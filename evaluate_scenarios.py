@@ -3,6 +3,8 @@
 Usage:
     python evaluate_scenarios.py --scenario A --wind east --n 20
     python evaluate_scenarios.py --n 5 --steps 300 --wind east
+    python evaluate_scenarios.py --scenario A --wind north --n 5 --steps 240 --seeds 101,202,303,404,505
+    python evaluate_scenarios.py --scenario A --wind north --n 5 --steps 240 --seed-base 100
 
 Read-only with respect to simulation logic: uses the same model setup as
 serve_dashboard.py and prints a summary (optionally CSV to stdout).
@@ -98,6 +100,36 @@ def _mean_std(values: list[float]) -> tuple[float | None, float | None]:
     return statistics.mean(values), statistics.stdev(values)
 
 
+def _parse_seeds_arg(raw: str) -> list[int]:
+    parts = [p.strip() for p in raw.split(",")]
+    if not parts or any(not p for p in parts):
+        raise ValueError("--seeds must be a comma-separated list of integers (e.g. 101,202,303)")
+    try:
+        return [int(p) for p in parts]
+    except ValueError as exc:
+        raise ValueError("--seeds must be a comma-separated list of integers (e.g. 101,202,303)") from exc
+
+
+def _resolve_run_seeds(args: argparse.Namespace) -> list[int]:
+    """Resolve the seed list for this batch: --seeds, --seed-base, or random."""
+    if args.seeds is not None and args.seed_base is not None:
+        raise ValueError("Provide either --seeds or --seed-base, not both")
+
+    if args.seeds is not None:
+        seeds = _parse_seeds_arg(args.seeds)
+        if len(seeds) != args.n:
+            raise ValueError(
+                "--seeds length (%d) does not match --n (%d); provide exactly %d seed(s)"
+                % (len(seeds), args.n, args.n)
+            )
+        return seeds
+
+    if args.seed_base is not None:
+        return [int(args.seed_base) + i for i in range(args.n)]
+
+    return [_resolve_seed(None) for _ in range(args.n)]
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Batch evaluate WildFireModel over random seeds.")
     parser.add_argument("--scenario", default="A", choices=["A", "B", "C", "D"])
@@ -109,6 +141,18 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--uavs", type=int, default=None)
     parser.add_argument("--victims", type=int, default=None)
     parser.add_argument("--firefighters", type=int, default=None)
+    parser.add_argument(
+        "--seeds",
+        default=None,
+        help="Comma-separated list of integer seeds (length must equal --n)",
+    )
+    parser.add_argument(
+        "--seed-base",
+        type=int,
+        default=None,
+        dest="seed_base",
+        help="Derive deterministic seeds as seed_base, seed_base+1, ..., seed_base+n-1",
+    )
     parser.add_argument("--csv", action="store_true", help="Print CSV rows to stdout")
     args = parser.parse_args(argv)
 
@@ -116,8 +160,17 @@ def main(argv: list[str] | None = None) -> int:
         print("N must be >= 1", file=sys.stderr)
         return 2
 
+    try:
+        seeds = _resolve_run_seeds(args)
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+
+    # Random path only: print generated seeds so the run can be reproduced later.
+    if args.seeds is None and args.seed_base is None:
+        print("SEEDS: " + ",".join(str(s) for s in seeds))
+
     params = _scenario_params(args)
-    seeds = [_resolve_seed(None) for _ in range(args.n)]
     rows: list[dict] = []
 
     print(
@@ -183,6 +236,11 @@ def main(argv: list[str] | None = None) -> int:
         for row in rows:
             writer.writerow(row)
         print(out.getvalue())
+
+    print(
+        "REPRODUCE: python evaluate_scenarios.py --scenario %s --wind %s --n %d --steps %d --seeds %s"
+        % (args.scenario, args.wind, args.n, args.steps, ",".join(str(s) for s in seeds))
+    )
 
     return 0
 
