@@ -47,7 +47,7 @@ def normalize_wind_direction(value: object | None = None) -> str:
 def wind_vector_from_direction(direction: object | None = None) -> tuple[float, float]:
     """Unit vector for the direction fire/smoke is pushed on the grid."""
     label = normalize_wind_direction(direction)
-    if label == "east":
+    if label == "north":
         return (0.0, 1.0)
     if label == "south":
         return (0.0, -1.0)
