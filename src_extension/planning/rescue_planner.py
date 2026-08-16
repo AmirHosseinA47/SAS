@@ -51,12 +51,6 @@ UNREACHABLE_STREAK_STEPS = 30
 UNDETECTED_STREAK_STEPS = 210
 UNREACHABLE_CAUSE_GEOGRAPHIC = "geographically_isolated"
 UNREACHABLE_CAUSE_UNDETECTED = "never_detected"
-# Evaluation cap is 240 steps. A late first-detect can still be assigned and
-# approaching at the cap (A/north 404 picks up at 237). Flush leftover
-# non-terminal victims at the horizon with a distinct cause so all_terminal
-# holds without calling that geographic isolation or a missed detection.
-UNREACHABLE_HORIZON_STEPS = 240
-UNREACHABLE_CAUSE_HORIZON = "horizon_unresolved"
 _UNREACHABLE_ESCAPE_TERMINAL = frozenset({"rescued", "dead", "unreachable", "cancelled"})
 
 
@@ -460,18 +454,15 @@ def unreachable_escape_victims(
     *,
     geo_threshold: int = UNREACHABLE_STREAK_STEPS,
     undetected_threshold: int = UNDETECTED_STREAK_STEPS,
-    step: int = 0,
-    horizon: int = UNREACHABLE_HORIZON_STEPS,
 ) -> tuple[list[tuple[str, str]], dict[str, int], dict[str, int]]:
     """Return ``(victim_id, cause)`` pairs whose consecutive streak reached a threshold.
 
     Causes:
     - ``geographically_isolated``: no safe BFS path for ``geo_threshold`` steps
     - ``never_detected``: never confirmed and unserved for ``undetected_threshold``
-    - ``horizon_unresolved``: still non-terminal at the evaluation horizon
 
     Geographic isolation is preferred when both geo and never-detected would fire.
-    Horizon is last-resort and does not rewrite those causes.
+    Leftover non-terminal victims at a step cap are left as-is.
     """
     if not isinstance(victim_flags, dict):
         victim_flags = {}
@@ -481,8 +472,6 @@ def unreachable_escape_victims(
         undetected_streaks = {}
     geo_limit = max(1, int(geo_threshold))
     und_limit = max(1, int(undetected_threshold))
-    horizon_step = max(1, int(horizon))
-    current_step = int(step or 0)
     marked: list[tuple[str, str]] = []
     seen: set[str] = set()
     for vid, flags in victim_flags.items():
@@ -513,8 +502,6 @@ def unreachable_escape_victims(
             marked.append((vid_s, UNREACHABLE_CAUSE_GEOGRAPHIC))
         elif undetected_streaks[vid_s] >= und_limit:
             marked.append((vid_s, UNREACHABLE_CAUSE_UNDETECTED))
-        elif current_step >= horizon_step:
-            marked.append((vid_s, UNREACHABLE_CAUSE_HORIZON))
     for vid in list(geo_streaks.keys()):
         if vid not in seen:
             geo_streaks.pop(vid, None)

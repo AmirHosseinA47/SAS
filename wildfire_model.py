@@ -68,7 +68,6 @@ from src_extension.planning.rescue_planner import (
     select_rescue_assignment,
     unreachable_escape_victims,
     UNREACHABLE_CAUSE_GEOGRAPHIC,
-    UNREACHABLE_CAUSE_HORIZON,
     UNREACHABLE_CAUSE_UNDETECTED,
 )
 from src_extension.execution.failsafe_modes import FailSafeMode
@@ -3819,7 +3818,6 @@ class WildFireModel(mesa.Model):
             flags,
             geo_streaks,
             undetected_streaks,
-            step=int(getattr(self, "evaluation_timesteps_counter", 0) or 0),
         )
         self._unreachable_geo_streak = geo_streaks
         self._unreachable_undetected_streak = undetected_streaks
@@ -3849,8 +3847,6 @@ class WildFireModel(mesa.Model):
                 streak = int(geo_streaks.get(vid, 0) or 0)
             elif cause == UNREACHABLE_CAUSE_UNDETECTED:
                 streak = int(undetected_streaks.get(vid, 0) or 0)
-            elif cause == UNREACHABLE_CAUSE_HORIZON:
-                streak = int(getattr(self, "evaluation_timesteps_counter", 0) or 0)
             else:
                 streak = 0
             log.append(
@@ -3990,6 +3986,17 @@ class WildFireModel(mesa.Model):
                         state.rescue_assigned = False
                     except Exception:
                         pass
+                    try:
+                        state.unreachable = False
+                    except Exception:
+                        pass
+                    try:
+                        state.unreachable_cause = ""
+                    except Exception:
+                        pass
+                    attrs = getattr(state, "attributes", None)
+                    if isinstance(attrs, dict):
+                        attrs.pop("unreachable_cause", None)
             runtime_victims = getattr(self.victim_runtime_model, "victims", None)
             if isinstance(runtime_victims, dict) and vid in runtime_victims:
                 try:
