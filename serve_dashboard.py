@@ -213,10 +213,68 @@ def _resolve_seed(raw_seed) -> int:
     return value
 
 
+def _resolve_role_count_params(num_agents, fire_trackers=None, victim_searchers=None):
+    """Return (fire_trackers, victim_searchers) to apply on the model.
+
+    Both None means leave unspecified so WildFireModel uses the legacy (n-1, 1)
+    last-UAV-is-searcher path. Raises ValueError on invalid combinations.
+    """
+    ft_given = fire_trackers is not None
+    vs_given = victim_searchers is not None
+    if not ft_given and not vs_given:
+        return None, None
+    ft = vs = None
+    if ft_given:
+        try:
+            ft = int(fire_trackers)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("fire-trackers must be an integer") from exc
+        if ft < 0:
+            raise ValueError("fire-trackers must be >= 0")
+    if vs_given:
+        try:
+            vs = int(victim_searchers)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("victim-searchers must be an integer") from exc
+        if vs < 0:
+            raise ValueError("victim-searchers must be >= 0")
+    n_agents = int(num_agents)
+    if ft_given and vs_given:
+        if ft + vs != n_agents:
+            raise ValueError(
+                "fire-trackers (%d) + victim-searchers (%d) must equal NUM_AGENTS (%d)"
+                % (ft, vs, n_agents)
+            )
+        return ft, vs
+    if ft_given:
+        if ft > n_agents:
+            raise ValueError(
+                "fire-trackers (%d) cannot exceed NUM_AGENTS (%d)" % (ft, n_agents)
+            )
+        return ft, n_agents - ft
+    if vs > n_agents:
+        raise ValueError(
+            "victim-searchers (%d) cannot exceed NUM_AGENTS (%d)" % (vs, n_agents)
+        )
+    return n_agents - vs, vs
+
+
+def _unreachable_cause_of(state):
+    cause = str(getattr(state, "unreachable_cause", "") or "").strip()
+    if cause:
+        return cause
+    attrs = getattr(state, "attributes", None)
+    if isinstance(attrs, dict):
+        return str(attrs.get("unreachable_cause", "") or "").strip()
+    return ""
+
+
 def _build_evaluation(model, terminal_step, steps, params):
     mv = getattr(model, "managed_victims", {}) or {}
     rescued = dead = unreachable = candidate = 0
-    for st in mv.values():
+    geographically_isolated = never_detected = horizon_unresolved = unreachable_other = 0
+    cause_parts = []
+    for vid, st in mv.items():
         s = str(getattr(st, "status", "")).lower()
         if s == "rescued":
             rescued += 1
@@ -224,6 +282,16 @@ def _build_evaluation(model, terminal_step, steps, params):
             dead += 1
         elif s == "unreachable":
             unreachable += 1
+            cause = _unreachable_cause_of(st)
+            cause_parts.append("%s:%s" % (vid, cause or "unspecified"))
+            if cause == "geographically_isolated":
+                geographically_isolated += 1
+            elif cause == "never_detected":
+                never_detected += 1
+            elif cause == "horizon_unresolved":
+                horizon_unresolved += 1
+            else:
+                unreachable_other += 1
         else:
             candidate += 1
     ff_dead = 0
@@ -234,6 +302,11 @@ def _build_evaluation(model, terminal_step, steps, params):
                 if type(c).__name__ == "Fire" and getattr(c, "burnt", False))
     total_v = max(rescued + dead + unreachable + candidate, 1)
     return {"rescued": rescued, "dead": dead, "unreachable": unreachable, "candidate": candidate,
+            "geographically_isolated": geographically_isolated,
+            "never_detected": never_detected,
+            "horizon_unresolved": horizon_unresolved,
+            "unreachable_other": unreachable_other,
+            "unreachable_causes": ";".join(sorted(cause_parts)),
             "total_victims": rescued + dead + unreachable + candidate, "firefighter_deaths": ff_dead,
             "burnt_cells": burnt, "steps_run": steps, "terminal_step": terminal_step,
             "all_terminal": candidate == 0, "rescue_rate": round(100.0 * rescued / total_v, 1),
@@ -248,18 +321,15 @@ def _start(cfg):
         cfv.SYSTEM_RANDOM = rng
         wf.SYSTEM_RANDOM = rng
         am.random = rng
-        ft_cfg = cfg.get("NUM_FIRE_TRACKERS")
-        vs_cfg = cfg.get("NUM_VICTIM_SEARCHERS")
-        if ft_cfg is not None or vs_cfg is not None:
-            num_fire_trackers = max(0, int(ft_cfg or 0))
-            num_victim_searchers = max(0, int(vs_cfg or 0))
-            num_agents = num_fire_trackers + num_victim_searchers
-            if num_agents < 1:
-                num_agents = max(1, int(cfg.get("NUM_AGENTS", 1)))
-        else:
-            num_agents = int(cfg["NUM_AGENTS"])
-            num_fire_trackers = None
-            num_victim_searchers = None
+        num_agents = int(cfg["NUM_AGENTS"])
+        try:
+            num_fire_trackers, num_victim_searchers = _resolve_role_count_params(
+                num_agents,
+                cfg.get("NUM_FIRE_TRACKERS"),
+                cfg.get("NUM_VICTIM_SEARCHERS"),
+            )
+        except ValueError as exc:
+            return {"error": str(exc)}
         params = dict(
             NUM_AGENTS=num_agents,
             NUM_VICTIMS=int(cfg["NUM_VICTIMS"]),
@@ -268,13 +338,9 @@ def _start(cfg):
             BATCH_SIZE=int(cfg.get("batch_size", 300)),
             FIRE_SPREAD_MULTIPLIER=float(cfg.get("fire_spread", 0.75)),
             PROBABILITY_MAP=False,
+            NUM_FIRE_TRACKERS=num_fire_trackers,
+            NUM_VICTIM_SEARCHERS=num_victim_searchers,
         )
-        if ft_cfg is not None or vs_cfg is not None:
-            params["NUM_FIRE_TRACKERS"] = num_fire_trackers
-            params["NUM_VICTIM_SEARCHERS"] = num_victim_searchers
-        else:
-            params["NUM_FIRE_TRACKERS"] = max(0, num_agents - 1)
-            params["NUM_VICTIM_SEARCHERS"] = min(1, num_agents)
         apply_scenario_config(cfv, wf, **params)
         model = WildFireModel()
         model.debug_log = False

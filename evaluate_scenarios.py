@@ -28,12 +28,21 @@ import wildfire_model as wf
 from src_extension.adaptation.local_adaptation_generator import apply_scenario_config
 from wildfire_model import WildFireModel
 
-from serve_dashboard import BUILTIN_SCENARIOS, _build_evaluation, _resolve_seed
+from serve_dashboard import (
+    BUILTIN_SCENARIOS,
+    _build_evaluation,
+    _resolve_role_count_params,
+    _resolve_seed,
+)
 
 METRIC_KEYS = (
     "rescued",
     "dead",
     "unreachable",
+    "geographically_isolated",
+    "never_detected",
+    "horizon_unresolved",
+    "unreachable_other",
     "candidate",
     "rescue_rate",
     "firefighter_deaths",
@@ -45,8 +54,14 @@ METRIC_KEYS = (
 
 def _scenario_params(args: argparse.Namespace) -> dict:
     preset = BUILTIN_SCENARIOS.get(args.scenario, {})
+    num_agents = int(args.uavs if args.uavs is not None else preset.get("NUM_AGENTS", 3))
+    fire_trackers, victim_searchers = _resolve_role_count_params(
+        num_agents,
+        getattr(args, "fire_trackers", None),
+        getattr(args, "victim_searchers", None),
+    )
     return {
-        "NUM_AGENTS": int(args.uavs if args.uavs is not None else preset.get("NUM_AGENTS", 3)),
+        "NUM_AGENTS": num_agents,
         "NUM_VICTIMS": int(args.victims if args.victims is not None else preset.get("NUM_VICTIMS", 5)),
         "NUM_FIREFIGHTERS": int(
             args.firefighters if args.firefighters is not None else preset.get("NUM_FIREFIGHTERS", 3)
@@ -55,7 +70,35 @@ def _scenario_params(args: argparse.Namespace) -> dict:
         "BATCH_SIZE": int(args.batch_size),
         "FIRE_SPREAD_MULTIPLIER": float(args.fire_spread),
         "PROBABILITY_MAP": False,
+        "NUM_FIRE_TRACKERS": fire_trackers,
+        "NUM_VICTIM_SEARCHERS": victim_searchers,
     }
+
+
+def _reproduce_line(args: argparse.Namespace, seeds: list[int]) -> str:
+    parts = [
+        "python evaluate_scenarios.py",
+        "--scenario %s" % args.scenario,
+        "--wind %s" % args.wind,
+        "--n %d" % args.n,
+        "--steps %d" % args.steps,
+        "--seeds %s" % ",".join(str(s) for s in seeds),
+    ]
+    if args.uavs is not None:
+        parts.append("--uavs %d" % args.uavs)
+    if args.victims is not None:
+        parts.append("--victims %d" % args.victims)
+    if args.firefighters is not None:
+        parts.append("--firefighters %d" % args.firefighters)
+    if args.fire_spread != 0.75:
+        parts.append("--fire-spread %s" % args.fire_spread)
+    if args.batch_size != 300:
+        parts.append("--batch-size %d" % args.batch_size)
+    if getattr(args, "fire_trackers", None) is not None:
+        parts.append("--fire-trackers %d" % args.fire_trackers)
+    if getattr(args, "victim_searchers", None) is not None:
+        parts.append("--victim-searchers %d" % args.victim_searchers)
+    return "REPRODUCE: " + " ".join(parts)
 
 
 def _run_seed(seed: int, params: dict, steps: int, *, quiet: bool = True) -> dict:
@@ -141,6 +184,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--uavs", type=int, default=None)
     parser.add_argument("--victims", type=int, default=None)
     parser.add_argument("--firefighters", type=int, default=None)
+    parser.add_argument("--fire-trackers", type=int, default=None, dest="fire_trackers")
+    parser.add_argument("--victim-searchers", type=int, default=None, dest="victim_searchers")
     parser.add_argument(
         "--seeds",
         default=None,
@@ -170,7 +215,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.seeds is None and args.seed_base is None:
         print("SEEDS: " + ",".join(str(s) for s in seeds))
 
-    params = _scenario_params(args)
+    try:
+        params = _scenario_params(args)
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
     rows: list[dict] = []
 
     print(
@@ -195,19 +244,26 @@ def main(argv: list[str] | None = None) -> int:
             continue
         rows.append(row)
         print(
-            "seed=%-10d rescued=%d dead=%d unreachable=%d unresolved=%d rate=%.1f%% ff_deaths=%d burnt=%d terminal=%s"
+            "seed=%-10d rescued=%d dead=%d unreachable=%d geo=%d never_detected=%d horizon=%d other=%d unresolved=%d rate=%.1f%% ff_deaths=%d burnt=%d terminal=%s all_terminal=%s"
             % (
                 seed,
                 row["rescued"],
                 row["dead"],
                 row["unreachable"],
+                row.get("geographically_isolated", 0),
+                row.get("never_detected", 0),
+                row.get("horizon_unresolved", 0),
+                row.get("unreachable_other", 0),
                 row["candidate"],
                 row["rescue_rate"],
                 row["firefighter_deaths"],
                 row["burnt_cells"],
                 row["terminal_step"] if row["terminal_step"] is not None else "-",
+                row.get("all_terminal"),
             )
         )
+        if row.get("unreachable_causes"):
+            print("  causes: %s" % row["unreachable_causes"])
 
     print("-" * 72)
     if not rows:
@@ -230,17 +286,18 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.csv:
         out = io.StringIO()
-        fieldnames = ["seed"] + list(METRIC_KEYS) + ["all_terminal", "total_victims", "scenario", "wind"]
+        fieldnames = (
+            ["seed"]
+            + list(METRIC_KEYS)
+            + ["all_terminal", "total_victims", "scenario", "wind", "unreachable_causes"]
+        )
         writer = csv.DictWriter(out, fieldnames=fieldnames, extrasaction="ignore")
         writer.writeheader()
         for row in rows:
             writer.writerow(row)
         print(out.getvalue())
 
-    print(
-        "REPRODUCE: python evaluate_scenarios.py --scenario %s --wind %s --n %d --steps %d --seeds %s"
-        % (args.scenario, args.wind, args.n, args.steps, ",".join(str(s) for s in seeds))
-    )
+    print(_reproduce_line(args, seeds))
 
     return 0
 
