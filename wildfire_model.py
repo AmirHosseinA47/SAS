@@ -2,6 +2,7 @@
 
 import math
 import sys
+from collections import deque
 from dataclasses import asdict, dataclass
 from typing import Any
 
@@ -62,7 +63,14 @@ from src_extension.execution.decision_dispatcher import DecisionDispatcher
 from src_extension.execution.execution_log import ExecutionLog
 from src_extension.execution.rescue_executor import RescueExecutor
 from src_extension.planning.decision_objects import RescueDecision
-from src_extension.planning.rescue_planner import RescuePlanner, select_rescue_assignment
+from src_extension.planning.rescue_planner import (
+    RescuePlanner,
+    select_rescue_assignment,
+    unreachable_escape_victims,
+    UNREACHABLE_CAUSE_GEOGRAPHIC,
+    UNREACHABLE_CAUSE_HORIZON,
+    UNREACHABLE_CAUSE_UNDETECTED,
+)
 from src_extension.execution.failsafe_modes import FailSafeMode
 from src_extension.execution.mode_manager import ModeManager, build_failsafe_dashboard_summary
 from src_extension.execution.safety_checker import SafetyChecker
@@ -271,6 +279,10 @@ class WildFireModel(mesa.Model):
         self._rescue_failed_logged: set[str] = set()
         self._rescue_blocked_logged: set[tuple[str, str]] = set()
         self._blocked_replacement_attempted: set[tuple[str, str]] = set()
+        self._unreachable_geo_streak: dict[str, int] = {}
+        self._unreachable_undetected_streak: dict[str, int] = {}
+        self._ff_victim_distances: dict[tuple[str, str], int] = {}
+        self._unreachable_escape_log: list[dict[str, Any]] = []
         self._firefighter_sync_mismatch_logged: set[str] = set()
         self._rescue_event_log: list[dict[str, Any]] = []
         self._latest_physical_rescue_by_victim: dict[str, dict[str, Any]] = {}
@@ -3511,6 +3523,21 @@ class WildFireModel(mesa.Model):
                         state.rescue_assigned = False
                     except Exception:
                         pass
+                    cause = str(meta.get("unreachable_cause", "") or "").strip()
+                    if cause:
+                        try:
+                            state.unreachable_cause = cause
+                        except Exception:
+                            pass
+                        attrs = getattr(state, "attributes", None)
+                        if not isinstance(attrs, dict):
+                            attrs = {}
+                            try:
+                                state.attributes = attrs
+                            except Exception:
+                                attrs = None
+                        if isinstance(attrs, dict):
+                            attrs["unreachable_cause"] = cause
             victim_marker = meta.get("victim_marker")
             if victim_marker is None:
                 victim_markers = getattr(self, "victim_marker_agents", None)
@@ -3526,7 +3553,7 @@ class WildFireModel(mesa.Model):
                 self._firefighter_id_for_victim(vid),
                 "rescue_failed",
                 reason or "no_available_firefighter",
-                {},
+                {"unreachable_cause": str(meta.get("unreachable_cause", "") or "")},
             )
             return True
 
@@ -3616,19 +3643,228 @@ class WildFireModel(mesa.Model):
             )
         )
 
-    def _mark_victim_unreachable(self, victim_id: str, victim_marker: Any | None) -> None:
+    def _mark_victim_unreachable(
+        self,
+        victim_id: str,
+        victim_marker: Any | None,
+        reason: str = "no_available_firefighter",
+        cause: str = "",
+    ) -> None:
         vid = str(victim_id or "").strip()
         if not vid:
             return
+        metadata: dict[str, Any] = {"victim_marker": victim_marker}
+        cause_s = str(cause or "").strip()
+        if cause_s:
+            metadata["unreachable_cause"] = cause_s
         self._execute_physical_rescue_via_executor(
             PhysicalRescueCommand(
                 action="mark_unreachable",
                 victim_id=vid,
                 firefighter_id=None,
-                reason="no_available_firefighter",
-                metadata={"victim_marker": victim_marker},
+                reason=str(reason or cause_s or "no_available_firefighter"),
+                metadata=metadata,
             )
         )
+
+    def _active_burning_cells(self) -> set[tuple[int, int]]:
+        cells: set[tuple[int, int]] = set()
+        for agent in getattr(self.schedule, "agents", []) or []:
+            if type(agent) is not agents.Fire:
+                continue
+            try:
+                if not agent.is_burning():
+                    continue
+            except Exception:
+                continue
+            pos = getattr(agent, "pos", None)
+            if pos is None:
+                continue
+            cells.add((int(pos[0]), int(pos[1])))
+        return cells
+
+    def _safe_path_reachable_cells(
+        self,
+        starts: list[tuple[int, int]],
+        burning: set[tuple[int, int]],
+    ) -> set[tuple[int, int]]:
+        """4-connected BFS; active fire cells are impassable, burnt cells are not."""
+        reachable: set[tuple[int, int]] = set()
+        queue: deque[tuple[int, int]] = deque()
+        for start in starts:
+            cell = (int(start[0]), int(start[1]))
+            if cell in burning or cell in reachable:
+                continue
+            if self.grid.out_of_bounds(cell):
+                continue
+            reachable.add(cell)
+            queue.append(cell)
+        while queue:
+            x, y = queue.popleft()
+            for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                nxt = (x + dx, y + dy)
+                if nxt in reachable or nxt in burning:
+                    continue
+                if self.grid.out_of_bounds(nxt):
+                    continue
+                reachable.add(nxt)
+                queue.append(nxt)
+        return reachable
+
+    def _update_unreachable_victims(self) -> None:
+        """Periodic escape hatch: isolated victims become unreachable after N steps."""
+        managed = getattr(self, "managed_victims", None)
+        markers = getattr(self, "victim_marker_agents", None)
+        if not isinstance(managed, dict) or not isinstance(markers, dict):
+            return
+        ff_markers = getattr(self, "firefighter_marker_agents", None)
+        if not isinstance(ff_markers, dict):
+            ff_markers = {}
+
+        living: list[tuple[str, Any, tuple[int, int]]] = []
+        starts: list[tuple[int, int]] = []
+        for ff_id, ff_marker in ff_markers.items():
+            if getattr(ff_marker, "dead", False):
+                continue
+            status = str(getattr(ff_marker, "status", "") or "").strip().lower()
+            if status == "dead":
+                continue
+            if getattr(ff_marker, "exiting", False):
+                continue
+            pos = getattr(ff_marker, "pos", None)
+            if pos is None:
+                continue
+            cell = (int(pos[0]), int(pos[1]))
+            living.append((str(ff_id), ff_marker, cell))
+            starts.append(cell)
+
+        burning = self._active_burning_cells()
+        reachable_cells = self._safe_path_reachable_cells(starts, burning)
+
+        prev_dists = getattr(self, "_ff_victim_distances", None)
+        if not isinstance(prev_dists, dict):
+            prev_dists = {}
+        new_dists: dict[tuple[str, str], int] = {}
+        flags: dict[str, dict[str, Any]] = {}
+        terminal_statuses = frozenset({"rescued", "dead", "unreachable", "cancelled"})
+
+        for vid, state in managed.items():
+            vid_s = str(vid or "").strip()
+            if not vid_s:
+                continue
+            marker = markers.get(vid_s)
+            status = str(getattr(state, "status", "") or "").strip().lower()
+            marker_status = (
+                str(getattr(marker, "status", "") or "").strip().lower()
+                if marker is not None
+                else ""
+            )
+            terminal = (
+                status in terminal_statuses
+                or marker_status in terminal_statuses
+                or bool(getattr(state, "rescued", False))
+                or bool(getattr(state, "dead", False))
+                or bool(getattr(state, "unreachable", False))
+                or bool(getattr(state, "cancelled", False))
+            )
+            vpos = None
+            if marker is not None:
+                vpos = getattr(marker, "pos", None)
+            if vpos is None:
+                vpos = getattr(state, "last_known_position", None)
+            vcell: tuple[int, int] | None = None
+            if vpos is not None and len(vpos) >= 2:
+                vcell = (int(vpos[0]), int(vpos[1]))
+
+            pair = self._find_active_firefighter_for_victim(vid_s, marker)
+            assigned_ff_id = str(pair[0]) if pair is not None else ""
+            approaching = False
+            assigned_approaching = False
+            if vcell is not None:
+                for ff_id, _ff_marker, ff_cell in living:
+                    dist = abs(ff_cell[0] - vcell[0]) + abs(ff_cell[1] - vcell[1])
+                    key = (ff_id, vid_s)
+                    new_dists[key] = dist
+                    if not assigned_ff_id or ff_id != assigned_ff_id:
+                        continue
+                    prev = prev_dists.get(key)
+                    if prev is not None and dist < int(prev):
+                        approaching = True
+                        assigned_approaching = True
+
+            confirmed = bool(getattr(state, "confirmed", False)) or marker_status in (
+                "confirmed",
+                "assigned",
+                "rescued",
+            )
+            geo_reachable = bool(vcell is not None and vcell in reachable_cells)
+            flags[vid_s] = {
+                "status": status or marker_status,
+                "terminal": terminal,
+                "assigned": bool(assigned_ff_id),
+                "assigned_approaching": assigned_approaching,
+                "geo_reachable": geo_reachable,
+                "confirmed": confirmed,
+                "approaching": approaching,
+            }
+
+        self._ff_victim_distances = new_dists
+        geo_streaks = getattr(self, "_unreachable_geo_streak", None)
+        if not isinstance(geo_streaks, dict):
+            geo_streaks = {}
+        undetected_streaks = getattr(self, "_unreachable_undetected_streak", None)
+        if not isinstance(undetected_streaks, dict):
+            undetected_streaks = {}
+        marked, geo_streaks, undetected_streaks = unreachable_escape_victims(
+            flags,
+            geo_streaks,
+            undetected_streaks,
+            step=int(getattr(self, "evaluation_timesteps_counter", 0) or 0),
+        )
+        self._unreachable_geo_streak = geo_streaks
+        self._unreachable_undetected_streak = undetected_streaks
+        if not marked:
+            return
+
+        step = int(getattr(self, "evaluation_timesteps_counter", 0) or 0)
+        log = getattr(self, "_unreachable_escape_log", None)
+        if not isinstance(log, list):
+            log = []
+            self._unreachable_escape_log = log
+        for vid, cause in marked:
+            marker = markers.get(vid)
+            pair = self._find_active_firefighter_for_victim(vid, marker)
+            if pair is not None:
+                ff_id, _ff_marker = pair
+                self._execute_physical_rescue_via_executor(
+                    PhysicalRescueCommand(
+                        action="unassign",
+                        victim_id=vid,
+                        firefighter_id=ff_id,
+                        reason=cause or "unreachable_escape",
+                        metadata={},
+                    )
+                )
+            if cause == UNREACHABLE_CAUSE_GEOGRAPHIC:
+                streak = int(geo_streaks.get(vid, 0) or 0)
+            elif cause == UNREACHABLE_CAUSE_UNDETECTED:
+                streak = int(undetected_streaks.get(vid, 0) or 0)
+            elif cause == UNREACHABLE_CAUSE_HORIZON:
+                streak = int(getattr(self, "evaluation_timesteps_counter", 0) or 0)
+            else:
+                streak = 0
+            log.append(
+                {
+                    "step": step,
+                    "victim_id": vid,
+                    "reason": cause or "unreachable_escape",
+                    "cause": cause,
+                    "streak": streak,
+                }
+            )
+            self._mark_victim_unreachable(
+                vid, marker, reason=cause or "unreachable_escape", cause=cause
+            )
 
     def _dispatch_firefighter_to_victim(
         self,
@@ -4240,6 +4476,7 @@ class WildFireModel(mesa.Model):
 
         self.schedule.step()
         self._run_post_move_decision_cycle(current_step_time)
+        self._update_unreachable_victims()
         self._log_step_summary()
         try:
             self.latest_dashboard_state = self.get_dashboard_state()

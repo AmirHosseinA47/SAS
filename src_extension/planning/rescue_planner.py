@@ -39,6 +39,26 @@ _HIGH_COMM_RISK = 0.55
 _CONFIRMATION_BONUS = 0.75
 _DELAY_CANCEL_BONUS = 0.75
 
+# Geographic isolation: fuel 7-10 depletes every FIRE_SPREAD_SPEED=3 steps, so a
+# burning barrier lasts ~21-30 steps before the cell is burnt (passable). N=30
+# exceeds one full burn-out so a temporary front does not permanently write off
+# a victim that a firefighter can still reach.
+UNREACHABLE_STREAK_STEPS = 30
+# Never-detected / never-approached: UAVs can first find a still-candidate
+# victim late (A/west seed 101 detects victim_0 at step 108). This timeout must
+# exceed that search window — and the 120-step cutoff that zeroed D/west 505
+# rescues — while still firing inside the 240-step cap (240 - 30).
+UNDETECTED_STREAK_STEPS = 210
+UNREACHABLE_CAUSE_GEOGRAPHIC = "geographically_isolated"
+UNREACHABLE_CAUSE_UNDETECTED = "never_detected"
+# Evaluation cap is 240 steps. A late first-detect can still be assigned and
+# approaching at the cap (A/north 404 picks up at 237). Flush leftover
+# non-terminal victims at the horizon with a distinct cause so all_terminal
+# holds without calling that geographic isolation or a missed detection.
+UNREACHABLE_HORIZON_STEPS = 240
+UNREACHABLE_CAUSE_HORIZON = "horizon_unresolved"
+_UNREACHABLE_ESCAPE_TERMINAL = frozenset({"rescued", "dead", "unreachable", "cancelled"})
+
 
 @dataclass
 class RescuePlanner:
@@ -409,6 +429,100 @@ def _is_initial_reason(reason: str) -> bool:
     return reason_l in ("initial", "test_initial", "victim_confirmed") or (
         "initial" in reason_l and "replacement" not in reason_l
     )
+
+
+def _is_terminal_flags(flags: dict[str, Any]) -> bool:
+    if bool(flags.get("terminal", False)):
+        return True
+    status = str(flags.get("status", "") or "").strip().lower()
+    return status in _UNREACHABLE_ESCAPE_TERMINAL
+
+
+def _is_productively_served(flags: dict[str, Any]) -> bool:
+    if bool(flags.get("assigned", False)) and bool(flags.get("assigned_approaching", False)):
+        return True
+    if bool(flags.get("approaching", False)):
+        return True
+    return False
+
+
+def _is_never_confirmed(flags: dict[str, Any]) -> bool:
+    if bool(flags.get("confirmed", False)):
+        return False
+    status = str(flags.get("status", "") or "").strip().lower()
+    return status in ("", "candidate", "unknown")
+
+
+def unreachable_escape_victims(
+    victim_flags: dict[str, dict[str, Any]],
+    geo_streaks: dict[str, int] | None = None,
+    undetected_streaks: dict[str, int] | None = None,
+    *,
+    geo_threshold: int = UNREACHABLE_STREAK_STEPS,
+    undetected_threshold: int = UNDETECTED_STREAK_STEPS,
+    step: int = 0,
+    horizon: int = UNREACHABLE_HORIZON_STEPS,
+) -> tuple[list[tuple[str, str]], dict[str, int], dict[str, int]]:
+    """Return ``(victim_id, cause)`` pairs whose consecutive streak reached a threshold.
+
+    Causes:
+    - ``geographically_isolated``: no safe BFS path for ``geo_threshold`` steps
+    - ``never_detected``: never confirmed and unserved for ``undetected_threshold``
+    - ``horizon_unresolved``: still non-terminal at the evaluation horizon
+
+    Geographic isolation is preferred when both geo and never-detected would fire.
+    Horizon is last-resort and does not rewrite those causes.
+    """
+    if not isinstance(victim_flags, dict):
+        victim_flags = {}
+    if geo_streaks is None:
+        geo_streaks = {}
+    if undetected_streaks is None:
+        undetected_streaks = {}
+    geo_limit = max(1, int(geo_threshold))
+    und_limit = max(1, int(undetected_threshold))
+    horizon_step = max(1, int(horizon))
+    current_step = int(step or 0)
+    marked: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for vid, flags in victim_flags.items():
+        vid_s = str(vid or "").strip()
+        if not vid_s:
+            continue
+        seen.add(vid_s)
+        entry = flags if isinstance(flags, dict) else {}
+        if _is_terminal_flags(entry):
+            geo_streaks[vid_s] = 0
+            undetected_streaks[vid_s] = 0
+            continue
+        served = _is_productively_served(entry)
+        geo_reachable = bool(entry.get("geo_reachable", entry.get("reachable", False)))
+        assigned = bool(entry.get("assigned", False))
+
+        if (not served) and (not geo_reachable):
+            geo_streaks[vid_s] = int(geo_streaks.get(vid_s, 0) or 0) + 1
+        else:
+            geo_streaks[vid_s] = 0
+
+        if (not served) and (not assigned) and _is_never_confirmed(entry):
+            undetected_streaks[vid_s] = int(undetected_streaks.get(vid_s, 0) or 0) + 1
+        else:
+            undetected_streaks[vid_s] = 0
+
+        if geo_streaks[vid_s] >= geo_limit:
+            marked.append((vid_s, UNREACHABLE_CAUSE_GEOGRAPHIC))
+        elif undetected_streaks[vid_s] >= und_limit:
+            marked.append((vid_s, UNREACHABLE_CAUSE_UNDETECTED))
+        elif current_step >= horizon_step:
+            marked.append((vid_s, UNREACHABLE_CAUSE_HORIZON))
+    for vid in list(geo_streaks.keys()):
+        if vid not in seen:
+            geo_streaks.pop(vid, None)
+    for vid in list(undetected_streaks.keys()):
+        if vid not in seen:
+            undetected_streaks.pop(vid, None)
+    marked.sort(key=lambda item: item[0])
+    return marked, geo_streaks, undetected_streaks
 
 
 def select_rescue_assignment(

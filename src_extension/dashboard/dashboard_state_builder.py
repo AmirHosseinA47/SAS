@@ -25,6 +25,16 @@ KNOWN_LIMITATIONS = [
 _TERMINAL_VICTIM = frozenset({"rescued", "dead", "unreachable", "cancelled"})
 
 
+def _unreachable_cause(state: Any) -> str:
+    cause = str(getattr(state, "unreachable_cause", "") or "").strip()
+    if cause:
+        return cause
+    attrs = getattr(state, "attributes", None)
+    if isinstance(attrs, dict):
+        return str(attrs.get("unreachable_cause", "") or "").strip()
+    return ""
+
+
 def _coords(value: Any) -> list[float] | None:
     if isinstance(value, (list, tuple)) and len(value) >= 2:
         return [float(value[0]), float(value[1])]
@@ -81,7 +91,8 @@ class DashboardStateBuilder:
 
     def _build_mission_status(self, model: Any, step: int) -> dict[str, Any]:
         managed = getattr(model, "managed_victims", None) or {}
-        rescued = dead = 0
+        rescued = dead = unreachable = 0
+        geographically_isolated = never_detected = horizon_unresolved = 0
         all_terminal = bool(managed)
         for _, state in managed.items():
             status = str(getattr(state, "status", "") or "").strip().lower()
@@ -89,6 +100,15 @@ class DashboardStateBuilder:
                 rescued += 1
             if bool(getattr(state, "dead", False)) or status == "dead":
                 dead += 1
+            if bool(getattr(state, "unreachable", False)) or status == "unreachable":
+                unreachable += 1
+                cause = _unreachable_cause(state)
+                if cause == "geographically_isolated":
+                    geographically_isolated += 1
+                elif cause == "never_detected":
+                    never_detected += 1
+                elif cause == "horizon_unresolved":
+                    horizon_unresolved += 1
             if status not in _TERMINAL_VICTIM and not bool(getattr(state, "rescued", False)):
                 all_terminal = False
 
@@ -125,6 +145,10 @@ class DashboardStateBuilder:
             "fail_safe_mode": fail_safe_mode,
             "rescued_count": rescued,
             "dead_victim_count": dead,
+            "unreachable_victim_count": unreachable,
+            "geographically_isolated_count": geographically_isolated,
+            "never_detected_count": never_detected,
+            "horizon_unresolved_count": horizon_unresolved,
             "unresolved_victim_count": unresolved,
             "all_victims_terminal": all_terminal and len(managed) > 0,
         }
@@ -217,6 +241,7 @@ class DashboardStateBuilder:
                     "dead": bool(getattr(state, "dead", False)) or status == "dead",
                     "unreachable": bool(getattr(state, "unreachable", False))
                     or status == "unreachable",
+                    "unreachable_cause": _unreachable_cause(state) or None,
                     "cancelled": bool(getattr(state, "cancelled", False))
                     or status == "cancelled",
                     "assigned_firefighter": str(getattr(state, "firefighter_id", "") or ""),
