@@ -86,6 +86,7 @@ CORRIDOR_DIVERSITY_X_BAND = 38
 CORRIDOR_DIVERSITY_MIN_STEPS = 20
 CORRIDOR_NARROW_X_SPAN = 18
 CORRIDOR_WEST_TARGET_X_MAX = 25
+CORRIDOR_WEST_CAMP_X = 12
 POST_RESCUE_COVERAGE_DURATION = 50
 COVERAGE_INTERIOR_X_MIN = 8
 COVERAGE_INTERIOR_X_MAX = 30
@@ -137,6 +138,53 @@ def _coverage_y_span(wind_state: dict[str, Any]) -> tuple[int | None, int | None
     return min(values), max(values)
 
 
+def _west_strip_reached(wind_state: dict[str, Any], safe_x_min: int) -> bool:
+    """True once the searcher has occupied the reachable west interior.
+
+    The static downwind west edge (x <= 3) is not a stable camp; A/west 505
+    median x was 11. Release west-first pull at that reachable band so an
+    upwind (east) sweep can start before the never_detected timeout.
+    """
+    x_lo, _ = _coverage_x_span(wind_state)
+    if x_lo is None:
+        return False
+    return int(x_lo) <= int(safe_x_min) + COVERAGE_SWEEP_BAND_MARGIN + 4
+
+
+def _east_strip_reached(wind_state: dict[str, Any], safe_x_max: int) -> bool:
+    _, x_hi = _coverage_x_span(wind_state)
+    if x_hi is None:
+        return False
+    return int(x_hi) >= int(safe_x_max) - COVERAGE_SWEEP_BAND_MARGIN - 4
+
+
+def _mark_x_strip_progress(
+    wind_state: dict[str, Any], safe_x_min: int, safe_x_max: int,
+) -> None:
+    if _west_strip_reached(wind_state, safe_x_min):
+        wind_state["west_strip_done"] = True
+    if _east_strip_reached(wind_state, safe_x_max):
+        wind_state["east_strip_done"] = True
+
+
+def _west_sweep_pending(wind_state: dict[str, Any], safe_x_min: int) -> bool:
+    if bool(wind_state.get("west_strip_done")):
+        return False
+    return not _west_strip_reached(wind_state, safe_x_min)
+
+
+def _east_sweep_pending(wind_state: dict[str, Any], safe_x_max: int) -> bool:
+    if bool(wind_state.get("east_strip_done")):
+        return False
+    return not _east_strip_reached(wind_state, safe_x_max)
+
+
+def _allow_east_force(wind_state: dict[str, Any]) -> bool:
+    """Second-sweep east pull is only for west wind (upwind of the fire)."""
+    w = str(wind_state.get("last_wind_direction") or "").strip().lower()
+    return w == "west"
+
+
 def _uncovered_region_bonus(
     cx: int,
     cy: int,
@@ -185,6 +233,12 @@ def _corridor_target_x_cap(
         tail = [int(x) for x in recent[-CORRIDOR_DIVERSITY_MIN_STEPS:]]
         if tail and all(x >= CORRIDOR_DIVERSITY_X_BAND for x in tail):
             return max(_coverage_safe_x_min(x_min), min(tail) - 8)
+        if (
+            tail
+            and all(x <= CORRIDOR_WEST_CAMP_X for x in tail)
+            and str(wind_state.get("last_wind_direction") or "").strip().lower() == "west"
+        ):
+            return safe_x_hi
     if coverage_active:
         return safe_x_hi
     return max(_coverage_safe_x_min(x_min), min(CORRIDOR_WEST_TARGET_X_MAX, safe_x_hi))
@@ -253,6 +307,58 @@ def resolve_primary_victim_searcher_uav_id(model_or_runtime: Any) -> str | None:
     return ids[0] if ids else None
 
 
+def _wind_label_from_vector(wind_vector: tuple[float, float]) -> str:
+    wvx, wvy = float(wind_vector[0]), float(wind_vector[1])
+    if abs(wvx) >= abs(wvy):
+        return "east" if wvx >= 0.0 else "west"
+    return "north" if wvy >= 0.0 else "south"
+
+
+def _searcher_crosswind_lane(
+    simulation: Any,
+    uav_id: str,
+    wind_direction: str,
+    x_min: int,
+    x_max: int,
+    y_min: int,
+    y_max: int,
+) -> tuple[str, int, int] | None:
+    """Disjoint cross-wind band for this searcher, or None when n <= 1."""
+    ids = resolve_victim_searcher_uav_ids(simulation)
+    n = len(ids)
+    if n <= 1:
+        return None
+    try:
+        idx = ids.index(str(uav_id))
+    except ValueError:
+        return None
+    w = normalize_wind_direction(wind_direction)
+    if w in ("east", "west"):
+        span = y_max - y_min + 1
+        lo = y_min + (span * idx) // n
+        hi = y_min + (span * (idx + 1)) // n - 1
+        if idx == n - 1:
+            hi = y_max
+        return ("y", lo, hi)
+    span = x_max - x_min + 1
+    lo = x_min + (span * idx) // n
+    hi = x_min + (span * (idx + 1)) // n - 1
+    if idx == n - 1:
+        hi = x_max
+    return ("x", lo, hi)
+
+
+def _lane_allows_cell(
+    lane: tuple[str, int, int] | None, cx: int, cy: int,
+) -> bool:
+    if lane is None:
+        return True
+    axis, lo, hi = lane
+    if axis == "y":
+        return lo <= cy <= hi
+    return lo <= cx <= hi
+
+
 def _simulation_from_runtime(runtime_models: Any) -> Any | None:
     if isinstance(runtime_models, dict):
         return runtime_models.get("simulation_model")
@@ -305,6 +411,8 @@ def _default_wind_search_state() -> dict[str, Any]:
         "recent_y_positions": [],
         "coverage_y_commit": None,
         "unresolved_victim_count": 0,
+        "west_strip_done": False,
+        "east_strip_done": False,
     }
 
 
@@ -603,6 +711,11 @@ def _corridor_diversity_failure(wind_state: dict[str, Any]) -> bool:
         return False
     if all(x >= CORRIDOR_DIVERSITY_X_BAND for x in tail):
         return True
+    if (
+        all(x <= CORRIDOR_WEST_CAMP_X for x in tail)
+        and str(wind_state.get("last_wind_direction") or "").strip().lower() == "west"
+    ):
+        return True
     if max(tail) - min(tail) <= CORRIDOR_NARROW_X_SPAN:
         return True
     return False
@@ -740,13 +853,40 @@ def _finalize_coverage_target(
     )
     if _coverage_mode_active(wind_state):
         tx = max(safe_x_min, min(safe_x_max, tx))
-        x_lo, x_hi = _coverage_x_span(wind_state)
-        if x_lo is not None and x_lo > safe_x_min + 3 and ax is not None and float(ax) > safe_x_min + 4:
-            west_goal = float(safe_x_min + COVERAGE_SWEEP_BAND_MARGIN)
-            tx = min(tx, west_goal)
-        elif x_hi is not None and x_hi < safe_x_max - 3 and ax is not None and float(ax) < safe_x_max - 4:
-            east_goal = float(safe_x_max - COVERAGE_SWEEP_BAND_MARGIN)
-            tx = max(tx, east_goal)
+        wind_label = str(wind_state.get("last_wind_direction") or "").strip().lower()
+        west_goal = float(safe_x_min + COVERAGE_SWEEP_BAND_MARGIN)
+        east_goal = float(safe_x_max - COVERAGE_SWEEP_BAND_MARGIN)
+        if wind_label == "west":
+            _mark_x_strip_progress(wind_state, safe_x_min, safe_x_max)
+            if (
+                _west_sweep_pending(wind_state, safe_x_min)
+                and ax is not None
+                and float(ax) > safe_x_min + 4
+            ):
+                tx = min(tx, west_goal)
+            elif (
+                _east_sweep_pending(wind_state, safe_x_max)
+                and _allow_east_force(wind_state)
+                and ax is not None
+                and float(ax) < safe_x_max - 4
+            ):
+                tx = max(tx, east_goal)
+        else:
+            x_lo, x_hi = _coverage_x_span(wind_state)
+            if (
+                x_lo is not None
+                and x_lo > safe_x_min + 3
+                and ax is not None
+                and float(ax) > safe_x_min + 4
+            ):
+                tx = min(tx, west_goal)
+            elif (
+                x_hi is not None
+                and x_hi < safe_x_max - 3
+                and ax is not None
+                and float(ax) < safe_x_max - 4
+            ):
+                tx = max(tx, east_goal)
     if int(wind_state.get("unresolved_victim_count", 0) or 0) > 0:
         if ay is not None:
             _update_coverage_y_commit(wind_state, y_min, y_max, float(ay))
@@ -3028,8 +3168,22 @@ class LocalAdaptationSpaceGenerator:
         elif commit == "south" and ay > y_min + COVERAGE_Y_COMMIT_PENETRATE_MARGIN:
             min_escape_dist = min(min_escape_dist, 5.0)
         center = wind_state.get("pocket_center")
+        lane = _searcher_crosswind_lane(
+            simulation,
+            uav_id,
+            _wind_label_from_vector(wind_vector),
+            x_min,
+            x_max,
+            y_min,
+            y_max,
+        )
+        _mark_x_strip_progress(wind_state, safe_x_min, safe_x_max)
+        west_pending = _west_sweep_pending(wind_state, safe_x_min)
+        east_pending = _east_sweep_pending(wind_state, safe_x_max)
         for cx in range(x_min + 1, x_max):
             for cy in range(y_min + 1, y_max):
+                if not _lane_allows_cell(lane, cx, cy):
+                    continue
                 if corridor_fail and cx > corridor_x_cap:
                     continue
                 if coverage_active:
@@ -3082,8 +3236,23 @@ class LocalAdaptationSpaceGenerator:
                     cx, cy, wind_state, x_min, x_max, y_min, y_max,
                 )
                 score += dist_agent * 0.35
-                if coverage_active and ax > safe_x_min + 4 and cx < ax:
-                    score += (ax - cx) * 0.75
+                if coverage_active:
+                    if _wind_label_from_vector(wind_vector) == "west":
+                        if (
+                            west_pending
+                            and ax > safe_x_min + 4
+                            and cx < ax
+                        ):
+                            score += (ax - cx) * 0.75
+                        elif (
+                            east_pending
+                            and _allow_east_force(wind_state)
+                            and ax < safe_x_max - 4
+                            and cx > ax
+                        ):
+                            score += (cx - ax) * 0.75
+                    elif ax > safe_x_min + 4 and cx < ax:
+                        score += (ax - cx) * 0.75
                 if coverage_active and y_force_min is not None and cy >= y_force_min:
                     score += (cy - y_force_min) * 0.45
                 if coverage_active and commit == "north" and y_force_min is not None:
@@ -3177,8 +3346,16 @@ class LocalAdaptationSpaceGenerator:
         y_values = range(iy_min, iy_max + 1, WIND_CORRIDOR_STRIDE)
         safe_x_min = _coverage_safe_x_min(x_min)
         safe_x_max = _coverage_safe_x_max(x_max)
+        lane = _searcher_crosswind_lane(
+            simulation, uav_id, wind_norm, x_min, x_max, y_min, y_max,
+        )
+        _mark_x_strip_progress(wind_state, safe_x_min, safe_x_max)
+        west_pending = _west_sweep_pending(wind_state, safe_x_min)
+        east_pending = _east_sweep_pending(wind_state, safe_x_max)
         for cx in x_values:
             for cy in y_values:
+                if not _lane_allows_cell(lane, cx, cy):
+                    continue
                 if coverage_active:
                     if cx < safe_x_min or cx > safe_x_max:
                         continue
@@ -3217,6 +3394,14 @@ class LocalAdaptationSpaceGenerator:
                 score += _uncovered_region_bonus(
                     cx, cy, wind_state, x_min, x_max, y_min, y_max,
                 )
+                if (
+                    coverage_active
+                    and wind_norm == "west"
+                    and not west_pending
+                    and east_pending
+                    and _allow_east_force(wind_state)
+                ):
+                    score += max(0.0, float(cx) - ax) * 0.75
                 if coverage_active and y_force_min is not None and cy >= y_force_min:
                     score += (cy - y_force_min) * 0.45
                 if coverage_active and commit == "north" and y_force_min is not None:
