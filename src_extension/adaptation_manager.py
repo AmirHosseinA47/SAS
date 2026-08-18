@@ -15,6 +15,7 @@ This module **orchestrates** by delegating to existing model stage methods; it d
 
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -170,6 +171,7 @@ class AdaptationManager:
         result["rescue_sync"] = _process_rescue_incidents(model)
         _call_stage(model, "_sync_firefighter_marker_status")
         _call_stage(model, "_sync_victim_agent_status")
+        _check_rescue_assignment_invariant(model)
         _call_stage(model, "_assert_no_direct_rescue_mutation")
         result["communication"] = _communication_summary(model)
 
@@ -201,6 +203,128 @@ def _collect_post_move_monitoring_snapshots(model: Any, current_step_time: float
     if monitor is None or not callable(getattr(monitor, "collect_global_snapshot", None)):
         return None
     return monitor.collect_global_snapshot(model, current_step_time)
+
+
+_TERMINAL_VICTIM_STATUSES = frozenset(
+    {"rescued", "dead", "unreachable", "cancelled"}
+)
+
+
+def _check_rescue_assignment_invariant(model: Any) -> None:
+    """Log firefighter/victim assignment divergence. Does not repair state."""
+    step = int(getattr(model, "evaluation_timesteps_counter", 0) or 0)
+    victim_markers = getattr(model, "victim_marker_agents", None)
+    ff_markers = getattr(model, "firefighter_marker_agents", None)
+    if not isinstance(victim_markers, dict) or not isinstance(ff_markers, dict):
+        return
+    managed = getattr(model, "managed_victims", None)
+    if not isinstance(managed, dict):
+        managed = {}
+    resolve = getattr(model, "_victim_id_from_agent", None)
+
+    def _vid_from_rv(rv: Any) -> str:
+        if rv is None:
+            return ""
+        if callable(resolve):
+            return str(resolve(rv) or "").strip()
+        return str(getattr(rv, "victim_id", "") or "").strip()
+
+    def _ff_points_at_victim(ff_marker: Any) -> bool:
+        if getattr(ff_marker, "dead", False):
+            return False
+        status = str(getattr(ff_marker, "status", "") or "").strip().lower()
+        if status in ("dead", "route_blocked"):
+            return False
+        if not getattr(ff_marker, "assigned", False):
+            return False
+        return getattr(ff_marker, "rescued_victim", None) is not None
+
+    def _victim_terminal(marker: Any, state: Any) -> bool:
+        if marker is not None:
+            mstatus = str(getattr(marker, "status", "") or "").strip().lower()
+            if mstatus in _TERMINAL_VICTIM_STATUSES:
+                return True
+        if state is None:
+            return False
+        sstatus = str(getattr(state, "status", "") or "").strip().lower()
+        if sstatus in _TERMINAL_VICTIM_STATUSES:
+            return True
+        return bool(
+            getattr(state, "rescued", False)
+            or getattr(state, "dead", False)
+            or getattr(state, "cancelled", False)
+            or getattr(state, "unreachable", False)
+        )
+
+    def _victim_marked_assigned(marker: Any, state: Any) -> bool:
+        if _victim_terminal(marker, state):
+            return False
+        if marker is not None:
+            if str(getattr(marker, "status", "") or "").strip().lower() == "assigned":
+                return True
+        if state is None:
+            return False
+        if getattr(state, "rescue_assigned", False):
+            return True
+        if str(getattr(state, "status", "") or "").strip().lower() == "assigned":
+            return True
+        return bool(getattr(state, "assigned", False))
+
+    ff_to_victim: dict[str, str] = {}
+    victim_to_ffs: dict[str, list[str]] = {}
+    for ff_id, ff_marker in ff_markers.items():
+        if not _ff_points_at_victim(ff_marker):
+            continue
+        vid = _vid_from_rv(getattr(ff_marker, "rescued_victim", None))
+        ff_s = str(ff_id)
+        if not vid:
+            print(
+                f"[RescueInvariant] step={step} firefighter={ff_s} "
+                f"assigned but victim id missing",
+                file=sys.stderr,
+            )
+            continue
+        ff_to_victim[ff_s] = vid
+        victim_to_ffs.setdefault(vid, []).append(ff_s)
+
+    for vid, marker in victim_markers.items():
+        vid_s = str(vid)
+        state = managed.get(vid_s)
+        if not _victim_marked_assigned(marker, state):
+            continue
+        ffs = victim_to_ffs.get(vid_s, [])
+        if len(ffs) != 1:
+            print(
+                f"[RescueInvariant] step={step} victim={vid_s} "
+                f"assigned but firefighters={ffs}",
+                file=sys.stderr,
+            )
+        elif state is not None:
+            back = str(getattr(state, "firefighter_id", "") or "").strip()
+            if back and back != ffs[0]:
+                print(
+                    f"[RescueInvariant] step={step} victim={vid_s} "
+                    f"assigned firefighter_id={back} but firefighter={ffs[0]}",
+                    file=sys.stderr,
+                )
+
+    for ff_id, vid in ff_to_victim.items():
+        marker = victim_markers.get(vid)
+        state = managed.get(vid)
+        if not _victim_marked_assigned(marker, state):
+            print(
+                f"[RescueInvariant] step={step} firefighter={ff_id} "
+                f"assigned to {vid} but victim not marked assigned",
+                file=sys.stderr,
+            )
+        elif state is not None:
+            back = str(getattr(state, "firefighter_id", "") or "").strip()
+            if back and back != ff_id:
+                print(
+                    f"[RescueInvariant] step={step} firefighter={ff_id} "
+                    f"assigned to {vid} but victim firefighter_id={back}",
+                    file=sys.stderr,
+                )
 
 
 def _process_rescue_incidents(model: Any) -> dict[str, Any]:

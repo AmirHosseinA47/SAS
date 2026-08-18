@@ -6,11 +6,14 @@ abstract firefighter/victim state, not physical movement or UAV paths.
 
 from __future__ import annotations
 
+import sys
 from typing import Any
 
 from ..planning.decision_objects import RescueDecision
 from ..planning.rescue_planner import select_rescue_assignment
 from .execution_log import ExecutionLog, ExecutionResult
+
+_GENERIC_VICTIM_IDS = frozenset({"", "mission", "rescue_target"})
 
 
 class RescueExecutor:
@@ -37,6 +40,56 @@ class RescueExecutor:
         victim_updates: dict[str, object] = {}
         firefighter_updates: dict[str, object] = {}
         runtime_updates: dict[str, object] = {}
+
+        if action_kind == "delay":
+            pairing = self._active_physical_pairing(
+                model, decision.victim_id, decision.firefighter_id
+            )
+            step = 0
+            if model is not None:
+                step = int(getattr(model, "evaluation_timesteps_counter", 0) or 0)
+            if pairing is not None:
+                pair_ff, pair_vid = pairing
+                print(
+                    f"[RescueDelayRefused] step={step} "
+                    f"victim={pair_vid or decision.victim_id or ''} "
+                    f"firefighter={pair_ff or decision.firefighter_id or ''} "
+                    f"reason=delay_refused_active_physical_pairing",
+                    file=sys.stderr,
+                )
+                refused_payload: dict[str, object] = {
+                    **dict(decision.payload),
+                    "rescue_action": decision.rescue_action,
+                    "victim_id": decision.victim_id,
+                    "firefighter_id": decision.firefighter_id,
+                    "route_choice": decision.route_choice,
+                    "refused_reason": "delay_refused_active_physical_pairing",
+                    "active_firefighter_id": pair_ff,
+                    "active_victim_id": pair_vid,
+                }
+                if self._execution_log is not None:
+                    self._execution_log.add(
+                        ExecutionResult(
+                            decision_id=decision.decision_id,
+                            executor_type="rescue",
+                            target_entity=decision.victim_id or "rescue",
+                            action=decision.rescue_action or "delay",
+                            status="failure",
+                            timestamp=timestamp,
+                            intended_effect=decision.explanation or decision.rescue_action,
+                            actual_result="delay_refused_active_physical_pairing",
+                            feedback_event=refused_payload,
+                            confidence_before=decision.confidence_score,
+                            confidence_after=decision.confidence_score,
+                            explanation=decision.explanation,
+                        )
+                    )
+                return {
+                    "applied": False,
+                    "reason": "delay_refused_active_physical_pairing",
+                    "decision_id": decision.decision_id,
+                    "payload": refused_payload,
+                }
 
         if model is not None and decision.victim_id:
             managed_victims = getattr(model, "managed_victims", None)
@@ -418,6 +471,67 @@ class RescueExecutor:
                 explanation=f"Physical rescue bridge: {event_type} ({reason})",
             )
         )
+
+    @staticmethod
+    def _firefighter_is_active_physical(ff_marker: Any) -> bool:
+        if ff_marker is None:
+            return False
+        if getattr(ff_marker, "dead", False):
+            return False
+        status = str(getattr(ff_marker, "status", "") or "").strip().lower()
+        if status in ("dead", "route_blocked"):
+            return False
+        if not getattr(ff_marker, "assigned", False):
+            return False
+        return getattr(ff_marker, "rescued_victim", None) is not None
+
+    def _active_physical_pairing(
+        self,
+        model: Any,
+        victim_id: str,
+        firefighter_id: str,
+    ) -> tuple[str, str] | None:
+        """Return (firefighter_id, victim_id) if an active physical pairing exists."""
+        if model is None:
+            return None
+        vid = str(victim_id or "").strip()
+        ff_id = str(firefighter_id or "").strip()
+        generic = vid.lower() in _GENERIC_VICTIM_IDS
+        victim_markers = getattr(model, "victim_marker_agents", None)
+        victim_marker = None
+        if isinstance(victim_markers, dict) and vid:
+            victim_marker = victim_markers.get(vid)
+        find_active = getattr(model, "_find_active_firefighter_for_victim", None)
+        if not generic and vid and callable(find_active):
+            pair = find_active(vid, victim_marker)
+            if pair is not None:
+                return str(pair[0]), vid
+
+        markers = getattr(model, "firefighter_marker_agents", None)
+        resolve = getattr(model, "_victim_id_from_agent", None)
+
+        def _target_victim_id(ff_marker: Any) -> str:
+            rv = getattr(ff_marker, "rescued_victim", None)
+            if rv is None:
+                return ""
+            if callable(resolve):
+                return str(resolve(rv) or "").strip()
+            return str(getattr(rv, "victim_id", "") or "").strip()
+
+        if ff_id and isinstance(markers, dict):
+            ff_marker = markers.get(ff_id)
+            if self._firefighter_is_active_physical(ff_marker):
+                rv_id = _target_victim_id(ff_marker)
+                if rv_id and (generic or rv_id == vid):
+                    return ff_id, rv_id
+
+        if generic and isinstance(markers, dict):
+            for fid, ff_marker in markers.items():
+                if not self._firefighter_is_active_physical(ff_marker):
+                    continue
+                rv_id = _target_victim_id(ff_marker)
+                return str(fid), rv_id or vid
+        return None
 
     @staticmethod
     def _classify_rescue_action(rescue_action: str) -> str:
