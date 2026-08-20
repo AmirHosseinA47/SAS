@@ -1,0 +1,903 @@
+==============================================================================
+STEP 0 - DOES THE VICTIM SEARCHER FOLLOW THE GENERATOR'S TARGET?
+==============================================================================
+HEAD commit : 887905a66eaceb850553438a1d9d8b6b5a1ea320
+Python      : 3.10.11 (tags/v3.10.11:7d4cc5a, Apr  5 2023, 00:38:17) [MSC v.1929 64 bit (AMD64)]
+mesa        : 1.2.1
+probe       : outputs/_diag_target_following.py (read-only monkeypatching)
+runs        : 240 steps each, no production code changed
+
+UNITS: detection / observation-post / observed-set membership are EUCLIDEAN
+r=8 (dx*dx + dy*dy <= 64), matching wildfire_model._detect_victims_in_uav_radius.
+Manhattan is used only to measure progress toward a target.
+
+------------------------------------------------------------------------------
+PATCH LEVEL (which object was patched) AND RAW CALL COUNTERS
+------------------------------------------------------------------------------
+The executor builds a FRESH generator on every call
+(uav_executor.py:3737 LocalAdaptationSpaceGenerator()._compute_...), so all
+generator patches are applied to the CLASS or to the MODULE, never to an
+instance. Patch targets actually used:
+
+  _apply_retarget_with_pathfinding_fallback    -> class:UAVExecutor
+  _apply_victim_searcher_hazard_gate           -> class:UAVExecutor
+  _attempt_pathfinding_toward_target           -> class:UAVExecutor
+  _choose_best_direction                       -> class:UAVExecutor
+  _commit_execution_direction                  -> class:UAVExecutor
+  _compute_wind_aware_search_target            -> class:LocalAdaptationSpaceGenerator
+  _finalize_coverage_target                    -> module:local_adaptation_generator
+  _generate_corridor_waypoints                 -> class:LocalAdaptationSpaceGenerator
+  _observation_coverage_penalty                -> module:local_adaptation_generator
+  _pick_global_coverage_escape_target          -> class:LocalAdaptationSpaceGenerator
+  _planner_wind_aware_target_from_decision     -> class:UAVExecutor
+  _score_hybrid_search_cell                    -> module:local_adaptation_generator
+  _uncovered_region_bonus                      -> module:local_adaptation_generator
+  _victim_near_edge_escape_required            -> class:UAVExecutor
+  _victim_positions_from_runtime               -> class:UAVExecutor
+  _wind_aware_victim_search_target             -> class:UAVExecutor
+  _wind_aware_victim_search_target_legacy      -> class:UAVExecutor
+  advance                                      -> class:agents.UAV
+  execute                                      -> class:UAVExecutor
+
+Raw counters (NOT compared against any expected value):
+  counter                                                D/north 101   D/south 101    A/west 505   A/north 101
+  gen_calls_total                                                260           259           278           260
+  gen_calls_searcher                                             260           259           278           260
+  gen_calls_nonsearcher                                            0             0             0             0
+  gen_caller__wind_aware_victim_search_target                     21            20            39            21
+  gen_caller__try_generate_wind_aware_victim_search_option           239           239           239           239
+  gen_returned_none                                                1             1             1             1
+  exec_wind_target_calls                                          21            20            39            21
+  legacy_calls                                                     1             1             1             1
+  legacy_nonnull                                                   1             1             1             1
+  planner_target_calls                                            22            21            40            22
+  planner_target_nonnull                                           1             1             1             1
+  pick_global_escape_calls                                       229           228           211           229
+  corridor_waypoint_calls                                          0             0             0             0
+  finalize_coverage_calls                                        259           258           277           259
+  score_hybrid_calls                                           65649         58921         68624         60514
+  bonus_calls_total                                           131298        117842        137248        121028
+  bonus_from__score_hybrid_search_cell                         65649         58921         68624         60514
+  bonus_from__pick_global_coverage_escape_target               65649         58921         68624         60514
+  bonus_from__generate_corridor_waypoints                          0             0             0             0
+  obs_penalty_calls                                            65649         58921         68624         60514
+  choose_best_direction_calls                                      6            42             1            13
+  pathfind_calls                                                 239           239           242           239
+  retarget_fallback_calls                                         21            20            39            21
+  hazard_gate_calls                                               11            77             2            19
+  hazard_gate_changed                                              6            22             1             5
+  execute_calls_searcher                                         240           240           243           240
+  commit_calls                                                   240           240           243           240
+  advance_calls                                                  240           240           240           240
+
+VERIFICATION: gen_calls_searcher and advance_calls are > 0 in every run, so
+the wrappers demonstrably fired. Agreement below is measured, not a false
+zero-disagreement artifact of instance-level patching.
+
+NOTE: the generator is called TWICE per step - once from the executor
+(uav_executor.py:3724 _wind_aware_victim_search_target) and once from the
+planner option builder (local_adaptation_generator.py:3773
+_try_generate_wind_aware_victim_search_option; the def is at :3773, not the
+:3793 cited in the plan). Both are counted separately.
+
+==============================================================================
+Q1 - AGREEMENT RATE: did the executor act on the generator's target?
+==============================================================================
+Agreement = the target routed toward by the executor (the argument passed to
+_choose_best_direction / _attempt_pathfinding_toward_target) is the SAME CELL
+as the generator's target, compared as (round(x), round(y)).
+
+  run              steps    agree  disagree   agreement
+  D/north 101        240      209        31       87.1%
+  D/south 101        240      209        31       87.1%
+  A/west 505         240      197        43       82.1%
+  A/north 101        240      209        31       87.1%
+
+Disagreement breakdown by cause (EXCLUSIVE, highest-precedence cause per step).
+These are MEASURED from wrapper traces, not inferred: each cause corresponds
+to a wrapper that fired or a wind_state flag read at executor entry.
+
+  cause                            D/north 101   D/south 101    A/west 505   A/north 101
+  legacy_target_source                       1             1             1             1
+  escape_target_routing                     30            30            42            30
+  TOTAL disagreements                       31            31            43            31
+
+Non-exclusive condition flags (a step can carry several; these show how often
+each override MECHANISM was active regardless of whether it changed the target):
+
+  flag                             D/north 101   D/south 101    A/west 505   A/north 101
+  escape_target_set                        220           220           214           220
+  force_coverage                           239           239           239           239
+  force_interior                           240           240           240           240
+  generator_returned_none                    1             1             1             1
+  hazard_gate_changed                        6            22             1             5
+  legacy_called                              1             1             1             1
+  legacy_nonnull                             1             1             1             1
+  planner_target_used                        1             1             1             1
+  retarget_fallback_fired                   21            20            37            21
+
+Generator branch that produced the target (measured by which inner function
+fired inside _compute_wind_aware_search_target):
+
+  branch                           D/north 101   D/south 101    A/west 505   A/north 101
+  finalize_only_escape                      30            30            54            30
+  pick_global_coverage_escape              209           209           185           209
+  returned_none                              1             1             1             1
+
+==============================================================================
+Q2 - ACTION LABELS applied by the executor to the searcher
+==============================================================================
+  committed action label                                 D/north 101   D/south 101    A/west 505   A/north 101
+  victim_search_escape_bfs                                        29            63            30            21
+  victim_search_hazard_retreat                                     4            16             0             1
+  victim_search_wind_aware                                         1             1             1             1
+  victim_search_wind_aware_retarget_to_interior                  206           160           209           217
+
+Cross-tab: for each label, how many of those steps AGREED with the generator
+target. This is the key correction to the earlier report - the label
+'victim_search_wind_aware_retarget_to_interior' does NOT mean the target was
+overridden; the retarget path routes toward the generator's OWN target and
+only changes the label and the routing method.
+
+  D/north 101:
+    victim_search_wind_aware_retarget_to_interior         206 steps,  176 agreed ( 85.4%)
+    victim_search_escape_bfs                               29 steps,   28 agreed ( 96.6%)
+    victim_search_hazard_retreat                            4 steps,    4 agreed (100.0%)
+    victim_search_wind_aware                                1 steps,    1 agreed (100.0%)
+  D/south 101:
+    victim_search_wind_aware_retarget_to_interior         160 steps,  148 agreed ( 92.5%)
+    victim_search_escape_bfs                               63 steps,   46 agreed ( 73.0%)
+    victim_search_hazard_retreat                           16 steps,   14 agreed ( 87.5%)
+    victim_search_wind_aware                                1 steps,    1 agreed (100.0%)
+  A/west 505:
+    victim_search_wind_aware_retarget_to_interior         209 steps,  173 agreed ( 82.8%)
+    victim_search_escape_bfs                               30 steps,   23 agreed ( 76.7%)
+    victim_search_wind_aware                                1 steps,    1 agreed (100.0%)
+  A/north 101:
+    victim_search_wind_aware_retarget_to_interior         217 steps,  187 agreed ( 86.2%)
+    victim_search_escape_bfs                               21 steps,   20 agreed ( 95.2%)
+    victim_search_wind_aware                                1 steps,    1 agreed (100.0%)
+    victim_search_hazard_retreat                            1 steps,    1 agreed (100.0%)
+
+==============================================================================
+Q3 - IS THE LEGACY TARGET SOURCE LIVE?
+==============================================================================
+uav_executor.py:3760 _wind_aware_victim_search_target_legacy is reached only
+when the generator returns None (uav_executor.py:3743-3744).
+
+  run                 calls   non-null    gen==None      differs
+  D/north 101             1          1            1            1
+  D/south 101             1          1            1            1
+  A/west 505              1          1            1            1
+  A/north 101             1          1            1            1
+
+Every legacy target differs from the generator's by construction: the legacy
+path only runs on steps where the generator produced no target at all.
+
+==============================================================================
+Q4 - PROGRESS TOWARD TARGET on steps where the target WAS honoured
+==============================================================================
+Manhattan distance from pos_before to pos_after, measured at agents.UAV.advance
+(the only place agent.pos mutates). 'blocked' = advance produced no move at all
+(agents.UAV.move returns False on out_of_bounds / not_UAV_adjacent /
+no_managed_direction_hold), which is distinct from moving the wrong way.
+
+  run              agree   closer     same  farther   blocked  closer%
+  D/north 101        209      177        0       27         5    84.7%
+  D/south 101        209      137        0       69         3    65.6%
+  A/west 505         197      192        0        4         1    97.5%
+  A/north 101        209      180        0       29         0    86.1%
+
+==============================================================================
+Q5 - CONTRAST, CONTROLLED FOR HAZARD DENSITY
+==============================================================================
+A/west 505 is the combo where the earlier x-axis scoring change produced a
+real improvement. If its agreement rate is not materially higher than the
+failing combos, agreement is NOT what distinguishes success from failure.
+
+  run              agreement   mean_fire    max_fire  mean_smoke hazard_gate
+  D/north 101          87.1%        92.6         146       153.7           6
+  D/south 101          87.1%       229.9         520       738.5          22
+  A/west 505           82.1%        79.9         137       191.6           1
+  A/north 101          87.1%        92.6         146       237.7           5
+
+==============================================================================
+Q6 - DID THE GENERATOR EVER PROPOSE A LEGAL OBSERVATION POST?
+==============================================================================
+Legal unpenalized post set = cells within EUCLIDEAN 8 of the victim, in
+bounds, not _downwind_edge_blocked, not _cell_on_edge(margin=
+WIND_INTERIOR_MARGIN=6). Verified against the prompt: (25,3) -> 45 posts,
+(40,25) -> 137 posts (includes the victim's own cell).
+
+  --- D/north 101 ---
+    never_detected=1  causes=victim_3:never_detected
+    victim spawns: victim_0@(40,25), victim_1@(25,48), victim_2@(10,25), victim_3@(25,3)
+    victim ever within Euclidean 8:  searcher=False  any UAV=False
+    closest approach:                searcher=14.14  any UAV=14.14
+    proposed targets: 239 steps, 12 DISTINCT cells
+      x: min=8 max=41 median=8.0     y: min=4 max=48 median=45.0
+    victim victim_3 @ (25,3): 45 legal unpenalized posts
+      generator EVER proposed a target in that set : NO (0 distinct: [])
+      executor EVER moved the searcher into the set: NO (0 cells)
+      2-D histogram of PROPOSED targets (rows = y bands, cols = x bands,
+      each bucket 10x10 cells; counts are step-occurrences):
+          x:  0-9  10-19 20-29 30-39 40-49
+      y 40-49   103     0     0     0    41
+      y 30-39     0     0     0     0     0
+      y 20-29     0     0     0     0     0
+      y 10-19    14     0     0     0     0
+      y  0- 9    46     0    30     0     5
+
+  --- D/south 101 ---
+    never_detected=1  causes=victim_1:never_detected
+    victim spawns: victim_0@(40,25), victim_1@(25,48), victim_2@(10,25), victim_3@(25,3)
+    victim ever within Euclidean 8:  searcher=False  any UAV=False
+    closest approach:                searcher=12.37  any UAV=10.0
+    proposed targets: 239 steps, 14 DISTINCT cells
+      x: min=2 max=41 median=8.0     y: min=1 max=46 median=4.0
+    victim victim_1 @ (25,48): 19 legal unpenalized posts
+      generator EVER proposed a target in that set : NO (0 distinct: [])
+      executor EVER moved the searcher into the set: NO (0 cells)
+      2-D histogram of PROPOSED targets (rows = y bands, cols = x bands,
+      each bucket 10x10 cells; counts are step-occurrences):
+          x:  0-9  10-19 20-29 30-39 40-49
+      y 40-49    46     0     0     0     0
+      y 30-39     0     0     0     0     0
+      y 20-29     0     0     0     0     0
+      y 10-19    14     0     0     0     0
+      y  0- 9    74     0    30     0    75
+
+  --- A/west 505 ---
+    never_detected=0  causes=(none)
+    victim spawns: victim_0@(40,25), victim_1@(32,46), victim_2@(13,34), victim_3@(7,12), victim_4@(30,11)
+    proposed targets: 239 steps, 37 DISTINCT cells
+      x: min=8 max=46 median=25.0     y: min=3 max=45 median=45.0
+    victim victim_0 @ (40,25): 137 legal unpenalized posts
+      generator EVER proposed a target in that set : NO (0 distinct: [])
+      executor EVER moved the searcher into the set: YES (24 cells)
+    victim victim_1 @ (32,46): 45 legal unpenalized posts
+      generator EVER proposed a target in that set : NO (0 distinct: [])
+      executor EVER moved the searcher into the set: YES (12 cells)
+    victim victim_2 @ (13,34): 189 legal unpenalized posts
+      generator EVER proposed a target in that set : YES (1 distinct: [(8, 38)])
+      executor EVER moved the searcher into the set: YES (1 cells)
+    victim victim_3 @ (7,12): 96 legal unpenalized posts
+      generator EVER proposed a target in that set : YES (1 distinct: [(8, 11)])
+      executor EVER moved the searcher into the set: NO (0 cells)
+    victim victim_4 @ (30,11): 165 legal unpenalized posts
+      generator EVER proposed a target in that set : NO (0 distinct: [])
+      executor EVER moved the searcher into the set: YES (32 cells)
+      2-D histogram of PROPOSED targets (rows = y bands, cols = x bands,
+      each bucket 10x10 cells; counts are step-occurrences):
+          x:  0-9  10-19 20-29 30-39 40-49
+      y 40-49     5    33    68    15    57
+      y 30-39    10     0     0     0     0
+      y 20-29     0     0     0     0     0
+      y 10-19     4     0     0     0     0
+      y  0- 9     0     0    14    33     0
+
+  --- A/north 101 ---
+    never_detected=1  causes=victim_0:never_detected
+    victim spawns: victim_0@(40,25), victim_1@(32,46), victim_2@(13,34), victim_3@(7,12), victim_4@(30,11)
+    victim ever within Euclidean 8:  searcher=False  any UAV=False
+    closest approach:                searcher=15.3  any UAV=8.94
+    proposed targets: 239 steps, 13 DISTINCT cells
+      x: min=8 max=41 median=8.0     y: min=4 max=46 median=37.0
+    victim victim_0 @ (40,25): 137 legal unpenalized posts
+      generator EVER proposed a target in that set : NO (0 distinct: [])
+      executor EVER moved the searcher into the set: NO (0 cells)
+      2-D histogram of PROPOSED targets (rows = y bands, cols = x bands,
+      each bucket 10x10 cells; counts are step-occurrences):
+          x:  0-9  10-19 20-29 30-39 40-49
+      y 40-49   107     0     0     0    35
+      y 30-39     6     0     0     0     0
+      y 20-29     0     0     0     0     0
+      y 10-19     7     0     0     0     0
+      y  0- 9    48     0    30     0     6
+
+==============================================================================
+Q7 - DOES THE COVERAGE BONUS RANK UNOBSERVED CELLS ABOVE OBSERVED ONES?
+==============================================================================
+MEASURED CORRECTION TO THE PREMISE. _uncovered_region_bonus has THREE call
+sites, and only ONE is gated on unresolved > 0:
+  local_adaptation_generator.py:1001  inside _score_hybrid_search_cell  GATED
+  local_adaptation_generator.py:3235  _pick_global_coverage_escape_target  UNGATED
+  local_adaptation_generator.py:3394  _generate_corridor_waypoints        UNGATED
+So the bonus fires on every candidate regardless of unresolved, and when
+unresolved > 0 it is added TWICE to the same candidate's score.
+
+GATING QUESTION - steps by unresolved_victim_count:
+  run             unresolved==0   unresolved>0      bonus calls
+  D/north 101                31            209           131298
+  D/south 101                31            209           117842
+  A/west 505                 55            185           137248
+  A/north 101                31            209           121028
+
+A. SPREAD ACROSS CANDIDATES WITHIN A STEP  (max(bonus) - min(bonus)).
+   If ~0 the term cannot influence the argmax regardless of magnitude.
+
+  run               steps       mean     median        min        max zero-spread
+  D/north 101         209      43.50      42.45      30.80      51.45          0
+  D/south 101         209      31.25      29.70      11.95      52.20          0
+  A/west 505          185      38.00      40.95      18.70      49.20          0
+  A/north 101         209      36.72      36.70      10.65      52.20          0
+
+B. CORRELATION between each candidate's bonus and the TRUE number of
+   unobserved cells within Euclidean 8 of that candidate. Computed per
+   detail step (every 10th step), then summarised across steps.
+   Positive = bonus prefers genuinely unobserved cells (healthy).
+   Near zero = the proxy does not track real coverage gaps.
+   NEGATIVE = the bonus actively prefers ALREADY-OBSERVED cells.
+
+   The quantity correlated is the EFFECTIVE bonus: the TOTAL added to one
+   candidate's score across both call sites in a step (gated call at :1001
+   plus ungated call at :3235), not either call's individual return value.
+   With the double-count that total is what actually moves the argmax.
+
+  D/north 101  (21 detail steps)
+    Pearson  vs searcher-only unobserved: mean=+0.279 median=+0.517 min=-0.486 max=+0.830  negative in 7/21 steps
+    Spearman vs searcher-only unobserved: mean=+0.264 median=+0.388 min=-0.611 max=+0.819  negative in 7/21 steps
+    Pearson  vs all-UAV unobserved     : mean=+0.454 median=+0.623 min=-0.320 max=+0.849  negative in 4/21 steps
+    Spearman vs all-UAV unobserved     : mean=+0.518 median=+0.652 min=-0.309 max=+0.915  negative in 4/21 steps
+  D/south 101  (21 detail steps)
+    Pearson  vs searcher-only unobserved: mean=-0.084 median=-0.224 min=-0.536 max=+0.465  negative in 13/21 steps
+    Spearman vs searcher-only unobserved: mean=-0.173 median=-0.276 min=-0.850 max=+0.388  negative in 12/21 steps
+    Pearson  vs all-UAV unobserved     : mean=+0.153 median=+0.369 min=-0.851 max=+0.852  negative in 8/21 steps
+    Spearman vs all-UAV unobserved     : mean=+0.124 median=+0.337 min=-0.917 max=+0.862  negative in 9/21 steps
+  A/west 505  (18 detail steps)
+    Pearson  vs searcher-only unobserved: mean=-0.119 median=-0.372 min=-0.538 max=+0.800  negative in 13/18 steps
+    Spearman vs searcher-only unobserved: mean=-0.162 median=-0.442 min=-0.770 max=+0.843  negative in 13/18 steps
+    Pearson  vs all-UAV unobserved     : mean=-0.307 median=-0.371 min=-0.724 max=+0.796  negative in 16/18 steps
+    Spearman vs all-UAV unobserved     : mean=-0.316 median=-0.366 min=-0.802 max=+0.807  negative in 15/18 steps
+  A/north 101  (21 detail steps)
+    Pearson  vs searcher-only unobserved: mean=+0.215 median=+0.259 min=-0.441 max=+0.892  negative in 8/21 steps
+    Spearman vs searcher-only unobserved: mean=+0.178 median=+0.118 min=-0.592 max=+0.965  negative in 9/21 steps
+    Pearson  vs all-UAV unobserved     : mean=+0.352 median=+0.444 min=-0.223 max=+0.833  negative in 6/21 steps
+    Spearman vs all-UAV unobserved     : mean=+0.316 median=+0.302 min=-0.318 max=+0.930  negative in 9/21 steps
+
+GATED / UNGATED SPLIT of that effective bonus, reported separately as
+requested. Per-candidate means within a detail step, averaged over steps:
+
+  run              gated mean ungated mean effective mean   double-counted
+  D/north 101           50.11        50.11         100.22       4093/4093  
+  D/south 101           50.78        50.78         101.55       3432/3432  
+  A/west 505            45.80        45.80          91.59       4177/4177  
+  A/north 101           46.93        46.93          93.86       3608/3608  
+
+  A candidate is 'double-counted' when both call sites contributed a non-zero
+  bonus to it in the same step. Where the gated and ungated means are equal,
+  the term is being applied at exactly twice its nominal weight.
+
+Scatter summary (one representative detail step per run): bonus vs true
+unobserved count within Euclidean 8.
+  D/north 101 step 10: bonus range [23.05, 68.75], unobserved range [84, 197]
+    (bonus, unobs_searcher, unobs_all): (68.8,84,84), (64.8,104,104), (62.1,144,144), (62.7,136,136), (65.8,116,116), (54.0,196,196), (52.5,197,197), (50.9,122,122), (41.0,190,180), (49.2,152,152)
+  D/south 101 step 10: bonus range [34.50, 68.30], unobserved range [84, 197]
+    (bonus, unobs_searcher, unobs_all): (67.0,84,84), (66.2,93,93), (65.5,101,101), (64.8,109,109), (64.0,116,116), (62.0,151,151), (58.6,196,196), (44.0,197,197), (41.2,197,183), (48.3,189,189)
+  A/west 505 step 10: bonus range [23.05, 65.30], unobserved range [84, 197]
+    (bonus, unobs_searcher, unobs_all): (65.3,84,84), (64.0,104,104), (61.3,144,144), (61.9,136,136), (61.6,130,130), (55.7,196,196), (47.8,181,133), (48.0,152,152), (38.8,187,138), (42.5,197,197)
+  A/north 101 step 10: bonus range [25.25, 66.80], unobserved range [84, 197]
+    (bonus, unobs_searcher, unobs_all): (64.2,84,84), (63.5,93,93), (62.7,101,101), (62.0,109,109), (61.2,116,116), (59.1,151,151), (55.8,196,196), (41.1,197,197), (39.8,193,192), (46.8,189,189)
+
+_observation_coverage_penalty (local_adaptation_generator.py:996, runs
+UNCONDITIONALLY) - spread across candidates and correlation with true
+unobserved count, to test whether it does the steering the bonus does not:
+
+  run            mean_spread max_spread mean_pearson mean_spearman
+  D/north 101          2.51       4.00       -0.320       -0.302
+  D/south 101          1.96       4.00        0.061        0.086
+  A/west 505           2.12       4.00        0.089        0.090
+  A/north 101          2.28       4.00       -0.701       -0.649
+
+HYPOTHESIS SIGNATURE CHECK: 1-D projection spans vs true 2-D observed
+fraction. The hypothesis predicts wide spans alongside ~0.5 observed.
+
+  run              final x_span   final y_span obs_frac_search   obs_frac_all
+  D/north 101            [7,25]        [30,41]         0.5680         0.7996
+  D/south 101            [1,13]        [41,48]         0.4852         0.8048
+  A/west 505            [24,27]        [17,27]         0.6412         0.8372
+  A/north 101            [8,25]        [30,42]         0.5884         0.6796
+
+Per-run coverage (240-step union, Euclidean r=8, /2500):
+  D/north 101    searcher-only=0.5680   all-UAV=0.7996   delta=+0.2316
+  D/south 101    searcher-only=0.4852   all-UAV=0.8048   delta=+0.3196
+  A/west 505     searcher-only=0.6412   all-UAV=0.8372   delta=+0.1960
+  A/north 101    searcher-only=0.5884   all-UAV=0.6796   delta=+0.0912
+
+MECHANICAL FINDING, verified in source (local_adaptation_generator.py:905-917):
+  _record_victim_searcher_x_band trims both lists to recent[-30:]. So
+  _coverage_x_span / _coverage_y_span are a 30-STEP ROLLING WINDOW, not
+  lifetime coverage. _uncovered_region_bonus is built entirely on those two
+  spans, so it is structurally blind to anything older than 30 steps -
+  a stronger defect than the 1-D projection framing, and it explains the
+  narrow final spans above sitting alongside 0.485-0.641 true coverage.
+
+==============================================================================
+Q8. SCORE DECOMPOSITION AT CALL SITE 1 (_pick_global_coverage_escape_target)
+==============================================================================
+
+Method: on every 10th step the probe re-scores the entire candidate grid using
+the UNPATCHED production helpers, mirroring the loop at
+local_adaptation_generator.py:3183-3270 filter-for-filter and term-for-term.
+It is self-validating: the mirror's argmax is compared against the best_point
+production itself passed into _finalize_coverage_target.
+
+  D/north 101    21/21 decompositions reproduced production's argmax
+  D/south 101    21/21 decompositions reproduced production's argmax
+  A/west 505     18/18 decompositions reproduced production's argmax
+  A/north 101    21/21 decompositions reproduced production's argmax
+
+  TOTAL 81/81. The mirror is EXACT, so the attribution below is a direct
+  readout of production's arithmetic rather than an inference about it.
+
+A. WHICH TERM ACTUALLY DRIVES SELECTION
+
+   Magnitude is not influence. A term that takes the same value on every
+   candidate cannot move the argmax however large it is; only its RANGE
+   (max - min) across the candidate set can. Mean range over detail steps:
+
+   term                       D/north 101   D/south 101    A/west 505   A/north 101
+   --------------------------------------------------------------------------------
+   never_seen_in                   809.66        652.98        933.50        733.47
+   never_seen_out                  809.66        652.98        933.50        733.47
+   cov_bonus_gated                  43.89         30.20         37.98         38.20
+   cov_bonus_ungated                43.89         30.20         37.98         38.20
+   hazard_clear                     15.66         14.77         34.14         14.09
+   x_force                          16.77         15.73          4.65         16.77
+   pocket_center_out                16.63         11.66         13.30         14.19
+   recent_target_penalty             9.30         10.74         14.04          5.76
+   pocket_center_in                 12.93          9.07         10.34         11.03
+   dist_agent_outer                  8.35          7.93          8.77          8.37
+   obs_penalty                       5.76          4.37          4.69          5.13
+   interior                          2.79          2.79          2.80          2.79
+   dist_agent_inner                  2.39          2.27          2.51          2.39
+   y_force                           0.96          0.32          0.90          0.90
+   commit_north                      0.75          0.25          0.70          0.70
+   commit_south                      0.25          0.75          0.29          0.30
+   downwind                          0.40          0.47          0.35          0.38
+   edge_penalty                      0.33          0.33          0.39          0.33
+
+   Zero range in every run, cannot affect selection: victim_like, pocket_penalty, visit_penalty, reached_penalty
+
+   Derived, exact from the same per-step ranges:
+
+   quantity                                 D/north 101   D/south 101    A/west 505   A/north 101
+   ----------------------------------------------------------------------------------------------
+   net dist_agent range (+0.25/cell)               5.96          5.67          6.26          5.98
+   EFFECTIVE coverage-bonus range                 87.78         60.40         75.96         76.40
+   EFFECTIVE never_seen range                   1619.31       1305.96       1866.99       1466.94
+   never_seen : coverage-bonus ratio              18.4x         21.6x         24.6x         19.2x
+
+   READING. The prompt's hypothesis was that dist_agent might dominate the
+   coverage bonus. It does not. Net dist_agent range is 5.7-6.3, which is
+   SMALLER than the effective coverage-bonus range (60.4-87.8), so the +0.35
+   outer term does not outvote coverage on its own.
+
+   The term that does is _never_seen_proximity_bonus. Its effective range is
+   1306-1867, i.e. 18x to 25x the coverage bonus's. It is added TWICE at
+   call site 1 (once inside _score_hybrid_search_cell at :999, once again at
+   :3232), and it swamps every other term including the coverage bonus.
+
+B. WHY THE SEARCHER NEVER GOES TO AN OBSERVATION POST
+
+   On the same detail steps the probe scores every cell of each victim's legal
+   observation-post set, separating two very different failures:
+     OUTSCORED - the post cell WAS a legal candidate and lost the argmax.
+     EXCLUDED  - the post cell never entered the candidate set at all, so NO
+                 re-weighting of any term could ever have selected it.
+
+  D/north 101   (21 detail steps; never_detected = victim_3)
+    victim_0   137 post cells | had >=1 candidate on 1/21 steps | ZERO on 20
+               excluded by (cell-steps): y_force_min=1110, commit_north_half=945, commit_south_half=370, y_force_max=315
+               when it WAS a candidate: mean deficit vs winner = 341.1
+               deficit attributed to: never_seen_in +165.1, never_seen_out +165.1, hazard_clear +11.9, x_force +8.6
+    victim_1    19 post cells | had >=1 candidate on 1/21 steps | ZERO on 20
+               excluded by (cell-steps): y_force_min=285, commit_south_half=95, min_escape_dist=11, fire_or_smoke_cell=3
+               when it WAS a candidate: mean deficit vs winner = 1187.6
+               deficit attributed to: never_seen_in +567.7, never_seen_out +567.7, hazard_clear +28.9, cov_bonus_gated +5.9
+    victim_2   152 post cells | had >=1 candidate on 1/21 steps | ZERO on 20
+               excluded by (cell-steps): y_force_min=1230, commit_north_half=1050, commit_south_half=410, y_force_max=350
+               when it WAS a candidate: mean deficit vs winner = 264.9
+               deficit attributed to: never_seen_in +142.1, never_seen_out +142.1, cov_bonus_gated -9.3, cov_bonus_ungated -9.3
+    victim_3    45 post cells | had >=1 candidate on 1/21 steps | ZERO on 20   <-- NEVER DETECTED
+               excluded by (cell-steps): commit_north_half=675, y_force_max=225, min_escape_dist=26
+               when it WAS a candidate: mean deficit vs winner = 169.7
+               deficit attributed to: never_seen_in +75.6, never_seen_out +75.6, x_force +4.5, hazard_clear +3.4
+
+  D/south 101   (21 detail steps; never_detected = victim_1)
+    victim_0   137 post cells | had >=1 candidate on 1/21 steps | ZERO on 20
+               excluded by (cell-steps): commit_south_half=1110, y_force_max=945, y_force_min=370, commit_north_half=315
+               when it WAS a candidate: mean deficit vs winner = 581.8
+               deficit attributed to: never_seen_in +281.8, never_seen_out +281.8, hazard_clear +11.1, x_force +10.9
+    victim_1    19 post cells | had >=1 candidate on 1/21 steps | ZERO on 20   <-- NEVER DETECTED
+               excluded by (cell-steps): commit_south_half=285, y_force_min=95, min_escape_dist=11
+               when it WAS a candidate: mean deficit vs winner = 1265.3
+               deficit attributed to: never_seen_in +613.1, never_seen_out +613.1, hazard_clear +20.4, x_force +7.5
+    victim_2   152 post cells | had >=1 candidate on 1/21 steps | ZERO on 20
+               excluded by (cell-steps): commit_south_half=1230, y_force_max=1050, y_force_min=410, commit_north_half=350
+               when it WAS a candidate: mean deficit vs winner = 142.3
+               deficit attributed to: never_seen_in +74.9, never_seen_out +74.9, cov_bonus_gated -6.3, cov_bonus_ungated -6.3
+    victim_3    45 post cells | had >=1 candidate on 1/21 steps | ZERO on 20
+               excluded by (cell-steps): y_force_max=675, commit_north_half=225, min_escape_dist=26
+               when it WAS a candidate: mean deficit vs winner = 554.6
+               deficit attributed to: never_seen_in +266.2, never_seen_out +266.2, x_force +6.8, recent_target_penalty -5.5
+
+  A/west 505   (18 detail steps; never_detected = none)
+    victim_0   137 post cells | had >=1 candidate on 1/18 steps | ZERO on 17
+               excluded by (cell-steps): y_force_min=888, commit_north_half=756, commit_south_half=370, y_force_max=315
+               when it WAS a candidate: mean deficit vs winner = 204.4
+               deficit attributed to: never_seen_in +105.3, never_seen_out +105.3, cov_bonus_gated -6.1, cov_bonus_ungated -6.1
+    victim_1    45 post cells | had >=1 candidate on 1/18 steps | ZERO on 17
+               excluded by (cell-steps): y_force_min=540, commit_south_half=225, min_escape_dist=6
+               when it WAS a candidate: mean deficit vs winner = 26.2
+               deficit attributed to: never_seen_in +12.2, never_seen_out +12.2, x_force +1.5, cov_bonus_gated +0.2
+    victim_2   189 post cells | had >=1 candidate on 1/18 steps | ZERO on 17
+               excluded by (cell-steps): y_force_min=2268, commit_south_half=945, min_escape_dist=81, saturated=40
+               when it WAS a candidate: mean deficit vs winner = 309.0
+               deficit attributed to: never_seen_in +142.3, never_seen_out +142.3, hazard_clear +17.9, pocket_center_out +1.8
+    victim_3    96 post cells | had >=1 candidate on 1/18 steps | ZERO on 17
+               excluded by (cell-steps): commit_north_half=1152, y_force_max=480, fire_or_smoke_cell=4, min_escape_dist=2
+               when it WAS a candidate: mean deficit vs winner = 354.0
+               deficit attributed to: never_seen_in +172.9, never_seen_out +172.9, hazard_clear +29.8, cov_bonus_gated -11.9
+    victim_4   165 post cells | had >=1 candidate on 1/18 steps | ZERO on 17
+               excluded by (cell-steps): commit_north_half=1980, y_force_max=825, min_escape_dist=102
+               when it WAS a candidate: mean deficit vs winner = 33.2
+               deficit attributed to: hazard_clear +11.9, never_seen_in +7.8, never_seen_out +7.8, pocket_center_out +1.8
+
+  A/north 101   (21 detail steps; never_detected = victim_0)
+    victim_0   137 post cells | had >=1 candidate on 1/21 steps | ZERO on 20   <-- NEVER DETECTED
+               excluded by (cell-steps): y_force_min=1036, commit_north_half=882, commit_south_half=444, y_force_max=378
+               when it WAS a candidate: mean deficit vs winner = 397.5
+               deficit attributed to: never_seen_in +180.1, never_seen_out +180.1, x_force +12.4, cov_bonus_gated +8.6
+    victim_1    45 post cells | had >=1 candidate on 1/21 steps | ZERO on 20
+               excluded by (cell-steps): y_force_min=630, commit_south_half=270, fire_or_smoke_cell=6, min_escape_dist=5
+               when it WAS a candidate: mean deficit vs winner = 617.7
+               deficit attributed to: never_seen_in +287.9, never_seen_out +287.9, x_force +12.4, cov_bonus_gated +10.3
+    victim_2   189 post cells | had >=1 candidate on 1/21 steps | ZERO on 20
+               excluded by (cell-steps): y_force_min=2646, commit_south_half=1134, min_escape_dist=81
+               when it WAS a candidate: deficit 0.0 - a post cell
+               WAS the argmax winner on that step
+    victim_3    96 post cells | had >=1 candidate on 1/21 steps | ZERO on 20
+               excluded by (cell-steps): commit_north_half=1344, y_force_max=576, min_escape_dist=2
+               when it WAS a candidate: mean deficit vs winner = 45.8
+               deficit attributed to: never_seen_in +23.0, never_seen_out +23.0, hazard_clear -22.9, recent_target_penalty +12.8
+    victim_4   165 post cells | had >=1 candidate on 1/21 steps | ZERO on 20
+               excluded by (cell-steps): commit_north_half=2310, y_force_max=990, min_escape_dist=102
+               when it WAS a candidate: mean deficit vs winner = 160.1
+               deficit attributed to: never_seen_in +60.4, never_seen_out +60.4, cov_bonus_gated +14.3, cov_bonus_ungated +14.3
+
+   READING. Across all runs and victims, post sets had zero legal candidates
+   on 345 victim-steps and at least one on only 18 - 95% of the time no
+   observation post was reachable at all. Dominant exclusion reasons:
+     commit_north_half         11984 cell-steps
+     y_force_min               11508 cell-steps
+     y_force_max                7124 cell-steps
+     commit_south_half          6888 cell-steps
+     min_escape_dist            1079 cell-steps
+   Where post cells are EXCLUDED rather than outscored, the coverage bonus is
+   irrelevant by construction: the cells are filtered out before any score is
+   computed. That is a hard geometric constraint, not a weighting problem.
+
+   THE MECHANISM IS coverage_y_commit, AND IT IS A CLIFF, NOT A GRADIENT.
+   Splitting every detail step by whether wind_state['coverage_y_commit'] is
+   set exposes exactly where the post sets go out of reach:
+
+   run               commit   detail steps  mean candidates     post cands
+   D/north 101         None              1             1374            100
+                        set             20              136              0
+   D/south 101         None              1             1448            103
+                        set             20               99              0
+   A/west 505          None              1             1374            298
+                        set             17              165              0
+   A/north 101         None              1             1443            337
+                        set             20              108              0
+
+   Read the last column. While coverage_y_commit is unset the searcher can see
+   between 100 and 337 legal observation-post cells. The moment it is set - by
+   step 20 in every run, and it is never released again - the candidate set
+   collapses by roughly 90% and the number of reachable observation-post cells
+   becomes EXACTLY ZERO, for every victim, on every remaining detail step of
+   all four runs.
+
+   Two filters do it, both inside the coverage_active block:
+     :3192-3195  commit == north drops every cy < upper_y_min;
+                 commit == south drops every cy > lower_y_max. Half the grid.
+     :3196-3199  y_force_min / y_force_max then drop most of what is left.
+
+   This is a stronger and more specific result than 'the bonus is
+   miscorrelated'. For 20 of 21 measured steps per run, NO setting of ANY
+   scoring weight could have sent the searcher to an observation post, because
+   no observation post was in the candidate set to be scored.
+
+   NUANCE, and it matters for attribution: this happens identically in A/west
+   505, the run that detected every victim. So the y-commit cliff is a hard
+   constraint on targeting but is NOT by itself sufficient to cause a miss -
+   in A/west the searcher's incidental path still covered the victims. It
+   bounds what any scoring fix can achieve; it does not on its own explain the
+   difference between the failing and succeeding runs.
+
+C. fire_tracker_detection_boost - AN EXTERNAL INPUT TO THESE SCORES
+
+   wildfire_model.py:1017-1024: when a FIRE_TRACKER detects a victim it writes
+   fire_tracker_detection_boost into EVERY victim searcher's wind_state. It is
+   read back at local_adaptation_generator.py:729 (_coverage_mode_active), :952
+   (_coverage_priority) and :1060. At :1061-1063 a boost >= 0.06 combined with
+   zero searcher detections sets force_coverage_escape and lifts
+   coverage_priority to >= 0.7. That is not a nudge to the scores:
+   force_coverage_escape raises min_escape_dist from 6.0 to 14.0 and disables
+   the parity filter, so a tracker's detection reshapes the searcher's
+   CANDIDATE SET from outside the searcher entirely.
+
+   run                 max     mean    steps > 0  steps >= 0.06
+   D/north 101       0.060    0.051          205            205
+   D/south 101       0.060    0.056          226            226
+   A/west 505        0.060    0.055          221            221
+   A/north 101       0.120    0.070          209            209
+
+   The boost is NON-ZERO in these runs, so it belongs in the term breakdown:
+   it inflates coverage_w, which multiplies both the obs_penalty and the
+   never_seen terms by (1 + coverage_w), and can force the escape branch.
+
+D. CALL-SITE ASYMMETRY BETWEEN THE TWO SCORING LOOPS
+
+   Both loops call _score_hybrid_search_cell and then add their own terms, but
+   they do not add the same ones. Verified in source:
+
+     site 1  _pick_global_coverage_escape_target, scorer at :3214
+       :3232  RE-ADDS _never_seen_proximity_bonus * (1 + coverage_w)
+       :3235  adds _uncovered_region_bonus (ungated)
+       :3238  adds dist_agent * 0.35
+       :3239  x-force for west AND east AND the generic ax-branch
+       :3266  adds pocket_center distance * 0.45
+
+     site 2  _generate_corridor_waypoints, scorer at :3376
+       :3394  adds _uncovered_region_bonus (ungated)   <- same
+       ----   does NOT re-add _never_seen_proximity_bonus
+       ----   does NOT add dist_agent * 0.35
+       ----   does NOT add any pocket_center term
+       :3397  x-force ONLY for the west + east_pending case
+       :3415  SUBTRACTS WIND_EDGE_PENALTY * 2.0 under force_interior, which
+              site 1 does not do at all
+
+   Consequences, in the units measured in section A:
+     - Both sites double-count _uncovered_region_bonus when unresolved > 0
+       (gated call at :1001 plus the ungated call at :3235 / :3394).
+     - Only site 1 doubles _never_seen_proximity_bonus. Since that term's
+       range is the largest of all, site 1 roughly HALVES the relative
+       influence of the coverage bonus compared with site 2.
+     - Only site 1 applies a net +0.25 per cell outward pull (see the
+       dist_agent sign asymmetry in OTHER DEFECTS).
+     So the escape path and the corridor path rank coverage differently, and
+     the same wind_state can yield different targets depending on which path
+     produced it.
+
+   IMPORTANT: this asymmetry is LATENT, not active, in these four runs.
+   corridor_waypoint_calls == 0 in all four, so site 2 never executed and
+   every measured target came from site 1. The asymmetry cannot explain
+   any divergence observed here; it is a defect waiting for the corridor
+   path to be revived.
+
+E. WHY ALL OF THE ABOVE IS PINNED ON: coverage_w IS EFFECTIVELY CONSTANT
+
+   Everything in sections A, B and C follows from one measured fact:
+
+   run              mean cov_w    max cov_w   cov_w >= 0.9  min_escape values
+   D/north 101           0.948        0.960       239/240                5/20
+   D/south 101           0.953        0.960       239/240                5/20
+   A/west 505            0.952        0.960       239/240                5/20
+   A/north 101           0.967        1.020       239/240                5/20
+
+   The causal chain, all verified in source:
+
+     1. _coverage_mode_active (:724-739) returns True for EVERY input with
+        unresolved > 0. Lines :731-738 test steps_since_detection, corridor
+        failure, boost > 0.2 and post_rescue, each returning True - and then
+        :739 returns True unconditionally anyway. Those four tests cannot
+        change the result, so the function is simply 'unresolved > 0'.
+     2. _coverage_priority (:959-962) therefore raises base to >= 0.9 whenever
+        a victim is unresolved, then :963 returns base + boost. Measured:
+        coverage_w >= 0.9 on 239 of 240 steps in every run.
+     3. coverage_w >= 0.9 sets min_escape_dist = max(min_escape, 20.0) at
+        :3147-3148. Measured min_escape_dist only ever takes the values above -
+        never its nominal 6.0, and never the 14.0 that force_coverage_escape
+        would give. Every cell within Manhattan 20 of the searcher is excluded
+        from its own candidate set.
+     4. coverage_w >= 0.9 also forces wind_w = HYBRID_WIND_WEIGHT * 0.15 at
+        :985-986, which is why the downwind term has the SMALLEST range of all
+        (0.35-0.47 in section A). The wind-aware search is not wind-aware in
+        practice.
+     5. coverage_active being permanently True is what arms the y-commit
+        filters of section B.
+
+   So the searcher spends essentially the whole run in maximum-coverage mode
+   with a 20-cell exclusion radius around itself, a dead wind term, and half
+   the grid filtered out. The coverage bonus is being asked to steer inside a
+   candidate set that these three mechanisms have already determined.
+
+==============================================================================
+VERDICT 1 - IS THE EXECUTOR THE BINDING CONSTRAINT ON SEARCHER TARGETING?
+==============================================================================
+
+ANSWER: (b) NO. The executor follows the generator on the large majority of
+steps. The problem is in what the generator PROPOSES, so the fix belongs in
+local_adaptation_generator.py.
+
+AMENDED BY Q8: the right FILE is settled, but 'a scoring change can work' -
+as this verdict was originally worded - is not supported. Q8-B shows the
+binding constraint inside the generator is the candidate FILTERS, not the
+scores. A pure re-weighting cannot select a cell that was filtered out before
+scoring, and on 20 of 21 measured steps per run every observation post was.
+
+Supporting numbers:
+  - Agreement rate (Q1):
+      D/north 101 87.1%  D/south 101 87.1%  A/west 505 82.1%  A/north 101 87.1%
+    The executor acted on the generator's exact cell on 197-209 of 240
+    steps in every run.
+  - Exactly ONE mechanism actually changes the acted-on target:
+    escape_target routing (uav_executor.py:1213), on 30/30/42/30 steps.
+    Crucially, wind_state['escape_target'] is WRITTEN BY THE GENERATOR
+    (local_adaptation_generator.py:3509 and :3579); uav_executor.py:1208 only
+    ever clears it. So even this override is fed by generator-authored state,
+    not by a competing executor policy.
+  - The legacy source is live but negligible: 1/1/1/1 step(s) of 240 (Q3),
+    reached only because the generator returned None that step.
+  - The earlier report's conclusion is REFUTED (Q2). The label
+    victim_search_wind_aware_retarget_to_interior fires on 160-217 steps, but
+    82.8-92.5% of those steps AGREED with the generator's target. That path
+    (_apply_retarget_with_pathfinding_fallback) routes toward the generator's
+    OWN target and only changes the label and the routing method. The label
+    was misread as evidence of override.
+  - victim_search_hazard_retreat is rare: 4/16/0/1 steps, and 87.5-100% of
+    those still agreed.
+  - Live-victim pursuit never interrupted the cursor: 0 steps carried
+    victim_escape_committed or victim_stuck_escape in any run.
+  - The target is honoured AND reachable (Q4): on agreeing steps the searcher
+    reduced Manhattan distance to it on 84.7/65.6/97.5/86.1% of steps.
+  - Agreement does NOT distinguish success from failure (Q5). A/west 505, the
+    designated contrast case (never_detected = 0 at HEAD, versus 1 in each of
+    the other three), has the LOWEST agreement (82.1%) while the three
+    failing runs have the HIGHEST (87.1%). Controlled for hazard density this
+    still holds: A/west has the least fire (79.9 mean cells) and 1 hazard-gate
+    trigger; D/south has the most fire (229.9) and 22 triggers, yet identical
+    87.1% agreement. The agreement difference does not survive - and it points
+    the wrong way.
+  - The decisive evidence is Q6. In all three FAILING runs the generator never
+    once proposed a cell inside the missed victim's legal post set across 240
+    steps, and proposed only 12/14/13 DISTINCT cells total. A/north 101 is the
+    starkest: 137 legal posts available, including the victim's own cell, and
+    13 distinct targets proposed, none in the set. The SUCCESS run A/west 505
+    proposed 37 distinct cells spread across the grid and reached 4 of 5
+    victims' post sets.
+
+No executor mechanism needs to change for a generator scoring fix to land.
+If a future change wants the escape_target path to stop diverting the cursor,
+that key is set in local_adaptation_generator.py, not in uav_executor.py.
+
+==============================================================================
+VERDICT 2 - WHICH DOES THE Q7 DATA SUPPORT?
+==============================================================================
+
+ANSWER: (2) CALLED BUT UNCORRELATED, with two corrections - one to how
+option (2) is worded, and one that the three-slot list cannot express.
+
+The bonus is emphatically NOT inert: its spread across candidates is large.
+What fails is the correlation. It does not track real coverage gaps.
+
+The FOURTH option offered in the prompt - 'the proxy works but is outvoted'
+- was tested against the data and is NOT selected, because its precondition
+fails: the correlation is not strong. Mean Spearman of the EFFECTIVE bonus
+against true searcher-unobserved count is
+  D/north 101 +0.264, D/south 101 -0.173, A/west 505 -0.162, A/north 101 +0.178
+- weak, and the SIGN FLIPS across runs. A proxy that ranks already-observed
+cells above unobserved ones in half the runs is not 'working'.
+
+However, the second half of that option IS confirmed, and it matters: the
+bonus is ALSO outvoted. Its effective range is 60-88 while
+_never_seen_proximity_bonus's is 1306-1867 (18x-25x larger, Q8-A).
+So the honest reading is BOTH: the proxy is miscorrelated AND outvoted.
+Re-weighting alone would not fix it, because a term that does not track
+coverage gaps produces the wrong answer at any weight; and rewriting the
+proxy alone would not fix it either, while a term with 20x its range
+still decides the argmax.
+
+Supporting numbers:
+  - NOT gated off, killing option (1). unresolved == 0 on only 31/31/55/31 of
+    240 steps, so the gated call site passes on the large majority. More
+    fundamentally, 2 of the 3 call sites are NOT GATED AT ALL
+    (local_adaptation_generator.py:3235 and :3394), so the bonus fired
+    131,298 / 117,842 / 137,248 / 121,028 times per run.
+    When unresolved > 0 it is added TWICE to the same
+    candidate. The premise that the coverage path is gated off is
+    measurably false.
+  - Option (2)'s 'spread near zero' clause is FALSE. Mean spread across
+    candidates within a step is 43.50/31.25/38.00/36.72, and ZERO steps in any
+    run had zero spread. The term does influence the argmax, strongly.
+  - Option (2)'s correlation clause is TRUE, and this is the real defect.
+    Spearman of the EFFECTIVE bonus vs true unobserved count within Euclidean
+    8, averaged over detail steps:
+      +0.264 / -0.173 / -0.162 / +0.178   against the searcher-only observed
+      +0.518 / +0.124 / -0.316 / +0.316   against the all-UAV set.
+    The sign FLIPS across runs and the magnitudes are weak. A term that ranks
+    already-observed cells above unobserved ones in half the runs is not
+    performing coverage exploration.
+  - Scale invariance, worth stating explicitly: because the gated and ungated
+    call sites return the SAME value for a cell, the effective bonus is exactly
+    2x the single-call value, and Pearson/Spearman are invariant to positive
+    scaling. So the double-count doubles the term's LEVERAGE on the argmax but
+    cannot change its correlation. Correlating the effective quantity was the
+    right thing to do, and it confirms the defect is in the proxy, not in the
+    accounting.
+  - _observation_coverage_penalty is not doing the steering either: mean
+    Spearman -0.302 / +0.086 / +0.090 / -0.649, equally inconsistent.
+  - The 1-D projection hypothesis is CONFIRMED on correlation but REFUTED on
+    its predicted signature. It predicted wide spans, small spread and
+    near-zero correlation. Measured: spread is LARGE, and the spans are NARROW
+    at the end of the run ([7,25]x[30,41], [1,13]x[41,48], [24,27]x[17,27],
+    [8,25]x[30,42]) rather than wide. The reason is mechanical and stronger
+    than the hypothesis: the spans come from lists trimmed to recent[-30:]
+    (local_adaptation_generator.py:913, :917), so they describe only a 30-step
+    rolling box. The bonus cannot see lifetime coverage in ANY number of
+    dimensions, which is why true coverage sits at 0.485-0.641 while the spans
+    report a small recent box.
+
+==============================================================================
+OTHER DEFECTS OBSERVED (recorded, NOT chased this round)
+==============================================================================
+
+1. dist_agent SIGN ASYMMETRY. _score_hybrid_search_cell:1010 applies
+   score -= dist_agent * 0.1, while call site 1 at :3238 applies
+   score += dist_agent * 0.35. The net effect at site 1 is +0.25 per cell of
+   Manhattan distance from the agent: the scorer is written to prefer NEARBY
+   cells and the call site overrides that into a preference for DISTANT ones.
+   Measured net range across candidates: 6.0, 5.7, 6.3, 6.0 (Q8-A).
+   Call site 2 has no such term, so the two paths disagree about whether
+   distance is good or bad. Not chased this round, per instruction.
+
+2. _uncovered_region_bonus DOUBLE-COUNT. Added once inside the scorer at :1001
+   (gated on unresolved > 0) and again, ungated, at :3235 and :3394. Whenever
+   unresolved > 0 the term is applied at twice its nominal weight, so
+   COVERAGE_UNVISITED_X_BONUS = 14.0 is effectively 28.0 on those steps.
+
+3. _never_seen_proximity_bonus DOUBLE-COUNT AT SITE 1 ONLY (:999 and :3232).
+   This is the term that actually decides the argmax (Q8-A), and it is the one
+   most affected by the asymmetry in Q8-D.
+
+4. coverage_y_commit PERMANENTLY EXCLUDES EVERY OBSERVATION POST (Q8-B). Once
+   set - by step 20 in all four runs, and never released - the filters at
+   :3192-3199 cut the candidate set by ~90% and take the number of reachable
+   observation-post cells to exactly zero on every subsequent measured step.
+   This is the largest single constraint found, and it is a filter, not a
+   weight, so no scoring change can reach past it.
+
+==============================================================================
+SUGGESTION (not part of the diagnosis; recorded after both verdicts)
+==============================================================================
+
+The next change should be a GENERATOR change, and the target-diversity gap in
+Q6 is the thing to attack: 12-14 distinct proposed cells in failing runs
+versus 37 in the succeeding one. Three candidate root causes are visible in
+the data and are worth separating before designing anything:
+  1. The 30-step rolling window (:913, :917). A lifetime visited-cell or
+     visited-coarse-bucket structure would let the exploration term see real
+     gaps. This is a state-representation change, not a weight tweak.
+  2. corridor_waypoint_calls == 0 in ALL FOUR RUNS. _generate_corridor_waypoints
+     never executed; every target came from _pick_global_coverage_escape_target
+     (185-209 steps) or a bare _finalize_coverage_target escape (30-54 steps).
+     An entire intended target-generation path is dead at HEAD, which would
+     explain why so few distinct cells are proposed. Worth confirming why
+     before tuning anything that assumes the corridor path runs.
+  3. NEW, and the strongest of the three: coverage_y_commit. It is a FILTER,
+     not a weight (:3192-3199). Q8-B shows it removing 100% of every victim's
+     observation-post set on 20 of 21 measured steps per run, in all four runs.
+     Whatever is done to the scoring terms cannot reach a cell that was never
+     scored. This should be settled before any term is re-weighted, and it is
+     a different kind of change from either of the above.
+
+Re-weighting _uncovered_region_bonus is NOT indicated, and Q8 sharpens why.
+Its spread is already large, so scaling it changes the argmax without making
+it track coverage; and it sits under a term with roughly 20x its range, so a
+proportionate increase would have to be very large to matter. Both
+double-counts (:1001 + :3235 for the coverage bonus, :999 + :3232 for
+never_seen) should be resolved on their own merits regardless, since each
+silently applies a term at twice its nominal weight.
+
