@@ -37,7 +37,11 @@ def _local_runtime(*, role: str = "fire_tracker", mission_goals: dict | None = N
             fire_probability_map=fire_map,
         ),
         "uav_resource_model": SimpleNamespace(
-            by_uav_id={"2500": SimpleNamespace(current_role=role, position=(10.0, 10.0))}
+            by_uav_id={
+                "2500": SimpleNamespace(
+                    current_role=role, current_position=(10.0, 10.0)
+                )
+            }
         ),
         "simulation_model": SimpleNamespace(
             HEIGHT=50,
@@ -115,7 +119,7 @@ def test_prioritize_victim_search_boosts_wind_aware_option() -> None:
             by_uav_id={
                 "2502": SimpleNamespace(
                     current_role="victim_searcher",
-                    position=(10.0, 10.0),
+                    current_position=(10.0, 10.0),
                 )
             }
         ),

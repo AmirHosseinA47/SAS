@@ -45,7 +45,7 @@ def _runtime_models(
         by_uav_id={
             "2502": SimpleNamespace(
                 current_role="victim_searcher",
-                position=uav_pos,
+                current_position=uav_pos,
             )
         }
     )

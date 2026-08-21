@@ -1189,6 +1189,18 @@ def run_one(scenario: str, wind: str, seed: int, steps: int) -> dict:
             rec = P.cur
             rec["fire_n"] = len(fire)
             rec["smoke_n"] = len(smoke)
+            # finalizer hazard re-validation gate: is the ISSUED target itself
+            # sitting in fire/smoke right now, and was the pre-finalize cell?
+            def _haz(t):
+                if not t:
+                    return None
+                c = (int(round(float(t[0]))), int(round(float(t[1]))))
+                return bool(c in fire or c in smoke)
+
+            rec["tgt_in_hazard"] = _haz(
+                rec.get("gen_target_exec") or rec.get("gen_target_planner")
+            )
+            rec["prefinal_in_hazard"] = _haz(rec.get("prefinal_target"))
             if P.searcher_ids:
                 sws = _wind_search_state(model, sorted(P.searcher_ids)[0])
                 rec["ft_boost"] = float(

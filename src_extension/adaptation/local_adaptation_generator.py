@@ -826,6 +826,48 @@ def _coverage_y_force_max(wind_state: dict[str, Any], y_min: int, y_max: int) ->
     ) else None
 
 
+def _reject_relocation_into_hazard(
+    original: tuple[float, float],
+    relocated: tuple[float, float],
+    fire_cells: set[tuple[int, int]] | None,
+    smoke_cells: set[tuple[int, int]] | None,
+) -> tuple[float, float]:
+    """Keep the pre-finalize target when clamping lands it in fire or smoke.
+
+    The candidate loop filters fire/smoke on the cell it SELECTS
+    (_pick_global_coverage_escape_target, the `(cx, cy) in fire_cells or ... in
+    smoke_cells` guard), but _finalize_coverage_target then RELOCATES that cell
+    - interior clamp into [safe_x_min, safe_x_max], then west_goal/east_goal on
+    the non-west branch, then the y-commit forced_y - and the relocated cell was
+    never re-checked against any hazard set.
+
+    Measured over four instrumented 240-step runs, 58/74 (D/north 101), 27/45
+    (D/south 101) and 36/53 (A/north 101) target commitments broke as "unsafe"
+    on the FIRST hold check after issue, against a median 37-cell traverse: the
+    targets were issued already burning, not destroyed en route. D/north
+    destroyed only two distinct cells across 58 breaks - (8, 45) and (41, 45),
+    i.e. exactly (west_goal, y_commit_north) and (east_goal, y_commit_north).
+    A/west 505, whose west branch bypasses the else-clamp, had 0 unsafe breaks
+    and 0 never_detected.
+
+    Falling back costs no score: `original` is the scorer's own argmax and has
+    already passed the candidate loop's fire/smoke filter using these same sets.
+    If the original is itself unsafe there is nothing better to fall back to, so
+    the relocated cell is returned unchanged and behaviour is as before.
+    """
+    if fire_cells is None and smoke_cells is None:
+        return relocated
+    fire = fire_cells or frozenset()
+    smoke = smoke_cells or frozenset()
+    rel = (int(round(float(relocated[0]))), int(round(float(relocated[1]))))
+    if rel not in fire and rel not in smoke:
+        return relocated
+    orig = (int(round(float(original[0]))), int(round(float(original[1]))))
+    if orig in fire or orig in smoke:
+        return relocated
+    return (float(original[0]), float(original[1]))
+
+
 def _finalize_coverage_target(
     target: tuple[float, float] | None,
     wind_state: dict[str, Any],
@@ -836,6 +878,8 @@ def _finalize_coverage_target(
     x_max: int | None = None,
     ax: float | None = None,
     ay: float | None = None,
+    fire_cells: set[tuple[int, int]] | None = None,
+    smoke_cells: set[tuple[int, int]] | None = None,
 ) -> tuple[float, float] | None:
     if target is None:
         return target
@@ -899,7 +943,12 @@ def _finalize_coverage_target(
             ty = max(float(forced_y), ty)
         elif commit == "south" and forced_y is not None:
             ty = min(float(forced_y), ty)
-    return (tx, ty)
+    return _reject_relocation_into_hazard(
+        (float(target[0]), float(target[1])),
+        (tx, ty),
+        fire_cells,
+        smoke_cells,
+    )
 
 
 def _record_victim_searcher_x_band(
@@ -3080,9 +3129,9 @@ class LocalAdaptationSpaceGenerator:
         if not isinstance(by_uav, dict) or uav_id not in by_uav:
             return None
         state = by_uav[uav_id]
-        pos = getattr(state, "position", None)
+        pos = getattr(state, "current_position", None)
         if pos is None and isinstance(state, dict):
-            pos = state.get("position")
+            pos = state.get("current_position")
         return LocalAdaptationSpaceGenerator._normalize_position(pos)
 
     @staticmethod
@@ -3286,6 +3335,7 @@ class LocalAdaptationSpaceGenerator:
                 best_point = (float(cx), float(cy))
         return _finalize_coverage_target(
             best_point, wind_state, x_min=x_min, y_min=y_min, y_max=y_max, x_max=x_max, ax=ax, ay=ay,
+fire_cells=fire_cells, smoke_cells=smoke_cells,
         )
 
     def _generate_corridor_waypoints(
@@ -3556,6 +3606,8 @@ class LocalAdaptationSpaceGenerator:
                     x_max=x_max,
                     ax=ax,
                     ay=ay,
+                    fire_cells=fire_cells,
+                    smoke_cells=smoke_cells,
                 )
                 if committed_final is not None:
                     return committed_final
@@ -3585,6 +3637,7 @@ class LocalAdaptationSpaceGenerator:
                     _record_corridor_target(wind_state, opp)
                     return _finalize_coverage_target(
                         opp, wind_state, x_min=x_min, y_min=y_min, y_max=y_max, x_max=x_max, ax=ax, ay=ay,
+fire_cells=fire_cells, smoke_cells=smoke_cells,
                     )
             escape = self._pick_global_coverage_escape_target(
                 runtime_models=runtime_models,
@@ -3768,6 +3821,7 @@ class LocalAdaptationSpaceGenerator:
             )
         return _finalize_coverage_target(
             best_target, wind_state, x_min=x_min, y_min=y_min, y_max=y_max, x_max=x_max, ax=ax, ay=ay,
+fire_cells=fire_cells, smoke_cells=smoke_cells,
         )
 
     def _try_generate_wind_aware_victim_search_option(

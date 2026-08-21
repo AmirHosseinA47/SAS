@@ -3704,10 +3704,10 @@ class UAVExecutor:
             return
         state = by_uav[self.uav_id]
         position = (float(pos[0]), float(pos[1]))
-        if hasattr(state, "position"):
-            state.position = position
+        if hasattr(state, "current_position"):
+            state.current_position = position
         elif isinstance(state, dict):
-            state["position"] = position
+            state["current_position"] = position
 
     def _wind_target_is_saturated(self, model: Any, target: tuple[float, float]) -> bool:
         if model is None:
