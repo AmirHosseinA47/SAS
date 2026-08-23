@@ -872,17 +872,21 @@ def _finalize_coverage_target(
             ):
                 tx = max(tx, east_goal)
         else:
-            x_lo, x_hi = _coverage_x_span(wind_state)
+            # Latch on strip progress instead of the 30-step position window.
+            # The window is shorter than the 8 -> 41 traverse (33 cells), so a
+            # span test re-fires the west clamp mid-traverse and reverses the
+            # searcher at x ~ 18-19. The latches are one-way, so each strip only
+            # has to be touched once. _allow_east_force is deliberately omitted:
+            # it hardcodes west wind and would block east forcing on this path.
+            _mark_x_strip_progress(wind_state, safe_x_min, safe_x_max)
             if (
-                x_lo is not None
-                and x_lo > safe_x_min + 3
+                _west_sweep_pending(wind_state, safe_x_min)
                 and ax is not None
                 and float(ax) > safe_x_min + 4
             ):
                 tx = min(tx, west_goal)
             elif (
-                x_hi is not None
-                and x_hi < safe_x_max - 3
+                _east_sweep_pending(wind_state, safe_x_max)
                 and ax is not None
                 and float(ax) < safe_x_max - 4
             ):

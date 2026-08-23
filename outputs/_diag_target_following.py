@@ -833,6 +833,8 @@ def install_patches() -> dict:
                     "steps_since_detection": int(ws.get("steps_since_detection", 0) or 0),
                     "unresolved": int(ws.get("unresolved_victim_count", 0) or 0),
                     "x_span": list(GEN._coverage_x_span(ws)),
+                    "west_strip_done": bool(ws.get("west_strip_done")),
+                    "east_strip_done": bool(ws.get("east_strip_done")),
                     "y_span": list(GEN._coverage_y_span(ws)),
                     # written into every searcher's state by the fire_tracker
                     # branch at wildfire_model.py:1017-1024, then read back by
