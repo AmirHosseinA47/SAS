@@ -1,0 +1,200 @@
+A/SOUTH REGRESSION DIAGNOSIS - fix14 vs fix8 / fix12 / fix13
+Tree: claude/position-rename-and-hazard-revalidation @ cf6bb06 (read-only round,
+no production edits). Probe: outputs/_diag_asouth_303.py, which loads
+outputs/_diag_target_following_FIX14.py verbatim and adds one module-level
+patch for the counterfactual arm (below). Runner: parent .venv (mesa 1.2.1),
+runs executed sequentially, 240 steps, scenario A, wind south.
+
+VERDICT: (H) HOLD-CAUSED.
+
+The target-hold added by fix14 Part 3 is the sole cause. With the hold
+neutralized on the same tree, seed 303 rescues 4 and detects every victim; with
+it enabled, the same seed rescues 2 and loses victim_1 and victim_2 to
+never_detected. This is not seed-specific bad luck: the hold's segment lengths
+on A/south are an order of magnitude longer than the churn it was designed
+against, on all five seeds. Seed 303 is where that cost happens to land on
+victims rather than on empty ground.
+
+
+1. WHAT THE BASELINES ALREADY REPORTED FOR A/SOUTH SEED 303
+   (from outputs/fix{8,12,13,14}_A_south.txt, read before instrumenting)
+
+     tag     rescued dead unreach never_det terminal  causes
+     fix8       3     1      1        1       210     victim_1:never_detected
+     fix12      4     1      0        0       128     -
+     fix13      4     1      0        0       166     -
+     fix14      2     1      2        2       210     victim_1, victim_2
+
+   all_terminal=True in every one of these runs, and steps_run=240 in every one.
+   No baseline "ran out the clock without concluding" on this seed, so the
+   accounting that produces never_detected is the same accounting in all four.
+   That already argues against (U) before any fresh run.
+
+   Note also that victim_1 IS a pre-existing miss in this lineage - fix8 lost it
+   on this seed. But fix13, whose tree differs from fix14 by the hold and
+   nothing else, detected it. So "latent under the baselines" does not describe
+   fix14's behaviour: the immediately preceding tree found both victims.
+
+
+2. THE COUNTERFACTUAL: SAME TREE, HOLD ON vs HOLD OFF
+
+   _apply_target_hold is called as a module global from _finalize_coverage_target
+   (local_adaptation_generator.py:1138), so the hold can be removed at module
+   scope without touching production:
+
+       GEN._apply_target_hold = lambda final, wind_state, **kw: final
+
+   That is exactly fix13's tree: git diff 0bff40f..77fa702 over
+   local_adaptation_generator.py shows fix14 = fix13's x-clamp latch + the hold,
+   and nothing else. The arms are named "hold" (= fix14, unpatched HEAD) and
+   "nohold" (= x-clamp alone, fix13-equivalent).
+
+   Validation - both arms reproduce their published matrix rows exactly:
+
+     rescued per seed   101 202 303 404 505   total
+     hold   (measured)   3   4   2   2   4      15   == fix14_A_south.txt
+     fix14  (published)  3   4   2   2   4      15
+     nohold (measured)   3   5   4   1   3      16   == fix13_A_south.txt
+     fix13  (published)  3   5   4   1   3      16
+
+   The probe is therefore measuring the real thing, and the hold alone accounts
+   for the entire -1 on A/south.
+
+   Seed 303, the two arms side by side:
+
+     arm      rescued  never_detected  causes
+     hold        2           2         victim_1:never_detected;victim_2:...
+     nohold      4           0         -
+
+   Per-victim closest approach over the run (Euclidean; detection radius is 8):
+
+     victim   spawn      hold: min_searcher / min_any   nohold: min_searcher / min_any
+     victim_0 (40, 25)        0.00 / 0.00                  2.24 / 0.00
+     victim_1 (32, 46)       11.31 / 11.31   NEVER          5.00 / 5.00   detected
+     victim_2 (13, 34)       10.30 / 10.30   NEVER          4.00 / 4.00   detected
+     victim_3 ( 7, 12)        0.00 / 0.00                 15.81 / 9.43
+     victim_4 (30, 11)        4.00 / 1.00                 12.17 / 1.00
+
+   Under the hold, no aircraft ever comes within 10 cells of either lost victim.
+   Both misses are pure non-visitation, not a scoring or candidate-filtering
+   failure.
+
+
+3. THE MECHANISM ON SEED 303
+
+   Searcher dwell by 10x10 block over 240 steps (x_block, y_block):
+
+     hold   : (1,1)=92  (2,2)=40  (3,2)=23  (4,3)=20  (0,1)=17  (2,1)=16
+              (1,0)=14  (4,2)=9   (1,2)=8   (2,0)=1
+     nohold : (2,3)=74  (3,2)=59  (2,4)=38  (2,2)=32  (1,3)=18  (1,2)=10  (1,3)=9
+
+   The hold arm spends 92 of 240 steps inside x 10-19, y 10-19 and never works
+   the northern half. The nohold arm works the y 20-49 band, which is where
+   victim_1 (32,46) and victim_2 (13,34) actually are.
+
+   The hold segments that produce this (init = Manhattan distance to target when
+   the hold was issued, best = closest it ever got, closed = fraction of the gap
+   closed before release or end of run):
+
+       steps      n   target    init  best  closed
+         2- 27   26   ( 8, 11)   32     9    71.9%
+        29- 40   12   ( 8, 45)   43    43     0.0%
+        42- 84   43   ( 8, 45)   48    33    31.2%
+        86-130   45   (41, 45)   67    54    19.4%
+       132-178   47   (41, 45)   59    40    32.2%
+       180-240   61   (41, 45)   39     9    76.9%
+
+   Six holds over 240 steps; 234 of 240 steps were spent under an active hold.
+   Release reasons for the whole run: {'unsafe': 1, 'stalled': 4} - ARRIVAL NEVER
+   FIRED ONCE. The searcher was continuously committed to a target it never
+   reached.
+
+   Why the release conditions do not bite:
+     - timeout: budget = COMMIT_TIMEOUT_MULTIPLIER (2.0) x initial Manhattan
+       distance. With init 39-67 the budget is 78-134 steps, longer than any of
+       these segments and comparable to half the run. It never fires.
+     - stalled: COMMIT_PROGRESS_WINDOW = 12 consecutive non-closing steps, and
+       commit_no_progress RESETS on any single step that beats the best distance
+       so far. A searcher crawling toward a distant corner beats its best
+       distance every few steps, so the stall counter is repeatedly reset;
+       observed commit_no_progress sat at 11 (one short of release) for long
+       stretches of segments 2-5.
+     - arrival: needs to be within COMMIT_ARRIVAL_DIST 2.0 of the target, which
+       never happens on this run.
+
+   So on this run the hold behaves as an open-ended commitment: it picks a far
+   corner (8,45) then (41,45), pins the searcher to it for 43-61 steps at a
+   time, closes 19-32% of the gap, is released for stalling, and then re-commits
+   to the SAME corner. From step 86 to the end of the run the target is (41,45)
+   continuously - 155 steps aimed at the far north-east corner - while victim_2
+   sits at (13,34) in the west the searcher has just left, and victim_1 at
+   (32,46) is approached only at the very end, too late (terminal=210).
+
+
+4. IS THIS SEED-SPECIFIC, OR A GENERAL COST ON THIS COMBO?
+
+   General. The hold's own design note (local_adaptation_generator.py:1000-1015)
+   calibrated against measured churn of 42-61 target segments per 240 steps with
+   mean holds of 3.3-5.7 steps. On A/south the hold produces:
+
+     seed  segs  mean hold  max hold  release reasons                arrivals
+      101    4     59.0       170     arrival 1, stalled 2              1
+      202    4     59.0        82     arrival 2, unsafe 1               2
+      303    6     39.0        61     unsafe 1, stalled 4               0
+      404    3     79.0       141     arrival 1, stalled 1              1
+      505    4     59.0       102     unsafe 1, arrival 2               2
+
+   Mean hold length on this combo is 39-79 steps, roughly 10x the 3.3-5.7 the
+   mechanism was sized for, and 3 of 5 seeds contain a single hold longer than
+   100 steps. Only 6 of the 21 holds issued across the five seeds ended in
+   arrival. The low-closure tail is visible on other seeds too - seed 404 holds
+   (41,45) for 141 steps and closes 2.8% of the gap; seed 505 holds (30,45) for
+   102 steps and closes 16.3%; seed 101 holds (41,45) for 170 steps.
+
+   Corroborating aggregate: acted-target changes over the run drop from 41-68
+   (nohold) to 11-47 (hold), and the searcher's coverage becomes more contiguous
+   but narrower - on seed 303 obs_frac_all falls from 0.740 (nohold) to 0.648
+   (hold) even though the searcher's own obs_frac RISES from 0.437 to 0.552. The
+   hold makes the searcher sweep a tighter, more coherent region, and on this
+   combo that region overlaps ground the other UAVs already cover.
+
+   What makes 303 the seed that pays: its two northern/western victims (32,46)
+   and (13,34) sit outside the south-west block the searcher is pinned to for
+   the first 130 steps, and the run terminates at 210. On the other four seeds
+   the same oversized holds happen to run through or near the victims (or the
+   victims are found by other UAVs), so the cost shows up as slower coverage
+   rather than as a miss. Seeds 404 and 505 in fact GAIN a rescue under the hold
+   (1->2 and 3->4), which is why A/south nets only -1 against fix13 rather than
+   more.
+
+   This is the hold's declared tradeoff - completion rate against exploration
+   breadth - landing badly on a combo where the coverage argmax repeatedly
+   selects unreachable far-corner targets.
+
+
+5. WHY NOT (U) UNMASKED
+
+   - all four baselines and fix14 report all_terminal=True and steps_run=240 on
+     this seed; nothing "ran out the clock" differently, and terminal=210 under
+     fix8 and fix14 alike.
+   - fix13, one mechanism away from fix14, detects both victims on this seed -
+     measured directly in this round's nohold arm, which reproduces fix13's
+     published A/south row exactly.
+   - the two misses are non-visitation with a 10+ cell margin, not marginal
+     detections that changed sides.
+   fix8's victim_1 miss on this seed is a real, separate, older gap, but it is
+   not what fix14 surfaced: fix14 re-created it by a different mechanism and
+   added victim_2 alongside it.
+
+
+6. ARTIFACTS
+
+   outputs/_diag_asouth_303.py                   probe wrapper (hold / nohold arms)
+   outputs/_as_{hold,nohold}_<seed>.json / .log  per-run traces, 5 seeds x 2 arms
+   outputs/_sum_asouth.py                        summarizer
+
+   Reproduce:
+     .venv/Scripts/python.exe outputs/_diag_asouth_303.py
+   (~225 s per run, 10 runs, sequential.)
+
+NO FIX PROPOSED IN THIS ROUND, per the round's terms.
