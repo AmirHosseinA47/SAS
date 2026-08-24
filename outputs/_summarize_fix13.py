@@ -234,7 +234,14 @@ def compare(new: dict, base: dict, new_name: str, base_name: str, log) -> None:
             % (fmt_combo(k[0], k[1]), k[2], ",".join(str(x) for x in sorted(vn[k]))))
 
 
-def diagnostics(new: dict, base: dict, new_name: str, base_name: str, log) -> None:
+def diagnostics(
+    new: dict,
+    base: dict,
+    new_name: str,
+    base_name: str,
+    log,
+    west_expected_unchanged: bool = True,
+) -> None:
     """Why the artifact marks appear, and what they cost.
 
     The artifact rule exists to avoid over-charging a tree for marks it only got
@@ -286,15 +293,21 @@ def diagnostics(new: dict, base: dict, new_name: str, base_name: str, log) -> No
     log("  %-10s %2d -> %2d  (%+d)" % ("TOTAL", tb, tn, tn - tb))
 
     log("")
-    log("SCOPE CHECK - the patch edits only the non-west branch of")
-    log("_finalize_coverage_target, so west-wind runs must be unchanged:")
+    if west_expected_unchanged:
+        log("SCOPE CHECK - the patch edits only the non-west branch of")
+        log("_finalize_coverage_target, so west-wind runs must be unchanged:")
+    else:
+        log("SCOPE CHECK - the change is gated on _coverage_mode_active rather")
+        log("than on wind, so west-wind runs are EXPECTED to move too:")
     fields = ("rescued", "dead", "nd", "ff_deaths", "candidate", "all_terminal",
               "terminal_step")
     for w in WINDS:
         ks = [k for k in common if k[1] == w]
         d = sum(1 for k in ks if any(base[k][f] != new[k][f] for f in fields))
-        log("  %-6s wind: %2d of %2d runs differ%s"
-            % (w, d, len(ks), "   <- expected 0" if w == "west" else ""))
+        note = ""
+        if w == "west":
+            note = "   <- expected 0" if west_expected_unchanged else "   <- expected nonzero"
+        log("  %-6s wind: %2d of %2d runs differ%s" % (w, d, len(ks), note))
 
 
 def main() -> int:
