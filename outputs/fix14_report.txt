@@ -1,0 +1,443 @@
+==============================================================================
+fix14 - X-CLAMP REACHABILITY FIX + TARGET-HOLD STABILITY
+GATE FAILED (3 of 5). THE 80-RUN MATRIX WAS NOT STARTED.
+==============================================================================
+
+Branch      claude/position-rename-and-hazard-revalidation
+HEAD        0bff40f
+Files       src_extension/adaptation/local_adaptation_generator.py only
+Python      3.10.11  mesa 1.2.1
+            C:\Users\ahrar\AppData\Local\Programs\Python\Python310\python.exe
+Tests       pytest 9.1.1 from E:\Projects\SAS\.venv
+
+Part 1 analysis   outputs/fix14_part1.txt
+Churn baseline    outputs/fix14_churn_baseline.txt   (_churn_fix14.py)
+Gate report       outputs/fix14_gate_report.txt      (_gate_fix14.py)
+Gate detail       outputs/fix14_gate_detail.txt      (_gate_fix14_detail.py)
+Hazard check      outputs/fix14_hazard_check.txt     (_gate_fix14_hazard.py)
+Probe             outputs/_diag_target_following_FIX14.py
+
+==============================================================================
+WHAT WAS APPLIED
+==============================================================================
+
+PART 2 - x-clamp reachability fix, re-applied to the non-west else branch of
+_finalize_coverage_target. Verified BYTE-FOR-BYTE against the previously
+validated version: the entire wind_label block, both the west branch and the
+else branch, 1576 bytes, hashes identically to commit 65f5b31
+(sha256 14a48a1a...). The west branch, the y-commit clamp, and
+WIND_EDGE_MARGIN / COVERAGE_SWEEP_BAND_MARGIN / COVERAGE_Y_COMMIT_TARGET_MARGIN
+are untouched - none of them appears anywhere in the diff.
+
+PART 3 - target hold, cached in wind_state per victim_searcher UAV, applied
+inside _finalize_coverage_target and gated on _coverage_mode_active. Release
+on ARRIVAL (euclid <= COMMIT_ARRIVAL_DIST 2.0), UNSAFE (held cell in the
+fire/smoke sets the finalizer already receives), STALLED (COMMIT_PROGRESS_WINDOW
+12 consecutive non-closing steps), or TIMEOUT (held steps >
+COMMIT_TIMEOUT_MULTIPLIER 2.0 x the Manhattan gap at commit). On release the
+cache is cleared and this step's normally computed target is returned
+unchanged; the hold re-arms on the next call, never by forcing a re-finalize
+in the same step.
+
+Constants are the ones cfaeb21 derived, reused with their justifications and
+NOT adjusted at any point. Note that cfaeb21 contains no production code at
+all - 31 files, all under outputs/ - so the constants and derivations were read
+from its commit message, which is the only place they survive.
+
+Bookkeeping is guarded on step_index, which is the one signature change:
+gen_inner shows the finalizer running two to three times on many steps, so a
+per-call counter would inflate held-steps and the stall window by 2-3x.
+step_index was already in scope at all four call sites.
+
+==============================================================================
+MEASUREMENT DESIGN - AND A CONFOUND THAT HAD TO BE REMOVED
+==============================================================================
+
+The preserved x-clamp POST artifacts (_tf_<tag>_XCLAMP.json, from 65f5b31) are
+NOT a clean A/B for Part 3. That tree predates both the finalizer hazard
+re-validation fix and the position rename that HEAD carries, so XCLAMP ->
+FIX14 mixes three changes, not one.
+
+A fourth side was therefore measured: P2ONLY, the same four probes with ONLY
+Part 2 applied to the current tree, run in a detached worktree at 0bff40f.
+P2ONLY -> FIX14 isolates the hold. Everything below reads P2ONLY as the
+baseline and reports XCLAMP alongside it for continuity.
+
+  BASE    pre-x-clamp                (65f5b31)
+  XCLAMP  Part 2 only, old tree      (65f5b31)
+  P2ONLY  Part 2 only, current tree  (this round)
+  FIX14   Part 2 + Part 3            (this round)
+
+All four probes on all four sides reported PATCH VERIFICATION OK, with the
+score mirror reproducing production's pre-finalize argmax on every sampled
+step (22/22, 19/19, 18/18, 14/14 on the FIX14 side).
+
+==============================================================================
+HEADLINE - THE MECHANISM WORKS; THE GATE STILL FAILS AS WRITTEN
+==============================================================================
+
+run           side    segs  distinct  meanhold  maxhold   x_hi  argmax@commit  never_detected
+----------------------------------------------------------------------------------------------
+D_north_101   BASE      16        12      14.9       42     26        -         victim_3
+D_north_101   XCLAMP    70        43       3.4       16     38        -         -
+D_north_101   P2ONLY    42        29       5.7       47     43        -         victim_3
+D_north_101   FIX14     11         9      21.7       55     45     83.3 (n=6)   -
+
+D_south_101   BASE      18        14      13.3       48     26        -         victim_1
+D_south_101   XCLAMP    16        14      14.9      127     38        -         -
+D_south_101   P2ONLY    44        37       5.4       39     42        -         -
+D_south_101   FIX14     15        13      15.9       93     41     33.3 (n=6)   -
+
+A_north_101   BASE      21        13      11.4       42     25        -         victim_0
+A_north_101   XCLAMP    73        45       3.3       30     46        -         victim_4
+A_north_101   P2ONLY    61        37       3.9       17     42        -         victim_3,victim_4
+A_north_101   FIX14     16        11      14.9       61     42     80.0 (n=5)   -
+
+A_west_505    BASE      56        37       4.3       54     38        -         -
+A_west_505    XCLAMP    56        37       4.3       54     38        -         -
+A_west_505    P2ONLY    51        37       4.7       44     42        -         -
+A_west_505    FIX14     20        12      11.9       63     42     33.3 (n=3)   -
+
+TWO THINGS STAND OUT BEFORE THE CONDITIONS ARE EVALUATED.
+
+First, Part 2 alone reproduces the churn on the CURRENT tree, independently of
+the old measurement: mean hold 5.7 / 5.4 / 3.9 against a pre-clamp-fix 14.9 /
+13.3 / 11.4. The fix13 root-cause finding replicates.
+
+Second, Part 2 alone on the current tree is WORSE for detection than it was on
+the old one: A/north 101 misses victim_3 AND victim_4 at P2ONLY, against
+victim_4 alone at XCLAMP, and D/north 101 misses victim_3 again after the old
+tree had recovered it. Adding Part 3 takes never_detected to ZERO on all four
+runs. That is the strongest single result of the round, and it is a
+within-tree comparison with nothing else varying.
+
+==============================================================================
+GATE VERDICT - CONDITIONS AS DECLARED, NOT AS RE-ENCODED
+==============================================================================
+
+  1 mean hold rises, no degenerate collapse   FAIL
+  2 x-range past 26 under N/S                 PASS
+  3 argmax-at-commit above 2.4-2.9%           PASS
+  4 A/west 505 control unchanged              FAIL
+  5 D/north + D/south zero never_detected     PASS
+  6 A/north seed-trade re-checked             REPORTED BELOW
+
+VERDICT: 3 of 5 -> GATE FAILED. Per the round's own rule, the 80-run matrix
+was NOT started and no constant was adjusted to try to change this.
+
+--- CONDITION 1: FAIL, on the second half of the condition -----------------
+
+The condition has two halves. The first passes decisively: mean hold rose from
+the churn baseline of 5.7 / 5.4 / 3.9 (P2ONLY; 3.3-3.4 on the old tree) to
+21.7 / 15.9 / 14.9, squarely in and above the 11-15 pre-clamp-fix band.
+
+The second half fails. It forbids "falling all the way back to the original
+churn-free-but-wrong-reachability regime (12-15 distinct targets total across
+240 steps)". Distinct finalized targets came back 9 (D/north), 13 (D/south),
+11 (A/north). D/south sits inside the named 12-15 band; D/north and A/north
+sit below it. By the count the condition names, the run is in - or past - the
+regime it forbids.
+
+REPORTED ALONGSIDE, NOT USED TO OVERTURN THE VERDICT: the forbidden regime is
+named by two properties, and the second one - wrong reachability - is absent
+by every measure available.
+
+  metric                          BASE (the regime)   P2ONLY    FIX14
+  ---------------------------------------------------------------------
+  x_hi, D/north / D/south / A/north      26/26/25    43/42/42  45/41/42
+  clamped segments %                  93.8/66.7/95.2  11.9/15.9/6.6  18.2/26.7/12.5
+  % of the initial gap actually closed  29.3/14.9/23.6  11.8/9.0/5.6  45.6/34.5/25.3
+  never_detected                        3 across 4 runs   3    0
+
+The searcher now holds few targets AND reaches them. The original regime held
+few targets and could not. The distinct-target count alone cannot tell those
+apart, which is why the condition as written cannot distinguish this outcome
+from the failure mode it was meant to exclude. That is a defect in the
+condition, reported as such - the verdict above still stands as FAIL.
+
+--- CONDITION 2: PASS ------------------------------------------------------
+
+x_hi 45 / 41 / 42 under north and south, against 26 / 26 / 25 pre-x-clamp.
+The reachability win from Part 2 survives the hold intact.
+
+--- CONDITION 3: PASS ------------------------------------------------------
+
+Argmax-at-commit - does the committed target match what the scorer would have
+chosen at the moment of commit - is 83.3% (n=6), 33.3% (n=6), 80.0% (n=5),
+against the pre-Part-2 baseline of 2.4-2.9%.
+
+Raw per-step argmax-survival is also reported in the gate table (19.4 / 12.8 /
+14.6) and MUST NOT be read as the condition: holding a target means
+deliberately declining a newer argmax, so the raw rate is forced down by the
+mechanism itself. The gate's own parenthetical names the at-commit metric,
+which is the one evaluated. The n values are small because a commit only
+happens when a hold arms, which is the whole point of the change.
+
+--- CONDITION 4: FAIL, structurally, and not fixable without gaming the gate -
+
+A/west 505 changed: 51 -> 20 segments, mean hold 4.7 -> 11.9, first finalize
+divergence at step 3 ((8, 45) vs (8, 11)).
+
+This was foreseeable and it is not a defect in the implementation. A/west was
+a valid control for the x-clamp fix because west wind takes the west branch,
+which Part 2 does not touch - "structurally cannot be affected by it", as the
+round put it. That reasoning does not extend to Part 3. The hold is gated on
+coverage mode, not on wind, and A/west spends 185 of its 240 steps in the
+coverage branch with a native mean hold of 4.3. It was always going to move.
+
+The change was NOT wind-gated to keep the control clean. Adding a west-wind
+exemption would have no justification other than making this condition pass,
+which the round explicitly forbids.
+
+A/west's OUTCOMES are unchanged on every side: rescued 4, never_detected 0.
+What moved is the trajectory, not the result.
+
+--- CONDITION 5: PASS ------------------------------------------------------
+
+D/north 101 and D/south 101 both at zero never_detected.
+
+--- CONDITION 6: A/NORTH 101 SEED-TRADE - RESOLVES ------------------------
+
+  BASE     victim_0
+  XCLAMP   victim_4              (the trade, on the old tree)
+  P2ONLY   victim_3, victim_4    (Part 2 alone on the current tree: worse)
+  FIX14    (none)
+
+The trade does not persist and does not merely change character - it
+disappears. On the current tree, Part 2 alone is worse than the old
+measurement suggested (two misses, not one); adding the hold clears both.
+Rescued on this run goes 2 (BASE) -> 2 (XCLAMP) -> 3 (FIX14).
+
+Probe-run outcomes across all four runs and all four sides:
+
+  side     rescued   never_detected
+  ---------------------------------
+  BASE          10                3
+  XCLAMP        11                1
+  P2ONLY        11                3
+  FIX14         12                0
+
+The isolated comparison is P2ONLY -> FIX14: rescued 11 -> 12, never_detected
+3 -> 0. One run moves against the trend - D/south 101 loses a rescue, 3 -> 2,
+while holding its never_detected at 0 - and it is named here rather than
+averaged away. Four runs is far too small a sample for the rescue column to
+carry weight; it is reported because it points the same way as the detection
+result rather than against it, not as evidence in its own right.
+
+==============================================================================
+HOLD RELEASE CONDITIONS - COUNTS PER RUN
+==============================================================================
+
+run             issued   arrival    unsafe   stalled   timeout   released
+-------------------------------------------------------------------------
+D_north_101          6         3         1         1         0          5
+D_south_101          6         2         0         3         0          5
+A_north_101          5         2         1         1         0          4
+A_west_505           3         2         0         0         0          2
+-------------------------------------------------------------------------
+TOTAL               20         9         2         5         0         16
+
+Every completed hold, from production's own bookkeeping (outputs/
+fix14_gate_detail.txt section 3). "closed" is Manhattan cells closed between
+arming and release:
+
+run           release   target       initial   best   closed   held   nop
+--------------------------------------------------------------------------
+D_north_101   arrival   [8, 11]           34      3       31     36     0
+D_north_101   unsafe    [45, 45]          68     15       53     53     0
+D_north_101   stalled   [5, 45]           53     48        5     16    11
+D_north_101   arrival   [32, 45]          22      3       19     23     0
+D_north_101   arrival   [14, 4]           56      3       53     53     0
+D_south_101   arrival   [8, 11]           33      3       30     32     0
+D_south_101   stalled   [41, 45]          64     45       19     30    11
+D_south_101   stalled   [41, 45]          48     10       38     59    11
+D_south_101   stalled   [31, 4]           44     44        0     11    11
+D_south_101   arrival   [29, 4]           47      3       44     44     0
+A_north_101   arrival   [8, 11]           31      3       28     28     0
+A_north_101   unsafe    [42, 45]          65     13       52     52     0
+A_north_101   arrival   [2, 45]           51      3       48     59     0
+A_north_101   stalled   [35, 4]           71     61       10     29    11
+A_west_505    arrival   [8, 11]           31      3       28     30     0
+A_west_505    arrival   [41, 45]          64      3       61     61     0
+
+ARRIVAL is the most common release, 9 of 16, and the arrivals are real
+traverses: 19 to 61 Manhattan cells closed. Under Part 2 alone the searcher
+closed 5.6-11.8% of a ~30-cell gap before abandoning the target and never once
+arrived. This is the churn being fixed, visible one hold at a time.
+
+TIMEOUT never fired on any run. Part 1 section 2 predicted this in advance
+from the constants: the budget is 2.0 x a ~30-cell gap, i.e. 58-69 steps, and
+the longest hold observed was 61.
+
+Part 1 also predicted STALLED would be the binding condition and would dominate
+the mechanism's behaviour. That was WRONG. STALLED is 5 of 16; ARRIVAL is 9.
+The searcher completes traverses more often than the pre-fix data suggested it
+could. The stall window did its job on the four holds where the searcher was
+genuinely not closing (best = 61 of 71, 48 of 53, 45 of 64, and 44 of 44), and
+one of those - D/south [31, 4], zero cells closed in 11 steps - is exactly the
+case the window exists to cut short.
+
+==============================================================================
+THE "UNSAFE" PREDICTION, CHECKED AGAINST THE DATA
+==============================================================================
+
+PREDICTED IN ADVANCE (outputs/fix14_part1.txt section 4, written before any
+Part 3 code existed):
+
+  (a) UNSAFE would NOT be as rare as the 1.3% hazard-target share the hazard
+      re-validation fix achieved at proposal time, because that fix only ever
+      runs at proposal time while a hold exposes a fixed cell to a moving
+      hazard field for 12+ steps.
+  (b) Sharper, falsifiable form: UNSAFE would be rare on D/north and A/north
+      (~15% peak hazard share of the grid) and NOT rare on D/south (~50%).
+
+MEASURED - AND THE PREDICTION IS WRONG. BOTH PARTS.
+
+The release counts alone appear to support (a): 2 unsafe releases out of 16
+(12.5%), or 2 out of 20 holds issued (10%), against 1.3% at proposal time.
+That reading is an artifact of the denominator. A per-RELEASE rate cannot be
+compared with a per-PROPOSAL rate - there are 16 releases against 940 held
+steps, so any per-release percentage is inflated by roughly the mean hold
+length.
+
+The probe records the right denominator on every step. The base probe at HEAD
+already carried tgt_in_hazard (is the issued target in fire or smoke NOW), and
+this round added held_in_hazard for the cell currently under hold. P2ONLY is
+the control: same tree, same hazard fix, no hold.
+
+  side     issued target in hazard      held target in hazard
+  -------------------------------------------------------------
+  P2ONLY         8 / 956 = 0.8%              n/a (no holds)
+  FIX14          2 / 956 = 0.2%              2 / 940 = 0.2%
+
+  (a) WRONG. The held target sits in hazard on 0.2% of held steps - BELOW the
+      1.3% proposal-time figure, not above it, and below P2ONLY's own 0.8%
+      issued-in-hazard rate on the same tree.
+
+  (b) WRONG, AND EXACTLY INVERTED. D/south - the run predicted to be worst,
+      with smoke covering up to half the grid - had ZERO unsafe releases and
+      0.0% held-in-hazard steps. D/north and A/north, predicted to be rare,
+      had one release each and 0.4% of held steps.
+
+WHAT THIS SAYS ABOUT WHETHER THE HAZARD FIX GENERALISES - the question the
+round asked to be answered explicitly either way:
+
+  IT LARGELY DOES GENERALISE, and the reason is visible in the numbers. There
+  were exactly 2 held-in-hazard steps and exactly 2 unsafe releases. One
+  hazardous step per release means the UNSAFE condition fires on the FIRST
+  step the held cell becomes unsafe, with zero lag. A target is validated safe
+  at proposal by the hazard fix and re-checked every step by the hold, so the
+  window in which a held target can be hazardous is one step wide by
+  construction.
+
+  A second, unpredicted result points the same way: holding REDUCED total
+  hazard exposure rather than increasing it. FIX14's issued-in-hazard rate is
+  0.2% against P2ONLY's 0.8% on the identical tree. Re-choosing a target every
+  four steps means four times as many chances to issue into a cell that has
+  just become hazardous; holding one already-validated cell means fewer. The
+  churn was itself a source of hazard exposure.
+
+  The two unsafe releases were both long holds that had closed most of their
+  gap - D/north [45, 45], initial 68, best 15, held 53 steps; A/north
+  [42, 45], initial 65, best 13, held 52 - and both were eastward traverses
+  into the downwind side where fire concentrates. Neither was issued into
+  hazard; both ignited during approach. That failure mode is real and
+  proposal-time validation cannot see it. But at 2 occurrences in 940 held
+  steps it is a rare event the hold already handles, not the systematic
+  exposure the prediction claimed.
+
+  The prediction was wrong because it reasoned from how much of the grid is
+  hazardous (up to 50% on D/south) without accounting for the fact that the
+  scorer's candidate filter and the hazard fix keep targets away from the
+  hazard field in the first place, so the relevant probability is not the
+  grid-wide share.
+
+==============================================================================
+A MEASUREMENT NOTE - clampX IN THE GATE TABLE
+==============================================================================
+
+The gate table's clampX column counts finalize OUTPUTS whose x is 8 or 41, one
+per step. That was the right unit for the x-clamp round, where every step
+produced an independently chosen target. Under a hold, one target is returned
+for many consecutive steps, so a single clamped commitment inflates the count
+by its hold length. D/south FIX14 reads 146 clamped steps against 81 at
+P2ONLY, which looks like a regression and is not: counted per COMMITMENT it is
+4 of 15 segments (26.7%) against 7 of 44 (15.9%), and against 12 of 18 (66.7%)
+at BASE. outputs/fix14_gate_detail.txt section 1 carries both units for every
+run and side.
+
+==============================================================================
+TEST SUITE
+==============================================================================
+
+Both sides run with E:\Projects\SAS\.venv\Scripts\python.exe -m pytest -q
+-p no:cacheprovider, full suite, no path filter.
+
+  CLEAN HEAD   8 failed, 427 passed, 5 warnings in 1994.69s
+               run in a detached git worktree at 0bff40f, so the baseline
+               cannot have been contaminated by the working-tree edits
+  PATCHED      8 failed, 427 passed, 5 warnings in 2069.10s
+
+The failing sets are IDENTICAL - same eight node IDs, verified by diffing the
+sorted FAILED lines. This reproduces the round's stated true baseline of
+8 failed / 427 passed exactly.
+
+CLASSIFICATION - all eight failures are PRE-EXISTING. There are NO NEW
+failures and none of the eight was fixed by this change.
+
+  pre-existing  tests/test_behavior_regression.py::
+                  test_descriptive_next_action_uses_target_position
+  pre-existing  tests/test_dashboard_panel.py::
+                  test_dashboard_panel_render_returns_string
+  pre-existing  tests/test_firefighter_dispatch_replacement.py::
+                  test_no_replacement_available_marks_victim_unreachable_once
+  pre-existing  tests/test_rescue_planner_authority.py::
+                  test_no_firefighter_planner_delay_or_unreachable
+  pre-existing  tests/test_uav_sector_assignment.py::
+                  test_fire_tracker_uavs_receive_different_target_sets
+  pre-existing  tests/test_uav_sector_assignment.py::
+                  test_fire_tracker_still_overridden_by_search_mode_fail_safe
+  pre-existing  tests/test_wind_aware_trajectory_regression.py::
+                  test_north_vs_south_trajectories_diverge_over_40_steps
+  pre-existing  tests/test_wind_aware_victim_search.py::
+                  test_victim_search_wind_aware_action_when_downwind_exists
+
+  427 passed    unchanged on both sides
+
+The last two are the ones the round flagged as sitting in files this change
+touches. Both fail identically before and after, so neither is evidence about
+this change in either direction.
+
+NO TRACEBACKS occurred anywhere in this round - not in the test runs, and not
+in any of the eight probe runs (four FIX14, four P2ONLY), all of which exited
+0 and printed PATCH VERIFICATION OK.
+
+==============================================================================
+WHAT HAPPENS NEXT - NOT DONE, AND WHY
+==============================================================================
+
+The 80-run matrix was NOT started. The gate failed 3 of 5 and the round's rule
+is explicit: report which conditions failed and by how much, and stop, without
+iterating on constants. No constant was touched at any point.
+
+The two failures are of different kinds and want different responses.
+
+  CONDITION 4 is not fixable while keeping the change honest. A/west stopped
+  being a control the moment a non-wind-gated mechanism was added. The next
+  round needs a different control for Part 3 - a run that does not enter
+  coverage mode, or an A/B on the same seed with the hold disabled, which is
+  what P2ONLY already provides. P2ONLY is arguably the control this round
+  should have declared in advance.
+
+  CONDITION 1 is a defect in the condition, not obviously in the change. The
+  distinct-target count cannot distinguish "few targets, reached" from "few
+  targets, unreachable", and the round is now in the first state while the
+  condition was written to exclude the second. Re-deciding that is a call for
+  whoever owns the round, not something to resolve by re-encoding the gate
+  after seeing the numbers.
+
+Both are questions about the gate. The mechanism's own evidence - zero
+never_detected on all four probe runs against three misses under Part 2 alone
+on the same tree, mean hold 3.9-5.7 -> 14.9-21.7, nine arrivals closing 19 to
+61 Manhattan cells where Part 2 alone never arrived once - is reported above
+and is not affected by how those two questions are settled.

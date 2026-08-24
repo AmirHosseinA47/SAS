@@ -76,6 +76,21 @@ WIND_VICTIM_HAZARD_BUFFER = 2
 WIND_POCKET_CAMP_THRESHOLD = 20
 WIND_INTERIOR_MARGIN = 6
 WIND_SWEEP_NO_MOVE_ESCAPE = 5
+
+# Target-hold constants. Derived in cfaeb21's round and re-verified in fix14
+# Part 1 (outputs/fix14_part1.txt section 2); NOT tuned against the gate.
+#   COMMIT_ARRIVAL_DIST matches the arrival test _touch_wind_search_dwell and
+#     _compute_wind_aware_search_target already use, so "arrived" means one
+#     thing on this path.
+#   COMMIT_PROGRESS_WINDOW = WIND_FIRE_FRONT_MIN_DISTANCE: a searcher deflected
+#     by the fire standoff must travel about one buffer radius tangentially
+#     before distance-to-target can fall again, so that many non-closing steps
+#     is a legitimate detour, not a stall.
+#   COMMIT_TIMEOUT_MULTIPLIER spans fix10 Part 1's measured detour inflation on
+#     real paths (x1.19 to x2.34).
+COMMIT_ARRIVAL_DIST = 2.0
+COMMIT_PROGRESS_WINDOW = WIND_FIRE_FRONT_MIN_DISTANCE
+COMMIT_TIMEOUT_MULTIPLIER = 2.0
 HYBRID_WIND_WEIGHT = 1.0
 HYBRID_COVERAGE_WEIGHT = 1.15
 HYBRID_VICTIM_WEIGHT = 1.0
@@ -413,6 +428,16 @@ def _default_wind_search_state() -> dict[str, Any]:
         "unresolved_victim_count": 0,
         "west_strip_done": False,
         "east_strip_done": False,
+        "commit_target": None,
+        "commit_set_step": None,
+        "commit_initial_dist": 0.0,
+        "commit_best_dist": None,
+        "commit_no_progress": 0,
+        "commit_held_steps": 0,
+        "commit_last_step": None,
+        "commit_issued": 0,
+        "commit_last_release": None,
+        "commit_breaks": {},
     }
 
 
@@ -435,6 +460,8 @@ def _wind_search_state(simulation: Any | None, uav_id: str) -> dict[str, Any]:
         state["recent_targets"] = []
     if not isinstance(state.get("saturated_until"), dict):
         state["saturated_until"] = {}
+    if not isinstance(state.get("commit_breaks"), dict):
+        state["commit_breaks"] = {}
     if not isinstance(state.get("corridor_targets"), list):
         state["corridor_targets"] = []
     if not isinstance(state.get("recent_corridor_targets"), list):
@@ -868,6 +895,159 @@ def _reject_relocation_into_hazard(
     return (float(original[0]), float(original[1]))
 
 
+def _clear_target_hold(wind_state: dict[str, Any], reason: str) -> None:
+    """End the current hold and record why, for the probe."""
+    breaks = wind_state.get("commit_breaks")
+    if not isinstance(breaks, dict):
+        breaks = {}
+        wind_state["commit_breaks"] = breaks
+    breaks[reason] = int(breaks.get(reason, 0) or 0) + 1
+    wind_state["commit_target"] = None
+    wind_state["commit_set_step"] = None
+    wind_state["commit_initial_dist"] = 0.0
+    wind_state["commit_best_dist"] = None
+    wind_state["commit_no_progress"] = 0
+    wind_state["commit_held_steps"] = 0
+    wind_state["commit_last_release"] = reason
+
+
+def _touch_target_hold(
+    wind_state: dict[str, Any],
+    held: tuple[float, float],
+    *,
+    ax: float | None,
+    ay: float | None,
+    step_index: int,
+) -> None:
+    """Advance hold bookkeeping once per step, not once per call.
+
+    _finalize_coverage_target runs two or three times on many steps (the
+    planner pass and the executor pass), so a per-call counter would inflate
+    held-steps and the stall window by 2-3x. Guarding on step_index makes
+    repeat calls within one step read the hold without advancing it.
+    """
+    last = wind_state.get("commit_last_step")
+    if last is not None and int(last) == int(step_index):
+        return
+    wind_state["commit_last_step"] = int(step_index)
+    wind_state["commit_held_steps"] = int(
+        wind_state.get("commit_held_steps", 0) or 0
+    ) + 1
+    if ax is None or ay is None:
+        return
+    dist = _manhattan(float(ax), float(ay), float(held[0]), float(held[1]))
+    best = wind_state.get("commit_best_dist")
+    if best is None or dist < float(best):
+        wind_state["commit_best_dist"] = dist
+        wind_state["commit_no_progress"] = 0
+    else:
+        wind_state["commit_no_progress"] = int(
+            wind_state.get("commit_no_progress", 0) or 0
+        ) + 1
+
+
+def _target_hold_release(
+    wind_state: dict[str, Any],
+    held: tuple[float, float],
+    *,
+    ax: float | None,
+    ay: float | None,
+    fire_cells: set[tuple[int, int]] | None,
+    smoke_cells: set[tuple[int, int]] | None,
+) -> str | None:
+    """First release condition that fires, or None while the hold stands.
+
+    Checked in the order the round declared them: arrival, unsafe, stalled,
+    timeout. The order only decides attribution when two fire on one step.
+    The hazard test reuses the fire/smoke sets _reject_relocation_into_hazard
+    already receives; it is the same check at a different moment, not a
+    second hazard model.
+    """
+    if ax is not None and ay is not None:
+        dx = float(held[0]) - float(ax)
+        dy = float(held[1]) - float(ay)
+        if (dx * dx + dy * dy) ** 0.5 <= COMMIT_ARRIVAL_DIST:
+            return "arrival"
+    cell = (int(round(float(held[0]))), int(round(float(held[1]))))
+    if (fire_cells and cell in fire_cells) or (smoke_cells and cell in smoke_cells):
+        return "unsafe"
+    if int(wind_state.get("commit_no_progress", 0) or 0) >= COMMIT_PROGRESS_WINDOW:
+        return "stalled"
+    budget = COMMIT_TIMEOUT_MULTIPLIER * float(
+        wind_state.get("commit_initial_dist", 0.0) or 0.0
+    )
+    if float(wind_state.get("commit_held_steps", 0) or 0) > budget:
+        return "timeout"
+    return None
+
+
+def _apply_target_hold(
+    final: tuple[float, float] | None,
+    wind_state: dict[str, Any],
+    *,
+    ax: float | None,
+    ay: float | None,
+    fire_cells: set[tuple[int, int]] | None,
+    smoke_cells: set[tuple[int, int]] | None,
+    step_index: int | None,
+) -> tuple[float, float] | None:
+    """Hold a finalized coverage target across steps instead of re-choosing.
+
+    Measured need: with the x-clamp fix applied and nothing holding the
+    target, the coverage argmax moves almost every step. On this tree
+    (outputs/fix14_gate_report.txt, P2ONLY side) that is 42, 44 and 61 target
+    segments over 240 steps with mean holds of 5.7, 5.4 and 3.9, closing
+    5.6-11.8% of a ~30-cell gap before abandoning the target; on the tree the
+    x-clamp round measured (outputs/fix14_part1.txt section 1) it was 70 and
+    73 segments at mean hold 3.4 and 3.3. No segment on any of those runs ever
+    ended within COMMIT_ARRIVAL_DIST of its target. The x-clamp bug used to
+    disguise the churn by relocating successive argmaxes onto the same two
+    columns; removing it exposed re-selection that was already there.
+
+    Scope is the coverage branch only. The escape_target path in
+    _compute_wind_aware_search_target already holds its own target until the
+    searcher is within 3 cells, and coverage mode is off on exactly the steps
+    that path runs (measured over the four x-clamp probes: 127/127 on D/south
+    101, 30/30 on A/north 101, 54/54 on A/west 505, with no exceptions in
+    either direction). Gating on _coverage_mode_active therefore leaves that
+    existing hold untouched.
+    """
+    if step_index is None:
+        return final
+    held = wind_state.get("commit_target")
+    if isinstance(held, (list, tuple)) and len(held) >= 2:
+        held = (float(held[0]), float(held[1]))
+        _touch_target_hold(wind_state, held, ax=ax, ay=ay, step_index=step_index)
+        reason = _target_hold_release(
+            wind_state,
+            held,
+            ax=ax,
+            ay=ay,
+            fire_cells=fire_cells,
+            smoke_cells=smoke_cells,
+        )
+        if reason is None:
+            return held
+        # Released: clear, and let this step's normally computed target through
+        # unchanged. The hold re-arms on the NEXT call rather than forcing a
+        # re-finalize now.
+        _clear_target_hold(wind_state, reason)
+        return final
+    if final is None or ax is None or ay is None:
+        return final
+    wind_state["commit_target"] = (float(final[0]), float(final[1]))
+    wind_state["commit_set_step"] = int(step_index)
+    wind_state["commit_initial_dist"] = _manhattan(
+        float(ax), float(ay), float(final[0]), float(final[1]),
+    )
+    wind_state["commit_best_dist"] = wind_state["commit_initial_dist"]
+    wind_state["commit_no_progress"] = 0
+    wind_state["commit_held_steps"] = 0
+    wind_state["commit_last_step"] = int(step_index)
+    wind_state["commit_issued"] = int(wind_state.get("commit_issued", 0) or 0) + 1
+    return final
+
+
 def _finalize_coverage_target(
     target: tuple[float, float] | None,
     wind_state: dict[str, Any],
@@ -880,6 +1060,7 @@ def _finalize_coverage_target(
     ay: float | None = None,
     fire_cells: set[tuple[int, int]] | None = None,
     smoke_cells: set[tuple[int, int]] | None = None,
+    step_index: int | None = None,
 ) -> tuple[float, float] | None:
     if target is None:
         return target
@@ -895,7 +1076,8 @@ def _finalize_coverage_target(
         if x_max is not None
         else COVERAGE_INTERIOR_X_MAX
     )
-    if _coverage_mode_active(wind_state):
+    coverage_active = _coverage_mode_active(wind_state)
+    if coverage_active:
         tx = max(safe_x_min, min(safe_x_max, tx))
         wind_label = str(wind_state.get("last_wind_direction") or "").strip().lower()
         west_goal = float(safe_x_min + COVERAGE_SWEEP_BAND_MARGIN)
@@ -916,17 +1098,21 @@ def _finalize_coverage_target(
             ):
                 tx = max(tx, east_goal)
         else:
-            x_lo, x_hi = _coverage_x_span(wind_state)
+            # Latch on strip progress instead of the 30-step position window.
+            # The window is shorter than the 8 -> 41 traverse (33 cells), so a
+            # span test re-fires the west clamp mid-traverse and reverses the
+            # searcher at x ~ 18-19. The latches are one-way, so each strip only
+            # has to be touched once. _allow_east_force is deliberately omitted:
+            # it hardcodes west wind and would block east forcing on this path.
+            _mark_x_strip_progress(wind_state, safe_x_min, safe_x_max)
             if (
-                x_lo is not None
-                and x_lo > safe_x_min + 3
+                _west_sweep_pending(wind_state, safe_x_min)
                 and ax is not None
                 and float(ax) > safe_x_min + 4
             ):
                 tx = min(tx, west_goal)
             elif (
-                x_hi is not None
-                and x_hi < safe_x_max - 3
+                _east_sweep_pending(wind_state, safe_x_max)
                 and ax is not None
                 and float(ax) < safe_x_max - 4
             ):
@@ -943,11 +1129,22 @@ def _finalize_coverage_target(
             ty = max(float(forced_y), ty)
         elif commit == "south" and forced_y is not None:
             ty = min(float(forced_y), ty)
-    return _reject_relocation_into_hazard(
+    final = _reject_relocation_into_hazard(
         (float(target[0]), float(target[1])),
         (tx, ty),
         fire_cells,
         smoke_cells,
+    )
+    if not coverage_active:
+        return final
+    return _apply_target_hold(
+        final,
+        wind_state,
+        ax=ax,
+        ay=ay,
+        fire_cells=fire_cells,
+        smoke_cells=smoke_cells,
+        step_index=step_index,
     )
 
 
@@ -3335,7 +3532,7 @@ class LocalAdaptationSpaceGenerator:
                 best_point = (float(cx), float(cy))
         return _finalize_coverage_target(
             best_point, wind_state, x_min=x_min, y_min=y_min, y_max=y_max, x_max=x_max, ax=ax, ay=ay,
-fire_cells=fire_cells, smoke_cells=smoke_cells,
+fire_cells=fire_cells, smoke_cells=smoke_cells, step_index=step_index,
         )
 
     def _generate_corridor_waypoints(
@@ -3608,6 +3805,7 @@ fire_cells=fire_cells, smoke_cells=smoke_cells,
                     ay=ay,
                     fire_cells=fire_cells,
                     smoke_cells=smoke_cells,
+                    step_index=step_index,
                 )
                 if committed_final is not None:
                     return committed_final
@@ -3637,7 +3835,7 @@ fire_cells=fire_cells, smoke_cells=smoke_cells,
                     _record_corridor_target(wind_state, opp)
                     return _finalize_coverage_target(
                         opp, wind_state, x_min=x_min, y_min=y_min, y_max=y_max, x_max=x_max, ax=ax, ay=ay,
-fire_cells=fire_cells, smoke_cells=smoke_cells,
+fire_cells=fire_cells, smoke_cells=smoke_cells, step_index=step_index,
                     )
             escape = self._pick_global_coverage_escape_target(
                 runtime_models=runtime_models,
@@ -3821,7 +4019,7 @@ fire_cells=fire_cells, smoke_cells=smoke_cells,
             )
         return _finalize_coverage_target(
             best_target, wind_state, x_min=x_min, y_min=y_min, y_max=y_max, x_max=x_max, ax=ax, ay=ay,
-fire_cells=fire_cells, smoke_cells=smoke_cells,
+fire_cells=fire_cells, smoke_cells=smoke_cells, step_index=step_index,
         )
 
     def _try_generate_wind_aware_victim_search_option(

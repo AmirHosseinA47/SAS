@@ -1,0 +1,388 @@
+==============================================================================
+fix14 PART 1 - GROUNDING THE TARGET-HOLD DESIGN IN EXISTING DATA
+==============================================================================
+
+Branch      claude/position-rename-and-hazard-revalidation
+HEAD        0bff40f  (fix13 x-clamp reachability fix: measured, reverted)
+Worktree    clean and up to date with origin at the time of this analysis
+Python      3.10.11  mesa 1.2.1
+            C:\Users\ahrar\AppData\Local\Programs\Python\Python310\python.exe
+
+==============================================================================
+0. CORRECTION TO THE BRIEF: THE DATA GAP DOES NOT EXIST
+==============================================================================
+
+The brief states that only the _BASE probe JSON exists at commit 65f5b31 and
+that the POST-side files are absent. That is not what the commit contains.
+
+Commit 65f5b31 on claude/coverage-target-clamp-fix-8cc247 carries BOTH sides:
+
+    _tf_A_north_101_BASE.json    _tf_A_north_101.json
+    _tf_A_west_505_BASE.json     _tf_A_west_505.json
+    _tf_D_north_101_BASE.json    _tf_D_north_101.json
+    _tf_D_south_101_BASE.json    _tf_D_south_101.json
+
+_gate_xclamp.py's own docstring defines the naming it consumes:
+
+    BASE = outputs/_tf_<tag>_BASE.json   (pre-x-clamp)
+    POST = outputs/_tf_<tag>.json        (x-clamp applied)
+
+Two independent checks confirm the no-suffix files are genuinely the POST
+artifacts and not leftovers from an earlier round:
+
+  (a) Re-running _gate_xclamp.py against the checked-out pair reproduces the
+      committed xclamp_gate_report.txt exactly - every figure, every verdict,
+      identical after CRLF normalisation. The report could only have been
+      produced from these files.
+
+  (b) The x-clamp round added west_strip_done / east_strip_done to the probe's
+      ws_entry snapshot. All four _BASE files lack those keys; all four
+      no-suffix files have them. That is a structural fingerprint of the POST
+      instrumentation, independent of any numeric agreement.
+
+CONSEQUENCE: the fallback the brief prescribes for the gap - re-apply Part 2
+first, re-run the probe, and use that as the Part 1 baseline - is not needed.
+Every number below is read off artifacts already on disk. Nothing is estimated
+and nothing is inferred from BASE data. The Part 2 re-application still happens,
+but as Part 2, not as a prerequisite for Part 1.
+
+Artifacts restored into this worktree from 65f5b31:
+    outputs/_tf_{A_north_101,A_west_505,D_north_101,D_south_101}{,_BASE}.json
+    outputs/_gate_xclamp.py  outputs/_gate_commitment.py
+    outputs/xclamp_gate_report.txt  outputs/step0_target_following.txt
+    outputs/_diag_target_following.py  outputs/_diag_target_following_COMMITLOG.py
+
+Derivation script: outputs/_churn_fix14.py
+Full table:        outputs/fix14_churn_baseline.txt
+
+==============================================================================
+1. THE CHURN BASELINE - MEASURED, ALL FOUR RUNS, BOTH SIDES
+==============================================================================
+
+A "segment" is a maximal run of consecutive steps holding the same finalized
+target. Steps with no target are dropped before grouping so an instrumentation
+gap cannot manufacture a segment boundary. A "re-target" is a segment boundary:
+every segment but the last is abandoned.
+
+Distances are Manhattan from the searcher's pre-move position to the target.
+"meanRem" is the distance still outstanding at the moment the target is
+abandoned - the brief's "mean remaining Manhattan distance at re-target".
+
+run           side  segs  dist  meanhold  maxhold  hold<=3  meanStart  meanRem  minRem  closed  arrived%
+--------------------------------------------------------------------------------------------------------
+D_north_101   BASE    16    12      14.9       42        6       38.2     27.8       2     9.4     13.3
+D_north_101   POST    70    43       3.4       16       48       32.4     30.1      11     2.2      0.0
+
+D_south_101   BASE    18    14      13.3       48        3       37.0     32.5       2     3.2      5.9
+D_south_101   POST    16    14      14.9      127        4       34.6     31.6      18     4.1      0.0
+
+A_north_101   BASE    21    13      11.4       42       10       36.1     28.6       2     6.7     10.0
+A_north_101   POST    73    45       3.3       30       55       28.9     27.2      10     1.6      0.0
+
+A_west_505    BASE    56    37       4.3       54       41       28.6     25.9      15     2.2      0.0
+A_west_505    POST    56    37       4.3       54       41       28.6     25.9      15     2.2      0.0
+
+CONFIRMED against commit 0bff40f's prose, exactly:
+    D/north  segments 16 -> 70,  mean hold 14.9 -> 3.4
+    A/north  segments 21 -> 73,  mean hold 11.4 -> 3.3
+The finalized-target series and the proposed-target series give identical
+segment statistics on all eight run-sides, so the finalizer's output IS the
+generator's return on this path - there is no divergence between them to
+account for.
+
+THE TWO RUNS THE COMMIT MESSAGE NEVER REPORTED:
+
+  D_south_101 DOES NOT CHURN. Segments went 18 -> 16 and mean hold 13.3 -> 14.9
+  - the opposite direction from the other two treatment runs. One POST segment
+  runs 127 steps, over half the run. Section 3 explains why, and it is the same
+  reason gate condition 1 failed on this run (distinct cells flat at 14 -> 14).
+  D/south is not a weak version of the churn signature; it is a different
+  regime, and any hold mechanism must not disturb it.
+
+  A_west_505 (control) is identical on every column, as expected: west wind
+  takes the west branch, which the x-clamp fix does not touch. Note the control
+  already sits at mean hold 4.3 with 41 of 56 segments lasting <= 3 steps. The
+  west branch churns natively and always has. This matters for the gate: a
+  "healthy" mean hold is not a property the west branch demonstrates.
+
+WHAT THE NUMBERS SAY THE SEARCHER IS ACTUALLY DOING (post-fix, churning runs):
+
+  - Targets are picked ~30 cells away (meanStart 32.4 / 28.9).
+  - They are abandoned ~28-30 cells away (meanRem 30.1 / 27.2).
+  - Net distance closed per segment: 2.2 and 1.6 cells. Against a ~30-cell
+    gap, the searcher gives up having covered ~6% of the journey.
+  - 48 of 70 and 55 of 73 segments last <= 3 steps.
+  - No segment on any POST run ends within COMMIT_ARRIVAL_DIST of its target.
+    The closest any abandoned target ever got was 11 and 10 cells (minRem).
+
+  Crucially, meanRem barely moved BASE -> POST (27.8 -> 30.1, 28.6 -> 27.2).
+  The searcher was always abandoning targets ~30 cells out. What the x-clamp
+  fix changed is not the distance at abandonment but the FREQUENCY of it: 15
+  and 20 re-targets became 69 and 72. Under the clamp, consecutive argmaxes
+  were relocated onto the same handful of lattice cells (x in {8,41}), so
+  successive re-targets were invisible - they collapsed into one segment. The
+  clamp was not preventing re-selection; it was disguising it by mapping many
+  different choices onto the same output. Removing it revealed churn that was
+  already there, and freed the argmax to wander further.
+
+  This is a sharper statement of the root cause than "the clamp provided
+  stability as a side effect of being wrong", and it changes the design: a
+  hold mechanism is not restoring something the clamp used to do correctly.
+  It is adding stability that has never existed on this path.
+
+  Corollary, and the reason ARRIVAL alone cannot carry the design: at a mean
+  closure of 0.65 cells/step (2.2 cells over a 3.4-step hold, near the movement
+  cap), a 30-cell traverse needs ~45 steps of uninterrupted commitment. Nothing
+  in the current code grants it.
+
+==============================================================================
+2. CONSTANTS - REUSED FROM cfaeb21 WITH THEIR DERIVATIONS, NOT RE-TUNED
+==============================================================================
+
+Read from cfaeb21. Note first what that commit actually contains:
+
+  git show cfaeb21 -- src_extension/adaptation/local_adaptation_generator.py
+
+returns NOTHING. cfaeb21 has no production changes at all - 31 files, all under
+outputs/, 2358 insertions. Its own message says so: "No production changes -
+both attempts were reverted after measurement. This commit carries the
+experimental record." The constants and their derivations survive only in the
+commit message, which is where the three below are quoted from, and they match
+the brief's statement of them exactly.
+
+Two things follow. First, "do not reuse the code verbatim" is not a choice
+here - there is no code to reuse. Second, the message records where the prior
+attempt intercepted: "Additive wrapper on _compute_wind_aware_search_target".
+That is a different site from the one Section 3 selects, and the difference is
+deliberate - see Section 3.
+
+  COMMIT_ARRIVAL_DIST = 2.0
+      Matches the arrival test already used by _touch_wind_search_dwell and by
+      the executor's escape-target clearing, so "arrived" means the same thing
+      in the hold as it does everywhere else on this path. Verified still
+      present at HEAD: _compute_wind_aware_search_target line ~3691 tests
+      dist_to_target <= 2.0 before advancing the corridor index.
+      STILL VALID - it is a consistency constraint against live code, not a
+      tuned value.
+
+  COMMIT_PROGRESS_WINDOW = 12   (= WIND_FIRE_FRONT_MIN_DISTANCE, line 70)
+      A searcher deflected by the 12-cell fire standoff needs roughly one
+      buffer-radius of tangential travel before distance-to-target can resume
+      falling, so up to 12 non-closing steps is a legitimate detour rather than
+      a stall. STILL VALID - WIND_FIRE_FRONT_MIN_DISTANCE is unchanged at 12 at
+      HEAD, so the geometry the derivation rests on is intact.
+
+  COMMIT_TIMEOUT_MULTIPLIER = 2.0
+      From fix10 Part 1's measured detour inflation on real paths, x1.19 to
+      x2.34; 2.0 spans nearly the full observed range. STILL VALID - derived
+      from path geometry on a grid and fire physics that this change does not
+      touch.
+
+These are reused as derived. They are NOT tuned to pass the gate, and per the
+brief they will not be adjusted if the gate fails.
+
+WHAT THE CONSTANTS IMPLY, GIVEN SECTION 1's MEASUREMENTS - stated now so the
+outcome can be read against a prior expectation rather than rationalised after:
+
+  TIMEOUT budget = 2.0 x meanStart = 64.8 (D/north), 69.2 (D/south),
+  57.8 (A/north), 57.2 (A/west) steps. Over a 240-step run that permits at
+  most ~4 timeouts even if every hold ran to its limit. TIMEOUT is a backstop,
+  not a working release condition.
+
+  ARRIVAL requires closing ~30 cells. At the observed ~0.65 cells/step ceiling
+  that is ~45 steps - inside the timeout budget, so arrival is reachable, but
+  only if STALLED does not fire first.
+
+  STALLED (12 consecutive non-closing steps) is therefore the binding
+  condition, and the mechanism's behaviour will be dominated by it. Expected
+  mean hold lands in the low-to-mid tens of steps: comfortably above the
+  3.3-3.4 churn baseline, and in the same band as the 11-15 pre-fix level
+  without reproducing the 12-15-distinct-targets degenerate regime, since the
+  targets being held are now the scorer's own argmax rather than two lattice
+  columns.
+
+  Gate condition 1 should therefore pass. It is not guaranteed: if the
+  deflection geometry produces stalls faster than 12 steps apart, mean hold
+  will sit nearer 6-8 and condition 1 becomes a judgement call on "materially".
+
+==============================================================================
+3. INTERCEPTION POINT - WHICH CALL SITE PRODUCES THE CHURN
+==============================================================================
+
+_finalize_coverage_target has four call sites, all inside
+_compute_wind_aware_search_target or its callee:
+
+  L3336  inside _pick_global_coverage_escape_target - finalizes the coverage
+         argmax and returns it
+  L3600  the escape_target commit path - re-finalizes an ALREADY-HELD target
+         while it is still >3 cells away
+  L3638  the _gradual_escape_target path - guarded by
+         not _coverage_mode_active(wind_state)
+  L3822  the corridor-waypoint path - the tail return
+
+EVIDENCE (per-step "branch" field, all four runs, both sides):
+
+run           side   pick_global_coverage_escape   finalize_only_escape   other
+------------------------------------------------------------------------------
+D_north_101   BASE                           209                     30       1
+D_north_101   POST                           239                      0       1
+D_south_101   BASE                           209                     30       1
+D_south_101   POST                           112                    127       1
+A_north_101   BASE                           209                     30       1
+A_north_101   POST                           209                     30       1
+A_west_505    BASE                           185                     54       1
+A_west_505    POST                           185                     54       1
+
+The churn is produced by pick_global_coverage_escape. It carries 239/240 and
+209/240 of the steps on exactly the two runs whose mean hold collapsed to ~3.3,
+and its target goes straight out of _compute_wind_aware_search_target at L3677
+with no commitment of any kind. Every step, _pick_global_coverage_escape_target
+re-scores the whole candidate grid and returns a fresh argmax.
+
+THIS ALSO EXPLAINS D/south, THE RUN THAT DID NOT CHURN. Its POST run spent 127
+of 240 steps in finalize_only_escape - the L3600 path, reachable only while
+coverage mode is INACTIVE (coverage_active is False on 128 of its 240 steps,
+against 1 and 31 on the other two treatment runs). That path already holds a
+target: it re-finalizes wind_state["escape_target"] and returns it until the
+searcher is within 3 cells. D/south's 127-step segment is that existing hold,
+not a coincidence. So a hold mechanism is not novel behaviour for this
+codebase - it is behaviour the escape_target path already has, that the
+coverage path lacks. D/south is the working case; the design generalises it.
+
+Note also that L3638's gradual-escape path is unreachable under coverage mode
+(its not-_coverage_mode_active guard), which is why it appears in no run's
+branch counts.
+
+DECISION - INTERCEPT INSIDE _finalize_coverage_target:
+
+  1. It is the single common exit. gen_inner records a "finalize" entry on
+     every step that produces a target, on all eight run-sides. Nothing reaches
+     the executor without passing through it. Intercepting at L3336 alone would
+     leave the corridor path (L3822) free to interleave a different target on
+     the steps where it fires.
+  2. It already receives everything the four release conditions need -
+     wind_state, ax, ay, fire_cells, smoke_cells - with no signature change for
+     the hazard sets. Part 3 requires reusing the fire/smoke sets the hazard
+     re-validation fix threads through the finalizer rather than adding a
+     second hazard check; those sets exist here and nowhere else on the path.
+  3. Because the finalized and proposed series are identical (Section 1),
+     holding at the finalizer is equivalent to holding at the generator return
+     for every metric in the gate, with strictly wider coverage.
+  4. It is strictly narrower than cfaeb21's site. That round wrapped
+     _compute_wind_aware_search_target, which holds the target for ALL of that
+     function's exits - including the corridor path, the escape_target commit
+     path at L3600, and the early sweep returns. The finalizer sits one level
+     down and inside the coverage branch, so D/south's existing 127-step
+     escape_target hold keeps its own release rule instead of being overridden
+     by a second one. Given that D/south is the run that already works
+     (Section 1), not disturbing it is worth the narrower scope.
+  5. Reaching it requires current_role in ("victim_searcher", "victim_search")
+     - the gate at L1766 in _generate_path_options is the only route to
+     _try_generate_wind_aware_victim_search_option. So "per victim_searcher
+     UAV" is satisfied structurally, with no role check to add. It also means
+     the hold governs SEARCH only: when live victim targets exist, L1767 takes
+     the victim path and the wind-aware generator is never called, so a held
+     search target cannot delay a rescue.
+
+ONE SIGNATURE CHANGE IS REQUIRED: step_index. _finalize_coverage_target does not
+currently receive it, and hold duration, the stall window and the timeout are
+all measured in steps. It cannot be counted internally: gen_inner shows the
+finalizer running 2-3 times per step on many steps (finalize / pick_global_escape
+appearing twice on 20-31 steps per run), so a per-call counter would over-count
+by 2-3x. step_index is already in scope at all four call sites -
+_compute_wind_aware_search_target computes it at L3512 and passes it to
+_pick_global_coverage_escape_target - so it is threaded, not derived. Progress
+bookkeeping is guarded on step_index changing, so repeat calls within one step
+read the cache without advancing any counter.
+
+CACHE LOCATION - wind_state, as the brief anticipated:
+
+  wind_state is per-UAV by construction: _wind_search_state(simulation, uav_id)
+  returns simulation._wind_search_target_state[uav_id], and
+  _default_wind_search_state() backfills any missing key on every read. That is
+  exactly how recent_x_positions, coverage_y_commit and the x-clamp fix's own
+  west_strip_done / east_strip_done are already stored. New keys added to
+  _default_wind_search_state() inherit the same per-UAV lifetime and the same
+  backfill safety for states created before this change.
+
+  The alternative - a cache on the generator instance - is not viable:
+  _diag_target_following.py's header records that the executor builds a fresh
+  LocalAdaptationSpaceGenerator() on every call (uav_executor.py:3737), so
+  instance state does not survive between steps. wind_state is the only
+  per-UAV store with the right lifetime.
+
+==============================================================================
+4. PREDICTION FOR THE "UNSAFE" RELEASE, STATED BEFORE RUNNING
+==============================================================================
+
+The brief asks whether UNSAFE should be rare, given the hazard re-validation
+fix cut the hazard-target share to 1.3% at proposal time.
+
+PREDICTION: NO - UNSAFE will not be as rare as 1.3%, and the gap between the
+two figures is the point. The hazard fix guarantees a target is safe at the
+INSTANT IT IS PROPOSED. A hold keeps a fixed cell for a mean of 12+ steps
+while the hazard field moves under it. These are different exposures, and the
+hold creates the second one for the first time.
+
+Measured hazard field over the four POST runs (fire_n / smoke_n per step):
+
+  run           fire peak   smoke peak   peak hazard share of the 2500-cell grid
+  D_north_101         132          250                                    ~15%
+  D_south_101         502          746                                    ~50%
+  A_north_101         132          240                                    ~15%
+  A_west_505          126          310                                    ~17%
+
+Smoke is the larger and more mobile component. On D/south it covers up to half
+the grid at peak. A cell held for 12-45 steps in that field has a materially
+non-zero chance of being overrun, and the hazard re-validation fix cannot
+prevent it - by construction it only ever runs at proposal time.
+
+SHARPER, FALSIFIABLE FORM: UNSAFE should be rare on D/north and A/north
+(~15% peak hazard share) and NOT rare on D/south (~50%). If UNSAFE instead
+comes back uniformly near zero on all three, the hazard fix generalises to
+mid-hold hazard change and the prediction is wrong. If it comes back
+concentrated on D/south, the mechanism is proposal-time-only as argued and the
+hold is doing work the hazard fix cannot. Either outcome is reported.
+
+OUTCOME (added after measurement; this section is left as written, since its
+value is that it was written first): BOTH PARTS OF THIS PREDICTION ARE WRONG.
+The held target sits in hazard on 0.2% of held steps, below the 1.3%
+proposal-time figure rather than above it, and D/south - predicted worst - had
+zero. See outputs/fix14_report.txt, section "THE 'UNSAFE' PREDICTION, CHECKED
+AGAINST THE DATA", and outputs/fix14_hazard_check.txt.
+
+==============================================================================
+5. WHAT PART 3 WILL DO, GIVEN THE ABOVE
+==============================================================================
+
+Cache in wind_state, checked at the top of _finalize_coverage_target's coverage
+branch, per victim_searcher UAV:
+
+  commit_target        the finalized (tx, ty) being held
+  commit_set_step      step_index at which it was set
+  commit_initial_dist  Manhattan distance from the searcher when it was set
+  commit_best_dist     best (smallest) distance achieved during the hold
+  commit_no_progress   consecutive steps without improving commit_best_dist
+  commit_last_step     last step_index at which bookkeeping advanced
+  commit_held_steps    steps held so far
+  commit_issued        holds opened, for the probe
+  commit_breaks        per-reason release counters, for the probe
+
+These key names are taken from cfaeb21's probe variant
+(_diag_target_following_COMMITLOG.py), which already snapshots commit_target,
+commit_held_steps, commit_initial_dist, commit_issued and commit_breaks out of
+wind_state into ws_entry. Reusing the names keeps the fix14 probe a minimal
+delta on that file rather than a new instrumentation scheme, which is the
+"same instrumentation discipline as cfaeb21's round" the brief asks for.
+
+Release when any of ARRIVAL (euclid <= 2.0), UNSAFE (cell in fire_cells or
+smoke_cells now), STALLED (hold_no_progress >= 12), TIMEOUT (steps held >
+2.0 x hold_set_man). On release, clear the cache and let the caller's freshly
+computed target through unchanged for this step; the next call re-arms the hold
+on whatever the normal path chooses. No forced re-finalize in the same step.
+
+Expected effect on the gate, from Section 2: condition 1 satisfied in the
+low-to-mid tens; conditions 2-3 inherited from Part 2 since the held target is
+the scorer's own argmax rather than a clamp product; condition 4 preserved
+because west wind never enters this branch and D/south's existing 127-step
+escape_target hold is on a different call site that the change leaves alone.
