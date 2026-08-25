@@ -1,0 +1,1059 @@
+================================================================================
+STATIC SEARCHER LANE PARTITIONING - DIAGNOSIS
+================================================================================
+Repo      : E:\Projects\SAS
+Branch    : claude/position-rename-and-hazard-revalidation
+HEAD      : f15a2e9 (one commit past the cf6bb06 named in the brief; the delta
+            is "A/south regression diagnosis", docs only - no code touched in
+            local_adaptation_generator.py)
+Runtime   : E:\Projects\SAS\.venv\Scripts\python.exe (py3.10 / mesa 1.2.1)
+Scope     : diagnosis only. No implementation code was written. The only files
+            added are read-only probes under outputs/ (listed at the end).
+
+All file:line references below are to
+  src_extension/adaptation/local_adaptation_generator.py
+unless stated otherwise.
+
+--------------------------------------------------------------------------------
+EXECUTIVE SUMMARY
+--------------------------------------------------------------------------------
+1. Lane assignment is stable in the only way that matters today: nothing in the
+   running system mutates a UAV's role, and UAVs are never removed from the
+   schedule. Measured: 0 lane changes across the instrumented matrix.
+
+2. Sub-item 1 (searcher-loss handling) is NOT a defect. Verdict (b), already
+   handled correctly - and not by accident. When the searcher list does shrink
+   (forced by hand), the re-derived partition is provably well-formed: disjoint,
+   gapless, in-bounds, no zero-width lane, for every n and every span where
+   n <= span. The orphaned band is absorbed by its neighbours. See PART 1 #3.
+
+3. A REAL defect was found, but it is not any of the three planned sub-items.
+   _finalize_coverage_target (line 1051) is lane-unaware and runs AFTER the lane
+   filter. Its two clamps overwrite the very axis the lane partitions:
+     - the coverage_y_commit clamp (1125-1131) overrides y, and y is the lane
+       axis under east/west wind;
+     - the x sweep clamp (1080-1119) overrides x, and x is the lane axis under
+       north/south wind.
+   Measured on Scenario C, 2 searchers, seed 101, 120 steps:
+     east  wind: the lower-lane searcher emitted a target OUTSIDE its own lane
+                 on 73.5% of emissions; 35 of 119 steps had BOTH searchers
+                 holding the identical target.
+     north wind: 20.5% / 32.5% out-of-lane; 12 of 119 steps collided.
+   Worse, the lane itself CAUSES the clamp: a searcher confined to lane y[0..24]
+   can never reach y >= 43, which is what clears the latch, so the latch is
+   permanent. Lane partitioning is partially self-defeating today.
+
+4. Sub-item 3 (uncertainty-weighted INITIAL allocation) is a no-op as specified.
+   At step 0 every cell is NEVER_SEEN, so uncertainty mass is exactly uniform and
+   an equal-mass split picks the identical boundary the even split already picks
+   (cut = 24 for n=2 on a 50-wide axis). Measured, PART 2 #5. The imbalance is
+   real but it only develops later, and it oscillates (equal-mass cut moves
+   18 -> 33 -> 37 -> 33 over t=40/120/200/240). The value is in RE-allocation
+   over time, not in the initial split.
+
+5. Sub-item 2 (work stealing) has the cleanest HOOK but weak measured MOTIVE.
+   "My lane is exhausted" is already an explicit state today - lines
+   3941/3945/3950 set wind_state["force_sweep"] = True and return None precisely
+   when the lane yielded no candidates - and a model-level shared coverage set
+   already exists, so no new structure is needed. But the imbalance it targets
+   largely is not there: across 40 instrumented runs, 78 of 80 searcher-lanes
+   finished above 0.90 ever-observed coverage, mean inter-lane spread 0.038.
+   The brief's "40% vs 95%" signature occurs once in 40 runs, and in that run
+   the missed victim was in the WELL-covered lane. See PART 2 #4.
+
+6. What static assignment does cost is FRESHNESS, not ever-seen coverage. The
+   inter-lane gap in uncertain_frac holds at ~0.19-0.21 at every checkpoint and
+   grows with time on east/west wind. One lane's information decays while the
+   other's is kept fresh.
+
+7. Ranking the roadmap on this evidence: fix the 1.4 override first (it is a
+   real defect and it distorts the signal every other sub-item would read);
+   then re-measure; then, if anything, balance on STALENESS rather than on
+   lane exhaustion. Sub-items 1 and 3 as specified should not be built.
+
+================================================================================
+PART 1 - CURRENT BEHAVIOR, PRECISELY
+================================================================================
+
+--------------------------------------------------------------------------------
+1.1  THE TWO FUNCTIONS, QUOTED IN FULL
+--------------------------------------------------------------------------------
+
+local_adaptation_generator.py:332-364
+
+    def _searcher_crosswind_lane(
+        simulation: Any,
+        uav_id: str,
+        wind_direction: str,
+        x_min: int,
+        x_max: int,
+        y_min: int,
+        y_max: int,
+    ) -> tuple[str, int, int] | None:
+        """Disjoint cross-wind band for this searcher, or None when n <= 1."""
+        ids = resolve_victim_searcher_uav_ids(simulation)
+        n = len(ids)
+        if n <= 1:
+            return None
+        try:
+            idx = ids.index(str(uav_id))
+        except ValueError:
+            return None
+        w = normalize_wind_direction(wind_direction)
+        if w in ("east", "west"):
+            span = y_max - y_min + 1
+            lo = y_min + (span * idx) // n
+            hi = y_min + (span * (idx + 1)) // n - 1
+            if idx == n - 1:
+                hi = y_max
+            return ("y", lo, hi)
+        span = x_max - x_min + 1
+        lo = x_min + (span * idx) // n
+        hi = x_min + (span * (idx + 1)) // n - 1
+        if idx == n - 1:
+            hi = x_max
+        return ("x", lo, hi)
+
+
+local_adaptation_generator.py:366-374
+
+    def _lane_allows_cell(
+        lane: tuple[str, int, int] | None, cx: int, cy: int,
+    ) -> bool:
+        if lane is None:
+            return True
+        axis, lo, hi = lane
+        if axis == "y":
+            return lo <= cy <= hi
+        return lo <= cx <= hi
+
+
+--- the exact partition formula ---
+
+  axis selection:  normalize_wind_direction(wind) in {east, west} -> split the
+                   Y axis;  {north, south} -> split the X axis. So the band is
+                   always perpendicular to the wind axis, as documented.
+
+  boundaries:      span = hi_bound - lo_bound + 1
+                   lo = lo_bound + (span * idx) // n
+                   hi = lo_bound + (span * (idx + 1)) // n - 1
+                   hi = hi_bound  when idx == n - 1   (absorbs the // remainder)
+
+  Concrete, on the real 50x50 grid (_grid_bounds returns 0, HEIGHT-1, 0, WIDTH-1
+  = 0,49,0,49), measured by outputs/_lane_probe_static.py:
+
+     n=2   ['1','2']          y[0..24]w25  y[25..49]w25
+     n=3   ['1','2','3']      y[0..15]w16  y[16..32]w17  y[33..49]w17
+     n=4   ['1','2','3','4']  y[0..11]w12  y[12..24]w13  y[25..36]w12  y[37..49]w13
+     n=5                      y[0..9] y[10..19] y[20..29] y[30..39] y[40..49]
+
+  The floor division makes the LAST lane absorb the remainder, so widths are
+  never off by more than 1 except for the final band, which is pinned to the
+  grid edge.
+
+--- what "idx" is derived from ---
+
+  idx = ids.index(str(uav_id)), where ids comes from
+  resolve_victim_searcher_uav_ids (line 276). That function:
+
+    * iterates model.schedule.agents, keeping only `type(agent) is UAV`;
+    * reads the role from model.managed_uav_states[uid].role FIRST, falling
+      back to model.uav_resource_model.by_uav_id[uid].current_role only when
+      the managed role is empty (lines 288-302);
+    * keeps ids whose role is in _VICTIM_SEARCHER_ROLES =
+      frozenset({"victim_searcher", "victim_search"}) (line 262);
+    * returns `sorted(ids, key=lambda x: int(x) if x.isdigit() else x)`
+      (line 306) - so NUMERIC sort for the digit ids this model produces
+      (measured ids are '2500'..'2504'), lexicographic otherwise;
+    * if no id carries a searcher role, falls back (lines 307-317) to a SINGLE
+      id - the n-th UAV by unique_id. n=1 => lane is None => no partitioning.
+      The fallback can therefore never produce a partition.
+
+  So idx is a position in a freshly sorted list of currently-searcher-roled UAV
+  ids. It is NOT insertion order and NOT a stored per-UAV index.
+
+--- is the list recomputed each call, or cached? ---
+
+  RECOMPUTED, every single call. There is no memoisation anywhere in
+  resolve_victim_searcher_uav_ids or _searcher_crosswind_lane, and both call
+  sites call it fresh on every target computation for every searcher on every
+  step.
+
+  Proven, not inferred: outputs/_lane_probe_static.py experiment E3 removes a
+  searcher UAV from model.schedule mid-run and re-reads the function with no
+  other change:
+
+     E3  schedule removal (death) of searcher 2503
+         before: ids=['2503', '2504'] lanes={'2503':'y[0..24]','2504':'y[25..49]'}
+         after : ids=['2504']         lanes={'2504': None}
+
+  A cached list could not have changed. It did.
+
+--- is idx stable across a run? ---
+
+  Yes, because its inputs never change at runtime. Measured over 60 steps
+  (Scenario C, 5 UAV, 3 trackers + 2 searchers, wind east, seed 101):
+
+     steps where searcher id LIST changed: 0
+     steps where LANE MAP changed:         0
+     role_switch_count at t=60:            0 for all five UAVs
+
+  And over the full instrumented 240-step matrix (PART 2): id_changes = 0 on
+  every run, all 8 combos, all 5 seeds. See PART 2.
+
+--- where _lane_allows_cell is applied: hard filter or scoring term? ---
+
+  HARD FILTER, at exactly two sites, both `continue` in the candidate loop -
+  the cell is discarded before it is ever scored. There is no lane term
+  anywhere in _score_hybrid_search_cell (line 1212).
+
+  Site A - _pick_global_coverage_escape_target (def at 3367):
+      3417   lane = _searcher_crosswind_lane(
+      3418       simulation, uav_id, _wind_label_from_vector(wind_vector),
+      3419       x_min, x_max, y_min, y_max,
+      ...
+      3429   for cx in range(x_min + 1, x_max):
+      3430       for cy in range(y_min + 1, y_max):
+      3431           if not _lane_allows_cell(lane, cx, cy):
+      3432               continue
+
+  Site B - _generate_corridor_waypoints (def at 3538):
+      3596   lane = _searcher_crosswind_lane(
+      3597       simulation, uav_id, wind_norm, x_min, x_max, y_min, y_max,
+      3598   )
+      ...
+      3602   for cx in x_values:
+      3603       for cy in y_values:
+      3604           if not _lane_allows_cell(lane, cx, cy):
+      3605               continue
+
+  Both are reached only from _compute_wind_aware_search_target (def 3691),
+  which is called once per searcher per step from
+  _try_generate_wind_aware_victim_search_option (4024, call at 4045).
+
+  *** AND THE FILTER IS NOT THE LAST WORD. *** See 1.4 below.
+
+--------------------------------------------------------------------------------
+1.2  WHAT HAPPENS TODAY ON SEARCHER LOSS OR ROLE CHANGE
+--------------------------------------------------------------------------------
+
+--- (a) can a victim_searcher UAV die? ---
+
+  NO. _process_pending_agent_removals (wildfire_model.py:2139) is the only
+  place that calls schedule.remove(), and it handles exactly three types:
+  PathMarker (2148), Victim (2159), Firefighter (2178). There is no UAV branch.
+  UAVs also have no death/crash state - agents.py has `self.dead = False` only
+  on the Firefighter class (agents.py:384), not on UAV.
+
+  Battery does drain (agents.py _update_battery_after_step, 268-280) and can
+  reach 0.0 with status "critical", but battery is observe-only: it changes the
+  status label and nothing else. A flat UAV keeps stepping and keeps its role.
+
+--- (b) can a victim_searcher's ROLE change mid-run? ---
+
+  Not through any path that is currently wired end to end. Traced completely:
+
+    * managed_uav_states[uid].role is written in exactly two places:
+        - wildfire_model.py:673, inside _assign_uav_roles(), scenario init only;
+        - src_extension/execution/global_executor.py:59, from
+          decision.uav_assignments.
+      _update_managed_uav_states_from_agents (wildfire_model.py:700) refreshes
+      position / battery_level / battery_status and DOES NOT touch role.
+
+    * decision.uav_assignments is built by _uav_assignments_from_params
+      (src_extension/planning/global_mission_planner.py:233):
+
+          def _uav_assignments_from_params(params):
+              for key in ("uav_assignments", "role_assignments"):
+                  mapped = _string_dict(params.get(key))
+                  if mapped:
+                      return mapped
+              assigned = params.get("assigned_role")
+              if isinstance(assigned, dict):
+                  return _string_dict(assigned)
+              return {}
+
+      Nothing in the repo ever puts "uav_assignments" or "role_assignments" into
+      an option's params (grep: the only hits are this function itself). The one
+      producer of "assigned_role" is
+      src_extension/adaptation/global_adaptation_generator.py:147:
+
+          parameters={**base_parameters, "assigned_role": role},
+
+      where `role` is a plain string from the list at lines 141-147
+      ("fire_tracking", "victim_search", ...). A string is not a dict, so the
+      isinstance(assigned, dict) test fails and the function returns {}.
+      => GlobalExecutor's role loop iterates an empty dict. No role is ever
+      written at runtime.
+
+    * agents.UAV has no independent `role` attribute at all. `UAV.current_role`
+      (agents.py:249) is a read-only property that resolves managed_uav_states
+      first, then uav_resource_model. uav_resource_model.by_uav_id[uid]
+      .current_role is refreshed every step from the local monitor's
+      task_context["role"] (wildfire_model.py:1067) - which is itself sourced
+      from that same property. The two stores mirror each other; neither is an
+      independent source of change.
+
+    * the fail-safe layer does NOT change roles. Its UAV options are
+      ("return_to_base", "low_power_mode", "abandon_task", "hold_position")
+      (failsafe_adaptation_generator.py:138-142) carried as a "failsafe_action"
+      string, and its own explanation_hint says
+      "Fail-safe option only; no UAV behavior is executed."
+
+  Measured confirmation: role_switch_count stayed 0 for every UAV over 60 steps,
+  and id_changes = 0 across the whole 240-step matrix.
+
+--- (c) IF the list did change, do lanes reshuffle? ---
+
+  YES - they reshuffle for every survivor, immediately, because idx is a
+  position in a list that just got shorter. This is not inference; the brief
+  asked for a traced call sequence, so here is a live one.
+
+  outputs/_lane_probe_perturb.py: Scenario C shape, 5 UAV, 2 trackers +
+  3 searchers, wind east, seed 101. Run 80 steps, then demote the MIDDLE
+  searcher (2503) exactly the way GlobalExecutor would - set
+  managed_uav_states['2503'].role = "fire_tracker" and mirror it into
+  uav_resource_model - then re-read the lanes with no step in between:
+
+     [t=80] BEFORE the loss        ids=['2502','2503','2504']
+        uav 2502 lane=y[0..15] width=16 obs_frac=0.682
+        uav 2503 lane=y[16..32] width=17 obs_frac=0.991
+        uav 2504 lane=y[33..49] width=17 obs_frac=1.000
+
+     >>> DEMOTED searcher 2503 to fire_tracker at t=80
+
+     [t=80] IMMEDIATELY AFTER (before any step)   ids=['2502','2504']
+        uav 2502  y[0..15]  ->  y[0..24]    RESHUFFLED
+        uav 2504  y[33..49] ->  y[25..49]   RESHUFFLED
+
+  Both survivors moved. Neither kept the lane it was assigned at first
+  computation. The orphaned band y[16..32] was split between them: 2502 gained
+  [16..24], 2504 gained [25..32].
+
+--- (d) discontinuity handling on reshuffle: is there any? ---
+
+  There is NONE, and this is the one genuinely untidy part of the current
+  behaviour - though see 1.3 for why it does not rise to a defect.
+
+  Per-searcher search state lives in simulation._wind_search_target_state,
+  keyed by uav_id only (_wind_search_state, line 444). It is never keyed by
+  lane and never invalidated when the lane changes. So on reshuffle the
+  survivor carries its entire accumulated state into a band it may never have
+  visited:
+
+     inherited territory (cells now owned that the owner never observed):
+        uav 2502 gained 450 cells, 8 of them never observed by anyone
+        uav 2504 gained 400 cells, 0 of them never observed by anyone
+
+     cached wind_state targets now OUT of the owner's lane:
+        uav 2502: 1/1 corridor targets out-of-lane, current_target_out=(24, 45)
+        uav 2504: 0/1 corridor targets out-of-lane
+
+     uav 2502 wind_state after: corridor_targets=1 idx=0
+                                current_target=(24.0, 45.0) saturated=25
+                                y_commit=north recent_targets=3
+
+  So: corridor_targets, corridor_index, current_target, saturated_until (25
+  entries), coverage_y_commit, recent_x_positions / recent_y_positions and the
+  dwell counters all survive the reshuffle untouched. Nothing resets. Coverage
+  itself is model-level (visibility_model), not per-searcher, so no coverage is
+  lost - only the searcher's private targeting state becomes stale.
+
+  In practice that staleness self-clears: a cached corridor target is dropped
+  when the searcher arrives or dwells (line 3890, _advance_corridor_index), and
+  a wind change clears corridor_targets outright (3778-3780). Running the probe
+  80 more steps past the loss:
+
+     [t=160]  uav 2502 obs_frac 0.682 (old lane, t=80) -> 0.918 (new lane, t=160)
+              uav 2504 obs_frac 1.000                  -> 1.000
+              ORPHANED lane y[16..32]: obs_frac 0.991  -> 1.000
+
+  The orphaned band did not decay; the widened lanes kept filling in.
+
+--------------------------------------------------------------------------------
+1.3  IS SUB-ITEM 1 AN ACTUAL BUG?
+--------------------------------------------------------------------------------
+
+  Test designed and run (the brief asked for a minimal one; two were run):
+
+  TEST 1 - outputs/_lane_probe_static.py
+    Instantiate the multi-searcher scenario, run it, then force each kind of
+    loss in turn on the live model and re-read the lanes:
+      E1  demote the FIRST searcher     -> ids 2 -> 1, lane becomes None
+      E2  demote the LAST searcher      -> ids 2 -> 1, lane becomes None
+      E2b demote all but one            -> n=1, lane None
+      E3  schedule.remove() the UAV     -> ids 2 -> 1, lane becomes None
+      E4  the partition arithmetic for every survivor subset
+
+  TEST 2 - outputs/_lane_probe_perturb.py
+    The same loss at n=3 (so survivors still partition), mid-run, with 80 steps
+    on either side, tracking per-lane coverage across the event. Quoted in 1.2c.
+
+  TEST 3 - exhaustive well-formedness sweep over the real function, spans 1..59
+    x n 2..11, checking for zero-width lanes, overlap, gaps and out-of-bounds
+    bands.
+
+  RESULTS
+
+  * The re-derived partition is always coherent. TEST 3 found ZERO cases of
+    overlap, ZERO gaps and ZERO out-of-bounds bands across all 580 combinations.
+    The only degenerate cases are min_width = 0, and they occur if and only if
+    n > span - i.e. more searchers than grid rows. On this 50x50 grid that needs
+    51+ searchers; the scenario presets top out at 5 UAV. Unreachable.
+
+  * Survivor bands after a loss are sensible, not pathological. From TEST 1 E4,
+    n=3 -> n=2:
+        ids ['1','2','3'] -> y[0..15] y[16..32] y[33..49]
+        remove '2'  ->  ['1','3'] -> y[0..24] y[25..49]   (both grow inward)
+        remove '1'  ->  ['2','3'] -> y[0..24] y[25..49]
+        remove '3'  ->  ['1','2'] -> y[0..24] y[25..49]
+    Every survivor set re-partitions the full span evenly. No searcher is ever
+    assigned two lanes; no lane is ever unowned.
+
+  * n dropping to 1 returns None, which _lane_allows_cell reads as "allow
+    everything" (line 369-370). The last searcher inherits the whole grid.
+    That is the correct degenerate behaviour, and it is the same code path the
+    default project matrix has always used.
+
+  * The loss cannot happen anyway. Per 1.2a/1.2b, no code path removes a UAV
+    from the schedule or rewrites a UAV role at runtime.
+
+  VERDICT ON SUB-ITEM 1:  (b) ALREADY HANDLED CORRECTLY.
+
+  And not "by accident" in the weak sense - the correctness comes from two
+  deliberate properties of the code: the `if idx == n - 1: hi = hi_bound` line
+  guarantees full coverage under floor division for any n, and the `n <= 1 ->
+  None` early return gives the right degenerate case. Recomputing from live
+  state rather than caching an index is what makes the partition self-healing.
+
+  The one thing a future fix could add is discontinuity handling on reshuffle
+  (1.2d): clearing the stale per-UAV corridor_targets / current_target /
+  saturated_until when a searcher's lane changes. That is a nice-to-have, it is
+  measured to self-clear within tens of steps, and it is dead code until
+  something can actually change a role. It should NOT be built before sub-item 2
+  or 3 - and it should not be built at all until a role-change path exists to
+  exercise it.
+
+  Caveat, stated plainly: because no runtime role change exists, sub-item 1
+  cannot be measured under the real system - only under hand-forced mutation,
+  which is what was done here. If a future change wires
+  global_adaptation_generator's role options through as a per-UAV dict (the
+  missing link is at global_mission_planner.py:238 - it wants a dict and gets a
+  string), sub-item 1 becomes live and 1.2d's stale-state cleanup becomes worth
+  revisiting.
+
+--------------------------------------------------------------------------------
+1.4  A REAL DEFECT FOUND EN ROUTE: THE LANE FILTER IS OVERRIDDEN DOWNSTREAM
+--------------------------------------------------------------------------------
+  This is not one of the three planned sub-items. It was found while confirming
+  where _lane_allows_cell is applied, and it materially affects all three.
+
+  _compute_wind_aware_search_target ends (line 4020) with:
+
+      return _finalize_coverage_target(
+          best_target, wind_state, x_min=x_min, y_min=y_min, y_max=y_max,
+          x_max=x_max, ax=ax, ay=ay, fire_cells=fire_cells,
+          smoke_cells=smoke_cells, step_index=step_index,
+      )
+
+  _finalize_coverage_target (def 1051) takes no lane, never calls
+  _searcher_crosswind_lane, and rewrites both coordinates:
+
+    * lines 1125-1131, NOT gated by coverage_active:
+
+          commit = wind_state.get("coverage_y_commit")
+          if commit in ("north", "south"):
+              forced_y = _coverage_y_commit_target_y(wind_state, y_min, y_max)
+              if commit == "north" and forced_y is not None:
+                  ty = max(float(forced_y), ty)
+              elif commit == "south" and forced_y is not None:
+                  ty = min(float(forced_y), ty)
+
+      _coverage_y_commit_target_y (831) returns y_max - 4 = 45 for "north".
+      Under EAST/WEST wind the lane axis IS y, so this clamps the target
+      straight out of the lane.
+
+    * lines 1080-1119, gated by coverage_active: the west/east sweep clamps
+      tx to safe_x_min+6 = 8 or safe_x_max-6 = 41. Under NORTH/SOUTH wind the
+      lane axis is x, so these do the same thing on the other axis.
+
+  AND THE LANE CAUSES THE LATCH. _coverage_y_lower_camping (774) flags a
+  searcher whose recent y positions never exceed upper_min + 6 = 31. A searcher
+  restricted to lane y[0..24] can NEVER exceed 24, so it is permanently
+  "camping" -> coverage_y_commit = "north". Clearing it requires
+  _coverage_y_commit_penetrated (797), i.e. y >= y_max - 6 = 43 - also
+  unreachable inside its own lane. The latch is permanent by construction.
+
+  There is a second-order consequence inside the candidate loops themselves:
+  sites A and B apply the lane filter AND, under coverage_active, the commit
+  filter (`if commit == "north" and cy < upper_y_min: continue`, 3437/3607, plus
+  the y_force_min >= 45 test). For a lower-lane searcher those two predicates
+  are mutually exclusive, so the candidate set is empty -> force_sweep -> the
+  target comes from a different path entirely.
+
+  MEASURED - outputs/_lane_probe_violation.py, Scenario C shape, 5 UAV,
+  3 trackers + 2 searchers, seed 101, 120 steps, wrapping
+  _compute_wind_aware_search_target and testing each emitted target against the
+  emitter's own lane:
+
+    WIND EAST (lane axis = y)
+      uav 2503  lane=y[0..24]
+         emissions=132  targets_outside_own_lane=97 (73.5%)
+         coverage_y_commit histogram: {None: 5, 'north': 129}
+         first y_commit latch at step 4 -> 'north'
+         distinct out-of-lane target y values: [45.0]      <-- y_max - 4
+      uav 2504  lane=y[25..49]
+         emissions=126  targets_outside_own_lane=0 (0.0%)
+         (its lane happens to contain y=45, so the clamp is invisible here)
+      steps where two searchers held the SAME target: 35 / 119
+         e.g. step=80 {'2503': (24.0, 45.0), '2504': (24.0, 45.0)}
+
+    WIND NORTH (lane axis = x)
+      uav 2503  lane=x[0..24]   out-of-lane 26/127 (20.5%)
+         distinct out-of-lane target x values: [41.0]      <-- safe_x_max - 6
+      uav 2504  lane=x[25..49]  out-of-lane 40/123 (32.5%)
+         distinct out-of-lane target x values: [8.0, 24.0] <-- safe_x_min + 6
+      steps where two searchers held the SAME target: 12 / 119
+
+  Interpretation. Lane partitioning is doing real work - fix7's 7-of-8 win is
+  not in question, and the upper-lane searcher is largely unaffected - but on
+  east/west wind the lower-lane searcher spends roughly three quarters of its
+  emissions chasing a point it is not supposed to own, frequently the same point
+  its neighbour is chasing. Any adaptive reallocation layered on top of lanes
+  will inherit this: work stealing cannot tell "my lane is exhausted" from "my
+  lane was overridden", and uncertainty-weighted widths will be applied to a
+  boundary the finalizer then ignores.
+
+  Secondary observation, same probe: the latch fired at step 4 even though
+  COVERAGE_Y_SWEEP_MIN_STEPS = 15. recent_y_positions is appended more than once
+  per step (_update_unresolved_coverage_state at 3726 and
+  _record_victim_searcher_x_band at 4014 and 4059), so the 15-sample window
+  fills in ~4 steps. The "15 steps" the constant name promises is really ~4.
+
+  Not fixed here - this is a diagnosis round. Flagged as the highest-value
+  target found.
+
+================================================================================
+PART 2 - THE COST OF STATIC ASSIGNMENT
+================================================================================
+
+--------------------------------------------------------------------------------
+2.4  INSTRUMENTED MULTI-SEARCHER MATRIX
+--------------------------------------------------------------------------------
+  Command: outputs/_lane_matrix_driver.sh (sequential, per the runtime note that
+  parallel combos exhaust memory on this machine). Wall clock 13:40 -> 16:29,
+  ~21 min per combo.
+
+  Matrix: Scenario C (5 UAV, 3 fire_trackers + 2 victim_searchers) and
+  Scenario D (4 UAV, 2 + 2), all four winds, seeds 101/202/303/404/505,
+  240 steps. 40 runs, 80 searcher-lanes, 140 victims. Role split forced with
+  fix5's --fire-trackers / --victim-searchers, so n=2 on every run and the lane
+  code is exercised on all 40 - which the default project matrix never does.
+
+  PER-COMBO (means over 5 seeds)
+
+  combo      resc dead unre  nd | lane obs_frac (mean)  spread | lane-compliance | id_chg
+  ---------------------------------------------------------------------------------------
+  C_east      1.8  1.2  0.0 0.0 | 2503=0.975 2504=0.963  0.043 | 0.94 / 0.70     | 0
+  C_west      2.4  0.6  0.0 0.0 | 2503=0.938 2504=0.977  0.039 | 0.84 / 0.42     | 0
+  C_north     2.2  0.8  0.0 0.0 | 2503=0.957 2504=0.982  0.031 | 0.43 / 0.69     | 0
+  C_south     2.2  0.6  0.2 0.2 | 2503=0.985 2504=0.999  0.014 | 0.53 / 0.52     | 0
+  D_east      2.0  2.0  0.0 0.0 | 2502=0.953 2503=0.985  0.054 | 0.75 / 0.68     | 0
+  D_west      3.2  0.8  0.0 0.0 | 2502=0.987 2503=0.987  0.024 | 0.68 / 0.51     | 0
+  D_north     2.6  1.4  0.0 0.0 | 2502=0.961 2503=0.978  0.036 | 0.53 / 0.69     | 0
+  D_south     2.4  1.0  0.6 0.2 | 2502=0.934 2503=0.994  0.061 | 0.53 / 0.65     | 0
+
+  obs_frac  = fraction of the searcher's OWN lane ever observed by run end,
+              measured as membership in
+              visibility_model.state.last_seen_timestamp_per_cell.
+  spread    = per-run max(obs_frac) - min(obs_frac), averaged over the 5 seeds.
+  compliance= fraction of steps the searcher's own position was inside its own
+              lane.
+  id_chg    = mid-run changes to the searcher id list (i.e. lane reshuffles).
+
+--- (a) PER-SEARCHER FINAL obs_frac: THE IMBALANCE IS NOT THERE ---
+
+  Pooled over all 80 searcher-lanes:
+      min 0.733   mean 0.972   median 0.988   max 1.000
+      lanes below 0.90 obs_frac:   2 / 80
+      lanes below 0.80 obs_frac:   1 / 80
+      runs with spread > 0.10:     2 / 40
+      mean per-run spread:         0.038
+      max  per-run spread:         0.255
+
+  This is a NEGATIVE result for sub-item 2 as motivated. The brief's signature -
+  "a lane that's 40% covered while its neighbour's is 95%" - occurs once in 40
+  runs, and never as extremely as 40/95. Both lanes reach near-total ever-seen
+  coverage on 38 of 40 runs. Static partitioning is not leaving ever-observed
+  coverage on the table.
+
+  The single outlier is worth reading closely, because it argues against the
+  hypothesis rather than for it:
+
+     D_south seed 202   lanes 2502=x[0..24]  2503=x[25..49]
+        t=40   2502 obs=0.466 unc=0.621 never=668 | 2503 obs=0.562 unc=0.672
+        t=120  2502 obs=0.542 unc=0.730 never=572 | 2503 obs=0.964 unc=0.600
+        t=200  2502 obs=0.633 unc=0.535 never=459 | 2503 obs=0.985 unc=0.474
+        final  2502 obs=0.733 unc=0.694 never=334 | 2503 obs=0.988 unc=0.570
+        compliance 2502=0.49  2503=0.83
+        outcome rescued=3 dead=0 unreachable=1  causes=victim_1:never_detected
+
+     Lane 2502 genuinely starved - 334 cells never seen at run end, and it is
+     the one run where work stealing would have had something to do. But the
+     victim that was missed (victim_1, pos x=25.0) sits in 2503's lane - the
+     lane that reached 0.988 - right on the boundary. The starved lane's own
+     victim (victim_2, x=10.0) was rescued. So even in the worst case, the
+     coverage deficit did not cause the miss.
+
+--- (b) DID ANY LANE'S ASSIGNMENT CHANGE MID-RUN? ---
+
+  NO. id_change_events is empty on all 40 runs, every combo, every seed. The
+  searcher id list returned by resolve_victim_searcher_uav_ids was byte-identical
+  at every one of the 240 steps of every run, so no lane boundary ever moved.
+
+  This is the measured confirmation of the PART 1 trace: with no code path able
+  to remove a UAV or rewrite a role, the "static" in static partitioning is not
+  a design choice that could be revisited at runtime - it is a fact about the
+  current system. There is consequently no mid-run coverage discontinuity to
+  report, because there was no mid-run change to cause one.
+
+--- (c) never_detected PER LANE ---
+
+  Pooled: 140 victims -> 94 rescued, 42 dead, 4 unreachable, of which
+  2 never_detected. Both never_detected events landed in the same seed (202):
+
+     C_south seed=202  victim_1 pos=[13.8, 44.5]  lane owner 2503 (x[0..24])
+     D_south seed=202  victim_1 pos=[25.0, 47.5]  lane owner 2503 (x[25..49])
+
+  Two events is not a distribution. What can be said:
+    * neither is in a starved lane. In D_south/202 the owner lane finished at
+      obs_frac 0.988; in C_south/202 at 0.985.
+    * both sit at high y (44.5, 47.5) under SOUTH wind, i.e. deep in the
+      upwind edge band, and D_south/202's victim sits exactly on the x=25 lane
+      boundary.
+    * misses are NOT concentrated in the lane of a slower searcher, because no
+      searcher was slower in a way that mattered and no searcher died or changed
+      role (see (b)).
+
+  Full outcome-by-lane attribution (pooled over 5 seeds per combo):
+    C_east   2503 {dead 1, rescued 4}      2504 {dead 5, rescued 5}
+    C_west   2503 {dead 1, rescued 4}      2504 {dead 2, rescued 8}
+    C_north  2503 {dead 3, rescued 7}      2504 {dead 1, rescued 4}
+    C_south  2503 {dead 3, rescued 6, never_detected 1}   2504 {rescued 5}
+    D_east   2502 {dead 2, rescued 3}      2503 {dead 8, rescued 7}
+    D_west   2502 {dead 1, rescued 4}      2503 {dead 3, rescued 12}
+    D_north  2502 {dead 1, rescued 4}      2503 {dead 6, rescued 9}
+    D_south  2502 {dead 2, rescued 3}      2503 {dead 3, rescued 9,
+                                                 geographically_isolated 2,
+                                                 never_detected 1}
+  The lane victim counts are uneven only because the victim ring is
+  deterministic and does not distribute evenly across a mid-grid cut - e.g. in
+  D_east three of four victims fall in 2503's half. That is a property of the
+  scenario layout, not of the searchers.
+
+--- (d) WHERE THE REAL IMBALANCE IS: FRESHNESS, NOT EVER-SEEN ---
+
+  The ever-observed metric saturates, but the uncertainty metric does not. Gap
+  between the two lanes' uncertain_frac (from
+  VisibilityModel.get_uncertain_regions()), pooled over all 40 runs:
+
+     t=40    mean 0.190   median 0.172   max 0.576
+     t=120   mean 0.202   median 0.186   max 0.506
+     t=200   mean 0.208   median 0.202   max 0.504
+     final   mean 0.192   median 0.141   max 0.552
+
+  A ~20-point standing gap in the fraction of each lane that is stale, smoke-
+  obscured or never-seen, present at every checkpoint and not shrinking. Per
+  combo it also has direction: on east/west wind it GROWS with time
+  (C_east 0.065 -> 0.157 -> 0.316; D_east 0.085 -> 0.207 -> 0.254), on north
+  wind it SHRINKS (C_north 0.456 -> 0.174 -> 0.165; D_north 0.366 -> 0.213 ->
+  0.215).
+
+  So the cost of static assignment is real but it is a REVISIT-RATE cost, not a
+  never-covered cost. One lane's information decays while the other's is kept
+  fresh. That is a weaker case for "work stealing when my lane is exhausted"
+  (lanes are never exhausted in the never-seen sense) and a stronger case for
+  balancing on staleness.
+
+--- (e) SEARCHERS ALREADY LEAVE THEIR LANES CONSTANTLY ---
+
+  Pooled lane compliance over 80 searcher-runs:
+     min 0.083   mean 0.631   median 0.640   max 0.988
+     searcher-runs spending >40% of steps OUTSIDE their own lane:  32 / 80
+
+  A searcher is outside its assigned band 37% of the time on average, and in
+  the worst case 92% of the time. This is the position-level corroboration of
+  finding 1.4: the lane is enforced on candidate cells but not on the emitted
+  target, so the searcher is routinely commanded out of its own band.
+
+  Consequence for the roadmap: there is already substantial unmanaged cross-lane
+  movement. Adding work stealing on top of a partition that is only ~63% honoured
+  would be building a deliberate mechanism on top of an accidental one. Fix 1.4
+  first, re-measure compliance, and only then decide whether stealing is needed.
+
+--- SUMMARY OF PART 2 #4 ---
+
+  * Static assignment is confirmed static: 0 lane changes in 40 runs.
+  * It is NOT leaving ever-observed coverage on the table: 78 of 80 lanes finish
+    above 0.90 obs_frac; mean inter-lane spread 0.038.
+  * It IS leaving freshness on the table: ~0.19-0.21 mean inter-lane uncertainty
+    gap, stable across the whole run and growing on east/west wind.
+  * never_detected is too rare in this matrix (2 of 140 victims) to attribute to
+    lane behaviour, and the two events that occurred were in well-covered lanes.
+  * The partition is only honoured 63% of the time at the position level, which
+    is a defect (1.4) rather than a property of static allocation.
+
+--------------------------------------------------------------------------------
+2.5  observation_status_map AND get_uncertain_regions - ACTUAL SHAPE/CONTENTS
+--------------------------------------------------------------------------------
+  Source: outputs/_lane_probe_uncertainty.py, Scenario C shape, 5 UAV,
+  3 trackers + 2 searchers, wind east, seed 101, 240 steps, sampled at
+  t = 0 / 40 / 120 / 200 / 240. Lanes fixed at step 0:
+  {'2503': 'y[0..24]', '2504': 'y[25..49]'}.
+
+  --- SHAPE (measured, not read off the dataclass) ---
+
+  VisibilityModel.state.observation_status_map
+     dict, len = 2500 (dense - every cell, always)
+     key    : tuple, e.g. (26, 21)   -- plain ints, (x, y)
+     value  : ObservationStatus enum, e.g.
+              <ObservationStatus.NEVER_SEEN: 'never_seen'>, .value = 'never_seen'
+     key space: every (x, y) with x in 0..HEIGHT-1, y in 0..WIDTH-1, created by
+              initialize_grid(width=HEIGHT, height=WIDTH)
+              (wildfire_model.py:178). This matches _grid_bounds' (x_min, x_max,
+              y_min, y_max) = (0, HEIGHT-1, 0, WIDTH-1) exactly, so lane bands
+              and map keys are in the same coordinate frame - cx indexes the
+              same axis as key[0].
+     values seen: never_seen, observed_no_fire, observed_fire, smoke_obscured,
+              stale_information (all five of the enum).
+     NOTE: it is VisibilityModel.state.observation_status_map, not
+           VisibilityModel.observation_status_map. Existing readers in this file
+           already go through .state (e.g. line 525).
+
+  VisibilityModel.get_uncertain_regions(confidence_threshold=0.4,
+                                        staleness_threshold=10.0)
+     set of tuple, len 2500 at t=0
+     membership rule (visibility_model.py:219-242): status in
+     {SMOKE_OBSCURED, NEVER_SEEN, STALE_INFORMATION} OR confidence < 0.4 OR
+     staleness > 10.0. Recomputed on every call and cached back into
+     state.unknown_or_uncertain_regions.
+     NOTE: get_uncertain_regions is a method on VisibilityModel, NOT on
+     GlobalMonitor. GlobalMonitor only calls it (global_monitor.py:96) and folds
+     the result into a summary dict. Sub-item 3 should call the VisibilityModel
+     directly.
+
+  --- CONTENTS: IS UNCERTAINTY MASS UNEVEN ACROSS THE CHOSEN SPLIT? ---
+
+   t   global status histogram                                  uncertain  ever-obs
+   0   never_seen 2500                                          2500 (100%)     0
+  40   obs_no_fire 1310 / never 638 / smoke 165 / fire 74 /
+       stale 313                                                1185 (47.4%) 1862
+ 120   smoke 616 / obs_no_fire 865 / never 166 / fire 141 /
+       stale 712                                                1527 (61.1%) 2334
+ 200   obs_no_fire 1311 / smoke 408 / stale 663 / never 62 /
+       fire 56                                                  1192 (47.7%) 2438
+ 240   obs_no_fire 903 / stale 1082 / smoke 356 / never 61 /
+       fire 98                                                  1560 (62.4%) 2439
+
+  Per lane (cells=1250 each):
+
+    t=0     2503 y[0..24]   never_seen 1250  stale    0  uncertain 1250 (100.0%)
+            2504 y[25..49]  never_seen 1250  stale    0  uncertain 1250 (100.0%)
+    t=40    2503            never_seen  372  stale  271  uncertain  652 ( 52.2%)
+            2504            never_seen  266  stale   42  uncertain  533 ( 42.6%)
+    t=120   2503            never_seen   90  stale  177  uncertain  515 ( 41.2%)
+            2504            never_seen   76  stale  535  uncertain 1012 ( 81.0%)
+    t=200   2503            never_seen    0  stale  185  uncertain  338 ( 27.0%)
+            2504            never_seen   62  stale  478  uncertain  854 ( 68.3%)
+    t=240   2503            never_seen    0  stale  447  uncertain  541 ( 43.3%)
+            2504            never_seen   61  stale  635  uncertain 1019 ( 81.5%)
+
+  --- WOULD UNCERTAINTY-WEIGHTED ALLOCATION HAVE CHOSEN A DIFFERENT SPLIT? ---
+
+  Computed directly: sum uncertainty mass per row of the lane axis, then place
+  the n-1 cuts at equal cumulative mass, and compare to the even-split cut.
+
+     t=0    even split cut = [24]   equal-MASS cut = [24]   IDENTICAL
+     t=40   even split cut = [24]   equal-MASS cut = [18]
+     t=120  even split cut = [24]   equal-MASS cut = [33]
+     t=200  even split cut = [24]   equal-MASS cut = [37]
+     t=240  even split cut = [24]   equal-MASS cut = [33]
+
+  This is the decisive number for sub-item 3 AS SPECIFIED. The brief describes
+  it as weighting the INITIAL lane width by staleness / never-seen mass. At
+  step 0 the map is uniformly NEVER_SEEN (2500/2500) and the staleness map is
+  uniformly 0.0, so every row carries identical mass and the equal-mass cut is
+  exactly the even cut. Uncertainty-weighted INITIAL allocation is a no-op -
+  it cannot pick a different boundary than the one already in the code, because
+  at t=0 there is no information to weight by.
+
+  The imbalance is real but it is a RUNTIME phenomenon, and it inverts: at t=40
+  the lower lane is the uncertain one (52.2% vs 42.6%, cut wants to move down to
+  18), and from t=120 onward the upper lane is (81.0% vs 41.2%, cut wants to
+  move up to 33-37). A single re-cut at any fixed time would be wrong at some
+  other time. Note also that from t=200 the driver is stale_information and
+  smoke_obscured, not never_seen - lane 2503 reaches never_seen = 0 while its
+  uncertainty climbs back from 27.0% to 43.3% through staleness alone.
+
+  IMPLICATION: sub-item 3 should be re-scoped from "uncertainty-weighted initial
+  allocation" to "periodic uncertainty-weighted RE-allocation", or dropped in
+  favour of sub-item 2. Work stealing addresses the same imbalance reactively
+  and does not need to guess a schedule.
+
+================================================================================
+PART 3 - INTEGRATION POINTS (no implementation)
+================================================================================
+
+--------------------------------------------------------------------------------
+3.1  SUB-ITEM 2 - WORK STEALING
+--------------------------------------------------------------------------------
+
+  WHERE A SEARCHER WOULD CHECK "IS MY LANE EXHAUSTED"
+
+  This state already exists explicitly - no new signal needs inventing. Inside
+  _compute_wind_aware_search_target there are three sites that mean exactly
+  "my lane produced nothing":
+
+     3940-3942   if int(wind_state.get("corridor_index", 0) or 0) >= len(corridor):
+                     wind_state["force_sweep"] = True
+                     return None
+     3944-3946   if not corridor:
+                     wind_state["force_sweep"] = True
+                     return None
+     3948-3951   index = int(wind_state.get("corridor_index", 0) or 0)
+                 if index >= len(corridor):
+                     wind_state["force_sweep"] = True
+                     return None
+
+  `corridor` here is the return of _generate_corridor_waypoints, whose ONLY
+  hard spatial filter beyond hazards is the lane (3604). An empty corridor is
+  therefore, definitionally, an exhausted-or-blocked lane. The natural hook is
+  a helper called at these three points, before `return None`, that retries
+  _generate_corridor_waypoints with a neighbour's lane instead of its own.
+
+  Cheaper and more precise alternative hook: _generate_corridor_waypoints
+  itself (3538). It already receives `simulation`, `uav_id`, `wind_state` and
+  the grid bounds, and it computes the lane at 3596. Widening the lane there -
+  fall back from own-lane to own-lane-plus-neighbour when the own-lane pass
+  yields zero scored candidates - keeps the change inside one function and
+  leaves the caller untouched.
+
+  WHERE IT WOULD LOOK UP A NEIGHBOUR'S REMAINING UNOBSERVED CELLS
+
+  A shared coverage set ALREADY EXISTS. Nothing needs adding to wind_state or
+  a new model-level structure. Three usable sources, in order of preference:
+
+   (i) simulation.visibility_model.state - the authoritative shared map.
+         .observation_status_map      dict[(x,y)] -> ObservationStatus, dense
+         .last_seen_timestamp_per_cell dict[(x,y)] -> float; membership alone is
+                                       an exact "has this cell EVER been seen"
+                                       test (this is what the probes used)
+         .staleness_map               dict[(x,y)] -> float, inf for never-seen
+         .unknown_or_uncertain_regions set[(x,y)], refreshed by
+                                       get_uncertain_regions()
+       It is model-level and unattributed - it says which cells are unobserved,
+       not who was supposed to observe them. Combined with
+       _searcher_crosswind_lane(simulation, neighbour_id, ...) that is exactly
+       "the neighbour's remaining unobserved cells", with no new state at all.
+
+  (ii) simulation.uav_visit_counts - dict[(uav_id, x, y)] -> int, initialised at
+       wildfire_model.py:264, incremented at 719. Per-UAV, so this DOES attribute
+       coverage. Already read in this file by the helper at line 505
+       (_uav_visit_count, used by the scorer). Use this to answer "has the
+       neighbour actually been there", as opposed to "has anyone seen it".
+
+ (iii) wind_state["saturated_until"] - per-UAV dict of recently-targeted cells
+       (written at 1418 and 1518, read by _is_saturated_cell at 575). This is
+       private to each searcher and is the reason a lane goes empty. A stealing
+       searcher must NOT inherit the neighbour's saturation set, or it will
+       decline the same cells for the same reason.
+
+  STATE IT WOULD WRITE
+       wind_state["corridor_targets"] / ["corridor_index"] as today, plus one
+       new marker (e.g. wind_state["stolen_from"]) so the searcher can hand the
+       band back when its own lane refills, and so the neighbour does not also
+       target the stolen band. Both live in the existing per-UAV
+       simulation._wind_search_target_state dict; no schema change elsewhere.
+
+  BLOCKER TO FIX FIRST: 1.4. Today force_sweep is reached partly because the
+  lane filter and the coverage_y_commit filter are mutually exclusive for a
+  lower-lane searcher, not because the lane is genuinely exhausted. Work
+  stealing hooked to force_sweep would fire on the wrong signal.
+
+  MOTIVE CHECK (added after the matrix ran): the measurement does not support
+  building this as specified. Lanes reach near-total ever-seen coverage on 38 of
+  40 runs, so "a searcher whose lane is exhausted idles" is close to a
+  non-event. If a rebalancing mechanism is wanted, the measured imbalance is in
+  STALENESS (PART 2 #4d), and the trigger would be "my lane's uncertain_frac is
+  materially below my neighbour's" - read from
+  simulation.visibility_model.get_uncertain_regions() intersected with each
+  lane's cells - rather than "my candidate list came back empty". That check
+  belongs where the lane is computed (3596), not at the force_sweep sites,
+  because it must fire while the lane is still producing candidates.
+
+--------------------------------------------------------------------------------
+3.2  SUB-ITEM 3 - UNCERTAINTY-WEIGHTED ALLOCATION
+--------------------------------------------------------------------------------
+
+  DOES THE CALL SIGNATURE NEED TO CHANGE?   NO.
+
+  The brief assumes _searcher_crosswind_lane "computes boundaries from n and idx
+  alone with no model access". It does compute from n and idx alone, but it is
+  NOT without model access - its first parameter is already the model:
+
+     def _searcher_crosswind_lane(simulation, uav_id, wind_direction,
+                                  x_min, x_max, y_min, y_max)
+
+  `simulation` is the WildFireModel itself (_simulation_from_runtime, 377-380,
+  returns runtime_models["simulation_model"], set to `self` at
+  wildfire_model.py:1679). It is already used inside the function, at line 342,
+  for resolve_victim_searcher_uav_ids(simulation). So:
+
+     simulation.visibility_model.state.observation_status_map
+     simulation.visibility_model.state.staleness_map
+     simulation.visibility_model.get_uncertain_regions()
+
+  are all reachable from inside the existing signature, with no change to either
+  call site (3417, 3596).
+
+  IS THE DATA AVAILABLE AT THAT POINT IN THE CALL CHAIN?   YES.
+
+  Both call sites sit inside _pick_global_coverage_escape_target /
+  _generate_corridor_waypoints, both of which are called from
+  _compute_wind_aware_search_target after `simulation = _simulation_from_runtime
+  (runtime_models)` at line 3708. runtime_models also carries
+  "visibility_model" directly (wildfire_model.py:1670) if a caller would rather
+  pass that than reach through the model - both call sites already have
+  `runtime_models` in scope too.
+
+  The idiom to follow is already in this file: _observation_coverage_penalty
+  (512) and _never_seen_proximity_bonus (540) both do
+  getattr(getattr(visibility, "state", None), "observation_status_map", None)
+  and tolerate a missing model. A lane weighter should defend the same way and
+  fall back to the even split.
+
+  WHAT TO WRITE:  nothing. Lanes are derived, not stored. If a weighted split
+  needs to be stable across steps (it does - recomputing a mass-weighted cut
+  every step would make the boundary jitter with the smoke), it needs a cache,
+  and the only per-run store available is simulation._wind_search_target_state,
+  which is per-UAV. A shared cut list would need either a new
+  simulation-level attribute or a well-known key inside that dict.
+
+  RECOMMENDATION: do not build this as specified. Per 2.5, at t=0 the weighting
+  input is uniform and the weighted cut is provably identical to the even cut.
+  Re-scope to periodic re-allocation, or fold into sub-item 2.
+
+--------------------------------------------------------------------------------
+3.3  SUB-ITEM 1 - SEARCHER-LOSS HANDLING
+--------------------------------------------------------------------------------
+
+  IS A FIX NEEDED?  No. Verdict (b) - see 1.3.
+
+  The partition is self-healing by construction, provably well-formed for every
+  reachable n, and there is no code path that can trigger the loss in the first
+  place. Building a lane-reassignment or lane-preservation rule now would add
+  unreachable code.
+
+  IF it ever becomes reachable (i.e. if role changes get wired through
+  global_mission_planner.py:238), the ONE thing worth adding is discontinuity
+  handling, and it goes in exactly one place:
+
+     _wind_search_state (line 444) - the per-UAV state factory. It already
+     normalises the dict on every access. Stamp the lane onto the state
+     (e.g. state["lane"]) and, when the freshly computed lane differs from the
+     stamped one, clear the now-stale targeting fields: "corridor_targets",
+     "corridor_index", "current_target", "saturated_until", "dwell_count",
+     "recent_targets", "recent_y_positions". Everything needed is already in
+     scope there - it receives `simulation` and `uav_id`, which is exactly what
+     _searcher_crosswind_lane needs.
+
+     Do NOT clear coverage state; that is model-level in visibility_model and
+     is shared, so it correctly survives.
+
+  A lane-PRESERVATION rule (pin each searcher to the band it first got) is the
+  wrong choice: measured at 1.2c, reshuffling is what lets the survivors absorb
+  the orphaned band. Preservation would leave y[16..32] unowned.
+
+================================================================================
+VERDICTS
+================================================================================
+  SUB-ITEM 1 (searcher loss / role change)
+      (b) ALREADY HANDLED CORRECTLY. The partition is recomputed from live
+      state on every call, is provably disjoint/gapless/in-bounds for every
+      reachable n, degrades correctly to None at n=1, and no runtime path can
+      remove a UAV or change its role today. The only gap is stale per-UAV
+      targeting state after a reshuffle (1.2d), which is measured to self-clear
+      and is unreachable in the current system. No fix warranted.
+
+  SUB-ITEM 2 (work stealing)
+      Cleanest hook, weakest measured motive. "Lane exhausted" already exists
+      as force_sweep at 3941/3945/3950, and a shared coverage set already exists
+      in visibility_model.state plus uav_visit_counts - so it is cheap to build.
+      But the matrix says lanes are essentially never exhausted in the never-seen
+      sense (78/80 lanes above 0.90 obs_frac; mean spread 0.038; the one starved
+      lane's own victim was rescued while the miss occurred in the neighbour's
+      well-covered lane). DEFER. If the imbalance is worth acting on it is the
+      ~0.20 standing STALENESS gap (PART 2 #4d), which is a different trigger
+      than "my lane is exhausted" and would need a different hook - most likely
+      inside _generate_corridor_waypoints' lane computation at 3596 rather than
+      at the force_sweep sites.
+      And in any case: fix 1.4 first, or stealing fires on a false signal. The
+      partition is only honoured 63% of the time at the position level today.
+
+  SUB-ITEM 3 (uncertainty-weighted allocation)
+      As specified - initial widths - it is a provable no-op: at t=0 the
+      uncertainty map is uniform and the equal-mass cut equals the even cut
+      exactly. Needs re-scoping to periodic re-allocation, or dropping.
+      No signature change is needed either way; `simulation` is already a
+      parameter and reaches visibility_model.
+
+  UNPLANNED FINDING (highest value)
+      _finalize_coverage_target (1051) is lane-unaware and overrides the lane
+      axis on both wind axes, and lane confinement is itself what latches the
+      override. 73.5% out-of-lane emissions and 35/119 duplicate-target steps
+      on east wind; 63% mean lane compliance at the position level across the
+      whole 40-run matrix. Fix this before layering anything adaptive on lanes.
+
+  RECOMMENDED ORDER
+      1. Fix 1.4 (lane-aware _finalize_coverage_target, or suppress the
+         coverage_y_commit / x-sweep clamps on the lane axis when a lane is
+         active). This is the only item with a measured defect behind it.
+      2. Re-run this matrix. Lane compliance should rise well above 0.63 and the
+         duplicate-target steps should go to ~0. Compare rescued/dead against the
+         numbers in PART 2 #4 - they are directly comparable, same seeds, same
+         steps, same role split.
+      3. Only then revisit adaptive reallocation, and target staleness rather
+         than exhaustion.
+      Sub-items 1 and 3 as written should not be built.
+
+  WHAT WAS NOT DONE / KNOWN LIMITS
+      * Sub-item 1 could not be exercised through the real system, because no
+        runtime role-change or UAV-removal path exists. It was tested by
+        hand-forcing the mutation on a live model. That is stated in 1.3 and is
+        why the verdict is (b) and not (c) - the tests that could be run all
+        passed, and the ones that could not be run are unreachable code.
+      * never_detected was too rare in this matrix (2 of 140 victims) to support
+        per-lane attribution. Establishing whether misses concentrate by lane
+        would need either many more seeds or a scenario tuned to produce misses.
+      * No fix was applied and no simulation logic was modified. Everything in
+        outputs/ added by this round is read-only instrumentation.
+
+================================================================================
+ARTEFACTS
+================================================================================
+  outputs/_lane_probe_static.py        lane stability + forced loss (E1-E4)
+  outputs/_lane_probe_perturb.py       mid-run n=3 -> n=2 loss, coverage either side
+  outputs/_lane_probe_violation.py     emitted-target lane compliance (finding 1.4)
+  outputs/_lane_probe_uncertainty.py   observation_status_map / uncertain-region dump
+  outputs/_lane_matrix.py              instrumented matrix runner
+  outputs/_lane_matrix_driver.sh       sequential 8-combo driver
+  outputs/_lane_matrix_summarize.py    matrix -> PART 2 #4 tables
+  outputs/lane_matrix/*.json           per-combo raw results
+  outputs/lane_matrix_run.log          matrix console log
+
+  Reproduce (from E:\Projects\SAS, PYTHONPATH=E:\Projects\SAS):
+    .venv\Scripts\python.exe outputs\_lane_probe_static.py east 101 60 5 2
+    .venv\Scripts\python.exe outputs\_lane_probe_perturb.py east 101 80 80 1
+    .venv\Scripts\python.exe outputs\_lane_probe_violation.py east 101 120 2
+    .venv\Scripts\python.exe outputs\_lane_probe_uncertainty.py east 101 240 2
+    bash outputs/_lane_matrix_driver.sh

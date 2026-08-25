@@ -1,0 +1,347 @@
+PART 1 - DIAGNOSIS: lane-unaware clamp in _finalize_coverage_target
+Branch claude/position-rename-and-hazard-revalidation @ f15a2e9 (== origin, verified)
+File: src_extension/adaptation/local_adaptation_generator.py
+
+================================================================
+1. THE TWO CLAMPS, QUOTED IN FULL, WITH RELEASE CONDITIONS
+================================================================
+
+--- (a) x-sweep clamp, _finalize_coverage_target lines 1080-1118 ---
+
+    coverage_active = _coverage_mode_active(wind_state)
+    if coverage_active:
+        tx = max(safe_x_min, min(safe_x_max, tx))
+        wind_label = str(wind_state.get("last_wind_direction") or "").strip().lower()
+        west_goal = float(safe_x_min + COVERAGE_SWEEP_BAND_MARGIN)
+        east_goal = float(safe_x_max - COVERAGE_SWEEP_BAND_MARGIN)
+        if wind_label == "west":
+            _mark_x_strip_progress(wind_state, safe_x_min, safe_x_max)
+            if (
+                _west_sweep_pending(wind_state, safe_x_min)
+                and ax is not None
+                and float(ax) > safe_x_min + 4
+            ):
+                tx = min(tx, west_goal)
+            elif (
+                _east_sweep_pending(wind_state, safe_x_max)
+                and _allow_east_force(wind_state)
+                and ax is not None
+                and float(ax) < safe_x_max - 4
+            ):
+                tx = max(tx, east_goal)
+        else:
+            # (long comment omitted here; body below is verbatim)
+            _mark_x_strip_progress(wind_state, safe_x_min, safe_x_max)
+            if (
+                _west_sweep_pending(wind_state, safe_x_min)
+                and ax is not None
+                and float(ax) > safe_x_min + 4
+            ):
+                tx = min(tx, west_goal)
+            elif (
+                _east_sweep_pending(wind_state, safe_x_max)
+                and ax is not None
+                and float(ax) < safe_x_max - 4
+            ):
+                tx = max(tx, east_goal)
+
+  RELEASE CONDITION (lines 176-195):
+
+    def _mark_x_strip_progress(wind_state, safe_x_min, safe_x_max):
+        if _west_strip_reached(wind_state, safe_x_min):
+            wind_state["west_strip_done"] = True
+        if _east_strip_reached(wind_state, safe_x_max):
+            wind_state["east_strip_done"] = True
+
+    def _west_sweep_pending(wind_state, safe_x_min):
+        if bool(wind_state.get("west_strip_done")):
+            return False
+        return not _west_strip_reached(wind_state, safe_x_min)
+
+  and _west_strip_reached / _east_strip_reached (lines 155-173) read
+  _coverage_x_span(wind_state) - the searcher's OWN recent x positions - and
+  compare them against the GLOBAL safe_x_min / safe_x_max:
+
+    return int(x_lo) <= int(safe_x_min) + COVERAGE_SWEEP_BAND_MARGIN + 4   # west
+    return int(x_hi) >= int(safe_x_max) - COVERAGE_SWEEP_BAND_MARGIN - 4   # east
+
+  => Release requires the AGENT to physically visit x <= safe_x_min+10
+     (or x >= safe_x_max-10). Nothing else clears it.
+
+--- (b) y-commit clamp, _finalize_coverage_target lines 1119-1131 ---
+
+    if int(wind_state.get("unresolved_victim_count", 0) or 0) > 0:
+        if ay is not None:
+            _update_coverage_y_commit(wind_state, y_min, y_max, float(ay))
+        else:
+            _update_coverage_y_commit(wind_state, y_min, y_max)
+    commit = wind_state.get("coverage_y_commit")
+    if commit in ("north", "south"):
+        forced_y = _coverage_y_commit_target_y(wind_state, y_min, y_max)
+        if commit == "north" and forced_y is not None:
+            ty = max(float(forced_y), ty)
+        elif commit == "south" and forced_y is not None:
+            ty = min(float(forced_y), ty)
+
+  TARGET VALUE (lines 831-840):
+    north -> y_max - COVERAGE_Y_COMMIT_TARGET_MARGIN  = y_max - 4  = 45
+    south -> y_min + COVERAGE_Y_COMMIT_TARGET_MARGIN  = y_min + 4
+
+  SET CONDITION (lines 811-829, _update_coverage_y_commit):
+    if commit already set:
+        if agent_y is not None and _coverage_y_commit_penetrated(...): clear
+        return
+    if _coverage_y_lower_camping(...):   commit = "north"
+    elif _coverage_y_upper_camping(...): commit = "south"
+
+    _coverage_y_lower_camping (774-782):
+        _, upper_min = _grid_y_half_split(y_min, y_max)     # GLOBAL half split
+        penetrate_y = upper_min + COVERAGE_SWEEP_BAND_MARGIN
+        tail = recent_y_positions[-COVERAGE_Y_SWEEP_MIN_STEPS:]
+        return bool(tail) and max(tail) < penetrate_y
+
+  RELEASE CONDITION (lines 795-809, _coverage_y_commit_penetrated):
+    north -> ay >= y_max - COVERAGE_Y_COMMIT_PENETRATE_MARGIN   (ay >= y_max-6)
+    south -> ay <= y_min + COVERAGE_Y_COMMIT_PENETRATE_MARGIN   (ay <= y_min+6)
+
+--- ANSWER TO Q1 ---
+CONFIRMED: neither clamp reads lane bounds. The signature (lines 1051-1064) is
+
+    def _finalize_coverage_target(target, wind_state, *, x_min, y_min, y_max,
+        x_max, ax, ay, fire_cells, smoke_cells, step_index)
+
+There is no `lane` parameter and no lane-derived value anywhere in the body.
+Every bound it uses - safe_x_min/safe_x_max (derived from x_min/x_max),
+y_min/y_max, _grid_y_half_split, the penetrate margins - is in GLOBAL grid
+coordinates. The function has no knowledge that a lane filter was ever applied
+upstream at :3431 or :3604.
+
+--- THE DEADLOCK, EXACTLY ---
+East/west wind => lane axis is "y" (_searcher_crosswind_lane, :351-357).
+Take the lower-lane searcher, n=2, y in [0,24], global y_max=49.
+
+  SET:     _coverage_y_lower_camping compares max(recent_y) against
+           upper_min + 6 = 25 + 6 = 31. A searcher CONFINED to y<=24 satisfies
+           max(tail) < 31 unconditionally, forever. The commit is set to
+           "north" by construction of the lane, not by any real pathology.
+  EMIT:    ty = max(45, ty) -> y=45, which is 21 cells outside the lane.
+  RELEASE: requires ay >= y_max-6 = 43. The lane hard filter at :3431/:3604
+           rejects every candidate with cy>24, so the agent can never be
+           steered to y>=43. The commit NEVER clears.
+
+That is the measured 73.5% out-of-lane emission rate, all at y=45. It is also
+why both searchers hold the identical target on 35/119 steps: forced_y depends
+only on global y_max, so every committed searcher is pulled to the same single
+cell row regardless of which lane it owns.
+
+The x-sweep clamp has the identical structure under north/south wind, where
+the lane axis is "x": a searcher confined to x in [21,41] can never reach
+x <= safe_x_min+10, so west_strip_done never latches and the west pull is
+permanent.
+
+KEY STRUCTURAL FACT: the clamp's axis and the lane's axis always coincide.
+Lane axis is "y" iff wind is east/west, and the y-commit is the y clamp;
+lane axis is "x" iff wind is north/south, and the x-sweep is the x clamp.
+There is never a case where the conflicting clamp sits on the free axis.
+
+================================================================
+2. CALL CHAIN - DOES IT RECEIVE LANE BOUNDS?
+================================================================
+
+No. Lane information must be added. All four call sites:
+
+  :3533  in _pick_global_coverage_escape_target
+         `lane` is ALREADY computed locally at :3417 via
+         _searcher_crosswind_lane(simulation, uav_id, ...). Available.
+  :3797  in _compute_wind_aware_search_target (committed escape_target path)
+  :3836  in _compute_wind_aware_search_target (gradual escape path)
+  :4020  in _compute_wind_aware_search_target (main return)
+
+_compute_wind_aware_search_target (:3691) does NOT currently compute a lane,
+but it has every input needed: `simulation` (:3708), `uav_id` (:3694),
+`wind_direction` (:3695), and x_min/x_max/y_min/y_max (:3705). So no call site
+lacks the lane info at the point it calls _finalize_coverage_target.
+
+_generate_corridor_waypoints (:3538) computes its own lane at :3596 but does
+not call _finalize_coverage_target.
+
+n<=1 CASE: _searcher_crosswind_lane returns None immediately when
+len(ids) <= 1 (:342-344), and also on ValueError when the uav is not in the
+searcher list (:347-349). There is no default lane object - "no lane" is a
+literal None, and _lane_allows_cell(None, ...) returns True unconditionally
+(:369-370). A single searcher therefore resolves to "no lane" cleanly, with
+nothing silently constraining it.
+
+IMPLEMENTATION CHOICE: rather than thread a `lane` kwarg through four call
+sites, carry the lane AXIS per-searcher in wind_state, which is already keyed
+by uav_id (_wind_search_state, :444-455). This is strictly better here because
+the y-commit is read in FOUR places, not one:
+  - :1125 in _finalize_coverage_target (the clamp under review)
+  - :3405 and :3572, the two lane-filtered candidate loops, where `commit`
+    becomes a HARD candidate filter: `if commit=="north" and cy < upper_y_min:
+    continue` at :3437 and :3610, plus the y_force_min/y_force_max filters at
+    :3614-3617
+  - :3527-3530, the corridor_fail y_force clamps
+Gating only _finalize would leave the lower-lane searcher's candidate set
+EMPTIED by `cy < upper_y_min: continue` intersected with the lane filter - the
+same pathology in a different costume. Gating at the source (never set the
+commit when a same-axis lane is active) fixes all four consistently with one
+edit and cannot leave the two representations disagreeing.
+
+================================================================
+3. (A) CLAMP THE CLAMP vs (B) SUPPRESS THE CLAMP
+================================================================
+
+CHOICE: (B) SUPPRESS. Decided before implementation. Reasons:
+
+(i) (A) DOES NOT FIX THE DEADLOCK - IT ONLY HIDES IT IN THE METRIC.
+    Clipping the emitted y to min(45, lane_hi)=24 changes what is emitted but
+    NOT the release condition, which is _coverage_y_commit_penetrated:
+    ay >= y_max-6 = 43. That is still globally defined and still unreachable
+    from inside the lane. Under (A) the override stays permanently latched and
+    the searcher is pinned to ty >= 24, the top edge of its own lane, for the
+    whole run. Lane compliance would jump to ~1.0 and the compliance gate would
+    "pass" - while freshness (the metric the investigation identifies as the
+    actual cost) and per-lane coverage get WORSE. A change that passes the
+    compliance gate by degrading the two gates it exists to serve is not a fix.
+
+(ii) THE CLAMP IS REDUNDANT INSIDE A LANE. The y-commit exists to break
+    north/south camping across a 50-cell grid. Inside a y-lane of span ~25
+    (n=2) or ~17 (n=3) the searcher is already bounded on that axis by the
+    lane. Worse, the camping DETECTOR is defined against the global half split
+    (_grid_y_half_split(y_min,y_max), :768-770), so for any lane lying strictly
+    below the global midline it fires 100% of the time as a pure artifact. It
+    is not detecting a pathology; it is detecting the lane.
+
+(iii) LANES ALREADY HAVE THEIR OWN ANTI-CAMPING, INDEPENDENT OF THIS CLAMP.
+    Checked as instructed:
+    - _corridor_diversity_failure (:732-748) is computed at :3399 INSIDE the
+      lane path, is x-based, is per-uav (wind_state is keyed by uav_id), and
+      drives corridor_x_cap at :3401 and the coverage escalation in
+      _coverage_mode_active (:760). Entirely independent of the y-commit.
+    - _uncovered_region_bonus (:203-236) rewards cells beyond the searcher's
+      own visited x/y span (_coverage_x_span/_coverage_y_span, per-uav) and is
+      applied to cells that have ALREADY passed the lane filter, so inside a
+      lane it pushes the searcher toward the unvisited ends of its own lane -
+      exactly the anti-camping job, correctly scoped.
+    - _is_saturated_cell / saturated_until decays revisited cells, per-uav.
+    Within-lane camping is therefore already handled by mechanisms that are
+    lane-safe because they are relative to the searcher's own visited span
+    rather than to global grid coordinates. (B) removes a redundant global
+    override and leaves all of these in place.
+
+(iv) (B) gives a lane searcher what n<=1 already has: a search space whose
+    bounds and whose anti-camping mechanism are consistent with each other.
+
+================================================================
+4. (Q4 - conditional on choosing (A))
+================================================================
+Not applicable, since (A) was not chosen. Recorded anyway because the
+constraint is real either way: the clamp would only ever need to constrain the
+axis it operates on, never both, because - per the end of section 1 - the
+clamp's axis and the lane's axis always coincide (y-commit <-> east/west <->
+y-lane; x-sweep <-> north/south <-> x-lane). A target already inside the lane
+on the other axis is untouched by the clamp on this axis, so "lane_hi" could
+only ever have meant the lane bound on the clamp's own axis. Under (B) the same
+fact is what makes the suppression precise: for a y-lane only the y-commit is
+suppressed and the x-sweep clamp stays fully active, and vice versa.
+
+================================================================
+PLANNED IMPLEMENTATION (Part 2)
+================================================================
+1. Record the lane axis per-searcher: wind_state["lane_axis"] = lane[0] if
+   lane else None, set where the lane is already computed (:3417, :3596) and
+   at the entry of _compute_wind_aware_search_target.
+2. _update_coverage_y_commit: when lane axis == "y", clear the commit and
+   return. This neutralises the y-commit at all four read sites at once.
+3. _finalize_coverage_target: skip the west/east sweep pulls when lane axis
+   == "x". The unconditional safety bound
+   tx = max(safe_x_min, min(safe_x_max, tx)) is NOT touched - it is a grid
+   safety clamp, not the sweep override.
+
+NO-OP ARGUMENT FOR n<=1: _searcher_crosswind_lane returns None for n<=1, so
+lane_axis is set to None; _default_wind_search_state has no "lane_axis" key so
+the .get() default is None as well; both new gates compare that axis against
+the literals "y"/"x" and are therefore inert. To be confirmed empirically by
+the bit-identical default-matrix requirement in Part 3.
+
+
+################################################################
+ADDENDUM - INDEPENDENT RE-VERIFICATION
+################################################################
+The analysis above was written before the source edit (part1 mtime 22:37,
+source mtime 22:40). The round was then interrupted mid-validation. This
+addendum records an independent re-derivation of the diagnosis from the
+HEAD source (git show HEAD:...), plus two findings the original missed.
+
+RE-VERIFIED, UNCHANGED
+  - Neither clamp reads lane bounds. Signature at :1051 (HEAD) has no lane
+    parameter; every bound is global (safe_x_*, y_min/y_max,
+    _grid_y_half_split).
+  - Lane axis and clamp axis always coincide (y-commit <-> east/west <->
+    y-lane; x-sweep <-> north/south <-> x-lane).
+  - n<=1 resolves to a literal None lane (:342-349), not a default object.
+  - Call sites: :3533 in _pick_global_coverage_escape_target (lane already
+    local at :3417); :3797/:3836/:4020 in _compute_wind_aware_search_target,
+    which had no lane but has every input to compute one.
+
+NEW FINDING 1 - (A) IS WORSE THAN THE ORIGINAL ANALYSIS ARGUED.
+The original said (A) would leave the searcher pinned to the top of its lane.
+It is actually more severe: under a y-lane the candidate loop produces an
+EMPTY candidate set, not a degraded one. In _pick_global_coverage_escape_target
+the three filters compose (HEAD :3431-3447):
+
+    if not _lane_allows_cell(lane, cx, cy):        continue   # cy <= 24
+    if commit == "north" and cy < upper_y_min:     continue   # cy >= 25
+    if y_force_min is not None and cy < y_force_min: continue # cy >= 45
+
+For the lower lane [0,24] with commit="north", cy<=24 AND cy>=45 is
+unsatisfiable. Every cell is rejected, best_point stays None, and control
+falls to the :3505 fallback, which synthesises the GRID CENTRE
+((x_min+x_max)//2, (y_min+y_max)//2) - a cell chosen with no reference to the
+lane at all. _finalize_coverage_target then raises its y to 45.
+
+This explains both measured signatures exactly:
+  - the 73.5% out-of-lane emissions all sitting at y=45, and
+  - the 35/119 identical-target steps: the upper-lane searcher can legally
+    reach y=45 inside [25,49], while the lower-lane searcher arrives at the
+    same row via the centre fallback. Two different code paths converge on
+    one cell.
+(A) clips the emitted y but does not touch the loop's own `commit` /
+y_force_min filters, which are separate reads of the same latched state. The
+candidate set stays empty and the searcher stays on the degenerate centre
+fallback for the whole run. (A) is therefore not merely incomplete - it leaves
+the primary failure path fully intact while making the compliance metric look
+fixed. This strengthens the original choice of (B), and specifically (B)
+applied AT THE SOURCE (never set the commit) rather than at the emission site.
+
+NEW FINDING 2 - THE STALE-COMMIT HOLE IS CLOSED BY CALL ORDER, NOT BY LUCK.
+_finalize_coverage_target only calls _update_coverage_y_commit when
+unresolved_victim_count > 0 (:1155), but applies the commit unconditionally
+(:1159). That leaves an apparent hole: a commit latched under an x-lane could
+survive a wind flip to a y-lane and be applied out-of-lane while unresolved==0.
+Checked and it is NOT reachable:
+  - _update_coverage_y_commit (:827) is the only writer of coverage_y_commit
+    besides the None initialisers at :427 and :473.
+  - It is called unconditionally from _sync_wind_search_streaks (:1645)
+    whenever grid_position is not None.
+  - In _compute_wind_aware_search_target the order is fixed:
+      :3747  _set_active_lane_axis(...)          <- axis set from current wind
+      :3762  _sync_wind_search_streaks(...)      -> :1645 clears the commit
+      :3845 / :3884 / :4068  _finalize_coverage_target(...)
+    The only earlier return is `if not fire_cells: return None` (:3735), which
+    precedes every finalize call.
+So on every step where the searcher has a position, the commit is re-evaluated
+under the current lane axis before any target is finalised. No additional gate
+at the application site is required, and none was added - the implemented fix
+is exactly (B) at the source, with no extra surface to re-validate.
+
+NEW FINDING 3 - WHAT THE COMPLIANCE METRIC ACTUALLY MEASURES.
+outputs/_lane_matrix.py:7 defines lane_compliance as "fraction of steps the
+searcher STOOD inside its own lane" - a physical-position metric, not a
+target-emission metric. This fix controls emission. Position compliance is
+downstream of emission and is also driven by target sources this fix does not
+touch and the brief does not cover, notably _gradual_escape_target (:3884
+path) and victim-pursuit targets, neither of which is lane-filtered. A rise
+to ~1.00 was therefore never available from this change alone; the emission
+rate measured by the violation probe is the metric this fix directly governs.

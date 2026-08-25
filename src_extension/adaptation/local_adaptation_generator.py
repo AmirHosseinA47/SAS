@@ -808,12 +808,38 @@ def _coverage_y_commit_penetrated(
     return False
 
 
+def _active_lane_axis(wind_state: dict[str, Any]) -> str | None:
+    """Axis of the cross-wind lane this searcher is confined to, or None.
+
+    None whenever no lane applies (n <= 1), which is the entire default
+    matrix - every lane-aware gate below is inert in that case.
+    """
+    axis = wind_state.get("lane_axis")
+    return axis if axis in ("x", "y") else None
+
+
+def _set_active_lane_axis(
+    wind_state: dict[str, Any], lane: tuple[str, int, int] | None,
+) -> None:
+    wind_state["lane_axis"] = lane[0] if lane is not None else None
+
+
 def _update_coverage_y_commit(
     wind_state: dict[str, Any],
     y_min: int,
     y_max: int,
     agent_y: float | None = None,
 ) -> None:
+    if _active_lane_axis(wind_state) == "y":
+        # A y-lane already bounds this searcher on the y axis, and the camping
+        # detector is defined against the GLOBAL half split - so any lane below
+        # the midline latches the commit permanently, while its release
+        # condition (ay >= y_max - 6) lies outside the lane the hard filter at
+        # the candidate loops enforces. Within-lane anti-camping is handled by
+        # _uncovered_region_bonus / _corridor_diversity_failure, which are
+        # relative to the searcher's own visited span and stay lane-safe.
+        wind_state["coverage_y_commit"] = None
+        return
     commit = wind_state.get("coverage_y_commit")
     if commit in ("north", "south"):
         if agent_y is not None and _coverage_y_commit_penetrated(
@@ -1080,9 +1106,17 @@ def _finalize_coverage_target(
     if coverage_active:
         tx = max(safe_x_min, min(safe_x_max, tx))
         wind_label = str(wind_state.get("last_wind_direction") or "").strip().lower()
+        # An x-lane bounds this searcher on the x axis; the sweep pull's own
+        # release (visit x <= safe_x_min + 10 / x >= safe_x_max - 10) is global
+        # and unreachable from inside the lane, so the pull would latch
+        # forever. Suppressed only for x-lanes - the y-commit below is
+        # untouched here, and both are inert when no lane applies.
+        x_lane_active = _active_lane_axis(wind_state) == "x"
         west_goal = float(safe_x_min + COVERAGE_SWEEP_BAND_MARGIN)
         east_goal = float(safe_x_max - COVERAGE_SWEEP_BAND_MARGIN)
-        if wind_label == "west":
+        if x_lane_active:
+            pass
+        elif wind_label == "west":
             _mark_x_strip_progress(wind_state, safe_x_min, safe_x_max)
             if (
                 _west_sweep_pending(wind_state, safe_x_min)
@@ -3423,6 +3457,7 @@ class LocalAdaptationSpaceGenerator:
             y_min,
             y_max,
         )
+        _set_active_lane_axis(wind_state, lane)
         _mark_x_strip_progress(wind_state, safe_x_min, safe_x_max)
         west_pending = _west_sweep_pending(wind_state, safe_x_min)
         east_pending = _east_sweep_pending(wind_state, safe_x_max)
@@ -3596,6 +3631,7 @@ fire_cells=fire_cells, smoke_cells=smoke_cells, step_index=step_index,
         lane = _searcher_crosswind_lane(
             simulation, uav_id, wind_norm, x_min, x_max, y_min, y_max,
         )
+        _set_active_lane_axis(wind_state, lane)
         _mark_x_strip_progress(wind_state, safe_x_min, safe_x_max)
         west_pending = _west_sweep_pending(wind_state, safe_x_min)
         east_pending = _east_sweep_pending(wind_state, safe_x_max)
@@ -3708,6 +3744,18 @@ fire_cells=fire_cells, smoke_cells=smoke_cells, step_index=step_index,
         simulation = _simulation_from_runtime(runtime_models)
         step_index = _step_index_from_runtime(runtime_models)
         wind_state = _wind_search_state(simulation, uav_id)
+        _set_active_lane_axis(
+            wind_state,
+            _searcher_crosswind_lane(
+                simulation,
+                uav_id,
+                normalize_wind_direction(wind_direction),
+                x_min,
+                x_max,
+                y_min,
+                y_max,
+            ),
+        )
         grid_pos = (
             (int(round(ax)), int(round(ay))) if uav_pos is not None else None
         )

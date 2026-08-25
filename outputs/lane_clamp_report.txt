@@ -1,0 +1,343 @@
+==============================================================================
+LANE-AWARE CLAMP FIX - FINAL REPORT
+==============================================================================
+Branch   claude/position-rename-and-hazard-revalidation @ f15a2e9
+         (verified == origin/claude/position-rename-and-hazard-revalidation
+          at the start of this round)
+File     src_extension/adaptation/local_adaptation_generator.py  (only file)
+Diff     49 insertions, 1 deletion
+Part 1   outputs/lane_clamp_part1.txt (diagnosis + independent re-verification)
+
+VERDICT: ALL GATES PASS.
+
+------------------------------------------------------------------------------
+GATE SUMMARY
+------------------------------------------------------------------------------
+  1. lane compliance rises materially from 0.63      PASS  0.6306 -> 0.7824
+  2. inter-lane uncertainty gap narrows from .19-.21  PASS  0.2000 -> 0.1324
+  3. per-lane coverage does not regress below 78/80   PASS  78/80 -> 79/80
+  4. default n<=1 matrix BIT-IDENTICAL to fix14       PASS  16/16, byte-proven
+  5. test suite vs 8-failed/427-passed baseline       PASS  8 failed, 427 passed
+                                                            identical node IDs
+
+------------------------------------------------------------------------------
+WHAT WAS WRONG (Part 1 summary; full analysis in lane_clamp_part1.txt)
+------------------------------------------------------------------------------
+_finalize_coverage_target is lane-unaware and operates purely on global grid
+coordinates. Its two overrides sit on exactly the axis the lane partitions:
+
+  y-commit clamp   east/west wind  -> lane axis "y"
+  x-sweep clamp    north/south wind -> lane axis "x"
+
+The lane itself is what latches the override. For a lower y-lane [0..24] with
+global y_max=49:
+
+  SET      _coverage_y_lower_camping compares max(recent_y) against the GLOBAL
+           half split + margin = 31. A searcher confined to y<=24 satisfies
+           that unconditionally, forever. The "camping detector" is detecting
+           the lane, not a pathology.
+  EMIT     ty = max(y_max - 4, ty) = 45, i.e. 21 cells outside the lane.
+  RELEASE  requires ay >= y_max - 6 = 43, which the lane hard filter at :3431
+           and :3604 makes unreachable. The commit never clears.
+
+Re-verifying this independently turned up something the original diagnosis
+missed, and it is the reason approach (A) was rejected. The latched commit is
+read in the candidate loop too, where three filters compose:
+
+    if not _lane_allows_cell(lane, cx, cy):          continue   # cy <= 24
+    if commit == "north" and cy < upper_y_min:       continue   # cy >= 25
+    if y_force_min is not None and cy < y_force_min: continue   # cy >= 45
+
+cy<=24 AND cy>=45 is unsatisfiable: the candidate set is EMPTY, not merely
+degraded. best_point stays None and control falls to the :3505 fallback, which
+synthesises the GRID CENTRE with no reference to the lane. That is the true
+source of the measured 73.5% out-of-lane emissions at y=45, and of the 35/119
+identical-target steps (the upper-lane searcher reaches y=45 legally inside
+[25,49]; the lower-lane searcher arrives at the same row via the centre
+fallback - two code paths converging on one cell).
+
+APPROACH CHOSEN: (B) SUPPRESS, applied AT THE SOURCE.
+(A) "clamp the clamp" would clip the emitted y but leaves the loop's own
+commit / y_force_min filters untouched, so the candidate set stays empty and
+the searcher stays on the degenerate centre fallback for the entire run. (A)
+would raise the compliance metric while leaving the primary failure path fully
+intact - passing the gate by breaking the thing the gate exists to protect.
+(B) is also justified on redundancy: inside a lane the searcher is already
+bounded on the clamp's axis, and within-lane anti-camping is already handled by
+_corridor_diversity_failure, _uncovered_region_bonus and the saturated-cell
+decay, all of which are per-uav and relative to the searcher's OWN visited span
+rather than to global grid coordinates - i.e. lane-safe by construction.
+
+------------------------------------------------------------------------------
+THE CHANGE
+------------------------------------------------------------------------------
+1. Per-searcher lane axis recorded in wind_state (already keyed by uav_id):
+   _set_active_lane_axis / _active_lane_axis, set where the lane is already
+   computed (:3460, :3634) and at the entry of _compute_wind_aware_search_target
+   (:3747).
+2. _update_coverage_y_commit: when the lane axis is "y", clear the commit and
+   return. This neutralises the y-commit at ALL FOUR of its read sites at once
+   (finalize, both candidate loops, the corridor_fail clamps) so the two
+   representations can never disagree.
+3. _finalize_coverage_target: skip the west/east sweep pulls when the lane axis
+   is "x". The unconditional interior bound
+   tx = max(safe_x_min, min(safe_x_max, tx)) is NOT touched - that is a grid
+   safety clamp, not the sweep override.
+
+The suppression is precisely axis-scoped: for a y-lane only the y-commit is
+suppressed and the x-sweep stays fully active, and vice versa. This is visible
+in the probes below - under north wind (x-lane) the y_commit histogram still
+latches north/south normally, because y is the free axis there.
+
+NOT TOUCHED, as required: _searcher_crosswind_lane, _lane_allows_cell, the
+x-clamp reachability fix, and the fix14 target-hold mechanism.
+
+------------------------------------------------------------------------------
+1. LANE COMPLIANCE  (same methodology as last round: fraction of steps the
+   searcher physically STOOD inside its own lane; 40 runs, 80 lane-observations)
+------------------------------------------------------------------------------
+  mean lane compliance          0.6306  ->  0.7824     (+0.152)
+  worst single-lane compliance  0.0833  ->  0.3208
+  lanes with compliance < 0.50      20  ->  9
+
+  combo      pre     post
+  C_east    0.822   0.714     <-- the one combo that regresses
+  C_west    0.633   0.732
+  C_north   0.556   0.737
+  C_south   0.524   0.815
+  D_east    0.715   0.852
+  D_west    0.598   0.872
+  D_north   0.605   0.743
+  D_south   0.591   0.795
+
+  7 of 8 combos improve; C_east (already the highest baseline) loses 0.11.
+
+  WHY NOT ~1.00: this metric is POSITION-based, not emission-based
+  (outputs/_lane_matrix.py:7). This fix governs target EMISSION. Position
+  compliance is downstream of emission and is also driven by target sources
+  this fix does not touch and the brief does not cover - notably
+  _gradual_escape_target and victim-pursuit targets, neither of which is
+  lane-filtered. A rise to ~1.00 was never available from this change alone.
+  The emission-level metric is item 2, and there the fix is total.
+
+------------------------------------------------------------------------------
+2. EAST-WIND SPECIFIC CASE  (probe: wind=east seed=101 steps=120, 2 searchers)
+------------------------------------------------------------------------------
+                                        BASELINE            POST-FIX
+  uav 2503, lane y[0..24] (lower)
+     out-of-lane emissions           97/132 (73.5%)       0/124 (0.0%)
+     coverage_y_commit histogram   {None:5, north:129}    {None:126}
+     first latch                    step 4 -> north       never latches
+     distinct out-of-lane y values  [45.0]                (none)
+  uav 2504, lane y[25..49] (upper)
+     out-of-lane emissions            0/126 (0.0%)       21/137 (15.3%)
+  steps both searchers held the
+  identical target                    35/119               7/119
+
+  The lower-lane searcher - the case the brief singles out - goes to ZERO
+  out-of-lane emissions, and the latch that caused it never fires at all.
+  Duplicate-target steps fall 35 -> 7.
+
+  HONEST RESIDUAL: the upper-lane searcher now shows 15.3% out-of-lane. These
+  are NOT the clamp. Every one of them is the single cell (24.0, 24.0) - the
+  grid centre - emitted with y_commit=None and cov_active=False, i.e. the
+  non-coverage interior-retarget / gradual-escape path, which has never been
+  lane-filtered and is outside this fix's scope. All 7 remaining duplicate
+  steps are that same cell. This is the next lane defect to fix, not a
+  regression introduced here (baseline 2504 was 0% only because its lane
+  happened to contain y=45, which made the clamp invisible on that searcher).
+
+  NORTH-WIND CASE (x-lane; validates the other half of the fix)
+                                        BASELINE            POST-FIX
+     uav 2503 lane x[0..24]          26/127 (20.5%)       0/122 (0.0%)
+     uav 2504 lane x[25..49]         40/123 (32.5%)       0/140 (0.0%)
+     identical-target steps             12/119              0/119
+  Both x-lanes go to zero and duplicate targets are eliminated entirely. The
+  y_commit histogram here still shows {None:5, north:67, south:51} - correct
+  and intended: under north/south wind y is the FREE axis, so the y-commit is
+  deliberately left fully active. This is direct evidence the suppression is
+  axis-scoped rather than a blanket disable.
+
+------------------------------------------------------------------------------
+3. INTER-LANE UNCERTAIN-CELL-FRACTION GAP  (the metric that matters most)
+------------------------------------------------------------------------------
+  mean |lane_a - lane_b| uncertain_frac, same checkpoints as last round:
+
+              BASELINE   POST-FIX
+    t = 40     0.1903     0.1187     -38%
+    t = 120    0.2016     0.1094     -46%
+    t = 200    0.2082     0.1690     -19%
+    all cp     0.2000     0.1324     -34%
+
+  The gap narrows at every checkpoint. The baseline's growth over time on
+  east/west wind is also blunted: D_east t200 goes 0.254 -> 0.076 and D_west
+  0.179 -> 0.123.
+
+  combo      t40 pre/post    t120 pre/post   t200 pre/post
+  C_east     0.065 / 0.074   0.157 / 0.151   0.316 / 0.348   <-- worse at t200
+  C_west     0.063 / 0.066   0.106 / 0.124   0.174 / 0.207   <-- worse at t200
+  C_north    0.456 / 0.141   0.174 / 0.073   0.165 / 0.171
+  C_south    0.219 / 0.210   0.214 / 0.081   0.135 / 0.151
+  D_east     0.085 / 0.065   0.207 / 0.084   0.254 / 0.076
+  D_west     0.109 / 0.162   0.215 / 0.084   0.179 / 0.123
+  D_north    0.366 / 0.058   0.213 / 0.199   0.215 / 0.132
+  D_south    0.160 / 0.175   0.326 / 0.079   0.227 / 0.143
+
+  Not uniform: Scenario C on east/west wind is slightly worse at t200. That is
+  the same pair of combos where the residual centre-fallback emissions above
+  concentrate. Aggregate improvement is nevertheless clear at all three
+  checkpoints.
+
+------------------------------------------------------------------------------
+4. PER-LANE FINAL COVERAGE FRACTION  (must not regress)
+------------------------------------------------------------------------------
+                                    BASELINE   POST-FIX
+    lanes above 0.90                  78/80      79/80
+    mean per-lane coverage           0.9721     0.9780
+    mean per-run spread (max-min)    0.0377     0.0295
+    worst per-run spread             0.2552     0.1608
+    lanes at or below 0.90       [0.733, 0.898]  [0.830]
+
+  No regression - coverage improves on every aggregate. The spread tightening
+  (0.0377 -> 0.0295, worst case 0.255 -> 0.161) is the work-balance signature
+  the partitioning is supposed to produce.
+
+------------------------------------------------------------------------------
+5. OUTCOME FIELDS  (reported for completeness; NOT treated as decisive)
+------------------------------------------------------------------------------
+  Totals across the 40-run multi-searcher matrix:
+
+                      BASELINE   POST-FIX
+    rescued              94         97
+    dead                 42         40
+    unreachable           4          3
+    never_detected        2          2
+
+  Movements are small and in the favourable direction. As the investigation
+  noted, only 2 of 140 victims were never_detected in the baseline, so this
+  matrix has no power to resolve never_detected; it is reported, not claimed.
+  ff_deaths is not instrumented in the multi-searcher harness
+  (outputs/_lane_matrix.py); it IS in the default matrix, where every value is
+  unchanged by construction (see item 6).
+
+------------------------------------------------------------------------------
+6. DEFAULT n<=1 MATRIX - BIT-IDENTICAL CHECK (non-negotiable gate)
+------------------------------------------------------------------------------
+  16 combos (A-D x 4 winds), seeds 101,202,303,404,505, 240 steps, no role
+  overrides. RESULT: PASS.
+
+  A wrinkle worth stating plainly: fix14's published files were generated WITH
+  the --csv flag; the runs in this round were initially generated without it,
+  so the raw files were not byte-equal - fix14's carry an extra CSV dump
+  section. That flag is pure stdout formatting (evaluate_scenarios.py:201,
+  guarded by the args.csv test at :287) and cannot affect simulation
+  behaviour. Identity was established three ways rather than assumed:
+
+    (a) fix14 with the --csv block excised is line-for-line identical to this
+        round's output:                                            16/16
+    (b) fix14's CSV rows agree field-by-field (seed, rescued, dead,
+        unreachable, geo, never_detected) with this round's seed rows: 80/80
+    (c) D/south was RE-RUN with --csv on the patched code and compared to
+        outputs/fix14_D_south.txt with cmp:      BYTE-IDENTICAL
+
+  (c) is the decisive one: same flags, same code path, byte-for-byte equal
+  output. Note that D/south is also the combo the previous interrupted attempt
+  never completed, so it had never been verified before this round.
+
+  WHY IT IS PROVABLY A NO-OP AT n<=1 - three independent arguments:
+    (i)   SEMANTIC. _searcher_crosswind_lane returns a literal None for n<=1
+          (:342-344) and on ValueError (:347-349). _set_active_lane_axis then
+          stores None. Both new gates compare that against "y"/"x", so both are
+          False and control flow is identical. There is no default lane object
+          that could silently constrain a single searcher.
+    (ii)  STRUCTURAL. The change adds one new key ("lane_axis") to wind_state.
+          Every consumer of that dict - in this file and in
+          src_extension/execution/uav_executor.py - reads it by named key.
+          Nothing iterates keys/items, serialises it, or compares it as a
+          whole, so an added key cannot perturb any consumer.
+    (iii) EMPIRICAL. The 16/16 result above.
+
+------------------------------------------------------------------------------
+7. TEST SUITE
+------------------------------------------------------------------------------
+  Command: E:\Projects\SAS\.venv\Scripts\python.exe -m pytest -q
+           -p no:cacheprovider      (full suite, no path filter - same as fix14)
+
+  RESULT:  8 failed, 427 passed, 5 warnings in 2398.40s (0:39:58)
+  BASELINE 8 failed, 427 passed  -> exact match
+
+  The failing node IDs are the IDENTICAL set, verified by diffing the sorted
+  FAILED lines: 0 NEW failures, 0 fixed.
+
+  pre-existing  tests/test_behavior_regression.py::
+                  test_descriptive_next_action_uses_target_position
+  pre-existing  tests/test_dashboard_panel.py::
+                  test_dashboard_panel_render_returns_string
+  pre-existing  tests/test_firefighter_dispatch_replacement.py::
+                  test_no_replacement_available_marks_victim_unreachable_once
+  pre-existing  tests/test_rescue_planner_authority.py::
+                  test_no_firefighter_planner_delay_or_unreachable
+  pre-existing  tests/test_uav_sector_assignment.py::
+                  test_fire_tracker_uavs_receive_different_target_sets
+  pre-existing  tests/test_uav_sector_assignment.py::
+                  test_fire_tracker_still_overridden_by_search_mode_fail_safe
+  pre-existing  tests/test_wind_aware_trajectory_regression.py::
+                  test_north_vs_south_trajectories_diverge_over_40_steps
+  pre-existing  tests/test_wind_aware_victim_search.py::
+                  test_victim_search_wind_aware_action_when_downwind_exists
+
+  The last two sit in files this change touches conceptually; both fail
+  identically before and after, so neither is evidence about this change.
+
+------------------------------------------------------------------------------
+NOTHING WAS TUNED
+------------------------------------------------------------------------------
+No constant was adjusted and no threshold was moved to reach any gate. The
+change is a pair of conditional suppressions plus the bookkeeping to know which
+axis a lane occupies. Approach (B) was selected in Part 1 on structural grounds
+BEFORE the post-fix matrix was run, and was not revisited after seeing results.
+
+One deliberate decision not to change more: a residual path was identified
+where _finalize_coverage_target applies a stale coverage_y_commit when
+unresolved_victim_count == 0 (the update at :1155 is guarded, the application
+at :1159 is not). It was left alone because it is unreachable, not because it
+was overlooked. _update_coverage_y_commit is the only writer of that key, and
+it is called unconditionally from _sync_wind_search_streaks (:1645) on every
+step where the searcher has a position - which in
+_compute_wind_aware_search_target runs at :3762, after the axis is set at :3747
+and before every _finalize_coverage_target call (:3845, :3884, :4068). The only
+earlier return is the "if not fire_cells: return None" guard. Adding a
+redundant gate there would have enlarged the surface needing re-validation for
+no behavioural gain.
+
+------------------------------------------------------------------------------
+KNOWN LIMITS AND WHAT TO DO NEXT
+------------------------------------------------------------------------------
+1. The centre-fallback path is now the dominant remaining lane violation:
+   (24.0, 24.0) emitted with cov_active=False from the non-coverage
+   interior-retarget / _gradual_escape_target route, which is not lane-filtered.
+   This accounts for all 21 residual out-of-lane emissions and all 7 residual
+   duplicate-target steps on east wind. Fixing it is the natural next step and
+   should push emission compliance to ~1.0.
+2. Scenario C on east/west wind is the weak spot: the only compliance
+   regression (C_east 0.822 -> 0.714) and the only t200 uncertainty-gap
+   regressions (C_east, C_west). Same root as (1).
+3. never_detected remains statistically inert at this matrix size (2 of 140
+   baseline). Any claim about it needs far more seeds.
+4. Position-level compliance is bounded by target sources outside this fix.
+   Do not expect it to approach 1.0 until (1) is addressed.
+
+------------------------------------------------------------------------------
+ARTEFACTS
+------------------------------------------------------------------------------
+  outputs/lane_clamp_part1.txt                     diagnosis + re-verification
+  outputs/lane_clamp_default_<A-D>_<wind>.txt      default n<=1 matrix (16)
+  outputs/_lane_clamp_default_D_south_CSV.txt      byte-identity proof vs fix14
+  outputs/lane_clamp_ms_<C|D>_<wind>.txt           multi-searcher matrix (8),
+                                                   pre and post side by side
+  outputs/lane_matrix/*.json                       post-fix raw (40 runs)
+  outputs/lane_matrix_baseline/*.json              pre-fix raw (40 runs)
+  outputs/_lane_clamp_probe_violation_east_POST.txt   east emission probe
+  outputs/_lane_clamp_probe_violation_north_POST.txt  north emission probe
+  outputs/_lane_clamp_pytest.txt                   full test-suite log
+==============================================================================
