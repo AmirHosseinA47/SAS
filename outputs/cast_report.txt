@@ -1,0 +1,245 @@
+==============================================================================
+C_east INTERIOR-RETARGET LANE VIOLATION - STATUS REPORT
+==============================================================================
+Base    claude/position-rename-and-hazard-revalidation @ 534f736
+        Verified: local HEAD == origin/claude/position-rename-and-hazard-
+        revalidation == 534f736. `git diff HEAD origin/<branch>` is empty.
+        The stale-branch hazard the brief warns about did NOT fire this time.
+Tree    .claude/worktrees/c-east-interior-retarget-diagnosis-daa820
+File    src_extension/adaptation/local_adaptation_generator.py (only file)
+
+HEADLINE
+  PART 1 (diagnose)  COMPLETE and independently re-verified against source.
+  PART 2 (implement) Edit is PRESENT IN THE WORKING TREE, uncommitted,
+                     reviewed and found sound by inspection. NOT validated.
+  PART 3 (validate)  NOT RUN. Could not be run in this session.
+
+  THE GATE IS NOT MET. Not because the fix failed - because no gate item was
+  measured. Every gate item requires executing the simulator, and no command
+  execution was available (see BLOCKER). No compliance number, no bit-identity
+  result and no test result is claimed anywhere in this report.
+
+==============================================================================
+BLOCKER - WHY PART 3 DID NOT RUN
+==============================================================================
+Two independent causes, in order of discovery.
+
+1. PRIOR SESSION: PARALLEL LAUNCH EXHAUSTED THE PAGING FILE.
+   outputs/_cast_default.sh and outputs/_cast_ms.sh launch every combo at once
+   with "&" and then wait on the pids. Sixteen simultaneous interpreters, each
+   importing mesa -> pandas -> matplotlib -> PIL, exceed the Windows paging
+   file on this machine. Every combo died during import:
+
+     ImportError: DLL load failed while importing strptime:
+     The paging file is too small for this operation to complete.
+       (outputs/cast_default_D_east.err, .../B_east.err, and
+        outputs/_cast_probe_D_west_POST.txt)
+
+   Result: all 16 outputs/cast_default_*.txt are ZERO BYTES, and the C_west /
+   D_east / D_west POST probes never produced data. This is an environment
+   failure, not a code failure - nothing about the fix was disproved by it.
+
+   FIXED, ready to run: outputs/_cast_default_seq.sh and
+   outputs/_cast_ms_seq.sh are sequential rewrites. They also fail loudly on
+   an empty output instead of silently leaving a zero-byte file.
+
+2. THIS SESSION: COMMAND EXECUTION UNAVAILABLE.
+   Both the Bash and the PowerShell tools were blocked for the remainder of
+   the session by a harness-level safety classifier that keys on earlier
+   conversation content rather than on the commands themselves. Read-only
+   file tools stayed available, which is why Part 1 could be completed and
+   re-verified in full and Part 3 could not be started at all.
+
+==============================================================================
+DATA-INTEGRITY WARNING - ONE PRIOR ARTIFACT IS MISLABELLED
+==============================================================================
+outputs/_cast_probe_C_north_PRE.txt and .json are NOT a pre-fix baseline.
+
+  - They are timestamped 20:09, i.e. AFTER the source edit was applied to the
+    working tree, so they were produced with the fix active.
+  - Their contents are identical to _cast_probe_C_north_POST.txt: 549
+    emissions, 0 out-of-lane, same per-source breakdown.
+  - The authoritative pre-fix value for C_north is 19 out-of-lane (3.3%),
+    recorded in the Q2.5 table of outputs/cast_part1.txt, which was written
+    before any source edit.
+
+  Do not use _cast_probe_C_north_PRE.* as a baseline. The other six PRE
+  probes (C_east 35, C_west 40, D_east 21, D_north 13, D_south 59) do match
+  the Q2.5 table and are trustworthy. _cast_probe_C_south_PRE.txt is
+  zero-byte and carries no data.
+
+==============================================================================
+PART 1 - DIAGNOSIS: VERIFIED
+==============================================================================
+The full diagnosis is outputs/cast_part1.txt, written before any source edit.
+I re-derived its load-bearing claims directly from source rather than
+accepting them. All of the following were confirmed by reading 534f736:
+
+Q1 THE EMITTER. _gradual_escape_target, :1372-1399. It is a grid-centre
+   fallback and nothing else:
+     :1383-1384  cx = (x_min+x_max)//2 ; cy = (y_min+y_max)//2
+     :1387-1388  if dist <= 1.0: return (cx, cy)      <- emits the centre
+     :1392-1393  tx/ty clamped into [min+1, max-1] of the SAME box
+   On a 0..49 grid that midpoint is exactly (24.0, 24.0) - the reported cell.
+   It is pure arithmetic on the bounds it is handed; it has no candidate set
+   and never consults a lane.
+
+   Its only call site is :3899 (was :3873 pre-edit), inside
+   _compute_wind_aware_search_target (:3727). CONFIRMED not to live in another
+   file, so the brief's "report and stop" condition does not apply.
+
+Q1b WHY THE PREVIOUS ROUND'S FIX CANNOT REACH IT - the structural point.
+   The call site is gated at :3866-3871 on
+       not _coverage_mode_active(wind_state)
+   which is literally the cov_active=False in the emission records. The path
+   then calls _finalize_coverage_target at :3910 - the function the lane-clamp
+   round fixed - but that function puts its entire x-clamp/lane block behind
+       :1106  if coverage_active:
+   and returns early at
+       :1172  if not coverage_active: return final
+   So on this path the lane gate added last round (:1114-1118) is not merely
+   ineffective, it is unreachable by construction. That is a complete
+   explanation of why compliance moved everywhere except here.
+
+Q2 WHY IT LOOKS LIKE C_east. cov_active=False reduces to
+   unresolved_victim_count == 0 (:752-754). The enabling state is "no
+   unresolved victim remains", which every combo enters. Per Q2.5 of
+   cast_part1.txt, 307 of 307 out-of-lane emissions across all eight combos
+   trace to this one function - directly or via re-commit of the value it
+   stored into escape_target/corridor_targets at :3903-3904.
+
+   IMPORTANT CORRECTION TO THE BRIEF'S PREMISE: C_east is not the worst
+   combo and is not structurally special. Pre-fix out-of-lane, seed 101:
+       D_west  71 (13.5%)      C_south 49 (9.4%)      D_east  21 (4.2%)
+       D_south 59 (12.0%)      C_east  35 (5.9%)      C_north 19 (3.3%)
+       C_west  40 (7.8%)                              D_north 13 (2.4%)
+   C_east is the combo whose compliance FELL last round, because it started
+   highest (0.822) and the clamp fix removed a y-commit that had been
+   accidentally pushing the upper-lane searcher off y=24. It is the visible
+   case, not a separate cause. Any fix here is a matrix-wide change, and it
+   must be validated as one.
+
+   The asymmetry is geometric: _searcher_crosswind_lane splits 0..49 into
+   [0,24] and [25,49]. The anchor cell 24 is INSIDE lane 0 and one cell
+   OUTSIDE lane 1, on whichever axis the wind selects. So the lower-lane
+   searcher is always compliant and the upper-lane searcher carries the whole
+   defect - which the probes show exactly (C_east: 2503 lane[0,24] 0 out-of-
+   lane; 2504 lane[25,49] 35 out-of-lane).
+
+Q3 LANE ACCESS AT THE CALL SITE: ALREADY PRESENT. No parameter threading is
+   needed, unlike the _finalize_coverage_target case last round. In scope at
+   :3865 are simulation (:3744), uav_id (:3730), wind_norm (:3823) and all
+   four bounds (:3740). _searcher_crosswind_lane is ALREADY CALLED in this
+   same function at :3749 to set the active lane axis.
+
+Q4 APPROACH CHOSEN: re-anchor the fallback on the searcher's own lane bounds;
+   do NOT build a filtered candidate search. Correct, for the reason that
+   decides it: _lane_allows_cell is a candidate filter and this path has no
+   candidates. The midpoint of the bounds IS the anchor, so substituting lane
+   bounds corrects the coordinate at its source, including the output clamp,
+   rather than clipping it on the way out. Filtering would require inventing a
+   candidate set - i.e. duplicating _pick_global_coverage_escape_target, which
+   the brief puts out of scope and which measurement clears anyway (2,007
+   emissions across 8 combos, zero out-of-lane).
+
+==============================================================================
+PART 2 - THE EDIT: PRESENT, REVIEWED, UNVALIDATED
+==============================================================================
+Location: local_adaptation_generator.py :3873-3901 (comment + 9 code lines).
+It computes the searcher's lane and substitutes the lane's bounds on the lane
+axis before calling _gradual_escape_target. Nothing else is touched.
+
+Scope compliance, checked line by line against the brief's prohibitions:
+  - _lane_allows_cell                     UNTOUCHED
+  - candidate loops :3466 / :3640          UNTOUCHED
+  - _finalize_coverage_target and the
+    lane-clamp round's lines               UNTOUCHED
+  - y-commit / x-sweep clamp (prior round) UNTOUCHED
+  - _pick_global_coverage_escape_target    UNTOUCHED
+
+Correctness review (by inspection - this is NOT a substitute for Part 3):
+  - n <= 1 inertness: _searcher_crosswind_lane returns None at :344-345 when
+    len(ids) <= 1, and on ValueError at :348-349. The new block is guarded on
+    `escape_lane is not None`, so at n <= 1 the six arguments passed to
+    _gradual_escape_target are exactly today's and control flow is identical.
+    The only added work is one read-only call that consumes no randomness -
+    which matters because it means the RNG stream cannot shift. This is a
+    semantic argument only; the empirical proof is gate item 6, NOT RUN.
+  - No new exception path: _searcher_crosswind_lane is already called
+    unconditionally at :3749 with the same `simulation` object, so a None or
+    malformed simulation would already have raised earlier in this function.
+  - Span guard `hi - lo >= 2` keeps the [lo+1, hi-1] inset at :1392-1393
+    non-empty; narrower lanes fall back to global bounds rather than aim
+    outside the lane. For n=2 on 0..49 the lanes are 25 cells, so the guard
+    is not exercised in this matrix.
+  - Hazard sidestep at :1394-1398 moves +/-1 from a point already inside
+    [lo+1, hi-1], so it stays within [lo, hi]. It cannot escape the lane.
+
+  NOTE, and it is the reason the full matrix matters: this changes behaviour
+  for the LOWER-lane searcher too, which was already compliant. On C_east
+  seed 101 its emission count moves 276 -> 318 and its escape targets move
+  from y=24 to y~12. Lane compliance is not the only metric in the gate;
+  per-lane coverage >0.90 (79/80) could move either way and has not been
+  measured.
+
+==============================================================================
+PART 3 - VALIDATION: NOT RUN
+==============================================================================
+  gate item                                        status
+  1. C_east compliance 0.714 -> ?                  NOT MEASURED
+  2. All 8 combos, no regression                   NOT MEASURED
+  3. Overall matrix 0.7824 -> ?                    NOT MEASURED
+  4. Per-lane coverage >0.90, 79/80 -> ?           NOT MEASURED
+  5. Fallback firing frequency before/after        PARTIAL, single seed only
+  6. Default n<=1 matrix BIT-IDENTICAL             NOT MEASURED  <- blocking
+  7. Test suite vs 8-failed/427-passed             NOT MEASURED
+
+Item 5 is the only one with any post-fix data, and it is seed 101 only, one
+seed of the five, on five of the eight combos. It is a mechanism check, not a
+gate result:
+
+  combo     PRE out-of-lane        POST out-of-lane
+  C_east    35 (5.9%)              0
+  C_south   49 (9.4%)              0
+  C_north   19 (3.3%)              0
+  D_north   13 (2.4%)              0
+  D_south   59 (12.0%)             0
+  C_west    40 (7.8%)              no data (paging-file failure)
+  D_east    21 (4.2%)              no data (paging-file failure)
+  D_west    71 (13.5%)             no data (paging-file failure)
+
+  Supporting mechanism evidence: post-fix escape targets land on lane
+  midpoints as predicted - C_south emits (11,24) and (37,24), the midpoints
+  of x[0,24] and x[25,49]; C_east emits y~11-12 and y~36-38. C_north is
+  unchanged PRE vs POST in every field (549 emissions, identical source
+  breakdown), which is the expected no-op signature on a combo whose escape
+  never aimed out of lane.
+
+  This says the mechanism responds as diagnosed. It says NOTHING about
+  compliance, about coverage, about the other four seeds, or about bit-
+  identity. Do not read it as a pass.
+
+==============================================================================
+HOW TO FINISH
+==============================================================================
+Run these in a session with shell access, from the worktree root. Sequential
+by design - do not restore the parallel scripts.
+
+  1. Post-fix multi-searcher matrix (edit already in tree):
+       bash outputs/_cast_ms_seq.sh outputs/lane_matrix_cast_POST
+  2. Post-fix default n<=1 matrix:
+       bash outputs/_cast_default_seq.sh outputs/cast_default
+  3. Bit-identity check of (2) against the lane-clamp round's committed rows:
+       bash outputs/_cast_bitcheck.sh
+     Outputs are UTF-16; compare accordingly.
+  4. Tests, classified against the 8-failed/427-passed baseline
+     (outputs/_cast_pytest_PRE.txt is a partial capture only - it was
+     truncated mid-run and should be re-taken).
+  5. Re-run the three missing POST probes: C_west, D_east, D_west.
+
+If gate item 6 is not bit-identical, the edit must come out regardless of what
+items 1-5 show. If C_east rises but another combo falls, report it as a mixed
+result - the brief is explicit that this is not to be called a net win.
+
+The edit is deliberately left in the working tree, uncommitted, so that step 1
+measures it. Nothing has been committed in this session.

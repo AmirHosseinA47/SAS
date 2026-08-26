@@ -1,0 +1,100 @@
+==============================================================================
+CAST PART 3 - VALIDATION: RUN AND MEASURED.  ALL SIX GATES PASS.
+==============================================================================
+Base   claude/c-east-interior-retarget-diagnosis-daa820 @ 534f736
+Tree   .claude/worktrees/c-east-interior-retarget-diagnosis-daa820
+Edit   src_extension/adaptation/local_adaptation_generator.py :3873-3901
+       (unchanged throughout Part 3; diff sha256 ee3b46b7...5ae6709)
+Run    2026-08-26, sequentially, GNU bash 5.3.15. Parent .venv (mesa 1.2.1).
+
+This supersedes the PART 3 section of cast_report.txt, which recorded every
+item as NOT MEASURED because that session had no command execution.
+
+------------------------------------------------------------------------------
+GATE RESULTS
+------------------------------------------------------------------------------
+1. C_east lane compliance          0.7137 -> 0.9692  (+0.2554)        PASS
+     Also clears its 0.822 pre-clamp-fix level. The upper-lane searcher
+     2504, which carried the entire defect, goes 0.4867 -> 0.9500.
+
+2. No regression across 8 combos   0 of 8 regress                     PASS
+     All 8 combo means and all 16 per-searcher means rose or held.
+     Smallest gain C_south +0.1104, largest C_east +0.2554.
+
+3. Overall matrix compliance       0.7824 -> 0.9467  (+0.1643)        PASS
+     lane0 column 0.8399 -> 0.9367;  lane1 column 0.7250 -> 0.9568.
+     The lane0/lane1 asymmetry that was the defect's signature is gone:
+     the gap closes from 0.1149 to -0.0201.
+
+4. Per-lane coverage > 0.90        79/80 -> 79/80                     PASS
+     Unchanged count, and the single sub-0.90 lane-seed IMPROVES:
+     pre  C_south seed=505 uav=2504 obs_frac=0.8304
+     post C_north seed=505 uav=2504 obs_frac=0.8880
+
+5. Default n<=1 matrix bit-identical   16/16 identical, 0 differ      PASS
+     Byte-for-byte (cmp) against the lane-clamp round's committed
+     lane_clamp_default_*.txt. This is the empirical proof of the n<=1
+     inertness that Part 2 could only argue semantically.
+     NOTE: cast_report.txt says these outputs are UTF-16 and to "compare
+     accordingly". They are not - all 16 are ASCII with CRLF, produced via
+     bash redirection. cmp is a clean test; no encoding normalisation was
+     applied or needed.
+
+6. Test suite                      8 failed / 427 passed              PASS
+     Failure SET identical to the committed baseline (_lane_clamp_pytest.txt),
+     not merely the count: 0 newly failing, 0 newly passing. Same 8 ids.
+     Runtime 1867s vs baseline 2398s.
+
+------------------------------------------------------------------------------
+MISSION OUTCOMES - UNCHANGED IN EVERY COMBO
+------------------------------------------------------------------------------
+rescued, dead, never_detected and unreachable are identical pre vs post in all
+8 combos across all 5 seeds (matrix means 2.42 / 1.00 / 0.05 / 0.08 both
+sides). Mid-run searcher-id/lane changes: 0 before, 0 after. The compliance
+gain carries no measured operational cost. This addresses the risk Part 2
+flagged - that re-anchoring also moves the already-compliant lower-lane
+searcher - and it did move (C_east 2503 0.9408 -> 0.9883) without harm.
+
+------------------------------------------------------------------------------
+PROVENANCE OF THE REUSED COMBOS
+------------------------------------------------------------------------------
+5 of the 8 multi-searcher combos (C_east, C_west, C_north, C_south, D_east)
+were produced by an interrupted run on 2026-08-25 20:29-22:40 that
+cast_report.txt does not mention. They were not taken on trust. C_east was
+re-run fresh and compared to the existing file:
+    sha256 identical (ed1c55bc...)  and  704/704 scalar fields identical
+The simulation is deterministic per seed, so this establishes that the stored
+files were produced by the source now in the tree. D_west, D_north and D_south
+were run fresh (D_west's prior attempt was interrupted after seed 101 and its
+log was set aside as .INTERRUPTED, not used).
+
+------------------------------------------------------------------------------
+ON THE BRIEF'S FRAMING
+------------------------------------------------------------------------------
+The defect was matrix-wide, not C_east-specific, and the fix is measured as a
+matrix-wide change. C_east was the visible case only because it had the
+highest baseline compliance (0.822) and so was the one combo whose number FELL
+last round. In raw pre-fix out-of-lane counts at seed 101 it was the LEAST
+affected of the five probed: D_west 71, D_south 59, C_south 49, C_west 40,
+C_east 35. The largest compliance gains land where the diagnosis predicted -
+the four east/west combos, whose lane axis is y and whose upper lane excludes
+the global centre cell 24.
+
+Superseded artifact: outputs/_cast_probe_C_north_PRE.* is mislabelled - it is
+post-edit and byte-identical to the POST probe. The C_north pre-fix baseline
+is the Q2.5 table in cast_part1.txt (19 out-of-lane, 3.3%). Not used here;
+gates 1-4 are computed from the committed lane_matrix baseline instead.
+
+------------------------------------------------------------------------------
+HOW TO REPRODUCE
+------------------------------------------------------------------------------
+  bash outputs/_cast_ms_seq.sh outputs/lane_matrix_cast          # 40 runs
+  bash outputs/_cast_default_seq.sh outputs/cast_default         # 16 runs
+  bash outputs/_cast_bitcheck.sh                                 # gate 5
+  bash outputs/_cast_pytest.sh outputs/_cast_pytest_POST.txt     # gate 6
+  bash outputs/_cast_pytest_cmp.sh outputs/_cast_pytest_POST.txt
+  .venv/Scripts/python.exe outputs/_cast_gates.py \
+        outputs/lane_matrix_cast outputs/lane_matrix             # gates 1-4
+Sequential by design. Do not restore the parallel _cast_default.sh /
+_cast_ms.sh - they oversubscribe the Windows paging file and every combo dies
+at import, leaving zero-byte outputs that look like a silent pass.

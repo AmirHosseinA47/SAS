@@ -3870,8 +3870,34 @@ fire_cells=fire_cells, smoke_cells=smoke_cells, step_index=step_index,
                     or bool(wind_state.get("force_coverage_escape"))
                 )
             ):
+                # _gradual_escape_target anchors on the MIDPOINT of the bounds
+                # it is handed (:1383-1384) and clamps its result back into
+                # that same box (:1392-1393). Handing it the global grid
+                # therefore aims every searcher at the one global centre cell,
+                # which lies outside the lane of every searcher whose lane does
+                # not contain it - and is the same cell for all of them. Handing
+                # it the searcher's OWN lane re-anchors the identical geometry
+                # on the lane midpoint. No candidate filtering is involved
+                # because this path has no candidate set: it is arithmetic, and
+                # the bounds are the anchor.
+                #
+                # lane is None whenever n <= 1 (_searcher_crosswind_lane:344),
+                # in which case the arguments below are exactly the ones passed
+                # before this change. The span guard keeps the +/-1 inset at
+                # :1392-1393 (and the hazard sidestep at :1394-1398) inside a
+                # lane; for a lane narrower than 3 cells it falls back to the
+                # previous global behaviour rather than aim outside the lane.
+                escape_lane = _searcher_crosswind_lane(
+                    simulation, uav_id, wind_norm, x_min, x_max, y_min, y_max,
+                )
+                ex_min, ex_max, ey_min, ey_max = x_min, x_max, y_min, y_max
+                if escape_lane is not None and escape_lane[2] - escape_lane[1] >= 2:
+                    if escape_lane[0] == "y":
+                        ey_min, ey_max = escape_lane[1], escape_lane[2]
+                    elif escape_lane[0] == "x":
+                        ex_min, ex_max = escape_lane[1], escape_lane[2]
                 opp = _gradual_escape_target(
-                    ax, ay, x_min, x_max, y_min, y_max, fire_cells, smoke_cells,
+                    ax, ay, ex_min, ex_max, ey_min, ey_max, fire_cells, smoke_cells,
                 )
                 if opp is not None:
                     wind_state["escape_target"] = opp

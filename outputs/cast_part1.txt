@@ -1,0 +1,522 @@
+==============================================================================
+C_east INTERIOR-RETARGET LANE VIOLATION - PART 1 DIAGNOSIS
+==============================================================================
+Base     claude/position-rename-and-hazard-revalidation @ 534f736
+         ("Fix lane-unaware clamp in _finalize_coverage_target")
+         Verified == origin/claude/position-rename-and-hazard-revalidation.
+File     src_extension/adaptation/local_adaptation_generator.py  (only file;
+         see Q1 - the path does NOT live elsewhere)
+Written  BEFORE any source edit.  git diff --stat src_extension/ was empty at
+         the time this file was written.
+
+BRANCH NOTE (the stale-branch hazard the brief warns about, and it did fire):
+  This session opened in the worktree
+  .claude/worktrees/c-east-interior-retarget-diagnosis-daa820, whose branch
+  head was cfaeb21 - SEVEN commits behind, i.e. WITHOUT the lane-clamp fix.
+  It was fast-forwarded to 534f736 before any measurement was taken.  Every
+  number below is from 534f736.  The primary checkout E:\Projects\SAS was
+  already at 534f736 and matches origin.
+
+------------------------------------------------------------------------------
+SUMMARY OF THE ANSWER
+------------------------------------------------------------------------------
+The emitter is _gradual_escape_target (:1372-1399), reached from its ONLY call
+site :3873 inside _compute_wind_aware_search_target.  It is a pure geometric
+fallback that walks the searcher 12 cells toward ((x_min+x_max)//2,
+(y_min+y_max)//2) = (24, 24) and lands EXACTLY on that cell whenever the
+searcher is already within Manhattan 12 of it.  It is not lane-filtered and it
+has no candidate set to filter - the grid centre is baked into the arithmetic.
+
+It is NOT the _pick_global_coverage_escape_target centre fallback (:3548-3563).
+That one was measured and it does not fire: 136 emissions on C_east seed 101,
+0 out-of-lane, 0 at the centre cell.  It is also structurally unreachable on
+this route (proof in Q1.4).
+
+Chosen fix: hand _gradual_escape_target the SEARCHER'S OWN LANE BOUNDS instead
+of the global grid bounds at :3873.  Reasoning in Q4.
+
+==============================================================================
+Q1.  LOCATE THE PATH.  QUOTE IT.  IS (24,24) A GRID-CENTRE FALLBACK?
+==============================================================================
+
+Q1.1  THE EMITTER, QUOTED IN FULL
+------------------------------------------------------------------------------
+src_extension/adaptation/local_adaptation_generator.py:1372-1399
+
+  1372  def _gradual_escape_target(
+  1373      ax: float,
+  1374      ay: float,
+  1375      x_min: int,
+  1376      x_max: int,
+  1377      y_min: int,
+  1378      y_max: int,
+  1379      fire_cells: set[tuple[int, int]],
+  1380      smoke_cells: set[tuple[int, int]],
+  1381      step: float = 12.0,
+  1382  ) -> tuple[float, float]:
+  1383      cx = float((x_min + x_max) // 2)
+  1384      cy = float((y_min + y_max) // 2)
+  1385      dx, dy = cx - ax, cy - ay
+  1386      dist = abs(dx) + abs(dy)
+  1387      if dist <= 1.0:
+  1388          return (cx, cy)
+  1389      scale = min(1.0, step / dist)
+  1390      tx = int(round(ax + dx * scale))
+  1391      ty = int(round(ay + dy * scale))
+  1392      tx = max(x_min + 1, min(x_max - 1, tx))
+  1393      ty = max(y_min + 1, min(y_max - 1, ty))
+  1394      if (tx, ty) in fire_cells or (tx, ty) in smoke_cells:
+  1395          for direction in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+  1396              nx, ny = tx + direction[0], ty + direction[1]
+  1397              if (nx, ny) not in fire_cells and (nx, ny) not in smoke_cells:
+  1398                  return (float(nx), float(ny))
+  1399      return (float(tx), float(ty))
+
+and its ONE call site, :3865-3887, inside _compute_wind_aware_search_target:
+
+  3865          if bool(wind_state.get("force_coverage_escape")) or pocket >= WIND_POCKET_CAMP_THRESHOLD:
+  3866              if (
+  3867                  not _coverage_mode_active(wind_state)
+  3868                  and (
+  3869                      pocket >= WIND_POCKET_CAMP_THRESHOLD
+  3870                      or bool(wind_state.get("force_coverage_escape"))
+  3871                  )
+  3872              ):
+  3873                  opp = _gradual_escape_target(
+  3874                      ax, ay, x_min, x_max, y_min, y_max, fire_cells, smoke_cells,
+  3875                  )
+  3876                  if opp is not None:
+  3877                      wind_state["escape_target"] = opp
+  3878                      wind_state["corridor_targets"] = [opp]
+  3879                      wind_state["corridor_index"] = 0
+  3880                      wind_state["force_sweep"] = False
+  3881                      wind_state["hazard_buffer_level"] = 2
+  3882                      _record_wind_search_target(wind_state, opp)
+  3883                      _record_corridor_target(wind_state, opp)
+  3884                      return _finalize_coverage_target(
+  3885                          opp, wind_state, x_min=x_min, y_min=y_min, y_max=y_max, x_max=x_max, ax=ax, ay=ay,
+  3886  fire_cells=fire_cells, smoke_cells=smoke_cells, step_index=step_index,
+  3887                      )
+
+`grep -rn "_gradual_escape_target"` over the whole repo returns exactly two
+hits: the definition at :1372 and this call at :3873.  Nothing outside
+src_extension/adaptation/local_adaptation_generator.py refers to it.  The path
+does NOT live elsewhere, so the brief's file restriction holds.
+
+Q1.2  YES - IT IS A GRID-CENTRE FALLBACK, AND WHICH ONE
+------------------------------------------------------------------------------
+The grid is 50x50, so _grid_bounds gives x_min=y_min=0, x_max=y_max=49 and
+lines :1383-1384 evaluate to cx = cy = 49 // 2 = 24.  (24.0, 24.0) is that
+cell.
+
+It is the same FAMILY as the position-rename round's ax/ay default but a
+DIFFERENT expression.  All grid-centre expressions in the file:
+
+    :3742-3743   (x_min + x_max) / 2.0      -> 24.5   true float midpoint;
+                                                      the ax/ay default used
+                                                      when uav_pos is None
+    :1383-1384   (x_min + x_max) // 2       -> 24     <-- THIS ONE
+    :3553-3554   int((x_min + x_max) // 2)  -> 24     _pick_global fallback
+    :1413-1424   (x_min + x_max) // 2       -> 24     _opposite_quadrant_...
+                                                      (dead code, no callers)
+    :770         (y_min + y_max) // 2       -> 24     _grid_y_half_split
+
+The observed cell is 24.0, not 24.5, so the ax/ay default at :3742 is excluded
+on its value alone.  It is also excluded on its guard: it only applies when
+_read_uav_position returns None, and every violating record carries a real
+grid_pos.
+
+It is NOT _corridor_diversity_failure's interior fallback.  _corridor_diversity_
+failure (:732) returns a bool; it has no target of its own.  Its only effect on
+a target is `corridor_fail and cx > corridor_x_cap` inside
+_pick_global_coverage_escape_target - and that function is shown below not to
+be the emitter.
+
+Q1.3  WHY THE CELL IS EXACTLY THE CENTRE, NOT MERELY NEAR IT
+------------------------------------------------------------------------------
+Two ways to land exactly on (24, 24):
+
+  (a) dist = |24-ax| + |24-ay| <= 12   ->  scale = min(1.0, 12/dist) = 1.0
+      ->  tx = round(ax + (24-ax)*1.0) = 24, ty = 24.  The "gradual" step is
+      not gradual at all inside a radius of 12; it snaps to the centre.
+  (b) dist <= 1.0  ->  early return (cx, cy) at :1388.
+
+And once the searcher has been dragged onto the centre ROW, it is stuck there:
+dy = 24 - ay = 0, so ty = round(ay + 0*scale) = ay = 24 for every subsequent
+call regardless of scale.  This is visible in the C_east trace below, where the
+x coordinate wanders (21, 23, 24, 25) while y is pinned at 24.0 for all 35
+violations.
+
+Q1.4  WHICH FUNCTION RETURNS IT, AND UNDER WHAT CONDITION IT FIRES INSTEAD OF
+      THE COVERAGE-MODE CANDIDATE LOOP
+------------------------------------------------------------------------------
+Structural proof that this branch, not the candidate loop, is taken:
+
+  * _coverage_mode_active (:751-767) has exactly ONE False exit:
+        unresolved = int(wind_state.get("unresolved_victim_count", 0) or 0)
+        if unresolved <= 0:
+            return False
+    every other path falls through to `return True`.  So
+        cov_active == False   <==>   unresolved_victim_count == 0
+    i.e. every managed victim is in a terminal state (rescued / dead /
+    unreachable).  Nothing else can turn coverage mode off.
+
+  * force_coverage_escape is STICKY.  _apply_unresolved_coverage_mode (:1215)
+    sets it True while coverage is active but has no path that clears it when
+    unresolved later drops to 0 - it simply returns False early.  So after the
+    last victim resolves, the flag survives and the outer gate at :3865 keeps
+    firing.
+
+  * Inside :3865, the inner condition at :3866-3872 is
+        not cov_active AND (pocket >= 20 OR force_coverage_escape)
+    whose second conjunct is IDENTICAL to the outer gate.  Therefore whenever
+    the outer gate is open and cov_active is False, the inner branch is
+    ALWAYS taken.
+
+  * _gradual_escape_target never returns None (:1388, :1398, :1399 all return
+    a tuple), so `if opp is not None` at :3876 is always true, and :3884
+    RETURNS.  Control never reaches self._pick_global_coverage_escape_target
+    at :3888.
+
+  => When cov_active is False, _pick_global_coverage_escape_target is
+     unreachable from this site.  Its other call site (:3765) is guarded by
+     `if coverage_mode and _corridor_diversity_failure(...)`, which requires
+     coverage_mode True.  So the :3548 centre fallback CANNOT produce a
+     cov_active=False emission at all.  The brief's residual signature
+     (cov_active=False) therefore identifies _gradual_escape_target uniquely.
+
+  * The coverage-mode candidate loops at :3466 and :3640 are not merely
+    outranked here - they are not consulted.  :3884 returns before
+    _generate_corridor_waypoints (:3930 onward) is ever reached, and
+    _pick_global_coverage_escape_target is skipped as shown.  This is why
+    _lane_allows_cell never gets a chance to act: there is no candidate set.
+
+Q1.5  EMPIRICAL CONFIRMATION  (outputs/_cast_probe.py, C/east seed 101, 240
+      steps, 5 UAV = 3 trackers + 2 searchers)
+------------------------------------------------------------------------------
+The probe wraps _compute_wind_aware_search_target, _gradual_escape_target and
+_pick_global_coverage_escape_target and attributes every emitted target to the
+helper whose return value it equals.  Read-only; no simulation logic touched.
+
+  emissions                                595
+  out-of-lane                               35  (5.9%)
+  out-of-lane by cov_active                 {False: 35}      <-- all of them
+  out-of-lane by source     {corridor_or_commit: 18, gradual_escape: 17}
+  _pick_global emissions                   136, out-of-lane 0, at centre 0
+  uav 2503 lane y[0..24]   emissions 276,  out-of-lane   0  (0.0%)
+  uav 2504 lane y[25..49]  emissions 320,  out-of-lane  35 (11.0%)
+
+  All 35 out-of-lane targets of uav 2504, in order:
+
+    step=68   (24,24) gradual_escape      | step=88   (24,24) replay
+    step=69   (24,24) replay              | step=89   (24,24) gradual_escape
+    step=70   (24,24) gradual_escape      | step=90   (24,24) replay
+    step=72   (24,24) gradual_escape      | step=91   (24,24) replay
+    step=74   (24,24) gradual_escape      | step=92   (24,24) gradual_escape
+    step=76   (24,24) gradual_escape      | step=94   (24,24) gradual_escape
+    step=77   (24,24) replay              | step=124  (21,24) gradual_escape
+    step=78   (24,24) replay              | step=125  (21,24) replay
+    step=79   (24,24) gradual_escape      | step=126  (21,24) replay
+    step=80   (24,24) replay              | step=127  (23,24) gradual_escape
+    step=81   (24,24) replay              | step=128  (23,24) replay
+    step=82   (24,24) gradual_escape      | step=129  (23,24) replay
+    step=84   (24,24) gradual_escape      | step=130  (25,24) gradual_escape
+    step=86   (24,24) gradual_escape      | step=131  (25,24) replay
+    step=87   (24,24) replay              | step=132  (25,24) replay
+                                          | step=133  (25,24) gradual_escape
+                                          | step=134  (25,24) replay
+    every one: cov=False, unres=0,        | step=135  (25,24) replay
+    force_coverage_escape=True            | step=136  (25,24) replay
+                                          | step=137  (25,24) gradual_escape
+
+  distinct out-of-lane targets: (21,24) (23,24) (24,24) (25,24)
+      - y is 24.0 in 35 / 35.  The violation is entirely a y-axis violation,
+        on the axis this east-wind lane partitions, one row below the lane.
+
+  "replay" = the emission came from the escape_target re-commit at :3843-3859,
+  which re-issues wind_state["escape_target"] - the value stored at :3877 by
+  the immediately preceding gradual escape.  18 / 18 of the replayed
+  out-of-lane targets were previously produced by _gradual_escape_target, so
+  100% of the 35 violations trace to that one function.
+
+  unresolved-victim transitions for uav 2504:
+      step 1  -> 0   (registry not yet populated)
+      step 2  -> 3
+      step 43 -> 2
+      step 53 -> 1
+      step 67 -> 0   <-- last victim resolves
+      first out-of-lane emission: step 68.
+
+  The defect switches on ONE STEP after the last victim reaches a terminal
+  state.  That is the causal link, measured, not inferred.
+
+==============================================================================
+Q2.  WHY C_east SPECIFICALLY?
+==============================================================================
+Three separable effects.  Two are real, one is not what it looks like.
+
+Q2.1  WHAT MAKES COVERAGE MODE INACTIVE - AND IT IS A SCENARIO-SIZE EFFECT
+------------------------------------------------------------------------------
+cov_active == False is exactly unresolved_victim_count == 0 (Q1.4).  It is not
+a mode the searcher chooses; it is "there is no unresolved victim left".  So
+the size of the cov-inactive tail is set by how fast the scenario finishes its
+victims:
+
+      scenario   victims   firefighters   UAV split
+      C              3           3        5 = 3 trackers + 2 searchers
+      D              4           2        4 = 2 trackers + 2 searchers
+
+C has FEWER victims and MORE firefighters than D.  It resolves its whole victim
+set earlier, so a larger share of a fixed 240-step run is spent with
+unresolved == 0 - which is precisely the regime in which the defective branch
+is the only branch.  This is the scenario-size effect the brief hypothesised,
+and it is confirmed by the cov_active=False share per combo in the table below.
+
+Q2.2  WHY THE UPPER LANE AND NOT THE LOWER ONE - THE AXIS EFFECT
+------------------------------------------------------------------------------
+_searcher_crosswind_lane splits a 50-cell span into [0..24] and [25..49].  The
+centre cell 24 lies INSIDE lane index 0 and OUTSIDE lane index 1, on either
+axis.  So the identical bug is invisible on the searcher that owns the lower
+lane and maximally visible on the one that owns the upper lane.  That
+asymmetry is exactly what the committed post-clamp-fix matrix shows
+(outputs/lane_matrix, 5 seeds per combo):
+
+  combo       lane0 (contains 24)    lane1 (excludes 24)    combo mean
+  C_east      2503=0.9408            2504=0.4867            0.7137
+  C_west      2503=0.9508            2504=0.5125            0.7317
+  C_north     2503=0.7217            2504=0.7517            0.7367
+  C_south     2503=0.7025            2504=0.9283            0.8154
+  D_east      2502=0.9842            2503=0.7200            0.8521
+  D_west      2502=0.9683            2503=0.7750            0.8717
+  D_north     2502=0.7508            2503=0.7358            0.7433
+  D_south     2502=0.7000            2503=0.8900            0.7950
+  ALL           0.8399                 0.7250                0.7824
+
+  On all four EAST/WEST combos (lane axis "y") lane0 is 0.94-0.98 and lane1 is
+  0.49-0.78 - a 0.19-0.45 gap in the direction the centre-anchor predicts.  On
+  the NORTH/SOUTH combos (lane axis "x") the gap is small and not consistently
+  signed.  East/west is where this defect bites.
+
+  It also localises the C_east regression exactly.  Pre-clamp-fix vs
+  post-clamp-fix, per searcher:
+      2503 (lower)  0.9392 -> 0.9408   unchanged
+      2504 (upper)  0.7050 -> 0.4867   -0.218
+  The whole of C_east's 0.822 -> 0.714 is the upper-lane searcher, i.e. the
+  searcher whose lane excludes y=24.
+
+Q2.3  IT IS NOT A WIND-SPECIFIC EFFECT IN THE PHYSICS SENSE
+------------------------------------------------------------------------------
+Nothing in _gradual_escape_target reads the wind.  Wind matters only because it
+selects the lane AXIS in _searcher_crosswind_lane (:350-357): east/west -> "y"
+lanes, north/south -> "x" lanes.  The centre anchor pins the coordinate on
+whichever axis it is; it becomes a lane violation only when that axis is the
+partitioned one AND the lane is the upper one.  East/west therefore shows it as
+a y violation, which is the axis the lane owns.
+
+Q2.4  WHY C_east AND NOT C_west, WHICH HAS THE SAME STRUCTURE
+------------------------------------------------------------------------------
+It is not that C_east is uniquely broken - C_west has the same signature
+(0.9508 / 0.5125).  C_east is singled out because it is the one combo whose
+compliance FELL relative to its pre-clamp-fix baseline: it began at 0.822, the
+highest of the eight, and the clamp fix removed a y-commit that had happened to
+push the upper-lane searcher north, i.e. away from y=24 and back into its own
+lane.  Removing the wrong mechanism exposed the centre anchor underneath it.
+C_west started at 0.633 and still improved to 0.732 despite carrying the same
+defect.  So C_east is the visible case, not a separate cause.
+
+Q2.5  PER-COMBO FIRING FREQUENCY  (seed 101, 240 steps - the "before" column
+      for Part 3 item 5)
+------------------------------------------------------------------------------
+outputs/_cast_probe.py run on all 8 multi-searcher combos, seed 101, 240 steps.
+Attribution rule: an emission counts as "direct" when the emitted target IS a
+_gradual_escape_target return, and as "replay" when it is a corridor_or_commit
+emission whose target the SAME searcher already emitted from a gradual source -
+i.e. the escape_target re-commit at :3843-3859 re-issuing the value stored at
+:3877.  "unattributed" is everything else.
+
+  combo      emis | out-of-lane | attributed to _gradual_escape_target | unattr | pick | cov=False | victims
+               n  |   n     %   |  direct  replay  TOTAL      %       |    n   | out  |     %     | done@
+  ---------------------------------------------------------------------------------------------------------
+  C_east      595 |   35    5.9 |     17      18     35     100.0     |    0   |   0  |     77.1  |  66
+  C_west      515 |   40    7.8 |     25      15     40     100.0     |    0   |   0  |     43.3  | 144
+  C_north     572 |   19    3.3 |      8      11     19     100.0     |    0   |   0  |     52.1  | 126
+  C_south     524 |   49    9.4 |     27      22     49     100.0     |    0   |   0  |     64.9  |  90
+  D_east      497 |   21    4.2 |     13       8     21     100.0     |    0   |   0  |     32.8  | 165
+  D_west      527 |   71   13.5 |     49      22     71     100.0     |    0   |   0  |     63.6  |  94
+  D_north     544 |   13    2.4 |      4       9     13     100.0     |    0   |   0  |     36.8  | 166
+  D_south     491 |   59   12.0 |     15      44     59     100.0     |    0   |   0  |     48.9  | 141
+  ---------------------------------------------------------------------------------------------------------
+  TOTAL      4265 |  307    7.2 |    158     149    307     100.0     |    0   |   0  |
+
+  307 of 307 out-of-lane emissions, in every one of the eight combos, come from
+  _gradual_escape_target or from a re-commit of one of its targets.  There is
+  no second mechanism to find.  _pick_global_coverage_escape_target emits
+  2,007 targets across the eight combos and NOT ONE of them is out of lane -
+  the lane filter at :3466 works, which is why the brief's instruction to leave
+  it alone is the right call.
+
+  distinct out-of-lane targets per combo:
+    C_east   (21,24) (23,24) (24,24) (25,24)
+    C_west   (24,24)
+    C_north  (24,45)
+    C_south  (24,24) (24,45)
+    D_east   (24,24)
+    D_west   (24,24)
+    D_north  (24,4)
+    D_south  (21,32) (22,30) (22,32) (22,34) (23,32) (23,33) (23,36)
+             (24,24) (24,26) (24,34)
+
+  READING THE TARGETS.  On east/west the lane axis is y and the violating
+  coordinate is y=24 - the anchor cell itself.  On north/south the lane axis is
+  x and the violating coordinate is x=24, while the y coordinate is whatever
+  _finalize_coverage_target's y-commit produced (45 on C_north, 4 on D_north).
+  That y rewrite is CORRECT and deliberate: for an x-lane searcher y is the
+  free axis, and the lane-clamp round left the y-commit fully active there on
+  purpose.  So the north-wind targets are the same defect with the free
+  coordinate legitimately moved, not a different one.  D_south's spread
+  (21..24) is the same anchor caught in flight: once the searcher has been
+  pulled below x=25 it sits near the centre column and
+  tx = round(ax + (24-ax)*scale) with scale < 1 lands on 21-24 instead of
+  exactly 24.  Counting only exact-24 cells would undercount the defect;
+  268 / 307 sit exactly on 24, the remaining 39 are in-flight values of the
+  same walk.
+
+Q2.6  SO IS IT SCENARIO SIZE, WIND, OR STRUCTURE?  ALL THREE, RANKED
+------------------------------------------------------------------------------
+  STRUCTURAL (dominant).  cov_active=False is the enabling condition and it is
+  purely "no unresolved victim remains".  Every combo spends 33-77% of its
+  emissions in that state, and the defect is the only target source there.
+  This is not specific to C or to east at all - it is 100% of the out-of-lane
+  emissions in all eight combos.
+
+  SCENARIO SIZE (real, secondary).  C reaches the all-terminal state earlier
+  than D on three of four winds (66 vs 165 on east, 90 vs 141 on south,
+  126 vs 166 on north; west is the exception, 144 vs 94).  On east - the combo
+  in question - C is all-terminal at step 66 against D's 165, so C_east spends
+  77.1% of its emissions in the broken regime, the highest of the eight, versus
+  32.8% for D_east, the lowest.  That is the scenario-size effect, and C_east
+  is its extreme.
+
+  WIND (real, but only as axis selection).  Wind picks the lane axis, and the
+  anchor pins the coordinate on whichever axis it is.  It becomes a lane
+  violation when the searcher owns the upper lane.  The visible consequence is
+  the east/west compliance split in Q2.2.
+
+
+==============================================================================
+Q3.  DOES THIS PATH HAVE ACCESS TO LANE BOUNDS WHERE IT COMPUTES ITS TARGET?
+==============================================================================
+_gradual_escape_target itself: NO.  Its whole input is (ax, ay), the four grid
+bounds, the two hazard sets and a step size.  It has no uav_id, no simulation
+and no wind, so it cannot derive a lane.
+
+Its CALL SITE: YES, completely, with nothing to thread through.  At :3873 the
+enclosing _compute_wind_aware_search_target already holds every input
+_searcher_crosswind_lane needs, and has already called it once in this same
+invocation:
+
+  :3740   x_min, x_max, y_min, y_max = self._grid_bounds(runtime_models)
+  :3744   simulation = _simulation_from_runtime(runtime_models)
+  :3747   _set_active_lane_axis(
+  :3748       wind_state,
+  :3749       _searcher_crosswind_lane(
+  :3750           simulation, uav_id,
+  :3751           normalize_wind_direction(wind_direction),
+  :3752-55        x_min, x_max, y_min, y_max,
+  :3756       ),
+  :3757   )
+  :3819   wind_norm = normalize_wind_direction(wind_direction)
+
+The lane tuple ("y", 25, 49) is therefore computed at :3749 and then THROWN
+AWAY - _set_active_lane_axis (:821-824) keeps only lane[0], the axis letter,
+because that is all the previous round needed.  The bounds are discarded one
+statement before the code that needs them.
+
+This is the opposite of the situation the lane-clamp round faced with
+_finalize_coverage_target.  That one is a module-level function with three
+call sites and no access to simulation or uav_id, which is why the axis had to
+be carried through wind_state.  Here nothing needs threading: no new parameter,
+no new wind_state key, no signature change.  Two options, both local:
+
+  (i)  bind the :3749 expression to a local and reuse it at :3873;
+  (ii) call _searcher_crosswind_lane again at :3873 using wind_norm (:3819).
+
+(ii) is preferred and is what will be implemented, for one reason: it does not
+edit a single line the lane-clamp round wrote, which the brief forbids.  The
+cost is one extra call to a pure function on a branch that only runs when
+coverage is inactive.  _searcher_crosswind_lane -> resolve_victim_searcher_uav_
+ids (:276-316) only reads model attributes; it mutates nothing and draws no
+randomness, so re-calling it is free of side effects.
+
+==============================================================================
+Q4.  IS A LANE-AWARE FIX THE RIGHT SHAPE, OR IS THERE A SIMPLER ONE?
+==============================================================================
+DECISION, taken before any code was written and before any post-fix run:
+
+  Re-anchor the fallback on the searcher's own lane by passing the LANE's
+  bounds to _gradual_escape_target at :3873 instead of the global grid bounds.
+  Do NOT turn the fallback into a filtered candidate search.
+
+That is the brief's option "constrain the fallback point to the searcher's own
+lane midpoint ... no filtering logic needed".  Five reasons from Q1-Q3:
+
+1.  THERE IS NOTHING TO FILTER.  _lane_allows_cell is a candidate filter and
+    this path has no candidates.  It is 17 lines of arithmetic with a single
+    outcome.  Applying a filter would mean first inventing a candidate set,
+    i.e. writing a second _pick_global_coverage_escape_target.
+
+2.  THE ANCHOR IS THE WHOLE BUG, AND BOUNDS ARE THE ANCHOR.  cx/cy at
+    :1383-1384 are literally the midpoint of the bounds handed in.  Passing
+    ("y", 25, 49) makes cy = (25+49)//2 = 37, and the output clamp at :1393
+    becomes ty = max(26, min(48, ty)), which is inside the lane by
+    construction.  The correction lands at the source of the coordinate, not
+    on its way out.
+
+3.  THIS IS NOT THE MISTAKE THE LAST ROUND REJECTED.  Last round option (A)
+    ("clamp the clamp") was rejected because clipping the emitted y left the
+    candidate loop's own commit / y_force_min filters unsatisfiable, so the
+    candidate set stayed empty and the searcher stayed on a degenerate
+    fallback: the metric would move while the failure path stayed intact.
+    That objection is about TWO REPRESENTATIONS DISAGREEING - a latched state
+    read in one place and clipped in another.  _gradual_escape_target has no
+    latch and no state at all: it is a pure function of (ax, ay, bounds).
+    Change the bounds and the entire computation changes, clamp included.
+    There is no second representation left to disagree.
+
+4.  THE ALTERNATIVE IS FORBIDDEN AND UNNECESSARY.  The lane-filtered candidate
+    search already exists as _pick_global_coverage_escape_target, which the
+    brief puts out of scope - and measurement says it is not the defect
+    anyway: 136 emissions on C_east seed 101, 0 out-of-lane, 0 at the centre.
+    Duplicating a correct function to replace a broken one is worse than
+    fixing the broken one.
+
+5.  IT ALSO REMOVES THE DUPLICATE-TARGET CONVERGENCE.  Today every searcher
+    computes the same global centre, so two searchers on the same step hold
+    the identical target (7 / 119 steps in the lane-clamp round's east probe,
+    all of them (24,24)).  Lane bounds give each searcher a different anchor,
+    which is the point of the partitioning.
+
+SUFFICIENCY - what this fix does and does not claim:
+  It fixes 100% of the measured C_east out-of-lane emissions, because 35/35
+  trace to _gradual_escape_target (17 direct + 18 replays of a stored gradual
+  target, Q1.5).  It does NOT claim to fix lane compliance to 1.0: compliance
+  is POSITION-based, and victim-pursuit targets and other non-search movement
+  are outside this path entirely - the same limit the previous round recorded.
+
+WHAT WILL NOT BE TOUCHED (brief's constraints):
+  _lane_allows_cell, the candidate loops at :3466 and :3640, and every line the
+  lane-clamp round wrote (_update_coverage_y_commit's y-lane gate,
+  _finalize_coverage_target's x-lane gate, _active_lane_axis /
+  _set_active_lane_axis and their call sites at :3460, :3634, :3747).  Also not
+  touched: the fix14 x-clamp reachability change and the target-hold mechanism.
+  The :3548 _pick_global centre fallback is left alone deliberately - it was
+  measured (0 firings) and Q1.4 shows it cannot produce the reported signature.
+
+THE n <= 1 CASE - HOW IT IS KEPT PROVABLY INERT:
+  _searcher_crosswind_lane returns a literal None when len(ids) <= 1 (:344-345)
+  and on ValueError (:348-349).  The new code is guarded on `lane is not None`,
+  so at n <= 1 the arguments passed to _gradual_escape_target are byte-for-byte
+  the ones passed today and control flow is identical.  The only added work is
+  one call to a read-only function that consumes no randomness.  This is
+  argued semantically here and will be proven empirically in Part 3 item 6 by
+  a bit-identical 16-combo default matrix.
