@@ -32,6 +32,7 @@ _MAINTAIN_RESCUE_MARKERS = (
     "hold_rescue",
     "keep_rescue_state",
 )
+_DELAY_CANCEL_MARKERS = ("delay", "cancel", "postpone", "abort")
 _LOW_VICTIM_CONFIDENCE = 0.45
 _HIGH_UNCERTAINTY = 0.55
 _HIGH_ROUTE_RISK = 0.55
@@ -271,7 +272,14 @@ def _is_confirmation_option(option_type: str, params: dict[str, Any]) -> bool:
 
 
 def _is_delay_or_cancel_option(option_type: str, params: dict[str, Any]) -> bool:
-    if any(token in option_type for token in ("delay", "cancel", "postpone", "abort")):
+    if any(token in option_type for token in _DELAY_CANCEL_MARKERS):
+        return True
+    # The real options carry the decision as a VALUE under "rescue_action"
+    # (``rescue_decision`` + ``{"rescue_action": "delay_rescue"}``), not as a key and
+    # not in ``option_type`` — match the same way ``_rescue_action`` and
+    # ``RescueExecutor._classify_rescue_action`` already do.
+    action = str(params.get("rescue_action", "") or "").strip().lower()
+    if any(token in action for token in _DELAY_CANCEL_MARKERS):
         return True
     return _is_truthy(params.get("delay_rescue")) or _is_truthy(params.get("postpone_rescue")) or _is_truthy(
         params.get("cancel_rescue")

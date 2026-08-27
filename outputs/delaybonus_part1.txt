@@ -1,0 +1,596 @@
+================================================================================
+PART 1 - RE-VERIFY AND DIAGNOSE: dead _DELAY_CANCEL_BONUS in rescue_planner.py
+================================================================================
+
+ENVIRONMENT / PROVENANCE
+  sys.version   : 3.10.11 (tags/v3.10.11:7d4cc5a, Apr  5 2023, 00:38:17) [MSC v.1929 64 bit (AMD64)]
+  mesa.__version__: 1.2.1
+  interpreter   : E:/Projects/SAS/.venv/Scripts/python.exe   (the parent .venv; no worktree-local .venv)
+  worktree      : E:/Projects/SAS/.claude/worktrees/xclamp-fix-artifacts-b1d79c
+  HEAD          : d6a964acef4db0de0f3a4836a4a1ede03ec13cf5
+                  "Re-anchor the gradual-escape fallback on the searcher's lane: all six gates pass"
+                  == origin/claude/position-rename-and-hazard-revalidation  (the branch named in the brief)
+
+  BRANCH NOTE (deviation from the brief, resolved):
+    The worktree was initially checked out at origin/main (cfaeb21). The brief names
+    claude/position-rename-and-hazard-revalidation. Relationship measured:
+        git merge-base origin/main origin/claude/position-rename-... -> cfaeb21
+        origin/main IS an ancestor; position-rename is 8 commits AHEAD.
+    rescue_planner.py is BYTE-IDENTICAL between the two:
+        git diff --stat cfaeb21 d6a964a -- src_extension/planning/rescue_planner.py  -> empty
+    The worktree was fast-forwarded to d6a964a (clean, no conflicts) so that measurement
+    matches the brief. This choice is corroborated by the pytest baseline below.
+
+  PYTEST TRUE BASELINE (full suite, this venv):
+      on d6a964a (position-rename) : 8 failed / 427 passed   <-- matches the brief's
+                                                                 "last known: 8 failed / 427 passed"
+      on cfaeb21 (main)            : 9 failed / 426 passed
+    The extra failure on main is tests/test_wind_aware_trajectory_regression.py::
+    test_east_vs_west_trajectories_diverge_over_40_steps, which position-rename fixes.
+    The brief's stated baseline is therefore the position-rename baseline - further
+    confirmation that d6a964a is the intended base.
+
+    The 8 pre-existing failures on d6a964a:
+      tests/test_behavior_regression.py::test_descriptive_next_action_uses_target_position
+      tests/test_dashboard_panel.py::test_dashboard_panel_render_returns_string
+      tests/test_firefighter_dispatch_replacement.py::test_no_replacement_available_marks_victim_unreachable_once
+      tests/test_rescue_planner_authority.py::test_no_firefighter_planner_delay_or_unreachable
+      tests/test_uav_sector_assignment.py::test_fire_tracker_uavs_receive_different_target_sets
+      tests/test_uav_sector_assignment.py::test_fire_tracker_still_overridden_by_search_mode_fail_safe
+      tests/test_wind_aware_trajectory_regression.py::test_north_vs_south_trajectories_diverge_over_40_steps
+      tests/test_wind_aware_victim_search.py::test_victim_search_wind_aware_action_when_downwind_exists
+
+    NOTE on the 4th: test_no_firefighter_planner_delay_or_unreachable asserts
+    rescue_action == "delay" from select_rescue_assignment() - the PHYSICAL dispatch
+    path (rescue_planner.py:515), which does NOT call _is_delay_or_cancel_option.
+    It is pre-existing, unrelated to this defect, and is not expected to change.
+
+
+================================================================================
+Q1. _is_delay_or_cancel_option AS IT EXISTS NOW - both failure modes CONFIRMED
+================================================================================
+
+Verbatim, src_extension/planning/rescue_planner.py lines 273-278 (HEAD = d6a964a):
+
+    def _is_delay_or_cancel_option(option_type: str, params: dict[str, Any]) -> bool:
+        if any(token in option_type for token in ("delay", "cancel", "postpone", "abort")):
+            return True
+        return _is_truthy(params.get("delay_rescue")) or _is_truthy(params.get("postpone_rescue")) or _is_truthy(
+            params.get("cancel_rescue")
+        )
+
+Related constants and call sites:
+    rescue_planner.py:40   _DELAY_CANCEL_BONUS = 0.75
+    rescue_planner.py:37   _HIGH_ROUTE_RISK    = 0.55
+    rescue_planner.py:38   _HIGH_COMM_RISK     = 0.55
+    rescue_planner.py:261  gate in _preference_adjustment  (the scoring effect)
+    rescue_planner.py:344  gate in _preference_note        (cosmetic explanation text only)
+
+BOTH FAILURE MODES FROM THE BRIEF STILL HOLD, unchanged:
+
+  (a) option_type substring match fails.
+      The real option_type is "rescue_decision", which contains none of
+      "delay" / "cancel" / "postpone" / "abort".
+
+  (b) params KEY-presence match fails.
+      params carries {"rescue_action": "delay_rescue"} - "delay_rescue" is a VALUE
+      under the key "rescue_action", not a KEY. params.get("delay_rescue") is None.
+      Across all of src_extension/, the strings "delay_rescue", "postpone_rescue" and
+      "cancel_rescue" never appear as a dict key or subscript; the only .get() calls on
+      them are lines 276-277 - this predicate itself.
+
+MEASURED, on real generator output (all 10 options of the real rescue space):
+
+  option_id                                              option_type             rescue_action          now
+  ----------------------------------------------------------------------------------------------------------
+  rescue_victim_handling_confirm_victim                  victim_handling         (none)                 False
+  rescue_victim_handling_track_victim                    victim_handling         (none)                 False
+  rescue_victim_handling_ignore_low_confidence_detection victim_handling         (none)                 False
+  rescue_decision_delay_rescue                           rescue_decision         delay_rescue           False
+  rescue_decision_cancel_rescue                          rescue_decision         cancel_rescue          False
+  rescue_decision_escalate_to_operator                   rescue_decision         escalate_to_operator   False
+  rescue_firefighter_assignment_nearest                  firefighter_assignment  (none)                 False
+  rescue_route_assign_safest_route                       route_planning          (none)                 False
+  rescue_route_uncertainty_aware_routing                 route_planning          (none)                 False
+  rescue_stability_maintain_current_rescue_state         stability_control       (none)                 False
+
+  _is_delay_or_cancel_option returns False for 10/10 real rescue options, including
+  both of the ones it exists to identify.
+
+  Driven with signals set maximally favourable to BOTH bonuses
+  (victim_confidence=0.05, uncertainty=0.99, route_risk=0.99, communication_risk=0.99 -
+  i.e. every gate at rescue_planner.py:252-261 forced open), _preference_adjustment
+  returns 0.0 for every option and _preference_note returns "" for every option.
+
+ONE NUANCE THE BRIEF DID NOT HAVE (does not change the verdict):
+  The substring branch is not unreachable in the abstract. fail_safe_planner.py:553
+  builds option_type = f"fail_safe_{strategy.action}", and fallback_strategy.py:173-187
+  defines actions delay_rescue / cancel_unsafe_rescue, yielding the real option_types
+  "fail_safe_delay_rescue" and "fail_safe_cancel_unsafe_rescue" - which DO satisfy the
+  predicate. They never reach it: _NON_RESCUE_TYPE_MARKERS (rescue_planner.py:28)
+  contains "fail_safe", so _is_clearly_non_rescue() strips them at rescue_planner.py:78,
+  before _select_rescue_option runs. Verified at runtime:
+      fail_safe_delay_rescue -> _is_delay_or_cancel_option=True
+                                _is_rescue_option=False, _is_clearly_non_rescue=True
+  So the predicate is dead for everything the rescue planner can actually see.
+
+
+================================================================================
+Q2. THE REAL DELAY AND CANCEL OPTION CONSTRUCTION
+================================================================================
+
+Source: src_extension/adaptation/rescue_adaptation_generator.py
+        ._generate_rescue_decision_options  (lines 204-300)
+
+  target_entity = read_value(rescue_analysis_result, "target_entity", "rescue_target")   # line 233
+
+  decision_options = [
+      ("delay_rescue",  "delay_rescue",
+       {"preferred_under_unreliable_communication": unreliable_communication,
+        "preferred_under_failsafe": failsafe_restricted},
+       "Delay rescue decision", ...),
+      ("cancel_rescue", "cancel_rescue",
+       {"preferred_under_failsafe": failsafe_restricted,
+        "unreachable_candidate": failsafe_restricted},
+       "Cancel rescue decision", ...),
+      ("escalate_to_operator", "escalate_to_operator",
+       {"preferred_under_failsafe": failsafe_restricted},
+       "Escalate rescue decision to operator", ...),
+  ]
+
+  for option_id, action, parameters, ... in decision_options:
+      merged = self._merge_rescue_goal_parameters(
+          {**base_parameters, **parameters, "rescue_action": action},   # <-- action is a VALUE
+          ...)
+      options.append(RescueAdaptationOption(
+          option_id=f"rescue_decision_{option_id}",
+          option_type="rescue_decision",          # <-- same for all three
+          target_entity=target_entity,
+          parameters=merged, ... ))
+
+LIVE-MEASURED option objects (real generator, runtime_models={}, target_entity="mission"):
+
+  DELAY:
+    option_id     : 'rescue_decision_delay_rescue'
+    option_type   : 'rescue_decision'
+    target_entity : 'mission'
+    parameters    : {'communication_reliability': None,
+                     'unreliable_communication': False,
+                     'preferred_under_unreliable_communication': False,
+                     'preferred_under_failsafe': False,
+                     'rescue_action': 'delay_rescue'}
+
+  CANCEL:
+    option_id     : 'rescue_decision_cancel_rescue'
+    option_type   : 'rescue_decision'
+    target_entity : 'mission'
+    parameters    : {'communication_reliability': None,
+                     'unreliable_communication': False,
+                     'preferred_under_failsafe': False,
+                     'unreachable_candidate': False,
+                     'rescue_action': 'cancel_rescue'}
+
+DOES CANCEL HAVE THE SAME DEFECT?  YES - EXACTLY THE SAME, not a different one.
+  Cancel is built by the same loop, with the same option_type ("rescue_decision") and
+  the same VALUE-under-"rescue_action" shape. It differs from delay only in two unrelated
+  boolean params (unreachable_candidate instead of preferred_under_unreliable_communication).
+  _is_delay_or_cancel_option returns False for cancel for both of the same reasons.
+  => The repair must key on the rescue_action VALUE; it does NOT need a separate
+     code path for cancel.
+
+THIRD SIBLING - escalate_to_operator:
+  Same construction, rescue_action='escalate_to_operator'. It is NOT a delay and NOT a
+  cancel, and must remain excluded. "escalate_to_operator" contains none of the tokens
+  delay/cancel/postpone/abort, so a value-based token match excludes it correctly.
+
+
+================================================================================
+Q3. WAS THE PREDICATE EVER CORRECT?  ->  WRONG FROM THE START
+================================================================================
+
+VERDICT: WRONG-FROM-THE-START. Not drift.
+
+Deciding commit: a4a01b4b73b627a8c6efd30a3793a1fa9e0ddf6b
+  "Add core project files and update README"
+  Amirhossein Ahrari <amirhossein.ahrari@uni-oldenburg.de>, Mon Jul 27 11:30:22 2026 +0200
+  560 files changed, 56642 insertions(+), 1 deletion(-)
+
+This single commit introduces BOTH the predicate AND the current option construction,
+atomically. Its only parent is f478a4de "Initial commit" (README.md, 1 file, 1 insertion) -
+there is no pre-history in git.
+
+  git log -L :_is_delay_or_cancel_option:src_extension/planning/rescue_planner.py
+      -> exactly ONE revision: the file creation at a4a01b4, introduced at line 259,
+         byte-identical to the version at HEAD (now line 273).
+
+  git log --all --oneline --diff-filter=AR -- '*rescue_adaptation_generator*'  -> a4a01b4 only
+  git diff a4a01b4 HEAD -- .../rescue_adaptation_generator.py | wc -c          -> 0
+  git cat-file -s a4a01b4:.../rescue_adaptation_generator.py                   -> 17549
+  git cat-file -s HEAD:.../rescue_adaptation_generator.py                      -> 17549
+
+Exhaustive blob enumeration over EVERY reachable commit on EVERY ref:
+    rescue_planner.py             -> 3 distinct blobs (4506c63a, 32272062, dbccd379)
+    rescue_adaptation_generator.py-> 1 distinct blob  (070dafa3) everywhere
+  All three planner blobs carry a byte-identical _is_delay_or_cancel_option and both
+  bonus constants at lines 39/40. The predicate has never differed anywhere in this
+  repository's object store. option_type="rescue_decision" + params["rescue_action"]
+  has been the generator's shape since the first byte in git.
+  (Dangling objects from git fsck were checked too: both hold the HEAD blobs.)
+
+PRE-GIT corroboration (a4a01b4 is a squashed import of an existing tree; .pyc files were
+shipped inside it and later deleted by b838895 "Remove __pycache__ ...; add .gitignore"):
+  Unmarshalling the shipped gen310.pyc, _generate_rescue_decision_options.co_consts
+  reproduces verbatim:
+      'rescue_decision', 'delay_rescue',
+      ('preferred_under_unreliable_communication', 'preferred_under_failsafe'),
+      'cancel_rescue', ('preferred_under_failsafe', 'unreachable_candidate'),
+      'escalate_to_operator', 'rescue_action',
+      frozenset({'delay_rescue', 'cancel_rescue'}), 'rescue_decision_'
+  -> delay_rescue/cancel_rescue appear ONLY as rescue_action VALUES, never as dict keys,
+     in a source file dated 2026-05-28 20:05:52 UTC - two months before the git import.
+  A byte-scan of the older planner314.pyc (source dated 2026-05-28 19:49:56 UTC, 16 minutes
+  EARLIER, and genuinely a different source: src_size 19659 vs the committed 19631) finds
+  _is_delay_or_cancel_option, delay_rescue, postpone_rescue, cancel_rescue, abort, postpone,
+  _DELAY_CANCEL_BONUS all already present. The token set was already current before the
+  oldest recoverable generator.
+
+  Caveat stated honestly: because a4a01b4 is a squashed import, git cannot rule out private,
+  never-committed drift before 2026-05-28. Every surviving artifact shows the mismatch;
+  none shows a matching pair. Within all recoverable evidence, this is not drift.
+
+WHAT SETTLES INTENT (this is a field-targeting bug, not a design choice):
+  Two working consumers in the same codebase apply the SAME token vocabulary to the
+  rescue_action VALUE, and they work:
+
+    src_extension/planning/rescue_planner.py:368   (95 lines BELOW the broken predicate,
+    def _rescue_action(option, params) -> str:      same module)
+        action = params.get("rescue_action")        <-- reads exactly the key the predicate should
+
+    src_extension/execution/rescue_executor.py:537
+    def _classify_rescue_action(rescue_action: str) -> str:
+        action = rescue_action.strip().lower()
+        if "confirm" in action: return "confirm"
+        if "delay"   in action: return "delay"
+        if "cancel"  in action: return "cancel"
+
+  Same tokens, same file family, wrong field in the predicate.
+
+_is_confirmation_option: SAME history, SAME shape, SAME defect.
+  Introduced by a4a01b4 in the same file, hunk @@ -0,0 +253,6 @@, immediately above
+  _is_delay_or_cancel_option; git log -L on it also returns one revision.
+  Gated by _CONFIRMATION_BONUS = 0.75 (line 39). No option_type in the repo contains
+  "confirm"; "confirmation"/"confirm_rescue" are never written as keys. The nearest real
+  key is "confirmation_required" (rescue_adaptation_generator.py:160) which
+  params.get("confirmation") does not match; the real marker is victim_action='confirm_victim'
+  - again a VALUE. Measured False on all three real victim_handling options.
+  NOT FIXED HERE (per the brief: report, do not fix).
+
+
+================================================================================
+Q4. OTHER GATES USING THE SAME MATCHING STYLE  ->  SYSTEMATIC, NOT AN ISOLATED TYPO
+================================================================================
+
+42 matching gates audited across the planning/adaptation/execution layers, every verdict
+measured against real generator output (85 generated options across five generators, plus
+24 fail-safe fallback options across three modes) rather than inferred from source.
+
+  RESULT:  18 DEAD  ·  8 PARTIALLY-WORKING  ·  16 WORK
+
+THE SINGLE REPEATED MISTAKE:
+  Planners pattern-match a semantic action name against option_type, or against a params
+  KEY, while every generator except the communication one puts that action name in a
+  params VALUE under a "*_action" key.
+
+DEAD gates in rescue_planner.py itself (the file under repair):
+  R3  :267-270 _is_confirmation_option    gates _CONFIRMATION_BONUS=0.75  -> False 10/10
+  R4  :273-278 _is_delay_or_cancel_option gates _DELAY_CANCEL_BONUS=0.75  -> False 10/10  [THIS DEFECT]
+  R5  :284-289 _MAINTAIN_RESCUE_MARKERS loops                            -> False 10/10
+       (harmless: _find_maintain_rescue_option still returns the right option via
+        find_maintain_option at :290)
+
+  => BOTH preference bonuses the rescue planner has are dead. R3 and R4 are the ONLY
+     discriminators in _preference_adjustment. See Q5.
+
+The SAME two defects are duplicated inside the scorer, utility_evaluation.py:
+  U9  :1050 is_confirmation  DEAD  (identical schema mismatch to R3)
+  U10 :1051 is_dispatch      DEAD  (real type firefighter_assignment; action is a VALUE)
+  U11 :1052 is_delay         DEAD  (identical schema mismatch to R4)
+
+Other DEAD gates found (reported, NOT fixed):
+  U3  utility_evaluation.py:357-361  "critical"                     0/85 options
+  U4  utility_evaluation.py:551-557  uncertainty_boost_inquiry x1.88 - enclosing gate
+  U5  utility_evaluation.py:558-572  uncertainty_damp_risky   x0.17   :547 `if "uncertainty_level"
+       in params` never opens; 0/85 generated options carry that key. The whole
+       uncertainty-adjustment limb is reachable only from test fixtures - which is also
+       why these defects survived: the tests construct options the generators never produce.
+  U7  utility_evaluation.py:840-845  search-mode uplift              0/23
+  U8  utility_evaluation.py:850-861  role_changed cost               0/23
+  U15 :1385 is_rtb / U16 :1386 is_low_power / U17 :1389 is_search / U18 :1390 is_hold
+       -> all four shaping branches of _evaluate_failsafe_option dead for every
+          generator-built fail-safe option (12/12 False each)
+  F4  fail_safe_planner.py:357-364   _MAINTAIN_FAILSAFE_MARKERS      12/12 False
+  L3  local_uav_path_planner.py:345-353 _HOLD_PATH_MARKERS           dead in practice
+  L4  local_uav_path_planner.py:589-590 escalation gate              0/31
+
+The same style also produces FALSE POSITIVES and orphaned option families:
+  F3  _is_critical_fail_safe_option matches the "critical" inside
+      "suspend_non_critical_tasks", while MISSING fail_safe_safe_hold and
+      fail_safe_collision_avoidance_override which both carry priority="critical"
+      (priority is in params but the predicate never reads it).
+  F2/F5 award the search bonus / search-mode flag to rescue-delay, rescue-cancel and
+      rescue-escalate fallbacks, while failsafe_mission_search_mode - the option whose
+      entire purpose is to activate search mode - measures False.
+  G2  _is_clearly_non_global orphans 3 generated fail_safe_mission options
+  L2  _is_clearly_non_local  orphans 4 generated communication_strategy options
+      (both families are generated every step and are unreachable from their own planner)
+  U1  _pick_evaluator routes 3 families (communication_failsafe, rescue_failsafe,
+      fail_safe_mission) to the wrong utility formula.
+
+WHERE THE STYLE IS DONE RIGHT (proof the fix is cheap and the contract is known):
+  - fail_safe_planner.py:438-443 _fail_safe_action  - reads the VALUE, WORKS
+  - fail_safe_planner.py:605-616 _mode_preference_bonus (2.0) - matches the VALUE, WORKS
+  - rescue_executor.py:537-549 _classify_rescue_action - matches tokens in the VALUE, WORKS
+  - constraint_filter._option_action :211-232 - reads the VALUE, WORKS
+  - communication_adaptation_generator writes real boolean KEYS (relay_mode,
+    reduced_communication, prioritize_critical_messages) and U12/U13/U14 all match - WORK
+  - four generators deliberately emit "do_nothing": True as a KEY, and both consumers
+    (planner_selection._is_maintain_option, utility_evaluation stability bonus) match it - WORK
+
+CONCLUSION FOR Q4: this is ONE INSTANCE OF A SYSTEMATIC PATTERN, not an isolated typo.
+Only the R4 instance is repaired in Part 2, per the brief.
+
+
+================================================================================
+KNOWN RELATED ISSUES - CURRENT STATUS (reported, NOT fixed)
+================================================================================
+
+ISSUE 1 - generic victim_id on delay options: CONFIRMED, and WORSE than "generic":
+          it is the EMPTY STRING.
+
+  RescueDecision is built at rescue_planner.py:119-131 with
+      victim_id=_entity_id(selected, params, "victim_id", "victim")
+  and _entity_id (rescue_planner.py:375-382) tries params["victim_id"], then
+  getattr(option, "victim"), then returns "".
+
+  Two independent failures:
+   (a) grep -n "victim_id\|firefighter_id" rescue_adaptation_generator.py -> ZERO hits.
+       The generator never writes a victim_id param, under any mission-goal configuration
+       (_merge_rescue_goal_parameters adds only rescue_urgency/active_rescues/
+       alive_firefighters + the four mission_goal_* keys).
+   (b) attr_key is "victim", NOT "target_entity". AdaptationOption declares no "victim"
+       field. hasattr(option,"victim") == False.
+       => the option's target_entity is NEVER READ on this path at all.
+
+  MEASURED end-to-end through the real planner:
+      selected_option_id : 'rescue_victim_handling_confirm_victim'
+      rescue_action      : 'victim_handling'
+      victim_id          : ''
+      firefighter_id     : ''
+  And across the WHOLE generated rescue space, all 10 options yield victim_id='' and
+  firefighter_id='' - the defect is not delay-specific.
+
+  Note target_entity is "mission" in the live run (wildfire_model.py:1722 hardcodes
+  "target_entity": "mission", so the generator's "rescue_target" default never fires).
+  Both "mission" and "" are members of _GENERIC_VICTIM_IDS
+  (rescue_executor.py:16 = frozenset({"", "mission", "rescue_target"})), so even a
+  hypothetical fix routing target_entity into victim_id would STILL land on the
+  generic branch.
+
+  CONSEQUENCE FOR BUG #6's GUARD - the brief's concern is CORRECT:
+    victim_id == "" -> generic = True (rescue_executor.py:499)
+      - specific branch :505-508  -> never taken (guarded out twice: generic AND vid falsy)
+      - named-ff branch :521-526  -> never taken (firefighter_id is "" too)
+      - generic fallback :528-533 -> THE BRANCH THAT RUNS. It returns the FIRST active
+        firefighter in dict order regardless of who it is rescuing.
+    Executed proof (ff_0 rescuing victim_9, delay decision carrying victim_id=""):
+        _active_physical_pairing(model, "", "") -> ('ff_0', 'victim_9')
+        execute -> applied=False reason=delay_refused_active_physical_pairing
+        stderr:  [RescueDelayRefused] step=42 victim=victim_9 firefighter=ff_0 ...
+    Contrast proving the guard is only broken by the empty id:
+        _active_physical_pairing(model, "victim_3", "") with ff_0 rescuing victim_9 -> None
+    => Any MAPE-K delay would be refused whenever ANY firefighter anywhere is mid-rescue,
+       and the log line would name an unrelated firefighter's victim.
+
+  SECOND, INDEPENDENT CONSEQUENCE (not in the brief):
+    rescue_executor.py:94  `if model is not None and decision.victim_id:` gates the entire
+    apply block (94-124). With victim_id == "", _apply_victim_state, _apply_firefighter_model
+    and _apply_victim_runtime are ALL SKIPPED, yet execute() still returns
+    {"applied": True, ...} and logs status="success" / actual_result="applied" (137-153).
+    Measured: all three update dicts {}, managed victim unchanged, ff marker untouched.
+    => a delay that passes the pairing gate is recorded as successfully applied while
+       mutating nothing.
+
+ISSUE 2 - MAPE-K delay never issues a physical unassign: CONFIRMED, fully open.
+
+  RescueExecutor.execute() (lines 30-159) reaches only three appliers, all managed-abstract:
+    _apply_victim_state (552-592) delay branch 577-583 sets victim.rescue_assigned=False
+        and victim.status="delayed" on the model.managed_victims MIRROR only.
+    _apply_firefighter_model (595-621) calls only firefighter_model.assign_to_victim /
+        update_unit_state (knowledge-model methods). It does NOT branch on
+        action_kind=="delay".
+    _apply_victim_runtime (624-654) calls only victim_runtime_model methods.
+  Nothing clears firefighter_marker.rescued_victim, nothing changes a firefighter agent's
+  target, nothing emits a PhysicalRescueCommand(action="unassign").
+
+  The only physical mutator, execute_physical_command (line 207 -> model.
+  apply_physical_rescue_command at 248), is reachable ONLY from
+  apply_physical_pairing_decision (:350, :400) and from wildfire_model.py:2676, 2717,
+  2741, 2895, 2759, 3877. execute() reaches NONE of them.
+
+  The physical "unassign" command exists and is used at five model-internal sites
+  (wildfire_model.py:2679 victim_dead, :2744 route_blocked, :3637 _unassign_firefighter,
+  :3839 unreachable-escape, :4053 firefighter_fire_casualty; handler at :3431).
+  None is reachable from a planner delay decision.
+
+  PLAIN STATEMENT: No. A successfully-applied MAPE-K delay CANNOT recall a firefighter
+  already en route. It flips managed-mirror flags; the physical firefighter agent keeps
+  its rescued_victim and keeps walking. BUG #6's refusal guard is the only thing between
+  a delay decision and this managed/physical divergence - it converts the problem into a
+  refusal rather than fixing it, and per Issue 1 it currently fires on the generic branch,
+  so it would refuse far too broadly.
+
+================================================================================
+(Q5 follows - live instrumented measurement)
+================================================================================
+
+================================================================================
+Q5. UTILITY GAP, QUANTIFIED ON A FRESH LIVE SAMPLE
+================================================================================
+
+*** HEADLINE - STATED UP FRONT, BEFORE ANY FIX OR MATRIX RUN ***
+
+    Repairing _is_delay_or_cancel_option will change ZERO selections.
+    Not "few". Zero, in 2400 measured planning calls.
+
+    The reason is NOT that delay loses by too much for a 0.75 bonus to overcome.
+    It is the opposite: delay TIES EXACTLY with the winner (gap = 0.000000 in
+    2400/2400 calls), and the bonus is a lexicographic PRIMARY sort key, so it
+    would win 100% of the time IF IT WERE EVER APPLIED.
+
+    It is never applied because there is a SECOND, INDEPENDENT DEAD GATE upstream
+    of the predicate: the route_risk / communication_risk signals that gate the
+    bonus are hardwired to 0.0 by missing plumbing, so the enclosing
+    "if high_route_risk or high_comm_risk:" at rescue_planner.py:260 never opens.
+
+    The predicate repair is still correct and worth making (Part 2). Its expected
+    behavioural impact is nil until the signal plumbing is also fixed. That second
+    defect is NOT fixed here - it is outside the brief's scope, and fixing it in the
+    same round would confound the measurement of this fix.
+
+METHOD
+  outputs/_delaybonus_probe.py wraps rescue_planner._rescue_signals and
+  ._select_rescue_option at runtime (no source edit) and records, for every planning
+  call: the signals dict, every scored option (score / feasible / preference bonus),
+  the real winner, and a SHADOW winner computed with a repaired predicate.
+  Scenario params mirror evaluate_scenarios._scenario_params exactly at CLI defaults.
+  outputs/_delaybonus_analyze.py adds a third counterfactual (repair + gate forced open).
+
+  Runs: D/east and D/west, seeds 101,202,303,404,505, 240 steps.
+        1200 planning calls per combo, 2400 total.
+  Raw: outputs/_delaybonus_probe_pre_Deast.{txt,json}
+       outputs/_delaybonus_probe_pre_Dwest.{txt,json}
+
+RESULT - IDENTICAL IN BOTH COMBOS
+                                                      D/east        D/west
+  planning calls                                       1200          1200
+  route_risk         min/max                         0.0 / 0.0     0.0 / 0.0   (only value: 0.0)
+  communication_risk min/max                         0.0 / 0.0     0.0 / 0.0   (only value: 0.0)
+  victim_confidence  min/max                         0.5 / 0.5     0.5 / 0.5   (only value: 0.5)
+  uncertainty        min/max                         0.0 / 0.0     0.0 / 0.0   (only value: 0.0)
+  route_risk         >= 0.55 (_HIGH_ROUTE_RISK)         0/1200        0/1200
+  communication_risk >= 0.55 (_HIGH_COMM_RISK)          0/1200        0/1200
+  DELAY/CANCEL BONUS GATE OPEN                          0/1200        0/1200
+  CONFIRMATION gate open (contrast)                     0/1200        0/1200
+  _is_delay_or_cancel_option TRUE  current                 0             0
+  _is_delay_or_cancel_option TRUE  repaired             2400          2400   (= 1200 x {delay,cancel})
+  every option feasible                                 True          True
+  ALL option scores                          distinct = [0.0]  distinct = [0.0]
+
+  Winner, CURRENT predicate  : rescue_victim_handling_confirm_victim   1200/1200 (both combos)
+  Winner, REPAIRED predicate : rescue_victim_handling_confirm_victim   1200/1200 (both combos)
+  SELECTIONS THAT FLIP with the repair alone :   0/1200      0/1200     -> 0/2400 TOTAL
+
+  COUNTERFACTUAL C (repaired predicate AND risk gate forced open):
+  Winner                     : rescue_decision_delay_rescue            1200/1200 (both combos)
+  SELECTIONS THAT FLIP       : 1200/1200   1200/1200                   -> 2400/2400 TOTAL
+
+THE UTILITY GAP ASKED FOR: winner.score - best_delay_option.score
+      n=2400   min = 0.000000   max = 0.000000   mean = 0.000000
+      EXACT TIES (gap == 0): 2400/2400
+      gaps larger than _DELAY_CANCEL_BONUS (0.75): 0/2400
+
+  Every rescue option scores EXACTLY 0.0 and is feasible, at every step, in both
+  combos. UtilityEvaluation produces no separation at all between the ten rescue
+  options - a total tie. (Root cause, reported not fixed: none of the six pfloat
+  inputs _evaluate_rescue_option reads at utility_evaluation.py:1041-1046 -
+  victim_priority, support_quality, expected_delay, route_risk, victim_uncertainty,
+  communication_risk - is ever written as a params key by rescue_adaptation_generator.)
+
+  So max(feasible, key=(_preference_adjustment, entry.score)) at rescue_planner.py:242
+  is a TOTAL TIE on both tuple elements, and Python's max returns the FIRST element -
+  rescue_victim_handling_confirm_victim, the first option the generator emits. That is
+  why it wins 2400/2400 today: not because it scored best, but because it was built first.
+
+WHY "HOW BIG IS THE BONUS RELATIVE TO THE GAP" IS THE WRONG QUESTION
+  rescue_planner.py:242
+      return max(feasible, key=lambda entry: (_preference_adjustment(entry, signals),
+                                              entry.score)).option
+  The bonus is NOT added to the utility score. It is the PRIMARY element of a
+  lexicographic sort key; entry.score is only the tiebreak. Any strictly positive
+  preference bonus therefore beats ANY utility gap, however large. _DELAY_CANCEL_BONUS
+  could be 0.75 or 0.0001 with identical effect.
+  => An additional, independent reason not to tune the constant: its magnitude is never
+     compared against anything. The brief's instruction to leave it alone is correct,
+     and tuning it could not have rescued the mechanism anyway.
+
+THE SECOND DEAD GATE, IN FULL (this is what actually blocks delay)
+  rescue_planner.py:191-196 builds the signals:
+      "route_risk":         _signal_value(analysis, context, ("route_risk",), default=0.0)
+      "communication_risk": _signal_value(analysis, context, ("communication_risk","comm_risk"), default=0.0)
+  _signal_value (rescue_planner.py:214-226) reads via _snapshot_value, i.e.
+  getattr(source, key, None) on "context" then "analysis".
+
+  Both arguments are THE SAME OBJECT: planning_coordinator.py:53-60 passes
+  analysis_snapshot=analysis_snapshot AND context=analysis_snapshot.
+
+  That object is a real AnalysisSnapshot dataclass (built at wildfire_model.py:1652).
+  Its complete field list is:
+      ['timestamp', 'local_results', 'global_result', 'all_triggers', 'dashboard_summary']
+  There is NO route_risk, NO communication_risk, NO comm_risk field. Nor do
+  GlobalAnalysisResult or LocalAnalysisResult carry them. _snapshot_value does not
+  descend into dashboard_summary. => both getattr chains return None => default 0.0.
+
+  The per-option max() fallback at rescue_planner.py:210-213 reads params keys
+  "route_risk"/"communication_risk", which rescue_adaptation_generator never writes
+  (grep: zero hits). => the max cannot lift them off 0.0 either.
+
+  The nearest real producer is a DIFFERENT KEY: the knowledge layer writes
+  route_risk_score (firefighter_model.py:35,74,102-103,131,153,196; values 0.1/0.35/
+  0.45/0.95/1.0 assigned at wildfire_model.py:3083-3130) and
+  managed/firefighter_state.py:29 writes route_risk_summary. Neither is named
+  route_risk. Nothing anywhere in the repository writes a key literally named
+  route_risk or communication_risk.
+
+  MEASURED: route_risk and communication_risk took the value 0.0 - and no other value -
+  in all 2400 planning calls across both combos. 0.0 >= 0.55 is never true.
+
+  => _DELAY_CANCEL_BONUS is guarded by TWO independent defects in series:
+       DEFECT A (in scope, fixed in Part 2): the predicate never matches the real option.
+       DEFECT B (out of scope, reported):    the gate above it never opens, because
+                                             route_risk/communication_risk are never
+                                             plumbed from any producer to the planner.
+     Fixing A alone cannot change behaviour. Fixing A is still correct and necessary:
+     it is a real bug, and A must be fixed before B could ever have any effect.
+
+  The same measurement shows the CONFIRMATION path fails differently: its gate is also
+  closed at runtime (victim_confidence pinned at the 0.5 default, never < 0.45;
+  uncertainty pinned at 0.0, never >= 0.55), AND its predicate _is_confirmation_option
+  is dead. So _preference_adjustment currently has no live discriminator whatsoever and
+  returns 0.0 for every option at every step - measured, 2400/2400.
+
+PREDICTION FOR THE GATE (recorded BEFORE the fix, per the brief)
+  After repairing the predicate, the BUG #6 acceptance gate will show:
+      delay decisions SELECTED by the planner .................... 0   (baseline 0)
+      reaching RescueExecutor.execute() with non-empty victim_id .. 0
+      refused on specific victim match ........................... 0
+      refused via generic-id fallback ............................ 0
+      BUG #6 invariant-violation logs ............................ 0
+  i.e. UNCHANGED. Per the brief's instruction, that means STOP and report - do not run
+  the 80-run matrix. The reason is DEFECT B above, not insufficient bonus magnitude.
+
+SCENARIO METRICS FROM THE PROBE RUNS (evaluate_scenarios defaults, 240 steps)
+  D/east: seed101 r=2 d=2 ffd=1 nd=0 | seed202 r=3 d=1 ffd=1 nd=0 | seed303 r=2 d=2 ffd=2 nd=0
+          seed404 r=1 d=3 ffd=2 nd=0 | seed505 r=2 d=2 ffd=2 nd=0
+  D/west: seed101 r=2 d=2 ffd=0 nd=0 | seed202 r=2 d=2 ffd=1 nd=0 | seed303 r=4 d=0 ffd=0 nd=0
+          seed404 r=4 d=0 ffd=0 nd=0 | seed505 r=2 d=1 ffd=0 nd=1 unreach=1
+
+  These intentionally do NOT match outputs/lane_matrix_cast/D_*.log. That committed
+  baseline was produced by outputs/_lane_matrix.py with an explicit "5 UAV: 3T+2S"
+  split (see the outputs/lane_matrix_run.log headers), which overrides the D preset's
+  UAV counts. It is not comparable to evaluate_scenarios.py defaults. The probe mirrors
+  evaluate_scenarios._scenario_params, and pre/post comparisons use the same harness,
+  so the delta remains valid.
+
+================================================================================
+END OF PART 1
+================================================================================
