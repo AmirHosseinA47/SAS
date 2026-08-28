@@ -1,0 +1,638 @@
+================================================================================
+FIREFIGHTER DEATHS UNDER DISPATCH PRESSURE - DIAGNOSIS
+Manhattan-only pairing: does "available" != "reachable" actually kill people?
+Read-only investigation. No production code changed.
+================================================================================
+
+VERDICT
+-------
+  (C) NOT SUPPORTED.
+
+  The code defect is REAL and confirmed exactly as characterised
+  (select_rescue_assignment sorts on Manhattan distance ONLY; "available"
+  contains no reachability test of any kind). But it is NOT what is killing
+  firefighters.
+
+  Over 18 instrumented runs (scenario D: wind east x13 seeds, wind south
+  x5 seeds, 240 steps each), 57 dispatch decisions and 16 firefighter deaths:
+
+    * dispatches issued with NO live path to the victim
+      (BFS, active fire impassable, evaluated AT DISPATCH TIME) : 1 / 57  (1.8%)
+    * deaths in category (a) - dispatched into an already-blocked
+      or already-partially-blocked corridor                     : 0 / 16  (0%)
+    * deaths in category (b) - correct dispatch, fire spread in  : 2 / 16  (12.5%)
+    * deaths in category (c) - something else                    : 14 / 16 (87.5%)
+
+  The single no-path dispatch (seed 333/east, step 42) did not produce a
+  death; that firefighter survived it.
+
+  WHAT IS ACTUALLY DRIVING THE DEATHS (category (c)):
+  Firefighters are being killed while IDLE and UNASSIGNED, pinned against the
+  grid boundary, not while walking into a victim.
+
+    * 14 / 16 deaths occurred when the firefighter had no target_pos, i.e. was
+      not en route to anybody. Only 2 / 16 died within 2 steps of last being
+      observed en route.
+    * 12 / 16 deaths occurred on a grid-boundary cell (x in {0,49} or
+      y in {0,49}).
+    * median gap between "last step observed en route" and "died" = 40 steps;
+      several are 100-200 steps. One firefighter (seed 909/east) died having
+      never received an assign dispatch at all.
+
+  The mechanism is: a firefighter finishes (or loses) a rescue at the map
+  edge, goes to standby there, and the wind-driven fire front eventually
+  sweeps to that edge. The idle-retreat logic (_survival_move /
+  _idle_needs_survival_move) then has nowhere left to retreat to - it is
+  already against the wall - so it holds and burns. This is a standby-posture
+  / no-safe-harbour problem, not a pairing problem. Fixing pairing would not
+  have saved any of these 14.
+
+  There is exactly ONE death in the whole sample with any pairing signal at
+  all (seed 101/east dispatch at step 16; see step 7 below). One of sixteen.
+
+SEPARATE FINDING - route_blocked (see Part 3 / Part 10)
+-------------------------------------------------------
+  route_blocked is a near-dead signal, and its guard suppresses it in exactly
+  the lethal case. Confirmed both by construction and empirically:
+    - 3 firings across 18 runs / 1685 _move_toward calls (0.18%).
+    - 0 firings in either 5-seed batch; all 3 came from one 8-seed batch.
+    - _mark_route_blocked was reached only 5 times total, and 2 of those 5
+      were suppressed by its own guard because the firefighter was already
+      standing in fire.
+  This is a real defect worth fixing on its own merits (Part 10).
+
+ENVIRONMENT / PROVENANCE
+------------------------
+  python  3.10.11 (E:\Projects\SAS\.venv)
+  mesa    1.2.1
+  HEAD    cfaeb21 "Target commitment and :739 gate fix: both measured, both
+          reverted"  ==  origin/main (verified: git rev-parse matches).
+
+  NOTE ON BRANCH: the brief names branch
+  claude/position-rename-and-hazard-revalidation. That branch is at 0e9c912
+  and is NOT an ancestor of, nor equal to, HEAD. This work ran on
+  origin/main. I diffed the two on the files under investigation:
+    - agents.py                              : identical
+    - src_extension/planning/rescue_planner.py: differs by 9 lines, all inside
+      _is_delay_or_cancel_option (a delay/cancel predicate fix). Neither
+      select_rescue_assignment, the availability filter, nor the Manhattan
+      sort differ. Findings below apply unchanged to both branches.
+
+  Test baseline: the stated baseline is 8 failed / 427 passed. It does NOT
+  hold on this HEAD. Measured twice - once under CPU contention, once clean -
+  both 9 failed / 426 passed, with an identical failure list. See the
+  "TEST BASELINE" section at the bottom. This investigation modified no
+  production code, so it did not cause the difference.
+
+================================================================================
+PART 1 - RE-VERIFYING THE MECHANISM CLAIM
+================================================================================
+
+1. select_rescue_assignment - IS IT MANHATTAN ONLY?
+---------------------------------------------------
+  YES. Manhattan distance only. Route safety appears nowhere - not as a hard
+  filter, not as a penalty, not as a tiebreaker. The tiebreaker is the
+  firefighter ID string.
+
+  src_extension/planning/rescue_planner.py:515-636. The scoring/sorting logic
+  in full (:619-626):
+
+        best_ff: str | None = None
+        best_dist: int | None = None
+        for ff_s, ff_pos in available:
+            dist = _manhattan_distance(victim_pos, ff_pos)
+            if best_dist is None or dist < best_dist or (dist == best_dist and ff_s < str(best_ff)):
+                best_ff = ff_s
+                best_dist = dist
+
+  and _manhattan_distance is exactly what it says:
+
+        def _manhattan_distance(a, b):
+            return abs(int(a[0]) - int(b[0])) + abs(int(a[1]) - int(b[1]))
+
+  The victim side is not scored at all - victims are sorted by ID string and
+  needy[0] is taken (:558-565):
+
+        needy.sort(key=lambda item: item[0])
+        ...
+        chosen_vid, victim_pos = needy[0]
+
+  The whole function is otherwise filtering (which victims need rescue, which
+  firefighters are available) and packaging the RescueDecision. The planner
+  receives a read-only `snapshot` dict; it has no reference to the model, the
+  grid, or the fire agents, so it could not evaluate a route even if it wanted
+  to. That is an architectural fact worth carrying into Part 3.
+
+2. THE "AVAILABLE" DEFINITION - EVERY CONDITION
+------------------------------------------------
+  Two layers, both quoted in full. Neither contains any reachability test.
+
+  Layer 1 - the planner's own filter, rescue_planner.py:577-591:
+
+        for ff_id, entry in firefighters.items():
+            ff_s = str(ff_id or "").strip()
+            if not ff_s or not isinstance(entry, dict):
+                continue
+            if bool(entry.get("dead", False)):
+                continue
+            if bool(entry.get("assigned", False)):
+                continue
+            if bool(entry.get("route_blocked", False)):
+                continue
+            if not bool(entry.get("available", True)):
+                continue
+            pos = entry.get("position")
+            if pos is None or len(pos) < 2:
+                continue
+            available.append((ff_s, (int(pos[0]), int(pos[1]))))
+
+  Layer 2 - what feeds entry["available"],
+  wildfire_model.py:2385-2397 (_firefighter_available_for_dispatch):
+
+        def _firefighter_available_for_dispatch(self, ff_marker: Any) -> bool:
+            if getattr(ff_marker, "dead", False):
+                return False
+            status = str(getattr(ff_marker, "status", "") or "").strip().lower()
+            if status in ("dead", "route_blocked"):
+                return False
+            if getattr(ff_marker, "assigned", False):
+                return False
+            if getattr(ff_marker, "exiting", False):
+                return False
+            if getattr(ff_marker, "rescue_completed", False):
+                return False
+            return getattr(ff_marker, "pos", None) is not None
+
+  Full set of conditions for "available": not dead; status not in
+  {dead, route_blocked}; not assigned; not exiting; not rescue_completed;
+  has a grid position.
+
+  CONFIRMED: reachability is absent. There is no path check anywhere between
+  the availability filter and the commit. The decision returned by
+  select_rescue_assignment goes straight to RescueExecutor, which applies it;
+  no downstream stage re-validates that the chosen firefighter can actually
+  get there. The characterisation in the brief is accurate.
+
+3. DOES route_blocked EVER GET SET? (the second suspect)
+---------------------------------------------------------
+  The suspicion was "any non-fire neighbour exists" is enough to prevent it.
+  That is very nearly right, and the truth is slightly worse.
+
+  There is exactly ONE call site, agents.py:961, inside _move_toward:
+
+        scored: list[dict[str, object]] = []
+        for cell in self._neighbor_cells():
+            if self._cell_contains_active_fire(cell):
+                continue
+            ... scored.append(...)
+
+        if not scored:
+            self._mark_route_blocked()
+            return
+
+  _neighbor_cells() is the 4-cell von Neumann neighbourhood, in-bounds only,
+  NOT including the firefighter's own cell (agents.py:674-682). So `scored`
+  is empty iff EVERY in-bounds von Neumann neighbour is simultaneously
+  burning. Confirmed: one non-fire neighbour is enough to suppress it.
+
+  And then the setter itself has a further guard, agents.py:914-921:
+
+        def _mark_route_blocked(self) -> None:
+            if not self._cell_contains_active_fire((int(self.pos[0]), int(self.pos[1]))):
+                if str(getattr(self, "status", "") or "").strip().lower() != "route_blocked":
+                    self.status = "route_blocked"
+                    ...
+
+  i.e. a firefighter that is surrounded on all four sides AND standing in
+  fire - the case that is about to kill it - is explicitly NOT marked
+  route_blocked.
+
+  There is also a structural reason the ordinary approach path can never
+  reach it. advance() (agents.py:455-...) calls _move_toward from three
+  places. Two of them (the normal "moving to victim" branch, :520, and the
+  "exiting with victim" branch, :554) are only reached when
+  _needs_immediate_survival_retreat() returned False, and that predicate
+  returns True whenever _cell_adjacent_to_fire(cell) - which is true whenever
+  any von Neumann neighbour is burning. So on those two paths at least one
+  neighbour is guaranteed non-burning, `scored` is guaranteed non-empty, and
+  route_blocked is UNREACHABLE by construction. The only path that can reach
+  it is the third: survival retreat was needed, _survival_move() failed to
+  move the unit, and it fell through to _move_toward at :470.
+
+  EMPIRICAL CONFIRMATION (constructed scenario, not reading alone).
+  outputs/_route_blocked_probe.py builds a real WildFireModel, parks one
+  firefighter at (25,25) with target (25,40), ignites 0/1/2/3/4 of its von
+  Neumann neighbours, and calls advance() once:
+
+    neighbours_on_fire=0    burning_nb=0 self_on_fire=False -> status=assigned       moved_to=(25, 26)
+    neighbours_on_fire=1    burning_nb=1 self_on_fire=False -> status=assigned       moved_to=(24, 25)
+    neighbours_on_fire=2    burning_nb=2 self_on_fire=False -> status=assigned       moved_to=(25, 26)
+    neighbours_on_fire=3    burning_nb=3 self_on_fire=False -> status=assigned       moved_to=(25, 24)
+    neighbours_on_fire=4    burning_nb=4 self_on_fire=False -> status=route_blocked  moved_to=(25, 25)
+    all-4 + standing IN fire burning_nb=4 self_on_fire=True  -> status=assigned       moved_to=(25, 25)
+
+  Exactly as derived: fires only at 4-of-4, and is suppressed by its own
+  guard in the 4-of-4 + standing-in-fire case.
+
+  EMPIRICAL FREQUENCY IN REAL RUNS (18 runs, scenario D, east+south):
+    _move_toward calls                        1685
+    ... with >=1 burning neighbour              31   (1.8%)
+    ... with ALL neighbours burning               5   (0.30%)
+    _mark_route_blocked actually called          5
+    route_blocked actually SET                   3   (0.18% of moves)
+    suppressed by the standing-in-fire guard     2   (40% of the calls)
+  Zero firings in the D/east 5-seed batch and zero in the D/south 5-seed
+  batch; all 3 came from the D/east 8-seed batch.
+
+  So: not literally never, but ~0.2% of moves, and it misses exactly the case
+  it most needs to catch. The blocked-route feedback loop is effectively
+  absent, as suspected.
+
+4. PROVENANCE - DESIGNED OR DRIFTED?
+-------------------------------------
+  Neither drifted nor deliberately reasoned - it is original and untouched.
+
+    git log -S"def select_rescue_assignment" -- .../rescue_planner.py
+      -> a4a01b4  "Add core project files and update README"  (2026-07-27)
+    git log -S"_manhattan_distance(victim_pos, ff_pos)"      -> a4a01b4
+    git log -S'if bool(entry.get("route_blocked", False)):'  -> a4a01b4
+    git log -S"def _firefighter_available_for_dispatch" -- wildfire_model.py
+                                                            -> a4a01b4
+    git log -S"def _mark_route_blocked" -- agents.py         -> a4a01b4
+
+  a4a01b4 is the bulk import commit. The Manhattan sort, the availability
+  filter, and the route_blocked call site have never been modified since the
+  code entered this repository. rescue_planner.py has been touched exactly
+  twice since (fdf6cfb, aa91659), both on victim terminal-state handling,
+  neither near the pairing logic.
+
+  Reading: an oversight carried in from the original import, not a decision
+  taken for a reason we have not yet understood. No design note, no comment,
+  no test asserts Manhattan-nearest is intended. That said - see Part 2 -
+  being an oversight does not make it the cause of the deaths.
+
+================================================================================
+PART 2 - QUANTIFICATION
+================================================================================
+
+METHOD
+------
+  outputs/_ffdeath_probe.py (read-only; monkeypatches wrappers around
+  wf.select_rescue_assignment, Firefighter._mark_route_blocked and
+  Firefighter._move_toward for observation only - the originals are called
+  unchanged and the decision object is passed through untouched).
+
+  For every dispatch that returns rescue_action == "assign" it records, using
+  the LIVE model state at that instant:
+    - Manhattan distance from chosen firefighter to victim
+    - BFS path length treating every currently-burning cell as impassable
+      (4-neighbour, same neighbourhood the firefighter actually moves in;
+      the victim's own cell is permitted as the destination)
+    - the same two numbers for EVERY other firefighter in the availability
+      pool, so a safer alternative can be identified
+  Each step it also records, per en-route firefighter, whether a live path to
+  its current target still exists - which is what distinguishes "already
+  blocked at dispatch" from "fire closed the route afterwards".
+
+  Runs (240 steps each, evaluate_scenarios.py defaults for scenario D:
+  4 UAVs / 4 victims / 2 firefighters, fire_spread 0.75, batch 300):
+    D/east   seeds 101,202,303,404,505
+    D/east   seeds 606,707,808,909,111,222,333,444
+    D/south  seeds 101,202,303,404,505
+  Raw data: outputs/_ffdeath_D_east.json, _ffdeath2_D_east.json,
+  _ffdeath_D_south.json. Analysis: outputs/_ffdeath_analyze.py.
+
+  REPRODUCE:
+    python outputs/_ffdeath_probe.py --scenario D --wind east --steps 240 \
+        --seeds 101,202,303,404,505
+    python outputs/_ffdeath_probe.py --scenario D --wind south --steps 240 \
+        --seeds 101,202,303,404,505
+
+5. EVERY DISPATCH DECISION
+---------------------------
+  man = Manhattan at dispatch; bfs = live path length at dispatch (None = no
+  path existed); detour = bfs - man; pool = size of the availability pool;
+  clrAlt = other available FFs that had a clear path; betterAlt = other
+  available FFs with a strictly smaller detour than the one chosen.
+
+  D/east, seeds 101-505
+  seed   step  victim   ff          man   bfs   detour pool clrAlt betterAlt
+  101    16    victim_0 ff_unit_0   18    20    2      2    1      1
+  101    19    victim_2 ff_unit_1   15    15    0      1    0      0
+  101    63    victim_1 ff_unit_1   48    48    0      1    0      0
+  101    139   victim_3 ff_unit_1   48    52    4      1    0      0
+  202    6     victim_0 ff_unit_0   15    15    0      2    1      0
+  202    11    victim_2 ff_unit_1   15    15    0      1    0      0
+  202    207   victim_3 ff_unit_1   47    47    0      2    1      0
+  303    7     victim_2 ff_unit_1   15    15    0      2    1      0
+  303    26    victim_0 ff_unit_0   15    15    0      1    0      0
+  303    105   victim_1 ff_unit_0   28    28    0      2    1      0
+  404    17    victim_2 ff_unit_1   15    15    0      2    1      0
+  404    35    victim_3 ff_unit_0   52    52    0      1    0      0
+  404    48    victim_3 ff_unit_1   47    47    0      1    0      0
+  505    17    victim_2 ff_unit_1   15    15    0      2    1      0
+  505    100   victim_1 ff_unit_0   21    21    0      2    1      0
+
+  D/east, seeds 606-444
+  606    18    victim_0 ff_unit_0   24    24    0      2    1      0
+  606    18    victim_2 ff_unit_1   15    15    0      1    0      0
+  606    45    victim_0 ff_unit_1   40    40    0      1    0      0
+  606    100   victim_3 ff_unit_1   26    26    0      1    0      0
+  707    7     victim_2 ff_unit_1   15    15    0      2    1      0
+  707    15    victim_0 ff_unit_0   15    15    0      1    0      0
+  707    123   victim_1 ff_unit_0   47    47    0      2    1      0
+  707    134   victim_3 ff_unit_1   47    47    0      1    0      0
+  808    14    victim_2 ff_unit_1   15    15    0      2    1      0
+  808    88    victim_1 ff_unit_0   20    20    0      2    1      0
+  808    129   victim_1 ff_unit_1   48    48    0      1    0      0
+  808    187   victim_3 ff_unit_1   46    62    16     1    0      0
+  909    7     victim_2 ff_unit_1   15    15    0      2    1      0
+  909    110   victim_3 ff_unit_1   47    47    0      1    0      0
+  111    6     victim_0 ff_unit_0   15    15    0      2    1      0
+  111    11    victim_2 ff_unit_1   15    15    0      1    0      0
+  222    8     victim_0 ff_unit_0   15    15    0      2    1      0
+  222    11    victim_2 ff_unit_1   15    15    0      1    0      0
+  333    6     victim_0 ff_unit_0   15    15    0      2    1      0
+  333    15    victim_2 ff_unit_1   15    15    0      1    0      0
+  333    42    victim_0 ff_unit_1   53    None  None   1    0      0   <-- (a)-shaped
+  333    134   victim_1 ff_unit_1   45    45    0      1    0      0
+  444    8     victim_0 ff_unit_0   15    15    0      2    1      0
+  444    115   victim_1 ff_unit_0   47    47    0      2    1      0
+  444    126   victim_3 ff_unit_1   22    22    0      1    0      0
+
+  D/south, seeds 101-505
+  101    15    victim_0 ff_unit_0   15    15    0      2    1      0
+  101    15    victim_2 ff_unit_1   15    15    0      1    0      0
+  101    128   victim_1 ff_unit_1   48    48    0      1    0      0
+  202    6     victim_0 ff_unit_0   15    15    0      2    1      0
+  202    10    victim_2 ff_unit_1   15    15    0      1    0      0
+  202    146   victim_1 ff_unit_0   43    43    0      2    1      0
+  303    18    victim_2 ff_unit_1   22    22    0      2    1      0
+  303    94    victim_3 ff_unit_1   47    47    0      2    1      0
+  303    138   victim_0 ff_unit_0   15    15    0      2    1      0
+  303    204   victim_1 ff_unit_1   39    39    0      2    1      0
+  404    9     victim_2 ff_unit_1   15    15    0      2    1      0
+  404    31    victim_1 ff_unit_0   23    23    0      2    1      0
+  404    74    victim_0 ff_unit_0   39    39    0      1    0      0
+  505    7     victim_2 ff_unit_1   15    15    0      2    1      0
+  505    28    victim_3 ff_unit_0   50    50    0      1    0      0
+  505    67    victim_1 ff_unit_1   47    47    0      1    0      0
+  505    90    victim_0 ff_unit_0   25    25    0      1    0      0
+
+  TOTALS over 57 dispatches:
+    no live path at dispatch time          1  (1.8%)   [seed 333/east step 42]
+    live path but detour > 0               3  (5.3%)   [detours of 2, 4, 16]
+    Manhattan == BFS exactly              53  (93%)
+    pool_size <= 1 (no choice to make)    28  (49%)
+    a strictly-better-routed alternative
+      existed and was passed over          1  (1.8%)   [seed 101/east step 16]
+
+  The 93% figure is the headline. Almost every dispatch in this scenario has
+  a straight-line-length clear path at the moment it is issued: the Manhattan
+  sort and a reachability-aware sort would pick the same unit. And in 49% of
+  dispatches there is only one available firefighter, so no sort of any kind
+  could change the outcome. Scenario D runs 2 firefighters; the pairing
+  decision simply does not have much room to be wrong.
+
+6. EVERY DEATH, CLASSIFIED
+---------------------------
+  "gap" = steps between the last step the unit was observed en route (had a
+  target_pos) and the step it died. gap<=2 means it died en route.
+
+  wind   seed  ff          died  gap   bfs@dispatch  state        cat
+  east   101   ff_unit_0   30    1     20            EN-ROUTE     b
+  east   202   ff_unit_0   216   202   15            idle         c
+  east   303   ff_unit_0   156   16    28            idle         c
+  east   404   ff_unit_0   48    1     52            EN-ROUTE     b
+  east   404   ff_unit_1   234   135   47            idle         c
+  east   606   ff_unit_0   33    4     24            idle         c
+  east   808   ff_unit_0   132   4     20            idle         c
+  east   909   ff_unit_0   81    -     (never dispatched) idle    c
+  east   909   ff_unit_1   213   52    47            idle         c
+  east   111   ff_unit_0   189   158   15            idle         c
+  east   222   ff_unit_0   192   159   15            idle         c
+  east   333   ff_unit_0   45    4     15            idle         c
+  east   333   ff_unit_1   207   26    45            idle         c
+  south  101   ff_unit_0   114   74    15            idle         c
+  south  404   ff_unit_1   60    40    15            idle         c
+  south  404   ff_unit_0   201   100   39            idle         c
+
+  COUNTS:
+    (a) dispatched into an already-blocked corridor    0 / 16   ( 0.0%)
+    (b) dispatched safely, fire spread into the route  2 / 16   (12.5%)
+    (c) something else                                14 / 16   (87.5%)
+
+  Every one of the 16 deaths was preceded by a dispatch whose BFS path was
+  clear at dispatch time (or by no dispatch at all). Category (a) is EMPTY.
+
+  Description of category (c): the firefighter was not en route to anyone
+  when it died. It had completed or lost its assignment and was standing by.
+  12 of the 16 death cells are on the grid boundary:
+
+    (35,49) (32,49) (29,0) (49,41) (36,49) (47,49) (34,0) (48,49) (48,49)
+    (49,29) (29,49) (49,26)   [boundary]
+    (44,40) (47,39) (1,24) (21,40)  [interior]
+
+  This is the standby posture: a firefighter exits at the nearest boundary
+  after a rescue, or is released mid-map when its victim is marked
+  unreachable, and then holds. _idle_needs_survival_move() and
+  _survival_move() do try to back it away from approaching fire, but against
+  the map edge there is no further retreat available, and the wind-driven
+  front eventually arrives. Four of the fourteen (gap 4,4,4,16) are the
+  softer variant: the victim was marked unreachable, the unit was released
+  deep in the fire's path, and it was overrun a few steps later - still not a
+  pairing decision, but arguably a "release posture" problem.
+
+7. WAS THERE A SAFER FIREFIGHTER THE MANHATTAN SORT PASSED OVER?
+-----------------------------------------------------------------
+  Since category (a) is empty, step 7 is formally vacuous. Ran it anyway
+  against all 57 dispatches, not just the (a) ones:
+
+    dispatches where another available firefighter had a strictly better
+    (smaller-detour) live route than the one chosen: 1 / 57.
+
+    That one is seed 101 / east / step 16: victim_0 assigned to ff_unit_0,
+    Manhattan 18, BFS 20 (detour 2); the other available unit had a
+    zero-detour clear path. ff_unit_0 then died at step 30, en route
+    (category b). This is the single case in the entire sample where
+    reachability-aware pairing would plausibly have changed who lived.
+
+    1 of 16 deaths. The other 15 had either no alternative in the pool
+    (pool_size 1) or an alternative that was no better.
+
+  This is the direct evidence the brief asked for, and it comes back
+  negative. Better pairing logic would have changed the outcome for at most
+  one death in sixteen, and the mechanism for the other fifteen is untouched
+  by it.
+
+================================================================================
+PART 3 - SCOPING
+================================================================================
+
+9. THE PRIMARY MECHANISM IS NOT SUPPORTED - HEADLINE
+------------------------------------------------------
+  Do not scope a reachability-aware-pairing fix as the firefighter-death fix.
+  It is not one. On this sample it would address at most 1 of 16 deaths, and
+  it would leave the actual mechanism - idle units overrun against the map
+  boundary - entirely untouched.
+
+  That said, the two ARE separable problems and the honest reading is:
+
+  (i) The pairing defect is real, cheap to fix, and worth fixing as a
+      correctness matter (it produced 1 no-path dispatch in 57 and 1
+      passed-over-safer-alternative in 57). It is a small win, and it should
+      be described and measured as a small win, not as the death fix. It may
+      also matter much more in scenarios with more firefighters - 49% of
+      dispatches here had a pool of exactly one unit, so scenario D
+      structurally cannot exercise the defect. If someone wants to know
+      whether pairing matters at all, the right next measurement is scenario
+      A or C (3 firefighters) or an explicit high-firefighter override, NOT a
+      fix attempt.
+
+  (ii) The thing that would actually reduce firefighter deaths is a standby /
+      release posture change: where does a firefighter go when it has no
+      assignment, and does it keep enough clearance from an advancing front
+      to survive 200 steps of standing there? 14/16 deaths, 12/16 on the
+      boundary. That is a different investigation and should be scoped as
+      one, not folded into this.
+
+  Neither is a "fire spread into an already-committed route" problem, so the
+  predictive-routing concern the brief raised as the hard case does not
+  really arise: only 2 of 16 deaths were en-route at all.
+
+8. IF THE PAIRING FIX IS PURSUED ANYWAY - APPROACH AND HOOK POINT
+-------------------------------------------------------------------
+  Named only, per instruction. No implementation code here.
+
+  HOOK POINT. Not inside the availability filter. The planner
+  (rescue_planner.py) receives a read-only snapshot dict and holds no
+  reference to the model, grid or fire agents, so it cannot compute a path
+  itself - this is a deliberate managed/managing separation (see
+  docs/02_managed_vs_managing.md) and should not be broken. The right shape
+  is:
+    - the MODEL side, where the snapshot is built
+      (wildfire_model.get_rescue_operational_snapshot, :2467-2492), adds a
+      precomputed reachability field per firefighter entry alongside the
+      existing "available" / "route_blocked" keys - the same place
+      _firefighter_available_for_dispatch is already called;
+    - the PLANNER consumes it in select_rescue_assignment as a SEPARATE
+      TIEBREAKER on top of the existing Manhattan sort at :619-626, not as a
+      redefinition of "available".
+
+  WHY A TIEBREAKER, NOT A HARD FILTER / NOT A REDEFINITION OF "available".
+  Three reasons:
+    - Redefining "available" would change what the `if not available:` branch
+      at :592-616 does - that branch already decides between "delay" and
+      "mark_unreachable", and feeding it a shrunken pool would silently
+      convert reachability failures into unreachable-victim markings. That is
+      a behaviour change well outside the stated defect, and this campaign has
+      already been burned by exactly that class of side effect.
+    - "available" is also consumed by the dashboard, the knowledge model and
+      adaptation_manager; it is a fleet-status concept, not a per-victim one.
+      Reachability is per (firefighter, victim) pair and does not belong on it.
+    - A hard filter makes a no-path situation produce no assignment at all.
+      Given the measured pool sizes (49% of dispatches have exactly one
+      candidate), a hard filter would mostly just convert "dispatch that
+      probably works out" into "delay", which is a rescue-rate regression
+      risk with no measured death benefit.
+  The conservative shape is: keep Manhattan as the primary key, add
+  "has a live path" (and optionally the detour) as a secondary key, so the
+  sort only changes when two units are otherwise tied or when one is
+  genuinely unroutable and another is not.
+
+  COST. Negligible, measured. A 4-neighbour BFS on the 50x50 grid is ~2500
+  cells worst case. This investigation ran a BFS every step for every en-route
+  firefighter - several thousand BFS calls per run - on top of the simulation,
+  with no observable change in run time; the simulation itself dominates by
+  orders of magnitude. Dispatches are rare (57 across 18 runs of 240 steps,
+  i.e. ~3 per run). Computing the fire-cell set once per snapshot build and
+  running one BFS per candidate firefighter at dispatch time is free at this
+  scale. Cost is not an argument against this fix; effect size is.
+
+10. route_blocked - REPORTED SEPARATELY AS REQUIRED
+-----------------------------------------------------
+  Independent of the pairing verdict, this is a genuine defect.
+
+  What is wrong, precisely:
+    (i) The trigger is far too strict. route_blocked is set only when ALL
+        in-bounds von Neumann neighbours are burning simultaneously
+        (agents.py:958-961). Measured: 0.30% of _move_toward calls reach that
+        state; 0.18% actually set the flag.
+    (ii) On the two ordinary approach paths (advance() :520 and :554) it is
+        UNREACHABLE by construction, because reaching those branches requires
+        _needs_immediate_survival_retreat() == False, which requires
+        not _cell_adjacent_to_fire(), which guarantees a non-burning
+        neighbour exists. Only the fall-through at :470 (survival retreat
+        was needed but _survival_move() could not move) can ever set it.
+    (iii) Worst of all, _mark_route_blocked's own guard (agents.py:915)
+        suppresses the flag when the firefighter is standing IN fire - which
+        is the step immediately before wildfire_model.py:4060 kills it.
+        Measured: 2 of the 5 calls in 18 runs were suppressed this way.
+
+  Consequence: once a firefighter is committed to an approach, the system has
+  no working feedback that the route has gone bad. The planner's
+  `if bool(entry.get("route_blocked", False)): continue` filter
+  (rescue_planner.py:583), the replacement-after-blocked reason path
+  (:596-599), the alert_manager route_blocked alert, and the
+  adaptation_manager / rescue_executor status handling for "route_blocked"
+  are all effectively dead code in practice. There is a whole replacement
+  pathway wired up behind a signal that fires 3 times in 18 runs.
+
+  Note the interaction with the pairing question: this campaign's suspicion
+  was that route_blocked never firing is what lets bad dispatches stand. The
+  data says the dispatches were not bad. But the reverse still holds - the
+  signal being dead means the system also cannot react to the 2 category-(b)
+  deaths, where the route WAS clear at dispatch and closed afterwards. In
+  seed 303/east the route to the target was measurably unreachable at steps
+  138, 139 and 140 and route_blocked was never set; in seed 606 and 333 it
+  did fire, and both firefighters died anyway a few steps later. So even when
+  it fires it fires too late to matter. A meaningful fix here is a threshold
+  change (e.g. "no non-adjacent-to-fire neighbour improves my distance", or
+  a live-path check against the target) plus removal of the standing-in-fire
+  suppression - but that is a separate scoping exercise and, on this
+  evidence, should also not be sold as the death fix.
+
+================================================================================
+ARTIFACTS
+================================================================================
+  outputs/_ffdeath_probe.py           instrumentation (read-only wrappers)
+  outputs/_ffdeath_probe2.py          same, second output filename
+  outputs/_ffdeath_analyze.py         classification / reporting
+  outputs/_route_blocked_probe.py     constructed route_blocked scenario
+  outputs/_ffdeath_D_east.json        raw: D/east seeds 101-505
+  outputs/_ffdeath2_D_east.json       raw: D/east seeds 606-444
+  outputs/_ffdeath_D_south.json       raw: D/south seeds 101-505
+
+  No production file was modified. git status is clean apart from these
+  outputs/ artifacts.
+
+================================================================================
+TEST BASELINE
+================================================================================
+  Stated baseline: 8 failed / 427 passed.
+  MEASURED ON HEAD (cfaeb21), TWICE, SAME RESULT: 9 failed / 426 passed.
+    run 1 (concurrent with two sim batches): 9 failed / 426 passed, 3425s
+    run 2 (clean, uncontended):              9 failed / 426 passed, 3318s
+  The 9 failures are identical in both runs, so this is not contention or
+  flakiness - the stated 8/427 baseline is stale by one test:
+
+    tests/test_behavior_regression.py::test_descriptive_next_action_uses_target_position
+    tests/test_dashboard_panel.py::test_dashboard_panel_render_returns_string
+    tests/test_firefighter_dispatch_replacement.py::test_no_replacement_available_marks_victim_unreachable_once
+    tests/test_rescue_planner_authority.py::test_no_firefighter_planner_delay_or_unreachable
+    tests/test_uav_sector_assignment.py::test_fire_tracker_uavs_receive_different_target_sets
+    tests/test_uav_sector_assignment.py::test_fire_tracker_still_overridden_by_search_mode_fail_safe
+    tests/test_wind_aware_trajectory_regression.py::test_north_vs_south_trajectories_diverge_over_40_steps
+    tests/test_wind_aware_trajectory_regression.py::test_east_vs_west_trajectories_diverge_over_40_steps
+    tests/test_wind_aware_victim_search.py::test_victim_search_wind_aware_action_when_downwind_exists
+
+  Two of these are in the rescue-pairing area this round investigated
+  (test_rescue_planner_authority::test_no_firefighter_planner_delay_or_unreachable
+  and test_firefighter_dispatch_replacement::test_no_replacement_available_
+  marks_victim_unreachable_once) - both concern the `if not available:` branch
+  at rescue_planner.py:592-616, which is precisely the branch Part 3 warns
+  against disturbing. They should be understood before any pairing change.
+
+  This round changed no production code, so the true baseline going forward
+  is 9 failed / 426 passed on cfaeb21. Full log:
+  outputs/_ffdeath_pytest_rerun.log
