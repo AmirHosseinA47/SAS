@@ -1,0 +1,707 @@
+================================================================================
+route_blocked TRIGGER + STANDING-IN-FIRE GUARD - PART 1: RE-VERIFY AND DESIGN
+================================================================================
+Written BEFORE any source edit, as required.
+
+ENVIRONMENT / PROVENANCE
+------------------------
+  worktree          E:\Projects\SAS\.claude\worktrees\route-blocked-fire-suppression-57e3a2
+  branch            claude/route-blocked-fire-suppression-57e3a2
+  HEAD              c1cb64af216a22b1fd5769896ed51d5002e7c3ff
+  identical to      claude/position-rename-and-hazard-revalidation  (same SHA)
+                    origin/claude/position-rename-and-hazard-revalidation (0 ahead / 0 behind)
+  working tree      clean at start
+  agents.py sha256  2a6b2d88215b1dc5851fbc9a68c31e70e484a01931503ca196e2f917c7242517
+  interpreter       E:\Projects\SAS\.venv\Scripts\python.exe - Python 3.10.11, mesa 1.2.1
+
+  NOTE ON BRANCH NAME. The brief asked to confirm `git branch --show-current`
+  == claude/position-rename-and-hazard-revalidation. It reports
+  claude/route-blocked-fire-suppression-57e3a2 instead, because the harness
+  placed this session in a git worktree whose branch was cut from
+  claude/position-rename-and-hazard-revalidation. The REQUIRED check - that the
+  code under test is the expected commit - passes exactly: HEAD is c1cb64a and
+  is bit-identical to both the named branch and its origin ref. Proceeding was
+  therefore correct; flagging the name difference for the record.
+
+================================================================================
+1. PROBE RERUN AGAINST CURRENT HEAD
+================================================================================
+Command:
+  E:\Projects\SAS\.venv\Scripts\python.exe outputs\_route_blocked_probe.py
+
+Output (verbatim):
+
+  mesa 1.2.1 | python 3.10.11
+
+  neighbours_on_fire=0   burning_nb=0 self_on_fire=False -> status=assigned       moved_to=(25, 26)
+  neighbours_on_fire=1   burning_nb=1 self_on_fire=False -> status=assigned       moved_to=(24, 25)
+  neighbours_on_fire=2   burning_nb=2 self_on_fire=False -> status=assigned       moved_to=(25, 26)
+  neighbours_on_fire=3   burning_nb=3 self_on_fire=False -> status=assigned       moved_to=(25, 24)
+  neighbours_on_fire=4   burning_nb=4 self_on_fire=False -> status=route_blocked  moved_to=(25, 25)
+  all-4 + standing IN fire  burning_nb=4 self_on_fire=True -> status=assigned     moved_to=(25, 25)
+
+VERDICT: the six-row table in the brief still holds EXACTLY. Nothing differs.
+  - 0..3 burning neighbours -> stays "assigned", unit moves.
+  - 4 burning neighbours, not in fire -> "route_blocked", unit does not move.
+  - 4 burning neighbours AND standing in fire -> flag SUPPRESSED, stays
+    "assigned".
+
+  Worth recording because it is direct evidence for the Option A analysis in
+  section 5: at neighbours_on_fire=3 the target is (25,40) and the unit moves to
+  (25,24) - i.e. it moves AWAY from the target (Manhattan 24 -> 25). The only
+  non-burning neighbour is the one behind it. That row is a real, already-
+  observable instance of "no neighbour improves my distance" while the unit is
+  NOT genuinely stuck.
+
+================================================================================
+2. THE FOUR FUNCTIONS AS THEY EXIST NOW (agents.py @ c1cb64a, verbatim)
+================================================================================
+
+--- _move_toward, agents.py:929-1007 -------------------------------------------
+
+    def _move_toward(self, target):
+        tx, ty = target
+        cx, cy = self.pos
+        dx, dy = tx - cx, ty - cy
+        if abs(dx) >= abs(dy):
+            nx = cx + (1 if dx > 0 else -1 if dx < 0 else 0)
+            ny = cy
+        else:
+            nx = cx
+            ny = cy + (1 if dy > 0 else -1 if dy < 0 else 0)
+        preferred = (nx, ny)
+        dist_before = abs(cx - tx) + abs(cy - ty)
+
+        scored: list[dict[str, object]] = []
+        for cell in self._neighbor_cells():
+            if self._cell_contains_active_fire(cell):
+                continue
+            dist_after = abs(cell[0] - tx) + abs(cell[1] - ty)
+            scored.append(
+                {
+                    "cell": cell,
+                    "dist_after": dist_after,
+                    "improving": dist_after < dist_before,
+                    "maintaining": dist_after == dist_before,
+                    "adjacent_fire": self._cell_adjacent_to_fire(cell),
+                    "smoke": self._cell_has_active_smoke(cell),
+                    "preferred": cell == preferred,
+                    "risk": self._firefighter_cell_risk(cell),
+                }
+            )
+
+        if not scored:
+            self._mark_route_blocked()
+            return
+
+        chosen: tuple[int, int] | None = None
+        chosen_tier = 4
+        tier_pools = [
+            [
+                item for item in scored
+                if item["improving"] and not item["adjacent_fire"] and not item["smoke"]
+            ],
+            [
+                item for item in scored
+                if item["maintaining"] and not item["adjacent_fire"] and not item["smoke"]
+            ],
+            [
+                item for item in scored
+                if not item["adjacent_fire"] and not item["smoke"]
+            ],
+        ]
+        for tier_idx, pool in enumerate(tier_pools, start=1):
+            if pool:
+                chosen_item = min(
+                    pool,
+                    key=lambda item: (item["dist_after"], 0 if item["preferred"] else 1),
+                )
+                chosen = chosen_item["cell"]
+                chosen_tier = tier_idx
+                break
+        if chosen is None:
+            chosen_item = min(
+                scored,
+                key=lambda item: (
+                    item["risk"],
+                    item["dist_after"],
+                    0 if item["preferred"] else 1,
+                ),
+            )
+            chosen = chosen_item["cell"]
+            chosen_tier = 4
+
+        self._last_move_tier = chosen_tier
+        self._last_move_risk = int(chosen_item["risk"])
+
+        if str(getattr(self, "status", "") or "").strip().lower() == "route_blocked":
+            self.status = "assigned" if self.assigned else "available"
+        self.model.grid.move_agent(self, chosen)
+
+--- _mark_route_blocked, agents.py:914-922 -------------------------------------
+
+    def _mark_route_blocked(self) -> None:
+        if not self._cell_contains_active_fire((int(self.pos[0]), int(self.pos[1]))):
+            if str(getattr(self, "status", "") or "").strip().lower() != "route_blocked":
+                self.status = "route_blocked"
+                handler = getattr(self.model, "_on_firefighter_route_blocked", None)
+                if callable(handler):
+                    handler(self)
+                else:
+                    print(f"[Rescue Blocked] FF-{self.unit_id} no safe route")
+
+--- _needs_immediate_survival_retreat, agents.py:683-700 -----------------------
+
+    def _needs_immediate_survival_retreat(self) -> bool:
+        if self.pos is None or getattr(self, "dead", False) or self.exiting:
+            return False
+        cell = (int(self.pos[0]), int(self.pos[1]))
+        if self._cell_contains_active_fire(cell) or self._cell_has_active_smoke(cell):
+            return True
+        fire_cells = self._fire_cells()
+        if not self.target_pos:
+            if self._cell_adjacent_to_fire(cell):
+                return True
+            if self._min_fire_distance(cell, fire_cells) <= IDLE_RETREAT_SAFETY_BUFFER:
+                return True
+            return False
+        if self._cell_adjacent_to_fire(cell):
+            return True
+        if self._min_fire_distance(cell, fire_cells) <= 1:
+            return True
+        return False
+
+--- _cell_adjacent_to_fire, agents.py:657-662 ----------------------------------
+
+    def _cell_adjacent_to_fire(self, cell: tuple[int, int]) -> bool:
+        cx, cy = cell
+        for ox, oy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+            if self._cell_contains_active_fire((cx + ox, cy + oy)):
+                return True
+        return False
+
+Supporting (referenced below, not requested but needed to reason):
+
+    def _neighbor_cells(self) -> list[tuple[int, int]]:          # agents.py:674-681
+        cx, cy = self.pos
+        neighbors: list[tuple[int, int]] = []
+        for ox, oy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+            cell = (cx + ox, cy + oy)
+            if not self.model.grid.out_of_bounds(cell):
+                neighbors.append(cell)
+        return neighbors
+
+================================================================================
+3. CALL-SITE REACHABILITY - ONE CLAIM IN THE BRIEF IS WRONG
+================================================================================
+The brief (from investigation section 10, item ii) states that TWO of the three
+_move_toward call sites are unreachable by construction. Re-verified: only ONE
+is. Correcting this now, because the whole per-call-site scoping decision in
+Part 2 depends on it.
+
+The three call sites, at current line numbers:
+
+  SITE 1  agents.py:472   survival-retreat fall-through
+                          (inside `if self._needs_immediate_survival_retreat():`,
+                           after `_survival_move()` failed to move the unit,
+                           and `self.target_pos and not self.exiting`)
+  SITE 2  agents.py:521   moving to victim
+                          (`if self.target_pos and not self.exiting:` ... else)
+  SITE 3  agents.py:556   exiting with victim
+                          (`elif self.exiting and self.exit_target:` ... else)
+
+SITE 2 - UNREACHABLE. Confirmed, as the brief says.
+  Reaching site 2 requires _needs_immediate_survival_retreat() == False with
+  self.target_pos set and self.exiting False. On that path the function's last
+  three tests apply, and the second of them is
+      if self._cell_adjacent_to_fire(cell): return True
+  so False implies NOT _cell_adjacent_to_fire(own cell). _cell_adjacent_to_fire
+  tests the same four von Neumann offsets that _neighbor_cells enumerates (with
+  out-of-bounds reading as "no fire" in both), so "not adjacent to fire" implies
+  every in-bounds neighbour is non-burning, so `scored` is non-empty (the grid
+  is 50x50, so _neighbor_cells is never empty). `if not scored:` can never be
+  true here. Airtight.
+
+SITE 3 - **REACHABLE TODAY**. The brief is WRONG about this one.
+  _needs_immediate_survival_retreat() short-circuits on its FIRST line:
+      if self.pos is None or getattr(self, "dead", False) or self.exiting:
+          return False
+  For an exiting unit it returns False because `self.exiting` is True - not
+  because the unit passed any fire test. No adjacency guarantee is established
+  at all. An exiting unit with all four neighbours burning goes straight to
+  site 556 and `scored` IS empty.
+
+  Demonstrated, not just argued - outputs/_route_blocked_reach_probe.py
+  (new, read-only; wraps _move_toward and records sys._getframe(1).f_lineno):
+
+    --- ASSIGNED / NOT EXITING ---
+    assigned nb_fire=0                need_retreat=False site=521  scored_empty=False status=en_route      pos=(25,26)
+    assigned nb_fire=3                need_retreat=True  site=-    scored_empty=False status=en_route      pos=(25,24)
+    assigned nb_fire=4                need_retreat=True  site=472  scored_empty=True  status=route_blocked pos=(25,25)
+    assigned nb_fire=4 + self on fire need_retreat=True  site=472  scored_empty=True  status=en_route      pos=(25,25)
+
+    --- EXITING WITH VICTIM ---
+    exiting  nb_fire=0                need_retreat=False site=556  scored_empty=False status=en_route      pos=(25,26)
+    exiting  nb_fire=3                need_retreat=False site=556  scored_empty=False status=en_route      pos=(25,24)
+    exiting  nb_fire=4                need_retreat=False site=556  scored_empty=True  status=route_blocked pos=(25,25)
+    exiting  nb_fire=4 + self on fire need_retreat=False site=556  scored_empty=True  status=en_route      pos=(25,25)
+
+  Row 7 is the refutation: exiting, four burning neighbours, status becomes
+  route_blocked at site 556. Reachable, today, with no code change.
+
+SITE 1 - REACHABLE. As the brief says. Rows 3 and 4 above.
+
+CORRECTED SUMMARY. route_blocked is unreachable on ONE of the three paths
+(site 2, the ordinary approach), not two. It is reachable on the survival-
+retreat fall-through and on the exiting path. The practical picture in the
+brief is still right - the flag is nearly dead - but the reason is the strictness
+of the all-four-neighbours condition, not a second structural block.
+
+Also note from row 2 of the reach probe: with three burning neighbours and
+target_pos set, _needs_immediate_survival_retreat() is True and _survival_move()
+succeeds, so _move_toward is never called at all. On the approach path,
+_move_toward only runs either (a) when the unit is comfortably clear of fire
+(site 2) or (b) when it is in trouble AND the retreat failed (site 1). There is
+no middle. This is why the current signal has no "warning" band.
+
+================================================================================
+4. WHAT THE SIGNAL ACTUALLY FEEDS (traced now, needed to design responsibly)
+================================================================================
+_mark_route_blocked -> self.status = "route_blocked" -> model._on_firefighter_route_blocked(ff)
+  (wildfire_model.py:3882-3910)
+    - prints "[Rescue Blocked] FF-<id> no safe route", deduped per (ff,victim)
+    - if ff.rescued_victim is None -> RETURNS. Everything below is skipped.
+      rescued_victim is set at PAIRING time (wildfire_model.py:3349), not at
+      pickup, so a properly dispatched unit does have it. Confirmed.
+    - records a "route_blocked" rescue event (feeds alert_manager + timeline)
+    - enqueues incident {type: route_blocked, ...} and calls
+      _process_rescue_incidents() SYNCHRONOUSLY, i.e. during schedule.step(),
+      before the post-move cycle.
+
+  _handle_rescue_incident, itype == "route_blocked" (wildfire_model.py:2730-2760)
+    - one attempt per (ff_id, victim_id), guarded by _blocked_replacement_attempted
+    - executes PhysicalRescueCommand(action="unassign", reset_victim_pending=True)
+    - then select_rescue_assignment(...reason="replacement_after_blocked") and
+      applies the pairing decision -> a DIFFERENT firefighter is dispatched.
+    - if no firefighter is available, rescue_planner.py:600-606 chooses "delay"
+      (not "mark_unreachable") for blocked reasons. Good - no victim gets
+      written off by this path.
+
+  Other consumers, all read-only status filters, all currently starved:
+    wildfire_model._firefighter_available_for_dispatch:2389   excludes route_blocked
+    wildfire_model apply-pairing guard :3330                  refuses to assign to route_blocked
+    rescue_planner.py:591                                     drops route_blocked from the pool
+    rescue_executor._firefighter_is_active_physical:482       treats as not-active
+    adaptation_manager._ff_points_at_victim:236               treats as not-pointing
+    alert_manager.py:151 / :222                               WARNING alert, by event and by status
+    dashboard_state_builder:279, live_dashboard_panel:311, serve_dashboard:93  display only
+
+*** NEW FINDING - CONSUMER LATCH (report, do not fix this round) ***
+  The flag has exactly four writers (grep over agents.py + wildfire_model.py +
+  src_extension for firefighter status writes):
+      agents.py:917                    set   -> "route_blocked"
+      agents.py:1005                   clear -> "assigned"/"available", ONLY at the
+                                       end of a successful _move_toward
+      wildfire_model.py:2099           clear -> "available", only in
+                                       _recycle_firefighter_after_exit (needs a
+                                       COMPLETED rescue)
+      wildfire_model.py:3350           set   -> "en_route" at pairing, but the
+                                       guard at :3330 refuses to pair a unit whose
+                                       status is already route_blocked
+      wildfire_model.py:4061           set   -> "dead"
+
+  The replacement pathway's own unassign (wildfire_model.py:3431-3463) sets
+      ff_marker.assigned = False
+      ff_marker.target_pos = None
+      ff_marker.rescued_victim = None
+      ff_marker.exiting = False
+      ff_marker.exit_target = None
+  and DELIBERATELY leaves status alone when it is route_blocked - there is an
+  explicit `if status != "route_blocked":` at :3454 that skips resetting
+  route_state/availability.
+
+  Consequence: after route_blocked fires and the replacement runs, the unit has
+  no target_pos and is not exiting, so advance() can never reach ANY _move_toward
+  call site again, so agents.py:1005 can never clear the flag. It cannot be
+  re-paired (:3330 and :2389 both exclude route_blocked) and it cannot complete a
+  rescue (it has none), so :2099 cannot fire either. The unit is alive, mobile,
+  and permanently removed from the dispatchable fleet for the rest of the run.
+
+  This is latent today only because the signal fires ~3 times in 18 runs. Any
+  fix that makes the signal live will start retiring firefighters permanently.
+  In scenario D there are TWO firefighters, so two firings can retire the entire
+  fleet. This is squarely in the brief's "consumers may be wrong for a live
+  signal" category; it is reported here and measured in Part 3, and NOT fixed
+  (the brief scopes this round to agents.py and to the SIGNAL).
+
+*** SECOND NEW FINDING - REPLACEMENT SEMANTICS ARE WRONG FOR AN EXITING UNIT ***
+  Because unassign clears rescued_victim / exiting / exit_target, a route_blocked
+  firing on site 556 makes a unit that is CARRYING a victim drop the whole task:
+  the carried victim is left at the unit's current cell and re-marked pending,
+  and a fresh firefighter is dispatched to it. Worse, if the blocked unit later
+  did reach its exit, agents.py:539-543 only removes/finalises a victim when
+  rescued_victim is not None - so the rescue would silently not count.
+  The replacement pathway was designed for the APPROACH phase. This is a
+  pre-existing hazard (site 556 is already reachable, section 3), not something
+  the fix introduces - but it is a strong reason to scope the new trigger.
+
+================================================================================
+5. NEW TRIGGER CONDITION - OPTION A vs OPTION B
+================================================================================
+
+OPTION A - relaxed neighbour test.
+  "Trigger when every non-burning neighbour fails to reduce distance to target."
+
+  Correctness: FAILS the brief's own acceptance criterion ("does not
+  false-trigger on a firefighter that's making slow-but-real progress around an
+  obstacle"). Manhattan distance is a local gradient, and going around ANY
+  obstacle means walking the gradient sideways or backwards for several steps.
+  A fire front lying across the approach is exactly that obstacle. Option A
+  fires on every step of a legal, successful detour. It is the textbook local-
+  minimum failure: "not descending the gradient" and "stuck" are different
+  properties, and the flag's name, its documented meaning ("no safe route") and
+  every consumer listed in section 4 mean the second one.
+  The probe rerun in section 1 already contains an instance: row 4
+  (neighbours_on_fire=3) has exactly one non-burning neighbour, it increases
+  Manhattan distance 24 -> 25, and the unit is in no danger of being stuck.
+  Option A would raise route_blocked there. Under the section-4 latch, that one
+  false positive permanently retires the unit.
+  Loosening it to "improve OR maintain" does not rescue it: a concave front
+  still forces strictly-backwards steps.
+
+  Cost: cheapest possible - the four values are already computed in `scored`
+  (`improving` / `maintaining` are literally there). Essentially free.
+
+  Timeliness: poor. It cannot fire until the unit is already jammed against the
+  fire, because while open ground remains ahead the gradient still descends.
+  It buys almost no lead time over the current condition - which is the exact
+  failure the brief is trying to fix.
+
+OPTION B - live BFS to the current target, active fire impassable.
+  "Trigger when no fire-free path exists from the unit's cell to its target."
+
+  Correctness: this IS the property the flag claims and the consumers assume.
+    - No false positives on detours: if ANY fire-free path exists, however long
+      or convoluted, BFS finds it and the flag stays clear. Slow-but-real
+      progress is, by construction, never flagged.
+    - True positives are exactly "genuinely stuck": encircled, or the target cut
+      off behind a closed front. That is also precisely the condition under
+      which the replacement pathway's answer - unassign and send a DIFFERENT
+      unit, which may approach from the other side of the front - is the correct
+      answer. A local gradient test cannot distinguish "I am stuck" from "nobody
+      can get there", and the replacement decision needs the global fact.
+    - It strictly dominates the current condition on the cases that matter: if
+      all four neighbours burn and the target is not one of them, BFS returns
+      None too.
+
+  Timeliness: this is the decisive advantage. Connectivity is a GLOBAL property,
+  so it can go false while the unit is 20 cells from any fire and in no local
+  danger at all - the moment the corridor closes, not the moment the unit is
+  being burned. That is the only way to get a signal with real lead time, and it
+  is the thing the brief is asking for. The investigation's own seed 303/east
+  case (route measurably unreachable at steps 138, 139, 140 with route_blocked
+  never set) is precisely an Option B true positive that Option A would also
+  have missed at 138.
+
+  Cost: a 4-neighbour BFS over 50x50 = 2500 cells, plus one _fire_cells() scan
+  of the schedule to build the impassable set.
+    - Call frequency here IS higher than the death investigation's per-step
+      dispatch checks, as the brief notes: _move_toward ran 1685 times across the
+      18 runs (~94/run) versus 57 dispatches. Upper bound is NUM_FIREFIGHTERS x
+      steps = 2 x 240 = 480 calls/run for scenario D.
+    - But the comparison that matters is against what advance() ALREADY does per
+      step: _fire_cells() is an O(all schedule agents) scan (~2500 Fire agents)
+      and advance() already calls it on the survival-retreat, idle-retreat and
+      moving-to-victim paths, and _needs_immediate_survival_retreat() calls it
+      again. One more such scan plus a bounded BFS is the same order as work
+      already being done every step.
+    - I am not asserting this - the BEFORE campaign (outputs/_rb_campaign.py)
+      instruments _fire_cells and BFS separately with perf_counter and the
+      measured per-run cost is reported in Part 3 against a ~6-7 min/run
+      baseline. If it is not negligible, that is reported rather than assumed.
+
+DECISION: **OPTION B.**
+  Option A is rejected on correctness, not on cost: it fires on exactly the case
+  the brief names as the false positive to avoid, it does so on the very first
+  constructed scenario in the existing probe, and given the section-4 latch each
+  false positive is permanent. Option B is the only one of the two whose
+  trigger condition matches the meaning the flag's consumers already depend on,
+  and the only one that can fire before the unit is already in the fire.
+
+  BFS details, matching outputs/_ffdeath_probe._bfs_path_len exactly (validated
+  in the firefighter-death investigation; not reinvented):
+    - 4-neighbour, in-bounds via the same grid bounds test;
+    - impassable = cells containing an actively burning Fire agent
+      (self._fire_cells(), one scan, then set membership - NOT
+      _cell_contains_active_fire per cell, which would do a grid content lookup
+      per visited cell);
+    - the TARGET cell is reachable even if it is itself burning (the dst test
+      precedes the blocked test). Deliberate: a victim's cell can transiently
+      burn, and treating that as "no route" would hand a doomed victim to a
+      replacement unit for no gain;
+    - the SOURCE cell is not tested for fire - BFS starts there regardless. That
+      is what makes the standing-in-fire case answerable at all (section 6).
+
+================================================================================
+6. THE STANDING-IN-FIRE GUARD
+================================================================================
+
+WHY DOES IT EXIST? Best understanding, stated before deciding:
+  The guard is a second, independent veto layered on top of the trigger, and the
+  only case it vetoes is "the unit is standing in active fire". A unit in that
+  state is killed later in the SAME step, by _check_fire_casualties, which the
+  post-move cycle runs at src_extension/adaptation_manager.py:170. The most
+  plausible intent is therefore de-duplication and tidiness:
+    (a) _check_fire_casualties already runs its own replacement - it issues
+        unassign(reason="firefighter_fire_casualty", reset_victim_pending=True)
+        at wildfire_model.py:4050-4060 and the casualty incident path re-pairs.
+        Marking route_blocked first would produce a second, competing
+        replacement attempt for the same victim in the same step.
+    (b) it avoids emitting a route_blocked WARNING alert (alert_manager:151/222)
+        for a unit that is about to emit a firefighter_dead CRITICAL one step
+        later, and avoids leaving "route_blocked" as a dying unit's status.
+  I found no comment, test or commit message stating the intent, so this is
+  inference from the surrounding code, not documented fact.
+
+WHY IT IS WRONG ANYWAY:
+  - Both concerns are already handled elsewhere. The duplicate-replacement worry
+    is covered by _blocked_replacement_attempted (one attempt per (ff,victim)),
+    by _rescue_incident_seen_keys, and by the fact that once the unit is
+    unassigned the casualty path's own unassign finds no active pairing and is a
+    no-op. The status-tidiness worry is covered by _check_fire_casualties
+    overwriting status to "dead" at :4061 regardless.
+  - The ordering actually favours firing. route_blocked is processed
+    SYNCHRONOUSLY inside schedule.step() (_on_firefighter_route_blocked calls
+    _process_rescue_incidents itself), whereas the casualty replacement happens
+    later, in the post-move cycle. Marking it gets the replacement dispatched one
+    phase EARLIER in the same step. The brief's own suggested rationale -
+    "replacement logic could then act on it a step earlier for whichever unit is
+    dispatched next" - is correct and is a real, mechanical gain, not a
+    hypothetical one.
+  - Setting route_blocked also EXCLUDES the dying unit from being selected as its
+    own replacement (:2389 and :3330 both filter route_blocked), which is
+    strictly desirable.
+  - And it is the single most informative moment in the whole signal: it is the
+    only time the system knows, before the death, that this unit is finished.
+    Suppressing it there is suppressing the one sample that matters.
+
+DECISION: **REMOVE THE GUARD** (i.e. invert its purpose, per the brief's third
+option: mark route_blocked immediately in this case).
+  Concretely, `_mark_route_blocked` keeps only its idempotence check
+  (do nothing if already route_blocked) and drops the
+  `if not self._cell_contains_active_fire(own cell)` veto.
+
+  Note this is a clean separation of concerns rather than a loosening: after the
+  change the TRIGGER decides when to raise the flag, and _mark_route_blocked
+  just raises it. If the unit is standing in fire but still has a live path, the
+  new trigger simply does not fire and the flag is not raised - the guard was
+  never what protected that case.
+
+  Residual risk accepted and named: if a unit standing in fire survives (its
+  cell's Fire burns out before _check_fire_casualties runs in the same step), it
+  will have been marked route_blocked and unassigned. Under the section-4 latch
+  it would then be permanently retired. Measured in Part 3.
+
+  Narrowing was considered and rejected: "suppress only when the unit has no
+  victim" is redundant, because _on_firefighter_route_blocked already returns
+  early when rescued_victim is None.
+
+================================================================================
+7. CHOSEN DESIGN (precise, for Part 2)
+================================================================================
+agents.py only.
+
+  D1. Add a helper `_path_exists_avoiding_fire(self, src, dst, fire_cells)` -
+      the _ffdeath_probe BFS, returning bool. Uses grid.out_of_bounds for the
+      bounds test and set membership for the impassable test; dst reachable even
+      if burning; early-out when src == dst.
+
+  D2. In `_move_toward(target)`, before building `scored`, compute
+          route_blocked_now = (not self.exiting) and not path_exists(pos, target)
+      using one self._fire_cells() call.
+
+  D3. Trigger:  `if not scored or route_blocked_now: self._mark_route_blocked()`
+      - `not scored` is KEPT unchanged, so every currently-firing case still
+        fires, on every call site, exactly as today. (The two conditions are not
+        strictly nested: if the target IS one of the four burning neighbours,
+        scored is empty but BFS reports reachable.) No existing behaviour is
+        removed.
+      - `not scored` keeps its `return` (the unit genuinely has nowhere to step).
+        `route_blocked_now` does NOT stop the unit - it raises the flag and then
+        falls through to the normal tier selection and move. Halting movement
+        would be a retreat-behaviour change, which is explicitly out of scope.
+
+  D4. Suppress the status auto-clear at the tail of _move_toward when
+      route_blocked_now is true, otherwise the flag would be set and cleared
+      within the same call. When route_blocked_now is false the tail clears the
+      flag exactly as today - this is the intended hysteresis: blocked while the
+      route is gone, clear on the first step taken with a live route.
+
+  D5. `_mark_route_blocked`: drop the standing-in-fire veto, keep idempotence.
+
+SCOPING THE NEW TRIGGER TO THE APPROACH PHASE (`not self.exiting`)
+  Deliberate, and stated here rather than discovered later:
+    - Site 2 (moving to victim) and site 1 (survival fall-through) are the
+      approach phase. The new trigger applies there. Site 2 becomes reachable
+      for the first time - that is the entire point of the change.
+    - Site 3 (exiting with victim) keeps ONLY the existing `not scored`
+      condition, byte-identical behaviour to today. Reason: section 4's second
+      finding - for a unit carrying a victim, the replacement pathway's response
+      (unassign, drop the victim, dispatch someone else) is the wrong response,
+      and would additionally break rescue finalisation. The correct handling of a
+      blocked EXITING unit is a retreat/exit-routing question, and both retreat
+      logic and standby/release posture are explicitly out of scope for this
+      round. Making the flag fire more often on that path would change rescue
+      outcomes through a pathway nobody has designed.
+  If Part 3 shows the approach-phase signal is sound and the consumer latch is
+  fixed, extending to the exiting path is a well-defined follow-up.
+
+INTERACTION WITH THE THREE CALL SITES - explicit answer to the Part 2 question
+  site 472 survival fall-through : trigger ALREADY reachable; now also fires on
+                                   the no-path case. Intended. This is the path
+                                   where units die, and it currently only fires
+                                   when the unit is already boxed in.
+  site 521 moving to victim      : trigger CURRENTLY UNREACHABLE; becomes
+                                   reachable. INTENDED, and the primary purpose
+                                   of the change - it is the only site that can
+                                   fire while the unit is still far from fire and
+                                   therefore the only source of lead time.
+  site 556 exiting with victim   : UNCHANGED. Already reachable today (contra the
+                                   brief); scoped out of the new trigger by the
+                                   `not self.exiting` guard for the reasons above.
+
+WHAT IS NOT CHANGED
+  - _survival_move, _assigned_one_step_retreat, the idle-retreat state machine,
+    the tier pools and the chosen-cell selection: untouched.
+  - rescue_planner.py and all dispatch/pairing logic: untouched.
+  - Every consumer in section 4: untouched. The two consumer findings above are
+    reported, not fixed.
+
+================================================================================
+8. HOW PART 3 WILL BE MEASURED
+================================================================================
+  outputs/_rb_campaign.py runs the identical 18-run sample (D/east seeds
+  101,202,303,404,505,606,707,808,909,111,222,333,444; D/south seeds
+  101,202,303,404,505; 240 steps), with the SAME params as
+  outputs/_ffdeath_probe.py (scenario D preset, NUM_FIRE_TRACKERS = n//2 = 2,
+  NUM_VICTIM_SEARCHERS = 2, fire spread 0.75, batch 300, PROBABILITY_MAP False),
+  so the 16 already-classified deaths line up seed-for-seed.
+
+  It is run TWICE: once at unmodified HEAD ("before"), which additionally
+  records, per _move_toward call, what the NEW trigger WOULD have decided -
+  a true counterfactual, with the simulation unperturbed - and once after the
+  edit ("after"). The before-run therefore gives lead-time-before-death against
+  exactly the same deaths the investigation classified, with no confounding
+  from changed behaviour; the after-run gives the real firing rate, the real
+  deaths, and the latched-unit count.
+
+  CONFIG CAVEAT, recorded deliberately (cf. the lane-matrix lesson): the
+  investigation's 18-run sample uses a 2 fire-tracker + 2 victim-searcher split,
+  whereas `evaluate_scenarios.py` at CLI defaults leaves both unset and takes the
+  legacy (n-1, 1) = 3T+1S path. They are DIFFERENT configurations and their
+  numbers are not interchangeable. So rescued/dead/ff_deaths are reported twice:
+  (a) before-vs-after within the 2T+2S campaign, internally valid across all 18
+  runs; and (b) via evaluate_scenarios.py at defaults for the 10 combos that have
+  committed baselines on this branch (outputs/fix14_D_east.txt,
+  outputs/fix14_D_south.txt, matching lane_clamp_default_* and cast_default_*).
+
+  Committed baseline being compared against (evaluate_scenarios defaults,
+  steps=240):
+    D/east  101: r2 d2 ff1 | 202: r3 d1 ff1 | 303: r2 d2 ff2 | 404: r1 d3 ff2 | 505: r2 d2 ff2
+    D/south 101: r2 d2 ff1 | 202: r3 d0 ff0 | 303: r4 d0 ff0 | 404: r0 d3 ff2 | 505: r3 d1 ff0
+
+  Test baseline is being measured on this worktree at HEAD, not taken from the
+  brief (8F/427P) or the investigation (9F/426P, measured on cfaeb21).
+
+================================================================================
+ARTIFACTS PRODUCED BY PART 1
+================================================================================
+  outputs/_route_blocked_reach_probe.py   new, read-only: which call site can
+                                          reach the trigger (section 3)
+  outputs/_rb_campaign.py                 new: the before/after 18-run harness
+  outputs/routeblocked_part1.txt          this file
+  No source file modified at the time of writing.
+
+================================================================================
+ADDENDUM (still pre-edit): CONSUMERS EXERCISED WITH A LIVE SIGNAL, AND A
+DECISIVE COST DATA POINT
+================================================================================
+
+A. COST QUESTION IS ALREADY ANSWERED BY EXISTING CODE ON THE HOT PATH
+   wildfire_model.py:3685 already contains `_safe_path_reachable_cells` -
+   "4-connected BFS; active fire cells are impassable, burnt cells are not" -
+   i.e. exactly the Option B primitive. It is called from
+   `_update_unreachable_victims` (:3741), which model.step() runs
+   UNCONDITIONALLY on EVERY step (wildfire_model.py:4487), together with
+   `_active_burning_cells()` (:3669), an O(all schedule agents) scan identical
+   in cost to `_fire_cells()`.
+
+   So a full-grid multi-source fire-impassable BFS plus a full fire-cell scan is
+   already paid once per step, unconditionally, today. Option B adds at most
+   NUM_FIREFIGHTERS such units of work per step (2 in scenario D), and its BFS
+   early-exits on reaching the target rather than flooding the whole grid.
+   The measured perf_counter split from the campaign is reported in Part 3, but
+   the design question "is a BFS per _move_toward call affordable at this call
+   frequency" is settled: the codebase already does strictly more than this every
+   step, on a path that runs even when no firefighter is moving.
+
+   This also settles a secondary question - Option B is not a new concept being
+   introduced into the model. "Safe-path reachability with active fire
+   impassable" is already the codebase's own definition of reachable, used to
+   decide whether a VICTIM is unreachable. Option B simply applies the same
+   definition to the firefighter's own route. Option A would introduce a second,
+   inconsistent notion of blocked.
+
+B. CONSUMERS UNDER A LIVE SIGNAL - MEASURED, NOT ASSUMED
+   outputs/_rb_consumer_probe.py builds a real WildFireModel, lets it dispatch
+   normally, then fires the real _mark_route_blocked and inspects every consumer.
+   Result (full output in outputs/_rb_consumer_probe_out.txt):
+
+     dispatch established step 17: ff_unit_1 -> victim_2
+
+     REPLACEMENT PATHWAY .................. WORKS
+       [Rescue Blocked] FF-ff_unit_1 no safe route
+       [RescueEvent] type=route_blocked victim=victim_2 ff=ff_unit_1
+       [Dispatch] FF-ff_unit_0 assigned to victim_2 reason=replacement_after_blocked
+       ff_unit_1 -> status=route_blocked, assigned=False, target=None, rv=no
+       ff_unit_0 -> status=en_route, assigned=True, target=(10,25), rv=yes
+       _blocked_replacement_attempted = [('ff_unit_1','victim_2')]  (one attempt)
+       victim_2 was subsequently RESCUED by the replacement unit.
+
+     PLANNER POOL / SNAPSHOT .............. WORKS
+       ff_unit_1  available=False assigned=False route_blocked=True dead=False
+
+     rescue_executor ...................... WORKS
+       _firefighter_is_active_physical(ff_unit_1) = False
+
+     adaptation_manager ................... WORKS
+       a full post_move run_cycle produced no RescueInvariant complaints
+
+     alert_manager ........................ WORKS
+       2 alerts, both severity=warning, for the same unit:
+         route_blocked / rescue_pipeline      / "no_safe_route"        (event-driven)
+         route_blocked / firefighter_monitor  / "... route blocked"    (status-driven)
+       (the double-emission is by design - two source_modules - but note that a
+       live signal doubles route_blocked alert volume. Cosmetic, not a defect.)
+
+     LATCH ................................ **BROKEN** (confirmed empirically)
+       after firing, stepping 60 further steps:
+         status trajectory: route_blocked            (never changes)
+         dead=False assigned=False target=None dispatchable=False
+       ff_unit_0 completed its rescue and returned to "available"; ff_unit_1
+       remained permanently route_blocked and permanently undispatchable while
+       alive and mobile. In the same run victim_1 was still "candidate" and
+       victim_0/victim_3 died, with a retired firefighter standing idle.
+
+   This confirms the static analysis in section 4: every consumer behaves
+   sensibly on the firing itself, and the single thing that is wrong is that
+   nothing ever clears the flag once the replacement pathway has removed the
+   unit's target. It is a genuine latch, it is a consumer-side defect
+   (wildfire_model.py:3454 explicitly preserves route_blocked through unassign),
+   and per the brief it is REPORTED, not fixed in this round.
+
+   Design consequence, and the reason Option A is now doubly rejected: under this
+   latch every false positive is permanent and costs a whole firefighter for the
+   rest of the run. A trigger that fires on "no neighbour improves my Manhattan
+   distance" would retire units during ordinary detours. With only 2 firefighters
+   in scenario D, two false positives retire the entire fleet.

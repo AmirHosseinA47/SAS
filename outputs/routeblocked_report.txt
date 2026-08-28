@@ -1,0 +1,628 @@
+================================================================================
+route_blocked TRIGGER + STANDING-IN-FIRE GUARD - IMPLEMENTATION AND VALIDATION
+================================================================================
+Design rationale and pre-edit verification: outputs/routeblocked_part1.txt
+This file covers Part 2 (implementation) and Part 3 (validation).
+
+  worktree   E:\Projects\SAS\.claude\worktrees\route-blocked-fire-suppression-57e3a2
+  HEAD       c1cb64a  (bit-identical to claude/position-rename-and-hazard-revalidation
+                       and to its origin ref, 0 ahead / 0 behind)
+  changed    agents.py only
+  python     E:\Projects\SAS\.venv\Scripts\python.exe - 3.10.11, mesa 1.2.1
+
+================================================================================
+HEADLINE
+================================================================================
+The trigger fix works and is measurably better than what it replaced:
+
+  * route_blocked firing rate DOUBLED: 7 -> 14 firings, 0.33% -> 0.69% of
+    _move_toward calls over the same 18 runs.
+  * The signal now precedes 13 of 14 firefighter deaths, up from 7 of 14.
+  * It fires on the "moving to victim" call site for the first time - that site
+    was unreachable by construction before.
+  * 5 of the 14 firings happen while the unit is standing in fire; every one of
+    those was silently suppressed by the old guard.
+  * No new test failures (8 failed / 427 passed, before and after, identical
+    failure lists).
+  * Cost is 0.03% of run wall time, measured.
+
+But the honest reading of the outcome is more restrained, and two things must be
+said plainly:
+
+  1. THE EXTRA LEAD TIME IS SMALL. Median lead is 3 steps; the maximum is 8.
+    The improvement is almost entirely in COVERAGE (7/14 -> 13/14 deaths get any
+    warning at all), not in EARLINESS. A 3-step warning is not enough time for a
+    replacement unit to cross the map. As a predictor of "this specific unit is
+    about to die", the signal is now reliable; as an early warning with room to
+    act, it is still late.
+
+  2. DOWNSTREAM, THE LIVE SIGNAL IS CURRENTLY A NET NEGATIVE. Outcomes did not
+    improve, and moved slightly the wrong way: over the 18-run campaign,
+    rescued 44 -> 42, victims dead 25 -> 26, firefighter deaths 14 -> 14. Two
+    seeds account for all of it, and both are explained by consumer defects
+    (section 6), not by the trigger misfiring. Every one of the 14 firings was
+    a correct identification of a genuinely unreachable target.
+
+  So the real fix is now in the CONSUMERS and in the retreat/standby posture,
+  not in the trigger condition. That is the next round's scope. Details and
+  evidence below; nothing here was tuned to produce a pass.
+
+================================================================================
+0. THREE CORRECTIONS TO THE BRIEF'S PREMISES (re-verified, as instructed)
+================================================================================
+
+(A) "TWO OF THE THREE CALL SITES ARE UNREACHABLE" - HALF WRONG.
+    Only ONE is. `_needs_immediate_survival_retreat()` short-circuits on its
+    first line (`... or self.exiting: return False`), so for an EXITING unit it
+    returns False without applying any fire test, and no
+    not-adjacent-to-fire guarantee is established. The exiting-with-victim site
+    is reachable today.
+    Proved twice: constructively (outputs/_route_blocked_reach_probe.py, an
+    exiting unit with four burning neighbours reaches status route_blocked with
+    no code change), and empirically - 1 of the 7 BEFORE firings in the 18-run
+    sample happened at the exiting-with-victim site.
+    Only the "moving to victim" site is genuinely unreachable by construction.
+
+(B) THE 16-DEATH SAMPLE DOES NOT EXIST AT HEAD. The brief asks about "the SAME
+    16 firefighter deaths already classified". Re-running the identical 18-run
+    sample at HEAD produces 14 deaths, at different steps.
+    This is not a harness difference - it is a code difference. The investigation
+    measured at cfaeb21, which is 11 commits behind HEAD and includes +348 lines
+    in src_extension/adaptation/local_adaptation_generator.py plus changes to
+    uav_executor.py and rescue_planner.py; those change UAV search, hence
+    detection timing, hence dispatch timing, hence firefighter trajectories.
+    CONTROL RUN (decisive): the investigation's own unmodified
+    outputs/_ffdeath_probe.py, run against a pristine `git archive HEAD` tree,
+    reproduces MY numbers, not the committed ones:
+        east seed 202   committed (cfaeb21): death step 216   HEAD: 60
+        east seed 303   committed (cfaeb21): death step 156   HEAD: 60
+    My campaign harness agrees with the control exactly. All lead-time analysis
+    below therefore uses the 14 deaths that actually occur at HEAD.
+    (The `evaluate_scenarios` committed baselines are NOT affected - they were
+    committed after cfaeb21 and reproduce byte-for-byte at HEAD; see section 5.)
+
+(C) THE 0.18% BASELINE IS ALSO FROM THAT OLDER CODE. At HEAD the pre-fix
+    baseline is 7 firings / 2106 calls = 0.33%. Comparisons below are HEAD-to-
+    HEAD; the 0.18% figure is quoted only for provenance.
+
+The six-row probe table in the brief, by contrast, DID still hold exactly at
+HEAD - see section 4.
+
+================================================================================
+1. WHAT WAS CHANGED (agents.py only, +64/-9 lines)
+================================================================================
+
+  (a) NEW HELPER `Firefighter._path_exists_avoiding_fire(src, dst, fire_cells)`
+      4-connected BFS, active fire impassable, early exit on reaching dst.
+      Semantics copied from the already-validated
+      outputs/_ffdeath_probe._bfs_path_len rather than reinvented:
+        - bounds via the existing self.model.grid.out_of_bounds
+        - impassable via set membership on one self._fire_cells() result
+        - the DESTINATION counts as reachable even when it is itself burning
+          (a victim's cell can burn transiently; calling that "no route" would
+          hand a still-rescuable victim to a replacement for nothing)
+        - the SOURCE is never tested, which is what makes the standing-in-fire
+          case answerable at all.
+      This is the same notion of reachability wildfire_model already uses to
+      decide whether a VICTIM is unreachable (`_safe_path_reachable_cells`,
+      :3685). The change applies the model's own definition to the firefighter's
+      own route rather than introducing a second, inconsistent one.
+
+  (b) NEW TRIGGER in `_move_toward`, computed before `scored` is built:
+          route_blocked_now = (not self.exiting) and not path_exists(pos, target)
+      Raised via `_mark_route_blocked()` AFTER the `if not scored:` early return,
+      then execution FALLS THROUGH to the normal tier selection and the unit
+      still moves. Raising the flag deliberately does not stop the unit -
+      choosing the best available step is the retreat logic's job and retreat
+      logic is out of scope.
+
+  (c) THE OLD CONDITION IS KEPT UNCHANGED. `if not scored: _mark_route_blocked()`
+      still fires on every call site exactly as before. The two conditions are
+      not strictly nested (if the target IS one of the four burning neighbours,
+      `scored` is empty but BFS reports reachable), so keeping both removes no
+      existing behaviour. Confirmed in the data: the 1 exiting-site firing in the
+      AFTER run is an old-condition firing, byte-identical to BEFORE.
+
+  (d) STATUS AUTO-CLEAR SUPPRESSED while blocked. The tail of `_move_toward`
+      clears route_blocked whenever a move is chosen; that now runs only when
+      `route_blocked_now` is false. Otherwise the flag would be set and cleared
+      inside the same call. This gives the intended hysteresis: blocked while the
+      route is gone, cleared on the first step taken with a live route.
+
+  (e) GUARD REMOVED from `_mark_route_blocked`. The
+      `if not self._cell_contains_active_fire(own cell)` veto is gone;
+      idempotence (do nothing if already route_blocked) is kept.
+      Rationale in Part 1 section 6. In short: both of the guard's plausible
+      purposes are already covered elsewhere (`_blocked_replacement_attempted`
+      dedupes the replacement; `_check_fire_casualties` overwrites status to
+      "dead" anyway), and firing here gets the replacement dispatched one phase
+      earlier because `_on_firefighter_route_blocked` runs
+      `_process_rescue_incidents()` synchronously inside `schedule.step()`,
+      whereas the casualty path runs later in the post-move cycle.
+      After the change the TRIGGER decides when to raise the flag and
+      `_mark_route_blocked` just raises it. A unit standing in fire that still
+      has a live path does not fire - the guard was never what protected that.
+
+INTERACTION WITH THE THREE CALL SITES - as required, stated explicitly, and now
+with measured firing counts from the 18-run AFTER campaign:
+
+  site 473  survival-retreat fall-through
+        Already reachable. Now also fires on the no-path case.
+        AFTER: 11 firings (6 old-condition, 5 new-condition-only). INTENDED.
+
+  site 522  moving to victim
+        Previously UNREACHABLE BY CONSTRUCTION. Now reachable.
+        AFTER: 2 firings, both with `scored` non-empty and no live path - i.e.
+        pure new-trigger firings that could not have occurred before. INTENDED,
+        and the entire point of the change: this is the only site that can fire
+        while the unit is still clear of fire, so it is the only possible source
+        of lead time.
+
+  site 557  exiting with victim
+        DELIBERATELY UNCHANGED, via the `not self.exiting` guard on the new
+        condition. AFTER: 1 firing, old-condition only - identical to BEFORE.
+        Reason (Part 1 section 4): the replacement pathway's response is
+        `unassign`, which clears rescued_victim / exiting / exit_target. For a
+        unit CARRYING a victim that drops the victim mid-fire, and worse,
+        agents.py:539-543 only finalises a rescue when rescued_victim is not
+        None - so a blocked-then-recovered exiting unit would reach the boundary
+        and the rescue would silently not count. That is a retreat/exit-routing
+        problem, not a signal problem. Scoped out and reported instead.
+
+NOT CHANGED: `_survival_move`, `_assigned_one_step_retreat`, the idle-retreat
+state machine, the tier pools, cell selection, rescue_planner.py, dispatch and
+pairing logic, and every consumer of the signal.
+
+================================================================================
+2. FIRING RATE - BEFORE vs AFTER (18 runs, HEAD, same seeds)
+================================================================================
+Sample: D/east seeds 101,202,303,404,505,606,707,808,909,111,222,333,444 and
+D/south seeds 101,202,303,404,505, 240 steps each. Params mirror
+outputs/_ffdeath_probe.py exactly (scenario D preset, NUM_FIRE_TRACKERS=2,
+NUM_VICTIM_SEARCHERS=2, fire spread 0.75, batch 300, PROBABILITY_MAP False).
+Harness: outputs/_rb_campaign.py; analysis: outputs/_rb_analyze.py;
+raw: outputs/_rb_{before,after}_D_{east,south}.json;
+full table: outputs/_rb_analysis.txt.
+
+                                          BEFORE          AFTER
+  _move_toward calls                        2106           2036
+    at moving-to-victim                1776 (84.3%)   1720 (84.5%)
+    at exiting-with-victim              291 (13.8%)    287 (14.1%)
+    at survival-fallthrough              39 ( 1.9%)     29 ( 1.4%)
+  old condition true (all 4 burning)     11 (0.52%)      8 (0.39%)
+  new condition true (no live path)      31 (1.47%)     20 (0.98%)
+  _mark_route_blocked calls                   11             14
+    suppressed by the guard                    4              0
+    of which standing in fire                  4              0
+  *** ACTUAL route_blocked firings ***      7 (0.33%)     14 (0.69%)
+
+  FIRING RATE ROSE: 0.33% -> 0.69% of _move_toward calls; 7 -> 14 firings.
+  (Against the brief's stated 3/1685 = 0.18% older-code baseline, 14/2036 =
+  0.69% is a ~3.8x rise; against the correct HEAD baseline it is exactly 2x.)
+
+  WHERE THE 14 AFTER FIRINGS HAPPEN, and what made each one possible:
+      by call site      survival-fallthrough  11
+                        moving-to-victim       2   <- previously impossible
+                        exiting-with-victim    1   <- unchanged old condition
+      by condition      old condition (scored empty)       8
+                        new condition only (path gone)     6
+      standing in fire at the moment of firing             5   <- all 5 would
+                        have been suppressed by the old guard
+
+  So of the +7 additional firings: +2 come from the newly-reachable
+  moving-to-victim site, +4 more from the new condition at the survival
+  fall-through, and the guard removal is what let 5 of the 14 through at all.
+  Both halves of the fix (trigger and guard) are doing measurable work.
+
+  NOTE ON THE "new condition true" COUNTS FALLING (31 -> 20): this is not the
+  trigger becoming less sensitive. It is the consequence of acting on the signal
+  - once route_blocked fires, the replacement pathway unassigns the unit, its
+  target_pos becomes None, and it stops calling _move_toward at all. The
+  BEFORE column counts a condition nobody acted on; the AFTER column counts one
+  that terminates the episode it detects.
+
+================================================================================
+3. LEAD TIME BEFORE DEATH - the direct evidence the brief asked for
+================================================================================
+Against the 14 firefighter deaths that actually occur at HEAD (see correction B).
+
+  OLD trigger, actual firings ............ signalled  7 of 14 deaths
+  NEW trigger, actual firings ............ signalled 13 of 14 deaths
+
+  wind  seed  ff          death   OLD lead      NEW lead
+  east  101   ff_unit_0    30     never          0 steps
+  east  202   ff_unit_0    60     3 steps        3 steps
+  east  222   ff_unit_0    75     5 steps        5 steps
+  east  303   ff_unit_0    60/63  never          8 steps
+  east  333   ff_unit_0    45     3 steps        3 steps
+  east  404   ff_unit_0    33/30  2 steps        1 step
+  east  505   ff_unit_0    51     2 steps        2 steps
+  east  606   ff_unit_0    33     3 steps        6 steps
+  east  808   ff_unit_0    45     5 steps        5 steps
+  east  808   ff_unit_1    -/156  n/a            3 steps   (death only in AFTER)
+  east  909   ff_unit_0    36     never          0 steps
+  east  333   ff_unit_1   207/-   never          n/a       (death only in BEFORE)
+  south 101   ff_unit_0   111     never          never
+  south 101   ff_unit_1   141/138 never          8 steps
+  south 404   ff_unit_1    57     never          0 steps
+
+  READ THIS HONESTLY:
+    - COVERAGE nearly doubled: 7/14 -> 13/14. Six deaths that previously got no
+      warning at all now get one. That is a real improvement and it is the gate
+      item about "fires with meaningful lead time for at least some deaths".
+    - EARLINESS barely moved. Old leads were 2,2,3,3,3,5,5 (max 5). New leads are
+      0,0,0,1,2,3,3,3,5,5,6,8,8 (max 8, median 3). Three of them are 0 - the
+      signal fires in the same step the unit dies, which is a report, not a
+      warning.
+    - The counterfactual (running the NEW condition read-only against the
+      UNPERTURBED before-run, so the deaths are literally the same events) gives
+      the same picture: 12/14 signalled, leads 0,0,0,2,3,4,5,5,5,6,11,162.
+      The single 162-step case is east seed 333 ff_unit_1 and it is exactly the
+      case that section 6 shows going wrong downstream.
+
+  VERDICT ON THE TRIGGER: as a detector it is now correct and reliable - it
+  catches nearly every unit that is about to die, and section 4 shows it does not
+  false-trigger on detours. As an EARLY WARNING it is still too late to act on in
+  most cases, because by the time a firefighter's target is topologically
+  unreachable, the fire is usually already on top of it. Making the warning
+  genuinely early would require predicting where the front will be in N steps,
+  not testing where it is now - a different and much larger change.
+
+================================================================================
+4. CONSTRUCTED PROBE - new six-row-equivalent table
+================================================================================
+outputs/_route_blocked_probe.py, extended. Rows 1-6 keep the original
+construction unchanged so the before/after comparison is like-for-like; rows 7-12
+are new, because the original construction only ever varies the unit's own four
+neighbours and therefore cannot exercise a live-path test at all.
+Full output: outputs/_rb_probe_after.txt.
+
+  --- ORIGINAL SIX ROWS (neighbour-only construction) ---
+  row                          nb_fire self_fire path  site   -> status        moved
+  neighbours_on_fire=0            0     False    True  522    -> assigned      yes
+  neighbours_on_fire=1            1     False    True  -      -> assigned      yes
+  neighbours_on_fire=2            2     False    True  -      -> assigned      yes
+  neighbours_on_fire=3            3     False    True  -      -> assigned      yes
+  neighbours_on_fire=4            4     False    False 473    -> route_blocked no
+  all-4 + standing IN fire        4     True     False 473    -> ROUTE_BLOCKED no  <-- CHANGED
+
+  Rows 1-5 are identical to the pre-fix table. Row 6 is the guard fix: it used to
+  come back "assigned" (suppressed); it now fires. That is the single behavioural
+  change visible in the original construction.
+
+  --- NEW LIVE-PATH ROWS (all four neighbours CLEAR; fire wall at y=30) ---
+  walled off, no gap (GENUINELY STUCK)   0  False  False 522  -> route_blocked  yes
+  wall with gap at x=0 (LONG DETOUR)     0  False  True  522  -> assigned       yes
+  wall with gap at x=25 (direct-ish)     0  False  True  522  -> assigned       yes
+  walled off + standing IN fire          0  True   False -    -> assigned       yes
+       +step 1: site=-    -> assigned          (still retreating)
+       +step 2: site=522  -> route_blocked     (fires once retreat ends)
+  gap at x=0 + standing IN fire          0  True   True  -    -> assigned       yes
+  EXITING, walled off (scoped out)       0  False  False 557  -> assigned       yes
+
+  These are the rows that matter for the gate:
+    - CATCHES GENUINELY STUCK: row 7. Every neighbour is clear, so the old
+      condition cannot fire and Option A ("no neighbour improves my distance")
+      would also not fire - the unit CAN step toward the wall. Only the live-path
+      test sees that the target is cut off. It fires, at the moving-to-victim
+      site, and the unit KEEPS MOVING (moved=yes) as designed.
+    - DOES NOT FALSE-TRIGGER ON SLOW-BUT-REAL PROGRESS: rows 8 and 9. Identical
+      wall with a single gap. A detour exists - a 40-plus-cell one via x=0 in
+      row 8 - and the flag stays clear. Manhattan distance does not improve on
+      these steps either, which is precisely why Option A was rejected: it would
+      have fired on both.
+    - Row 4 of the original table is the same point in the original
+      construction: three neighbours burning, the only free cell moves the unit
+      AWAY from the target (Manhattan 24 -> 25), and the flag correctly stays
+      clear.
+    - GUARD REMOVAL IS NOT INDISCRIMINATE: row 11. Standing in fire but with a
+      live path - no firing.
+    - EXITING PATH UNCHANGED: row 12. Target unreachable, but the unit is
+      carrying a victim, so the new condition is scoped out and the status stays
+      assigned.
+
+  KNOWN GAP, deliberate and reported rather than papered over (row 10): when a
+  unit is standing in fire but its neighbours are clear,
+  `_needs_immediate_survival_retreat()` is true and `_survival_move()` succeeds,
+  so `_move_toward` is never called that step and the trigger cannot evaluate.
+  The signal is deferred, not lost - the +step lines show it arriving 2 steps
+  later once the unit has retreated clear. Closing that gap would mean putting
+  the check inside the retreat path, and retreat logic is explicitly out of
+  scope for this round.
+
+================================================================================
+5. OUTCOME METRICS
+================================================================================
+
+5a. CAMPAIGN CONFIG (2 fire-trackers + 2 searchers), all 18 runs, before vs after
+    Internally valid: both columns measured by the same harness at HEAD.
+
+      wind  seed | before        | after         | delta
+      east  101  | r2 d2 ff1     | r2 d2 ff1     | same
+      east  111  | r4 d0 ff0     | r4 d0 ff0     | same
+      east  202  | r2 d2 ff1     | r2 d2 ff1     | same
+      east  222  | r3 d1 ff1     | r3 d1 ff1     | same
+      east  303  | r1 d3 ff1     | r1 d3 ff1     | same
+      east  333  | r2 d2 ff2     | r1 d3 ff1     | r-1 d+1 ff-1
+      east  404  | r2 d2 ff1     | r2 d2 ff1     | same
+      east  444  | r3 d0 ff0     | r3 d0 ff0     | same
+      east  505  | r2 d2 ff1     | r2 d2 ff1     | same
+      east  606  | r1 d2 ff1     | r1 d2 ff1     | same
+      east  707  | r4 d0 ff0     | r4 d0 ff0     | same
+      east  808  | r3 d1 ff1     | r2 d1 ff2     | r-1 d+0 ff+1
+      east  909  | r2 d2 ff1     | r2 d2 ff1     | same
+      south 101  | r2 d1 ff2     | r2 d1 ff2     | same
+      south 202  | r3 d1 ff0     | r3 d1 ff0     | same
+      south 303  | r3 d1 ff0     | r3 d1 ff0     | same
+      south 404  | r2 d2 ff1     | r2 d2 ff1     | same
+      south 505  | r3 d1 ff0     | r3 d1 ff0     | same
+      TOTALS     | r44 d25 ff14  | r42 d26 ff14  | r-2 d+1 ff+0
+
+    16 of 18 runs are bit-identical. Two moved, and both are diagnosed in
+    section 6.
+
+5b. evaluate_scenarios.py AT CLI DEFAULTS (3 fire-trackers + 1 searcher), the
+    config this branch's committed baselines use.
+
+    BASELINE VALIDATED FIRST: the committed baselines (outputs/fix14_D_east.txt,
+    outputs/fix14_D_south.txt, matching lane_clamp_default_* and cast_default_*)
+    were re-run at HEAD from a pristine `git archive HEAD` tree and reproduce
+    EXACTLY, line for line. So unlike the death sample in correction (B), these
+    committed numbers ARE valid at HEAD and are a sound comparison point.
+
+      D/east   seed | committed & re-measured | after     | delta
+               101  | r2 d2 ff1               | r2 d2 ff2 | ff +1
+               202  | r3 d1 ff1               | r3 d1 ff1 | same
+               303  | r2 d2 ff2               | r2 d2 ff2 | same (terminal 118->115)
+               404  | r1 d3 ff2               | r1 d3 ff2 | same (terminal 66->189)
+               505  | r2 d2 ff2               | r2 d2 ff2 | same
+      D/south  101  | r2 d2 ff1               | r2 d2 ff1 | same
+               202  | r3 d0 ff0               | r3 d0 ff0 | same
+               303  | r4 d0 ff0               | r4 d0 ff0 | same
+               404  | r0 d3 ff2               | r0 d3 ff2 | same, but victim_1
+                    |                         |           | reclassified
+                    |                         |           | unspecified ->
+                    |                         |           | geographically_isolated
+                    |                         |           | (terminal 102->170)
+               505  | r3 d1 ff0               | r3 d1 ff0 | same
+
+      rescued: unchanged on all 10.  victims dead: unchanged on all 10.
+      firefighter deaths: 11 -> 12 (+1, D/east seed 101 only).
+
+    The `terminal_step` movements and the D/south 404 reclassification are a
+    direct and defensible consequence of the signal: a blocked replacement makes
+    rescue_planner choose "delay" rather than "mark_unreachable"
+    (rescue_planner.py:600-606), so a victim stays live longer and is later
+    classified by its real cause (geographically_isolated) instead of
+    "unspecified". Arguably an improvement in reporting fidelity; flagged as a
+    change either way. Note burnt_cells is identical in every case, confirming
+    the fire trajectory and RNG stream are untouched.
+
+================================================================================
+6. WHY THE THREE OUTCOME CHANGES HAPPENED - traced, not guessed
+================================================================================
+The brief asks whether movements are "because route_blocked now triggers
+replacement/rerouting logic downstream, or for some other reason". All three are
+the former, and each exposes a consumer defect rather than a trigger defect.
+
+CASE 1 - D/east seed 101 at eval defaults, ff_deaths 1 -> 2.
+  Traced step by step on both trees (outputs/_rb_seed101_{before,after}.txt):
+      BEFORE: step 15 ff_unit_0 dispatched. Step 42 `_mark_route_blocked` IS
+              called at (42,41) but the guard SUPPRESSES it - status stays
+              en_route. Step 42 ff_unit_0 dies at (42,41). ff_unit_1 survives.
+      AFTER:  step 15 ff_unit_0 dispatched. Step 38 route_blocked FIRES at
+              (42,41) - four steps earlier - the unit is unassigned and its
+              victim reset to pending. Step 42 ff_unit_0 dies anyway at (41,41).
+              ff_unit_1's trajectory diverges from step 45 and it is overrun at
+              (19,43) at step 201.
+  So the trigger was right (ff_unit_0's route really was gone) and the earlier
+  firing did not kill it - it died at the identical step in both runs. The extra
+  death is ff_unit_1's, 159 steps later, downstream of the re-pairing churn the
+  unassign set off. Rescued and victims-dead are unchanged.
+
+CASE 2 - campaign D/east seed 333, r-1 d+1 ff-1. THE LATCH, IN THE WILD.
+  This is the clearest evidence in the whole exercise, and it is a consumer bug:
+      BEFORE: ff_unit_1 keeps working, contributes a rescue, dies at step 207.
+              -> r2 d2 ff2
+      AFTER:  route_blocked fires for ff_unit_1 at step 45 at (0,25). It is
+              unassigned, and it then sits at (1,25) with status route_blocked
+              for the remaining 195 steps - alive, mobile, and permanently
+              undispatchable. It never dies (ff 2 -> 1) and it never rescues
+              anyone again (r 2 -> 1, d 2 -> 3).
+  The campaign confirms it directly: end-of-run latched units = 0 before, 1
+  after, and that one unit is exactly east/333 ff_unit_1.
+  MECHANISM (static analysis in Part 1 section 4, confirmed here and by
+  outputs/_rb_consumer_probe.py): the flag has only three clearing paths -
+  agents.py:1005 (end of a successful `_move_toward`), wildfire_model.py:2099
+  (recycle after a COMPLETED rescue), and death. The replacement pathway's
+  unassign (wildfire_model.py:3431-3463) sets target_pos=None and exiting=False
+  while DELIBERATELY preserving the route_blocked status - there is an explicit
+  `if status != "route_blocked":` at :3454. With no target and not exiting,
+  `advance()` can never reach any `_move_toward` call site again, so :1005 can
+  never run; and :2389 / :3330 both refuse to re-pair a route_blocked unit, so
+  :2099 can never run either. The unit is retired for the rest of the run.
+  In scenario D there are only TWO firefighters, so two firings can retire the
+  whole fleet. This latch converted a firefighter death into a victim death.
+
+CASE 3 - campaign D/east seed 808, r-1 ff+1.
+  route_blocked fires for ff_unit_1 at step 153 while it is standing in fire, and
+  it dies 3 steps later at 156. Same shape as case 1: a correct, late
+  identification whose replacement churn costs a rescue.
+
+WHAT NONE OF THE THREE ARE: a false positive. Every one of the 14 firings had a
+genuinely unreachable target under the model's own definition of reachability.
+The trigger is not what is misbehaving.
+
+================================================================================
+7. DOWNSTREAM CONSUMERS UNDER A LIVE SIGNAL (gate item - behaviour, not presence)
+================================================================================
+outputs/_rb_consumer_probe.py builds a real WildFireModel, lets it dispatch
+normally, fires the real `_mark_route_blocked`, and inspects every consumer.
+Full output: outputs/_rb_consumer_probe_out.txt.
+
+  REPLACEMENT PATHWAY ............ WORKS CORRECTLY
+      ff_unit_1 blocked -> unassigned -> ff_unit_0 dispatched to the same victim
+      with reason=replacement_after_blocked -> that victim was subsequently
+      RESCUED. `_blocked_replacement_attempted` correctly limits it to one
+      attempt per (firefighter, victim).
+  PLANNER POOL / SNAPSHOT ........ WORKS   route_blocked=True, excluded from the pool
+  rescue_executor ................ WORKS   _firefighter_is_active_physical = False
+  adaptation_manager ............. WORKS   a full post_move run_cycle produced no
+                                           RescueInvariant complaints
+  alert_manager .................. WORKS   2 warning alerts, one event-driven
+                                           ("no_safe_route", source rescue_pipeline)
+                                           and one status-driven (source
+                                           firefighter_monitor). Both correct.
+                                           Cosmetic note: the same condition
+                                           produces two alerts, so a live signal
+                                           doubles route_blocked alert volume.
+  planner "delay" vs "mark_unreachable" ... CORRECT: blocked reasons choose
+                                           "delay", so no victim is written off
+                                           by an empty replacement pool.
+
+  *** THE ONE BROKEN CONSUMER: THE LATCH *** (NEW FINDING - reported, not fixed)
+      After firing, the probe stepped 60 more steps:
+          status trajectory: route_blocked   (never changes)
+          dead=False assigned=False target=None dispatchable=False
+      The other firefighter completed its rescue and returned to "available";
+      the blocked one stayed permanently retired. In that same run one victim was
+      still "candidate" and two died, with a healthy firefighter standing idle.
+      Section 6 case 2 shows this happening in a real seeded run.
+
+  This is a consumer-side defect (wildfire_model.py:3454 preserves the status
+  through unassign, and nothing else clears it). Per the brief - "report it as a
+  new finding rather than trying to fix it in this round" - it is reported here.
+  It is the single highest-value follow-up: until it is fixed, every route_blocked
+  firing costs a firefighter permanently, which is why a correct trigger currently
+  produces slightly worse outcomes.
+
+  SECOND CONSUMER FINDING (pre-existing, not introduced here): for an EXITING
+  unit the replacement response is simply wrong - unassign clears rescued_victim,
+  exiting and exit_target, dropping the carried victim mid-fire, and
+  agents.py:539-543 would then fail to finalise the rescue at the boundary. The
+  exiting call site is already reachable today (correction A), so this is a
+  latent hazard independent of this change. It is why the new condition is scoped
+  to the approach phase.
+
+================================================================================
+8. COST
+================================================================================
+Measured with perf_counter inside the campaign, split by component, over all 18
+runs:
+      _fire_cells()  0.39 - 0.40 ms per _move_toward call
+      BFS            0.93 - 0.94 ms per call
+      total          2.7 - 2.8 s across ~2000 calls
+      against        ~10,000 s of simulation wall time
+      => 0.03% of run time.
+
+Call frequency is indeed higher here than the death investigation's per-step
+dispatch checks (2106 `_move_toward` calls vs 57 dispatches over the same 18
+runs), and the answer still holds comfortably. The decisive argument is not the
+measurement but what the model already does: `_update_unreachable_victims` runs
+`_safe_path_reachable_cells` - a full-grid, multi-source, fire-impassable BFS -
+plus an `_active_burning_cells()` scan, UNCONDITIONALLY on every step
+(wildfire_model.py:4487). This change adds at most NUM_FIREFIGHTERS bounded,
+early-exiting BFS runs per step on top of that. Cost is not an argument against
+this design.
+
+================================================================================
+9. TEST SUITE
+================================================================================
+Measured on THIS worktree, not taken from the brief or the investigation.
+      BEFORE (unmodified HEAD): 8 failed, 427 passed  (2681 s)
+      AFTER  (fix applied):     8 failed, 427 passed  (3362 s)
+      Failure lists byte-identical (`diff` clean):
+        test_behavior_regression.py::test_descriptive_next_action_uses_target_position
+        test_dashboard_panel.py::test_dashboard_panel_render_returns_string
+        test_firefighter_dispatch_replacement.py::test_no_replacement_available_marks_victim_unreachable_once
+        test_rescue_planner_authority.py::test_no_firefighter_planner_delay_or_unreachable
+        test_uav_sector_assignment.py::test_fire_tracker_uavs_receive_different_target_sets
+        test_uav_sector_assignment.py::test_fire_tracker_still_overridden_by_search_mode_fail_safe
+        test_wind_aware_trajectory_regression.py::test_north_vs_south_trajectories_diverge_over_40_steps
+        test_wind_aware_victim_search.py::test_victim_search_wind_aware_action_when_downwind_exists
+
+      NO NEW FAILURES. The brief's stated 8/427 baseline is confirmed correct on
+      this branch; the investigation's 9/426 was measured on a different tree, as
+      the brief warned.
+      Note tests/test_firefighter_fire_avoidance.py::
+      test_firefighter_holds_only_when_surrounded_by_active_fire - which asserts
+      the exact old firing behaviour and that the handler is called exactly once -
+      still passes.
+
+================================================================================
+10. GATE
+================================================================================
+  [PASS] probe shows the new trigger fires correctly
+         Catches genuinely stuck (walled off, all neighbours clear) and does NOT
+         false-trigger on slow-but-real progress (same wall with a gap; also the
+         original row-4 case where the only free step increases distance).
+         Section 4.
+  [PASS] firing rate rises
+         7 -> 14 firings, 0.33% -> 0.69% of calls, same 18 runs. Section 2.
+  [PASS, with an important caveat] meaningful lead time for some deaths
+         Coverage 7/14 -> 13/14 deaths signalled. But the leads are short
+         (median 3, max 8, three of them 0). Reported as required rather than
+         presented as a win: the signal is now a reliable detector and still a
+         late warning. Section 3.
+  [PASS] no new test failures
+         8F/427P before and after, identical lists. Section 9.
+  [PASS] downstream consumers checked for BEHAVIOUR, not presence
+         Replacement pathway, planner pool, rescue_executor, adaptation_manager
+         and alert_manager all verified sane under a live signal. One consumer is
+         BROKEN - the route_blocked latch permanently retires a firefighter - and
+         it is reported as a new finding, with a real seeded run demonstrating it
+         converting a firefighter death into a victim death. Sections 6 and 7.
+
+  Nothing was tuned to reach these. The two adverse seeds and the +1 firefighter
+  death at eval defaults are reported in full above rather than smoothed over.
+
+================================================================================
+11. WHAT THE NEXT ROUND SHOULD SCOPE (evidence-backed, in priority order)
+================================================================================
+  1. FIX THE LATCH. Highest value and small. A firefighter whose route_blocked
+     was acted on by the replacement pathway must return to service. Either
+     clear the status inside the unassign at wildfire_model.py:3454, or give
+     `advance()` a clearing path for a unit that has no target. Until this is
+     fixed, a correct trigger is net-negative, which is why the outcome numbers
+     here moved slightly the wrong way despite a strictly better signal.
+  2. REACHABILITY-AWARE REPLACEMENT. The replacement dispatched after a
+     route_blocked currently ignores whether the REPLACEMENT can reach the
+     victim - the planner still sorts by Manhattan distance. Now that the model
+     can answer "is this reachable", section 6 case 1 shows a second unit being
+     sent toward a target that was just proven unreachable. This is the pairing
+     tiebreaker the death investigation described and deferred; it is now much
+     cheaper to justify because the primitive exists.
+  3. EXITING-UNIT HANDLING. Decide what a blocked unit carrying a victim should
+     do. It must not be "unassign", which drops the victim and breaks rescue
+     finalisation. Until then the new condition stays scoped to the approach.
+  4. RETREAT / STANDBY POSTURE. Unchanged from the death investigation's
+     conclusion and untouched here. The lead-time data in section 3 supports it:
+     by the time a route is topologically gone, the fire is already on the unit.
+     Surviving requires being somewhere better earlier, not being told sooner.
+
+================================================================================
+ARTIFACTS
+================================================================================
+  agents.py                            THE ONLY SOURCE FILE CHANGED (+64/-9)
+  outputs/routeblocked_part1.txt       Part 1: re-verification and design
+  outputs/routeblocked_report.txt      this file
+  outputs/_route_blocked_probe.py      constructed probe, extended with live-path rows
+  outputs/_rb_probe_after.txt          its output after the fix
+  outputs/_route_blocked_reach_probe.py  call-site reachability (correction A)
+  outputs/_rb_campaign.py              18-run before/after harness
+  outputs/_rb_analyze.py               analysis
+  outputs/_rb_analysis.txt             full analysis output
+  outputs/_rb_{before,after}_D_{east,south}.json   raw campaign data
+  outputs/_rb_consumer_probe.py / _out.txt         live-signal consumer behaviour
+  outputs/_rb_seed101_{before,after}.txt           seed-101 divergence trace
+  outputs/_rb_eval_{before,after}_D_{east,south}.txt  evaluate_scenarios runs
+  outputs/_rb_pytest_{before,after}.txt             test runs
+  outputs/_rb_pytest_{before,after}_failures.txt    failure lists (identical)
+  outputs/_rb_eval_{before,after}.sh                eval runners
+
+  The pristine-HEAD tree used for the BEFORE baselines and the control run was a
+  `git archive HEAD` extract in the session scratchpad; its agents.py sha256
+  matches the pre-edit working tree exactly
+  (2a6b2d88215b1dc5851fbc9a68c31e70e484a01931503ca196e2f917c7242517).
+  outputs/_ffdeath_D_east.json was briefly overwritten by an early timing run and
+  restored with `git checkout --`; it is unmodified.

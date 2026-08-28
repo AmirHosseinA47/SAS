@@ -2,6 +2,7 @@
 
 import mesa
 import functools
+from collections import deque
 
 # own python modules
 
@@ -911,15 +912,51 @@ class Firefighter(mesa.Agent):
             return True
         return False
 
+    def _path_exists_avoiding_fire(
+        self,
+        src: tuple[int, int],
+        dst: tuple[int, int],
+        fire_cells: set[tuple[int, int]],
+    ) -> bool:
+        """4-connected reachability with active fire impassable.
+
+        Same notion of "reachable" the model already uses to decide whether a
+        victim is unreachable (wildfire_model._safe_path_reachable_cells).
+        The destination counts as reachable even when it is itself burning: a
+        victim's cell can burn transiently, and calling that "no route" would
+        hand a still-rescuable victim to a replacement for nothing. The source
+        is never tested, so a unit standing in fire can still be asked whether
+        its target is reachable.
+        """
+        if src == dst:
+            return True
+        grid = self.model.grid
+        seen = {src}
+        queue = deque([src])
+        while queue:
+            cx, cy = queue.popleft()
+            for ox, oy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                cell = (cx + ox, cy + oy)
+                if grid.out_of_bounds(cell):
+                    continue
+                if cell in seen:
+                    continue
+                if cell == dst:
+                    return True
+                if cell in fire_cells:
+                    continue
+                seen.add(cell)
+                queue.append(cell)
+        return False
+
     def _mark_route_blocked(self) -> None:
-        if not self._cell_contains_active_fire((int(self.pos[0]), int(self.pos[1]))):
-            if str(getattr(self, "status", "") or "").strip().lower() != "route_blocked":
-                self.status = "route_blocked"
-                handler = getattr(self.model, "_on_firefighter_route_blocked", None)
-                if callable(handler):
-                    handler(self)
-                else:
-                    print(f"[Rescue Blocked] FF-{self.unit_id} no safe route")
+        if str(getattr(self, "status", "") or "").strip().lower() != "route_blocked":
+            self.status = "route_blocked"
+            handler = getattr(self.model, "_on_firefighter_route_blocked", None)
+            if callable(handler):
+                handler(self)
+            else:
+                print(f"[Rescue Blocked] FF-{self.unit_id} no safe route")
 
     def _cell_is_hazard(self, cell: tuple[int, int]) -> bool:
         if self.model.grid.out_of_bounds(cell):
@@ -938,6 +975,17 @@ class Firefighter(mesa.Agent):
             ny = cy + (1 if dy > 0 else -1 if dy < 0 else 0)
         preferred = (nx, ny)
         dist_before = abs(cx - tx) + abs(cy - ty)
+
+        # Route is blocked when no fire-free path to the target exists at all,
+        # not merely when every neighbour happens to burn. Scoped to the
+        # approach phase: for a unit already carrying a victim the replacement
+        # pathway is the wrong response, so the exiting path keeps only the
+        # original "nowhere to step" condition below.
+        route_blocked_now = False
+        if not self.exiting:
+            route_blocked_now = not self._path_exists_avoiding_fire(
+                (int(cx), int(cy)), (int(tx), int(ty)), self._fire_cells(),
+            )
 
         scored: list[dict[str, object]] = []
         for cell in self._neighbor_cells():
@@ -960,6 +1008,11 @@ class Firefighter(mesa.Agent):
         if not scored:
             self._mark_route_blocked()
             return
+
+        if route_blocked_now:
+            # Raise the signal but keep moving: choosing the best available step
+            # is the retreat logic's job and is out of scope here.
+            self._mark_route_blocked()
 
         chosen: tuple[int, int] | None = None
         chosen_tier = 4
@@ -1001,7 +1054,9 @@ class Firefighter(mesa.Agent):
         self._last_move_tier = chosen_tier
         self._last_move_risk = int(chosen_item["risk"])
 
-        if str(getattr(self, "status", "") or "").strip().lower() == "route_blocked":
+        if not route_blocked_now and (
+            str(getattr(self, "status", "") or "").strip().lower() == "route_blocked"
+        ):
             self.status = "assigned" if self.assigned else "available"
         self.model.grid.move_agent(self, chosen)
 
