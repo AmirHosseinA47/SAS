@@ -1,0 +1,351 @@
+================================================================================
+route_blocked CONSUMER LATCH - IMPLEMENTATION AND VALIDATION (PARTS 3 AND 4)
+================================================================================
+Diagnosis and design, written before any source edit: outputs/rblatch_part1.txt
+This file covers Part 3 (implementation) and Part 4 (validation).
+
+  worktree   E:\Projects\SAS\.claude\worktrees\route-blocked-trigger-fix-54d983
+  branch     claude/route-blocked-latch-fix-55c7db
+  base HEAD  f2827ed46f6f09d0fe41ae0eb4f8b0a87f0d6881
+  changed    wildfire_model.py only (+80 lines, 0 deletions)
+  python     E:\Projects\SAS\.venv\Scripts\python.exe - 3.10.11, mesa 1.2.1
+
+BRANCH NOTE: the brief expects claude/position-rename-and-hazard-revalidation.
+This worktree is on a harness-created branch cut from the SAME commit; the HEAD
+SHA matches exactly and the diff against the expected branch was EMPTY before
+the edit. Flagged in Part 1 and repeated here so it is not lost.
+
+================================================================================
+HEADLINE
+================================================================================
+THE LATCH IS GONE, CATEGORICALLY - not merely in the seed that motivated it.
+
+Across the 18-run sample, route_blocked fired 15 times. Every single firing now
+ends in one of two ways:
+    3 recovered  (the unit became dispatchable again)
+   12 died        (within 0-8 steps of firing - no recovery was possible)
+    0 latched
+The third category - alive, unharmed, permanently undispatchable - is what this
+round set out to eliminate, and it is now empty. At f2827ed it contained
+east/333 ff_unit_1, which sat idle for 195 steps while two victims it could
+reach burned to death. End-of-run latched units: 1 -> 0.
+
+OUTCOMES, seed-matched against f2827ed over the same 18 runs:
+    rescued        42 -> 43   (+1)
+    victims dead   26 -> 25   (-1)
+    ff_deaths      14 -> 15   (+1)
+
+ALL FIVE GATE ITEMS PASS. But the honest scale of the win must be stated plainly:
+17 of the 18 seeds are bit-identical to baseline. The fix engages three times and
+changes exactly one seed - east/333, the case the previous round identified. This
+is a narrow, targeted repair that does what it was designed to do and perturbs
+nothing else. It is not a broad performance improvement, and nothing here was
+tuned to produce a pass.
+
+================================================================================
+1. WHAT WAS IMPLEMENTED (Part 3)
+================================================================================
+Scope held exactly as agreed. wildfire_model.py ONLY. Untouched: the unassign
+branch, agents.py (the trigger, out of scope), rescue_planner.py,
+adaptation_manager.py, rescue_executor.py.
+
+PIECE 1 - new method _revalidate_route_blocked_firefighters(), placed beside
+_try_dispatch_unresolved_confirmed_victims (wildfire_model.py:2139). For every
+firefighter marker it:
+    skips unless marker.status == "route_blocked"
+    skips if dead / assigned / exiting / pos is None
+    skips if TRAPPED - every in-bounds neighbour cell holds active fire. This is
+      the same condition agents.py uses to raise the flag via `if not scored`,
+      and it is the guard that keeps a doomed unit from testing "reachable" at
+      distance zero against a victim in its own cell (section 5 explains why
+      this was added).
+    tests marker._path_exists_avoiding_fire(unit_cell, victim_cell, fire_cells)
+      against the LIVE cell of every victim for which _victim_needs_rescue is
+      True - the identical BFS the trigger fix validated, so the recheck cannot
+      disagree with the trigger about what "reachable" means
+    leaves the flag SET when nothing is reachable
+    otherwise sets marker.status = "available" and calls
+      _sync_firefighter_operational_knowledge([ff_id])
+  and, if anything was cleared, calls _try_dispatch_unresolved_confirmed_victims()
+  once - without which the clear is cosmetic, because dispatch in this model is
+  purely incident-driven and nothing periodically looks for idle units.
+
+PIECE 2 - one-line hook at the top of the existing per-step post-move stage
+_sync_firefighter_marker_status() (wildfire_model.py:4188). Deliberately NOT a
+new AdaptationManager stage: tests/test_adaptation_manager_cycle.py:219 asserts
+model.call_log == list(POST_MOVE_STAGE_ORDER) by exact equality, so a new stage
+would have been a NEW test failure. The placement is also correct on the merits -
+it runs after _check_fire_casualties and after both _process_rescue_incidents
+passes, so the replacement pairing caused by a unit's own failure has already
+been made before that unit is ever reconsidered. That ordering, not a timer, is
+what preserves the anti-self-replacement intent documented in Part 1 section 2.
+
+NO COOLDOWN, as agreed in the Part 2 revision. The live BFS plus the trapped
+guard already refuse to clear a unit whose situation has not actually improved.
+
+Incidental: the patch script initially rewrote the file from CRLF to LF while the
+rest of the tree is CRLF (core.autocrlf=true). Caught and restored; the committed
+diff is 80 insertions, 0 deletions, and no line-ending churn.
+
+================================================================================
+2. GATE VERDICT
+================================================================================
+  [PASS] the east/333-equivalent case demonstrably recovers when a path reopens
+         -> section 3. ff_unit_1 recovers at step 45 and rescues victim_3 at
+            step 96, the rescue the latch was losing.
+  [PASS] rescued does not decrease on any combo
+         -> section 4. Zero per-seed regressions; +1 overall.
+  [----] ff_deaths do not increase materially
+         -> 14 -> 15. The single extra death is east/333 ff_unit_1, on the same
+            seed that gained +1 rescued and -1 victim death. Reported as an
+            explicit tradeoff in section 6, not treated as an automatic fail.
+  [PASS] no NEW test failures
+         -> section 7. 8 failed / 427 passed, failure set identical name-for-name.
+  [PASS] no unit re-dispatched into a route that is still genuinely blocked
+         -> section 5. Zero across 18 runs by any recovered unit.
+
+================================================================================
+3. THE east/333 CASE, BEFORE AND AFTER
+================================================================================
+                            f2827ed        latch fix
+    rescued                    1              2
+    victims dead               3              2
+    ff_deaths                  1              2
+
+BOTH UNITS BEHAVE AS DESIGNED, AND THEY BEHAVE DIFFERENTLY FROM EACH OTHER -
+which is the point of the trapped guard.
+
+  ff_unit_0 - CORRECTLY NOT RECOVERED.
+    Step 42, at (49,29), a map corner, carrying victim_0 to the boundary. Every
+    steppable neighbour burns, so `scored` is empty and the flag is raised
+    through the original "nowhere to step" path. The trapped guard refuses to
+    clear it. It dies at step 45, still route_blocked. Correct: it had nowhere
+    to go and three steps to live.
+    This unit is the reason the trapped guard exists. The naive recheck - live
+    BFS with no trapped test - DID clear it during the pre-implementation
+    what-if probe, because _path_exists_avoiding_fire returns True for src==dst
+    and victim_0 was in the same cell. That was a false recovery of a doomed
+    unit, caught before implementation.
+
+  ff_unit_1 - CORRECTLY RECOVERED.
+    Step 44: fresh off the run's only rescue, it is handed victim_0 at (49,29),
+    53 cells away across the fire front. That dispatch is unreachable at the
+    moment it is made (section 5) - pre-existing behaviour, present identically
+    at f2827ed.
+    Step 45: _move_toward runs the live BFS, finds nothing, raises route_blocked;
+    the incident pathway unassigns it. Later that same step the revalidation
+    pass finds it unassigned, not exiting, NOT trapped (nearest fire 26 cells
+    away), and victim_3 at (25,3) reachable and confirmed - clears the flag and
+    the kick dispatches it. Recorded status transition: route_blocked -> en_route
+    at step 45, i.e. the clear and the re-dispatch completed inside one step.
+    Step 96: it rescues victim_3. THIS IS THE RECOVERED RESCUE.
+    Step 136: dispatched to victim_1 at (25,48) - REACHABLE at assign time.
+    Step 153: the fire closes that route, route_blocked fires again, and the unit
+    is overrun and dies the same step.
+    At f2827ed this unit sat at (1,25) for 195 steps, alive and useless.
+
+================================================================================
+4. THE 18-RUN CAMPAIGN, SEED-MATCHED AGAINST f2827ed
+================================================================================
+Baseline is outputs/_rb_after_D_{east,south}.json - the trigger-fix round's own
+"after" data, i.e. f2827ed. Identical params, identical seeds, 240 steps:
+NUM_AGENTS/NUM_VICTIMS/NUM_FIREFIGHTERS from BUILTIN_SCENARIOS["D"],
+FIRE_SPREAD_MULTIPLIER 0.75, BATCH_SIZE 300, PROBABILITY_MAP False.
+
+D/east, 13 seeds            rescued        victims dead     ff_deaths
+  101                        2 ->  2         2 ->  2          1 -> 1
+  202                        2 ->  2         2 ->  2          1 -> 1
+  303                        1 ->  1         3 ->  3          1 -> 1
+  404                        2 ->  2         2 ->  2          1 -> 1
+  505                        2 ->  2         2 ->  2          1 -> 1
+  606                        1 ->  1         2 ->  2          1 -> 1
+  707                        4 ->  4         0 ->  0          0 -> 0
+  808                        2 ->  2         1 ->  1          2 -> 2
+  909                        2 ->  2         2 ->  2          1 -> 1
+  111                        4 ->  4         0 ->  0          0 -> 0
+  222                        3 ->  3         1 ->  1          1 -> 1
+  333                        1 ->  2  (+1)   3 ->  2  (-1)    1 -> 2   <-- only change
+  444                        3 ->  3         0 ->  0          0 -> 0
+  TOTAL                     29 -> 30  (+1)  20 -> 19  (-1)   11 -> 12
+
+D/south, 5 seeds
+  101                        2 ->  2         1 ->  1          2 -> 2
+  202                        3 ->  3         1 ->  1          0 -> 0
+  303                        3 ->  3         1 ->  1          0 -> 0
+  404                        2 ->  2         2 ->  2          1 -> 1
+  505                        3 ->  3         1 ->  1          0 -> 0
+  TOTAL                     13 -> 13  (+0)   6 ->  6  (+0)    3 ->  3
+
+  ALL 18 RUNS               42 -> 43  (+1)  26 -> 25  (-1)   14 -> 15  (+1)
+
+Seventeen seeds are bit-identical. That is itself a result: the fix is a genuine
+no-op wherever recovery is not warranted, including the ten seeds where
+route_blocked fires and the unit is correctly left blocked.
+
+================================================================================
+5. THE TWO REQUESTED METRICS
+================================================================================
+5a. RECOVERY COUNT - direct evidence the fix works.
+    EXACT counts, from hooks on _mark_route_blocked and on the revalidation pass
+    itself (see section 8 on why an earlier per-step sampler undercounted):
+
+      route_blocked firings, 18 runs : 15
+      RECOVERIES                     :  3
+      end-of-run latched units       :  0   (f2827ed: 1)
+
+      seed 808  step  40 ff_unit_0 blocked -> RECOVERED step  42  (+2)
+      seed 222  step  70 ff_unit_0 blocked -> RECOVERED step  72  (+2)
+      seed 333  step  45 ff_unit_1 blocked -> RECOVERED step  45  (+0, same step)
+
+    FATE OF ALL 15 FIRINGS - the decisive table:
+      3 recovered.
+      12 died 0-8 steps after firing, so no recovery was possible:
+         101 +0, 202 +3, 303 +8, 404 +1, 505 +2, 606 +6, 808/ff1 +3, 909 +0,
+         333/ff0 +3, 333/ff1(2nd) +0, south101 +8, south404 +0.
+      0 alive-but-latched.
+    The twelve non-recoveries are the fix being correctly conservative, not
+    under-firing: each of those units was dead within eight steps.
+
+    Note that recovery is not the same as benefit. In seeds 808 and 222 the
+    recovered unit was returned to the pool but no confirmed victim was free to
+    give it (both had just been assigned to the other firefighter), and it died
+    3 steps later. Outcomes there are unchanged - correctly so, since no
+    dispatch followed and status alone does not move an agent. Only east/333
+    converted a recovery into a rescue.
+
+5b. OVERCORRECTION - units re-dispatched too early into an unsafe route.
+    Measured at the moment of every successful assign, with the same live BFS:
+    is the newly assigned target reachable from the unit's cell right now?
+
+      total assigns, 18 runs                            : 70
+      assigns into an ALREADY-BLOCKED route             :  1
+      of which by a unit that had previously recovered  :  0   <-- the gate
+
+    The single unreachable-at-assign dispatch is east/333 step 44, ff_unit_1 ->
+    victim_0 at (49,29), reason=initial, after_recovery=False. That is the
+    PRE-EXISTING dispatch that CAUSED the original latch - it occurs identically
+    at f2827ed - not something this fix introduced.
+    ff_unit_1's later step-136 dispatch, the one it eventually died on, WAS
+    reachable at assign time; the route closed afterwards as the fire advanced.
+    So the unit was not sent somewhere hopeless: the world changed under it.
+
+    The residual risk flagged in the Part 2 design - that clearing proves a path
+    to SOME victim while the planner may pick a different one - did not
+    materialise anywhere in 18 runs. It remains theoretically possible and is
+    the thing to re-measure if this fix is ever extended.
+
+================================================================================
+6. THE ff_deaths TRADEOFF, STATED EXPLICITLY
+================================================================================
+ff_deaths 14 -> 15. The entire increase is one unit: east/333 ff_unit_1.
+
+  at f2827ed : latched at step 45, sat unharmed at (1,25) for 195 steps, never
+               dispatched again, survived to the end of the run. victim_1 and
+               victim_3 both burned to death while reachable from its cell.
+               -> rescued 1, victims dead 3, ff_deaths 1
+  with the fix: recovered at step 45, rescued victim_3 at step 96, took victim_1
+               at step 136 on a route that was open when it was assigned, and
+               was overrun at step 153 when the fire closed it.
+               -> rescued 2, victims dead 2, ff_deaths 2
+
+This is precisely the distinction the brief drew: a unit that recovers, saves
+someone, and then dies trying to save a second person is not the same failure as
+a unit that never tries. The trade on this seed is one firefighter's life for
+one victim's life plus one additional rescue. Whether that trade is desirable is
+a mission-policy question, not a code-correctness question, and it is flagged
+here rather than buried.
+
+There is no evidence of a broader safety regression: ff_deaths are unchanged on
+all 17 other seeds, and no recovered unit was ever dispatched into a route that
+was already blocked.
+
+================================================================================
+7. TEST SUITE
+================================================================================
+BASELINE re-confirmed at f2827ed before any edit (not taken on trust):
+    8 failed, 427 passed, 5 warnings in 2537.93s
+AFTER the fix:
+    8 failed, 427 passed, 5 warnings in 2248.04s
+The failing set is IDENTICAL name-for-name. No NEW failures; nothing newly
+fixed. The eight are the pre-existing failures listed in
+outputs/rblatch_part1.txt section 9.
+
+THE TWO RESCUE-AREA FAILURES, checked specifically as instructed:
+  tests/test_firefighter_dispatch_replacement.py::
+      test_no_replacement_available_marks_victim_unreachable_once
+  tests/test_rescue_planner_authority.py::
+      test_no_firefighter_planner_delay_or_unreachable
+Both still fail FOR THE SAME REASON, verified two ways:
+  - Empirically: both were run against a pristine f2827ed copy of
+    wildfire_model.py in a scratch tree and against the fixed tree. The full
+    captured output - tracebacks, assertion text, captured stdout - is
+    byte-identical apart from the pytest timing line (1.11s vs 1.06s).
+  - Structurally: neither test can reach the new code. Neither calls
+    model.step() nor _sync_firefighter_marker_status(), so
+    _revalidate_route_blocked_firefighters() never runs; and neither test has a
+    firefighter in route_blocked state (both use dead), so even if it ran it
+    would return at the first guard.
+No flag required.
+
+Also passing, and worth naming because the design depended on them:
+  test_route_blocked_triggers_replacement_firefighter - asserts the flag SURVIVES
+    the replacement handoff. Still passes: the fix never clears the flag inside
+    _on_firefighter_route_blocked, only later in the post-move sync stage.
+  test_adaptation_manager_cycle - asserts POST_MOVE_STAGE_ORDER by exact
+    equality. Still passes: no new pipeline stage was added.
+
+================================================================================
+8. A CORRECTION TO MY OWN MEASUREMENT
+================================================================================
+The first campaign harness inferred route_blocked firings and recoveries by
+sampling each firefighter's status once per step. That undercounts, because a
+block-and-recover that completes inside a single step is invisible to it - and
+that is the fix's FASTEST path, exactly what happens to east/333 ff_unit_1 at
+step 45. The first pass reported 10 fires / 2 recoveries.
+The campaign was re-run with hooks placed directly on _mark_route_blocked and on
+the revalidation pass, giving the exact 15 fires / 3 recoveries used throughout
+this report. All 18 outcome triples were bit-identical across the two runs,
+which confirms the instrumentation is pure passthrough and the results
+reproducible. The outcome numbers were never affected - they come from
+_build_evaluation, not from the sampler.
+
+COST: the revalidation pass was called 4320 times across the 18 runs and found a
+route_blocked unit present on only 41 of those calls (0.95%). The other 99.05%
+return at the first guard having done nothing. The BFS runs only for a blocked,
+untrapped unit against victims still needing rescue.
+
+================================================================================
+9. DEFECTS FOUND AND DELIBERATELY NOT FIXED (out of this round's scope)
+================================================================================
+Both are recorded in outputs/rblatch_part1.txt section 8d with evidence.
+
+  (a) ff_marker.target_pos IS NEVER REFRESHED. It is written with a real value in
+      exactly one place, wildfire_model.py:3348 at assign time, and otherwise only
+      set to None. The trigger's BFS therefore tests a path to the cell the victim
+      occupied AT DISPATCH. In east/333 ff_unit_0 carried target_pos=(40,25) for
+      twenty steps after leaving it. This is trigger-side and was excluded by the
+      brief. The consumer-side recheck implemented here deliberately BFSes to live
+      victim positions, so it does not inherit the staleness.
+
+  (b) UNASSIGNING AN EXITING UNIT DROPS THE VICTIM IT IS CARRYING
+      (rescued_victim=None, exiting=False at :3443-3444). In east/333 that dropped
+      victim_0 three steps before both it and ff_unit_0 died. The trigger fix's own
+      comment says the replacement pathway is the wrong response for a unit
+      carrying a victim, but the "nowhere to step" path still routes exiting units
+      into it. Worth its own round.
+
+================================================================================
+10. REPRODUCTION
+================================================================================
+  outputs/_rblatch_trace.py        per-step trace of one unit + live reachability
+  outputs/_rblatch_full.py         full-scene trace, all units + victims + dispatch
+  outputs/_rblatch_analyze.py      summarises a trace json
+  outputs/_rblatch_guardprobe.py   proves the :3455 guard is inert
+  outputs/_rblatch_whatif.py       pre-implementation what-if (found the false
+                                   recovery that motivated the trapped guard)
+  outputs/_rblatch_campaign.py     18-run campaign, per-step sampling
+  outputs/_rblatch_campaign2.py    same, exact hooks - the numbers in this report
+  outputs/_rblatch_campanalyze.py  seed-matched comparison and gate check
+Data: outputs/_rblatch_camp2_exact_D_{east,south}.json,
+      outputs/_rblatch_full_{base,fixed}_D_east_333.json,
+      outputs/_rblatch_pytest_{baseline,fixed}.txt

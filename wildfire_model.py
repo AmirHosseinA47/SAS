@@ -2136,6 +2136,85 @@ class WildFireModel(mesa.Model):
                 continue
             self._dispatch_firefighter_to_victim(vid, marker, "initial")
 
+    def _revalidate_route_blocked_firefighters(self) -> None:
+        """Clear a stale route_blocked flag once a live route reopens.
+
+        route_blocked is raised about one specific target, but every dispatch
+        gate reads it as a property of the unit, and the only in-run clear sits
+        at the end of ``Firefighter._move_toward`` - which an unassigned unit can
+        never reach, because reaching it needs a target and a target needs a
+        dispatch the flag itself refuses. Without this pass an idle, unharmed
+        firefighter stays undispatchable for the rest of the run even after its
+        route has reopened.
+        """
+        markers = getattr(self, "firefighter_marker_agents", None)
+        victim_markers = getattr(self, "victim_marker_agents", None)
+        if not isinstance(markers, dict) or not isinstance(victim_markers, dict):
+            return
+
+        blocked: list[tuple[str, Any]] = []
+        for ff_id, ff_marker in markers.items():
+            status = str(getattr(ff_marker, "status", "") or "").strip().lower()
+            if status != "route_blocked":
+                continue
+            if getattr(ff_marker, "dead", False):
+                continue
+            if getattr(ff_marker, "assigned", False):
+                continue
+            if getattr(ff_marker, "exiting", False):
+                continue
+            if getattr(ff_marker, "pos", None) is None:
+                continue
+            blocked.append((str(ff_id), ff_marker))
+        if not blocked:
+            return
+
+        # Live victim cells. The flag was raised against the cell the victim
+        # occupied at dispatch, which goes stale as the victim moves or is
+        # carried, so reachability is re-tested against where victims are now.
+        victim_cells: list[tuple[int, int]] = []
+        for vid, victim_marker in victim_markers.items():
+            if not self._victim_needs_rescue(str(vid), victim_marker):
+                continue
+            pos = getattr(victim_marker, "pos", None)
+            if pos is not None:
+                victim_cells.append((int(pos[0]), int(pos[1])))
+        if not victim_cells:
+            return
+
+        recovered: list[str] = []
+        fire_cells: set[tuple[int, int]] | None = None
+        for ff_id, ff_marker in blocked:
+            try:
+                if fire_cells is None:
+                    fire_cells = ff_marker._fire_cells()
+                # A unit with nowhere to step is genuinely blocked no matter who
+                # stands nearby. Same condition the trigger uses to raise the
+                # flag, and it stops a trapped unit from testing "reachable"
+                # at distance zero against a victim in its own cell.
+                neighbors = ff_marker._neighbor_cells()
+                if all(ff_marker._cell_contains_active_fire(c) for c in neighbors):
+                    continue
+                cell = (int(ff_marker.pos[0]), int(ff_marker.pos[1]))
+                if not any(
+                    ff_marker._path_exists_avoiding_fire(cell, vcell, fire_cells)
+                    for vcell in victim_cells
+                ):
+                    continue
+                ff_marker.status = "available"
+            except Exception:
+                continue
+            recovered.append(ff_id)
+            unit_label = str(getattr(ff_marker, "unit_id", ff_id) or ff_id)
+            print(f"[Route Cleared] FF-{unit_label} route reopened at {ff_marker.pos}")
+            self._sync_firefighter_operational_knowledge([ff_id])
+
+        # Nothing in this model periodically looks for idle units: dispatch is
+        # incident-driven, so a recovered unit would otherwise idle as
+        # "available" instead of as "route_blocked" and never be picked up.
+        if recovered:
+            self._try_dispatch_unresolved_confirmed_victims()
+
     def _process_pending_agent_removals(self) -> int:
         """Finalize rescued victims and recycle exiting firefighters back to available standby."""
         removed = 0
@@ -4106,6 +4185,7 @@ class WildFireModel(mesa.Model):
 
     def _sync_firefighter_marker_status(self) -> None:
         """Mirror firefighter marker status into managed + knowledge models."""
+        self._revalidate_route_blocked_firefighters()
         self._sync_firefighter_operational_knowledge()
 
     def _victim_id_from_agent(self, agent: Any) -> str:
