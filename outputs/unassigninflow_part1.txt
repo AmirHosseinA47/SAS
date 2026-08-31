@@ -1,0 +1,914 @@
+================================================================================
+ROUTE_BLOCKED UNASSIGN INFLOW - PART 1 (RE-VERIFICATION) AND PART 2 (DESIGN)
+Branch claude/position-rename-and-hazard-revalidation, HEAD 62b4fbe
+Read-only investigation. No production code changed while this was written.
+================================================================================
+
+STATUS OF THIS FILE - ALL COMPLETE
+  Part 1 steps 1-2  static re-verification at current HEAD   sections 1-2
+  Part 1 step 3     fresh instrumented 13-run sample         section 3
+  Part 2 step 4     can the release tell it is unsafe        section 4
+  Part 2 step 5     the proactive-retreat proposal, measured section 5
+  Part 2 step 6     the upstream dispatch question           section 6
+  CONCLUSION        no further fix is indicated at this layer section 7
+
+  No production source file was modified at any point. Verified: `git diff
+  --stat -- agents.py wildfire_model.py src_extension/ tests/` is empty, and
+  `git status` shows only new untracked files under outputs/. Parts 3 and 4 of
+  the brief are therefore not run, and their gate does not apply.
+
+PROVENANCE NOTE ON THE TWO SOURCE REPORTS
+  outputs/idleretreat_report.txt and outputs/idleretreat_part1.txt are present
+  in the working tree at this HEAD and were read directly.
+
+  outputs/standby_investigation.txt is NOT present in the main working tree at
+  this HEAD - it was never committed to this branch. The copy that exists is
+  .claude/worktrees/route-blocked-fire-suppression-57e3a2/outputs/
+  standby_investigation.txt, and that is the copy quoted here. Its Part 1.2 and
+  Part 3 do say exactly what the brief reports: 7 of 11 idle deaths (64%)
+  entered idle via `unassign / replacement_after_blocked`, pointing at
+  wildfire_model.py:3520-3524, and option (d) "stop stranding units next to
+  fire" is listed as the STRONG SECONDARY lever. Every figure taken from it is
+  labelled as pre-idle-retreat-fix and is re-measured in section 3 rather than
+  carried forward.
+
+
+================================================================================
+1. THE UNASSIGN BRANCH AS IT EXISTS NOW  (Part 1 step 1)
+================================================================================
+
+1.1  THE QUOTED BRANCH
+------------------------
+The line numbers in both source reports are still exact. wildfire_model.py,
+inside `WildFireModel.apply_physical_rescue_command`, verbatim at 62b4fbe:
+
+  3510        if action == "unassign":
+  3511            if not ff_id:
+  3512                return False
+  3513            ff_markers = getattr(self, "firefighter_marker_agents", None)
+  3514            if not isinstance(ff_markers, dict):
+  3515                return False
+  3516            ff_marker = ff_markers.get(ff_id)
+  3517            if ff_marker is None:
+  3518                return False
+  3519
+  3520            ff_marker.assigned = False
+  3521            ff_marker.target_pos = None
+  3522            ff_marker.rescued_victim = None
+  3523            ff_marker.exiting = False
+  3524            ff_marker.exit_target = None
+  3525            managed_ff = getattr(self, "managed_firefighters", None)
+  3526            if isinstance(managed_ff, dict):
+  3527                state = managed_ff.get(ff_id)
+  3528                if state is not None:
+  3529                    try:
+  3530                        state.assignment_state = "unassigned"
+  3531                    except Exception:
+  3532                        pass
+  3533                    status = str(getattr(ff_marker, "status", "") or "").strip().lower()
+  3534                    if status != "route_blocked":
+  3535                        try:
+  3536                            state.route_state = "idle"
+  3537                        except Exception:
+  3538                            pass
+  3539                        try:
+  3540                            state.availability = "available"
+  3541                        except Exception:
+  3542                            pass
+
+The rest of the branch (3544-3573) resets the VICTIM's pending flags when
+`meta["reset_victim_pending"]` is set, requests a rescue-path clear, and syncs
+operational knowledge. It contains no further mutation of the firefighter.
+
+CONFIRMED: the branch still does not relocate or otherwise protect the
+released unit. Every statement in it is bookkeeping. There is no call to
+`grid.move_agent`, no call to `_survival_move`, `_assigned_one_step_retreat`
+or any hazard predicate, and no read of the unit's position at all. The unit
+is left standing exactly where it was.
+
+The only conditional in the whole branch, at 3534, makes the abandonment
+slightly stronger rather than weaker: because the release always happens with
+`status == "route_blocked"` (section 2.2), `route_state` stays whatever it was
+and `availability` is NOT set back to "available". The released unit is left
+in place AND left undispatchable until
+`_revalidate_route_blocked_firefighters` clears the flag on a later step.
+
+1.2  IT HAS NOT CHANGED SINCE EITHER SOURCE REPORT WAS WRITTEN
+---------------------------------------------------------------
+Not asserted from the line numbers matching - checked in git:
+
+    git log --oneline -- wildfire_model.py
+      70e1b33  route_blocked consumer latch
+      aa91659  Remove horizon flush from BUG #2 escape hatch
+      fdf6cfb  Fix BUG #2: victims never reach a terminal state
+      a4a01b4  Add core project files
+
+  62b4fbe (the idle-retreat fix) touched `agents.py` and `outputs/` only -
+  `git show --stat HEAD` lists no wildfire_model.py hunk, and its own commit
+  message says so explicitly ("wildfire_model.py untouched - scope expansion
+  declined"). So the last commit to touch this file is 70e1b33, which predates
+  both source reports' findings about it. The branch is byte-identical to what
+  they described.
+
+
+================================================================================
+2. THE ROUTE_BLOCKED REPLACEMENT PATH  (Part 1 step 2)
+================================================================================
+
+2.1  THE FULL CALL CHAIN, TOP TO BOTTOM
+-----------------------------------------
+Every hop verified by reading, not inferred. The whole chain is SYNCHRONOUS:
+the release happens inside the released unit's own `advance()`, in the middle
+of the very `_move_toward` call that detected the blockage.
+
+  agents.py:1173  Firefighter.advance()
+    -> one of three call sites reaches _move_toward:
+       (a) 1067 via the immediate-survival-retreat branch, but ONLY when
+           `_survival_move()` has already run this step and FAILED to move
+           the unit (`self.pos == before_pos`, agents.py:468-471)
+       (b) the plain `if self.target_pos and not self.exiting:` approach branch
+       (c) the `elif self.exiting and self.exit_target:` carry-out branch
+
+  agents.py:1069  Firefighter._move_toward(target)
+     1085-1090      route_blocked_now = (not exiting) and NOT
+                    _path_exists_avoiding_fire(cur, target, fire_cells)
+     1092-1108      `scored` = in-bounds neighbours that are not burning
+     1110-1112      if not scored:  _mark_route_blocked();  return      <-- (i)
+     1114-1117      if route_blocked_now:  _mark_route_blocked()        <-- (ii)
+                    ... and then FALLS THROUGH and keeps moving
+     1119-1157      tier selection, scored against `dist_before` to the target
+     1159-1162      the "route reopened" clear - skipped, route_blocked_now
+     1163           self.model.grid.move_agent(self, chosen)
+
+  agents.py:1054  Firefighter._mark_route_blocked()
+                    guard: only fires if status is not already "route_blocked"
+                    sets self.status = "route_blocked"
+                    calls model._on_firefighter_route_blocked(self)
+
+  wildfire_model.py:3961  _on_firefighter_route_blocked(ff_marker)
+                    prints [Rescue Blocked], records a "route_blocked" event,
+                    returns early if the victim no longer needs rescue, else
+                    _enqueue_rescue_incident({"type": "route_blocked", ...,
+                                              "reason":
+                                              "replacement_after_blocked"})
+                    _process_rescue_incidents()          <-- immediate, not deferred
+
+  wildfire_model.py:2864  _process_rescue_incidents()
+                    gated on _rescue_incident_processing_enabled, which is set
+                    True at construction (wildfire_model.py:292) and only ever
+                    set False by tests/test_rescue_planner_authority.py:103.
+                    In a real run it is always on, so the release is always
+                    synchronous inside _move_toward.
+
+  wildfire_model.py:2806  _handle_rescue_incident(), itype == "route_blocked"
+     2809-2820      once-per-(ff, victim) guard via _blocked_replacement_attempted
+     2821-2829      execute_physical_command(unassign, ff_id, victim_id,
+                                             reason="replacement_after_blocked",
+                                             metadata={"reset_victim_pending": True})
+     2831-2840      snapshot -> select_rescue_assignment -> apply the pairing
+                    decision: THIS is where "reassign to a replacement" is
+                    decided, and it is decided AFTER the release, from a
+                    snapshot that no longer contains the released unit as
+                    available (its status is route_blocked).
+
+  wildfire_model.py:3510  apply_physical_rescue_command, the branch in 1.1
+
+SO: "where does the reassign get decided" has two distinct answers, and the
+distinction matters for the design.
+  * The DECISION TO RELEASE is taken at wildfire_model.py:2809-2829, in
+    `_handle_rescue_incident`. It is unconditional: if the victim still needs
+    rescue and this (ff, victim) pair has not been tried, the unit is released.
+    Nothing about the unit's own safety is consulted.
+  * The CHOICE OF REPLACEMENT is taken afterwards at 2831-2840 by
+    `select_rescue_assignment`, and may well come back "delay" (no available
+    firefighter). The release is NOT contingent on a replacement being found.
+
+2.2  WHAT IS KNOWN ABOUT THE RELEASED UNIT AT THAT CALL SITE
+--------------------------------------------------------------
+The brief asks specifically whether fire state, position and the same
+BFS-reachability check the trigger and the recovery pass already use are
+accessible at the release point. They are, completely.
+
+  `ff_marker` is in hand at wildfire_model.py:3516, and it is an
+  `agents.Firefighter` instance - `firefighter_marker_agents[unit_id] = marker`
+  is assigned exactly once, at wildfire_model.py:613, from
+  `agents.Firefighter(...)` constructed at 609. So the full hazard/geometry
+  API of the agent is available on it directly:
+
+    ff_marker.pos                            current cell
+    ff_marker._fire_cells()                  agents.py:617  live burning set
+    ff_marker._neighbor_cells()              agents.py:675  in-bounds 4-neighbours
+    ff_marker._cell_contains_active_fire()   agents.py:629
+    ff_marker._cell_adjacent_to_fire()       agents.py:658
+    ff_marker._cell_has_active_smoke()       agents.py:641
+    ff_marker._min_fire_distance()           agents.py:718
+    ff_marker._cell_meets_required_idle_safety()  agents.py:727
+    ff_marker._cell_is_ideal_idle_standoff()      agents.py:738
+    ff_marker._path_exists_avoiding_fire()   agents.py:1017  <-- the SAME BFS
+    ff_marker._survival_move()               agents.py:754   <-- the fixed retreat
+
+  and on the model side:
+    self._active_burning_cells()             wildfire_model.py:3748
+    self._safe_path_reachable_cells()        wildfire_model.py:3764
+
+  In particular the exact enclosure test used by the route_blocked trigger
+  (agents.py:1110, `not scored`) and by the recovery pass
+  (`_revalidate_route_blocked_firefighters`, wildfire_model.py:2192-2196,
+  `all(ff_marker._cell_contains_active_fire(c) for c in neighbors)`) is one
+  line away at the release site. ANSWER TO THE CORE QUESTION OF PART 2 STEP 4:
+  yes, at the moment of unassign the model can tell whether the release is
+  safe, at no extra plumbing cost.
+
+2.3  TWO STRUCTURALLY DIFFERENT RELEASES, NOT ONE
+---------------------------------------------------
+This is the single most important thing the static read adds to the framing in
+the brief, and it changes what "the unit is left standing there" means.
+
+  (i)  `not scored` - agents.py:1110.  Every in-bounds neighbour is burning.
+       `_mark_route_blocked()` runs, the unit is released, and `_move_toward`
+       RETURNS. The unit does not move. This is genuine full enclosure and is
+       exactly the C1 bucket of the idle-retreat round.
+       Reachable from all three advance() call sites, including the carry-out
+       branch, so an EXITING unit carrying a victim can be released this way -
+       and the release clears `exiting`, `exit_target` and `rescued_victim`,
+       i.e. it drops the victim it was carrying. `reset_victim_pending` then
+       hands that victim back to the dispatcher as "confirmed".
+
+  (ii) `route_blocked_now` - agents.py:1114.  BFS says there is no fire-free
+       path to the target, but free neighbours remain. `_mark_route_blocked()`
+       runs, the unit is released - and then the call KEEPS GOING and moves it.
+       It is NOT left standing there. It takes one more step, chosen by tiers
+       scored against `dist_before` to the target it no longer has:
+         tier 1  closer to the target, not adjacent to fire, no smoke
+         tier 2  same distance, not adjacent to fire, no smoke
+         tier 3  any cell not adjacent to fire and no smoke
+         tier 4  lowest `_firefighter_cell_risk`, tie-broken by CLOSER to target
+       Only the `not self.exiting` guard at agents.py:1086 scopes this branch
+       to the approach phase, so case (ii) never applies to a carrying unit.
+
+  The brief's premise - "since it was route_blocked, 'where it was' is, by
+  definition, next to fire, the unit is left standing there" - is precisely
+  true for (i) and is wrong in two ways for (ii): the unit is not necessarily
+  next to fire (BFS blockage is a property of the corridor, not of the unit's
+  own cell), and it does not stand still.
+
+2.4  WHEN CAN EACH FIRE, RELATIVE TO THE RETREAT LOGIC?
+---------------------------------------------------------
+`advance()` runs `_survival_move()` at most once per step, and reaches
+`_move_toward` from the immediate-danger branch ONLY when that `_survival_move`
+failed to move the unit (agents.py:460-471). That yields a complete, closed
+taxonomy of the state a unit is in at the instant it is released:
+
+  (i)   ENCLOSED.  `_needs_immediate_survival_retreat()` is necessarily True
+        (a neighbour burning implies `_cell_adjacent_to_fire`), so
+        `_survival_move()` HAS ALREADY RUN THIS VERY STEP, on this exact
+        state, and returned without moving. The retreat logic has already been
+        asked and has already answered "nowhere".
+
+  (ii)  FREE NEIGHBOUR, IN IMMEDIATE DANGER (on fire / in smoke / adjacent to
+        fire / min-fire-distance <= 1). Same as above: `_survival_move()` ran
+        first this step and failed to move the unit, otherwise `_move_toward`
+        would never have been reached.
+
+  (iii) FREE NEIGHBOUR, NOT IN IMMEDIATE DANGER (>= 2 cells from fire, no
+        smoke, not adjacent). `_move_toward` is reached directly from the
+        approach branch. `_survival_move()` did NOT run this step. This is the
+        only category in which an extra retreat call at the release point
+        could do anything that is not already being done.
+
+  Section 3 measures how the real releases distribute across (i)/(ii)/(iii).
+
+2.5  A HARD IMPLEMENTATION CONSTRAINT ON THE STEP-5 PROPOSAL
+--------------------------------------------------------------
+Found while reading, and it constrains any version of "check for immediate
+danger and move now at the unassign site":
+
+  `_move_toward` builds `scored` from `self._neighbor_cells()` at agents.py:1093
+  - BEFORE `_mark_route_blocked()` is called at 1117. If the release handler
+  moves the unit, `chosen` at 1157 is still a neighbour of the cell the unit
+  has just LEFT, and the trailing `grid.move_agent(self, chosen)` at 1163 will
+  place it there: a teleport of up to two cells, straight back toward the
+  fire it just retreated from.
+
+  So the step-5 proposal cannot be implemented as an isolated added call. It
+  necessarily also requires ending the remainder of that `_move_toward` call.
+  The design in section 5 tests those two pieces separately for exactly this
+  reason.
+
+
+================================================================================
+3. FRESH INSTRUMENTED SAMPLE AT 62b4fbe  (Part 1 step 3)
+================================================================================
+
+3.0  WHAT WAS RUN, AND PROOF IT IS THE 62b4fbe WORLD
+------------------------------------------------------
+13 runs, the same shape as the previous two rounds: D/east half-roles seeds
+101-505, D/south half-roles seeds 101-505, D/east default-roles seeds
+101/202/303, 240 steps, FIRE_SPREAD_MULTIPLIER 0.75, run sequentially.
+
+  harness   outputs/_ui_probe.py       (new; derived from _ir_probe3.py)
+  analysis  outputs/_ui_analyze.py  -> outputs/_ui_analyze_out.txt
+  data      outputs/_ui_p1_{east_half,south_half,east_default}.json
+
+_ir_probe.py / _ir_probe2.py / _ir_probe3.py were checked first and are still
+valid, but none of them instruments the release point: probe3 records
+assign/unassign lifecycle rows with no posture, no BFS, and no link to the
+_move_toward call the release happens inside. This round needs all three, so
+_ui_probe.py extends probe3 rather than replacing it. It only WRAPS methods,
+and every added call is read-only (_fire_cells, _neighbor_cells,
+_cell_contains_active_fire, _path_exists_avoiding_fire, the safety
+predicates), so it must not perturb the run.
+
+That is not assumed - it is checked. outputs/_ui_basecheck.py compares this
+sample seed by seed against the idle-retreat round's post-fix data
+(outputs/_ir_p3_POST_*.json, the 13 runs that validated 62b4fbe):
+
+    east_half 101..505, south_half 101..505, east_default 101..303
+      -> MATCH on all 13, on firefighter_deaths, rescued, dead, rescue_rate,
+         unreachable, burnt_cells, terminal_step AND on the exact
+         (step, unit, cell) tuple of every death.
+    firefighter deaths: 62b4fbe baseline 7, this sample 7.
+    RESULT: IDENTICAL.
+
+  So every rate below is measured on the 62b4fbe world, not on a neighbouring
+  one, and the pre-idle-retreat figures in the source reports are superseded
+  rather than extended.
+
+3.1  HOW MANY ROUTE_BLOCKED-TRIGGERED UNASSIGNS OCCUR
+-------------------------------------------------------
+    E/half     5
+    E/default  2
+    S/half     1
+    TOTAL      8   over 13 runs
+
+  All 8 are `reason="replacement_after_blocked"`, and each corresponds 1:1
+  with a `_mark_route_blocked` firing (8 firings, 8 fired, 0 suppressed by the
+  already-route_blocked guard). The only other unassign reason in the whole
+  sample is `fire_casualty` (13 of them), which is the victim-burned path and
+  is not this round's subject.
+
+  All 8 released units were APPROACHING (en_route). ZERO were released while
+  exiting/carrying a victim out. That matters because the enclosure branch is
+  reachable from the carry-out path too (section 2.3) and would drop a carried
+  victim; it simply did not happen in this sample.
+
+  Against the pre-idle-retreat baseline the source reports quote - 5
+  `replacement_after_blocked` unassigns in E/half alone, 7 of 11 idle deaths
+  downstream of one - the inflow ITSELF is essentially unchanged (E/half is
+  still 5). What changed is downstream survival, which is exactly what
+  62b4fbe was supposed to change.
+
+3.2  HOW MANY LEAVE THE UNIT WITH ZERO LEGAL ESCAPE
+-----------------------------------------------------
+Using the same "all in-bounds neighbours burning" test the route_blocked
+trigger uses at agents.py:1110 and the recovery pass uses at
+wildfire_model.py:2192-2196:
+
+    zero legal escape at the moment of release  : 4 / 8   (50%)
+    at least one free neighbour                 : 4 / 8   (50%)
+
+  And the released unit's own cell, in every one of the 8:
+
+    enclosed (4)      on fire 2   in smoke 0   adjacent to fire 4   safe 0
+    not enclosed (4)  on fire 0   in smoke 3   adjacent to fire 4   safe 0
+
+  NOT ONE of the 8 releases happens on a cell that meets required idle safety.
+  All 8 are on or beside fire. The brief's premise - "where it was is, by
+  definition, next to fire" - is confirmed empirically, 8/8, even though the
+  BFS blockage that triggers the release is a property of the corridor rather
+  than of the unit's cell and did not have to come out that way.
+
+3.3  THE FOUR NON-ENCLOSED RELEASES ARE NOT WHAT THE FRAMING ASSUMES
+----------------------------------------------------------------------
+This is the finding that redirects the whole round, so it is given in full.
+
+  In ALL FOUR non-enclosed releases the unit had EXACTLY ONE free neighbour,
+  and `_move_toward` - continuing past the release, as section 2.3 (ii)
+  describes - moved the unit ONTO that cell:
+
+    combo seed unit        step  cell       free cells      took       target
+    E/d   101  ff_unit_0     38  [42,41]    [[41,41]]       [41,41]    [40,25]
+    E/d   303  ff_unit_0     55  [41,23]    [[42,23]]       [42,23]    [25, 3]
+    E/h   303  ff_unit_0     55  [41,23]    [[42,23]]       [42,23]    [25, 3]
+    E/h   404  ff_unit_0     29  [31,38]    [[31,39]]       [31,39]    [10,25]
+
+  Measured consequences of that continued step, over the 4:
+    ended closer to fire than it started                        0 / 4
+    landed on a cell worse than the best free neighbour         0 / 4
+    a safe neighbour existed at release and was not taken       0 / 4
+    landed adjacent to fire                                     4 / 4  (no
+      non-adjacent cell existed - n_safe was 0 in all four)
+
+  The choice set had size one. The "keeps walking toward the blocked target"
+  behaviour is structurally real, but with one legal cell available the tier
+  chain cannot express a preference: in 2 of the 4 the cell taken is actually
+  FURTHER from the abandoned target (E/d 303 and E/h 303 go 36->37 Manhattan,
+  E/h 404 goes 34->35). It is not walking into the fire; it is taking the only
+  door.
+
+  AND THE RETREAT LOGIC HAD ALREADY REFUSED THAT DOOR. In every one of the 4,
+  `_survival_move()` ran earlier in the same step and did not move the unit
+  (section 3.4), and the reason is visible in the traces: the single free
+  neighbour is the cell the unit occupied on the previous step, i.e.
+  `_idle_retreat_last_cell`, so `_retreat_candidates` (agents.py:880-884)
+  excludes it, the candidate set is empty, `_assigned_one_step_retreat` finds
+  nothing (n_safe = 0), and the unit latches. E/h seed 404 is the clearest:
+
+      step  pos        mfd free safe assigned status         survival_move
+       27   [31,39]     1    1    0  True     en_route       moved -> [31,39]
+       28   [31,38]     1    1    0  True     en_route       moved -> [31,38]
+       29   [31,39]     1    1    0  False    route_blocked  REFUSED, latched
+                                                             (only free cell
+                                                              = [31,39] =
+                                                              last_cell)
+                        ... then _move_toward took [31,39] anyway ...
+       30   [31,38]     1    0    0  False    route_blocked  moved -> [31,38]
+       31   [31,38]     1    0    0  False    route_blocked  refused
+       32   [31,38]     1    0    0  False    route_blocked  refused
+       33   dead
+
+  So on the release step, `_move_toward`'s continued move is the ONLY thing
+  moving these units, and it moves them to the one cell the retreat logic just
+  declined for a non-emergency reason. This is the C3/C4 residual shape the
+  idle-retreat report named as its deliberately-deferred follow-up (its
+  section 4.4), re-appearing here from the release side.
+
+3.4  THE RETREAT LOGIC HAS ALREADY BEEN CONSULTED - IN ALL 8
+---------------------------------------------------------------
+Recorded, not inferred. `_survival_move` at the release step, for all 8:
+
+    combo seed unit        step  pos       free safe  idle  stalled_pre  moved
+    E/d   101  ff_unit_0     38  [42,41]     1    0  False     False     NO
+    E/d   303  ff_unit_0     55  [41,23]     1    0  False     False     NO
+    E/h   101  ff_unit_0     30  [44,40]     0    0  False     False     NO
+    E/h   202  ff_unit_0     57  [39,25]     0    0  False     False     NO
+    E/h   303  ff_unit_0     55  [41,23]     1    0  False     False     NO
+    E/h   404  ff_unit_0     29  [31,38]     1    0  False     False     NO
+    E/h   505  ff_unit_0     49  [45,23]     0    0  False      True     NO
+    S/h   404  ff_unit_1     57  [ 3,20]     0    0  False     False     NO
+
+  8 of 8: `_survival_move()` ran in the SAME STEP, BEFORE the release, on the
+  IDENTICAL cell and fire field, and did not move the unit. In all 8 it exited
+  by setting `_idle_retreat_stalled = True`.
+
+  This follows from the control flow in section 2.4 and is what the data
+  shows: the delay distribution from release to the next `_survival_move` call
+  is [(0, 8)] - every single release already had one that step.
+
+  The release taxonomy of section 2.4 comes out as:
+    (i)   enclosed                                   4 / 8
+    (ii)  free neighbour, in immediate danger        4 / 8
+    (iii) free neighbour, NOT in immediate danger    0 / 8   <-- does not occur
+
+  Category (iii) - the only category in which an extra retreat call at the
+  release point could do something the model is not already doing - is EMPTY
+  in this sample.
+
+3.5  FATE OF THE RELEASED UNITS
+---------------------------------
+  ZERO-ESCAPE (enclosed) releases, 4:
+    died within 10 steps                 2   (both died on the release step
+                                              ITSELF - died_in = 0, 0)
+    died later than 10 steps             1   (E/h 505, 14 steps later)
+    survived to end of run               1   (E/h 202: regained a free
+                                              neighbour 6 steps later, reached
+                                              a genuinely safe cell after 8)
+  NOT-ENCLOSED releases, 4:
+    died within 10 steps                 2   (both at 4 steps)
+    survived to end of run               2   (both reached a safe cell 21
+                                              steps later)
+
+  So enclosure at the moment of release is NOT a death sentence - one of the
+  four escaped once the fire receded - and non-enclosure is not a reprieve:
+  the split is 3 dead / 1 alive versus 2 dead / 2 alive, on 4 and 4.
+
+  The two same-step deaths are the extreme case and deserve naming, because
+  they bound what any release-point change could achieve:
+    E/h 101 ff_unit_0, step 30, cell [44,40] - ON FIRE, all 4 neighbours
+      burning, released and dead in the same step.
+    S/h 404 ff_unit_1, step 57, cell [3,20]  - ON FIRE, all 4 neighbours
+      burning, released and dead in the same step.
+  `_check_fire_casualties` runs after `schedule.step()` in the same model step
+  (src_extension/adaptation_manager.py:170), so these units were already
+  standing in fire when the release fired. There is no interval in which
+  anything could act.
+
+3.6  HOW THE 7 DEATHS RELATE TO THE INFLOW
+--------------------------------------------
+    total firefighter deaths in the 13 runs                       7
+    preceded by a route_blocked release OF THAT SAME UNIT         5
+    not preceded by one                                           2
+
+      E/d 101  ff_unit_0  died step  42 at [41,41]   4 steps after release
+      E/h 101  ff_unit_0  died step  30 at [44,40]   0 steps  (same step)
+      E/h 404  ff_unit_0  died step  33 at [31,38]   4 steps after release
+      E/h 505  ff_unit_0  died step  63 at [41,22]  14 steps after release
+      S/h 404  ff_unit_1  died step  57 at [ 3,20]   0 steps  (same step)
+      E/d 202  ff_unit_0  died step 225 at [34,49]   no release   (the C3 leash
+                                                                   death)
+      S/h 101  ff_unit_1  died step 135 at [ 1, 0]   no release   (C1)
+
+  5 of 7 (71%) are downstream of a route_blocked release. The source report's
+  pre-fix figure was 7 of 11 (64%). The SHARE is essentially unchanged; the
+  absolute count fell 7 -> 5 because total deaths fell 13 -> 7. So 62b4fbe did
+  not change which inflow dominates - it reduced how often that inflow proves
+  fatal.
+
+  Cross-referenced against the idle-retreat round's residual buckets:
+    E/h 101 (A), S/h 404 (A)   - both are same-step-as-release deaths
+    E/d 101 (C1), E/h 404 (C1) - enclosed AT DEATH but NOT at release; each
+                                 had one free neighbour when released and
+                                 became enclosed over the following 4 steps
+    E/h 505 (C4)               - released 14 steps before death
+    E/d 202 (C3), S/h 101 (C1) - no release at all
+  Note this corrects a reading the brief carries over: the two bucket-A deaths
+  are not "in-transit" deaths on an untouched path - they are release-point
+  deaths, released and killed within the same step. And only ONE of the three
+  C1 deaths (S/h 101) is unrelated to a release.
+
+3.7  WAS THE BLOCKAGE VISIBLE AT DISPATCH TIME
+------------------------------------------------
+Measured for Part 2 step 6, at the moment `apply_physical_rescue_command`
+committed each of the 8 assignments that later produced a release, by running
+`_path_exists_avoiding_fire` from every dispatchable unit to the victim cell:
+
+    releases traced back to their own assign event      8 / 8
+    route was OPEN at commitment                        8 / 8
+    route was ALREADY CLOSED at commitment              0 / 8
+
+    transit steps between assign and route_blocked release:
+      12, 14, 14, 23, 23, 31, 35, 37     (min 12, median 23, max 37)
+
+    assigns where >= 1 OTHER dispatchable unit existed  4 / 8
+    of those, an alternative with an OPEN route         4 / 4
+
+  Every one of these 8 dispatches was issued into a corridor that BFS said was
+  clear, and the corridor then closed during a transit of at least 12 steps.
+  In the 4 cases where the Manhattan sort had any choice at all, the
+  alternative's route was open too, so a reachability-aware sort had nothing
+  to discriminate on and would have been free to pick the same unit.
+
+  This reproduces verdict C of outputs/ffdeath_investigation.txt at a HEAD
+  where route_blocked actually fires. That investigation measured 1 of 57
+  dispatches with no live path and 0 of 16 deaths in that category; here it is
+  0 of 8 releases and 0 of 5 release-linked deaths.
+
+
+================================================================================
+4. CAN THE MODEL TELL WHETHER THE RELEASE IS SAFE, AND WHAT CAN BE DONE
+   FOR A UNIT WITH ZERO ESCAPE?   (Part 2 step 4)
+================================================================================
+
+4.1  CAN IT TELL? YES, TRIVIALLY.
+-----------------------------------
+Section 2.2 establishes this from the source: `ff_marker` at
+wildfire_model.py:3516 is an `agents.Firefighter`, so the enclosure test the
+route_blocked trigger itself uses is one line away:
+
+    all(ff_marker._cell_contains_active_fire(c)
+        for c in ff_marker._neighbor_cells())
+
+together with `_min_fire_distance`, `_cell_meets_required_idle_safety`,
+`_cell_is_ideal_idle_standoff` and the same `_path_exists_avoiding_fire` BFS.
+There is no information barrier at the release point. The premise of the
+brief's step 4 holds completely.
+
+The conditional it proposes - "when releasing a unit whose current position
+has zero legal fire-free neighbours, do NOT simply leave it standing there
+passively" - is therefore implementable. The question is only what the
+alternative branch would DO.
+
+4.2  WHAT CAN BE DONE FOR A FULLY-ENCLOSED UNIT: NOTHING. STATED PLAINLY.
+---------------------------------------------------------------------------
+The honest answer the brief asks for is the negative one, and it is not a
+judgement call - it is a property of the model's action space, checked rather
+than assumed. For a unit whose four in-bounds neighbours are all burning:
+
+  (a) MOVE. There is nowhere to move to. `_cell_contains_active_fire` is a
+      hard filter in EVERY firefighter movement path without exception -
+      `_move_toward`'s `scored` (agents.py:1094), `_retreat_candidates`
+      (agents.py:881), `_assigned_one_step_retreat` (agents.py:1002). A cell
+      that is burning is not a legal destination anywhere in the code. There
+      is no damage model, no "push through the flames" tier, and adding one
+      would be inventing a new physical mechanic, not fixing a defect.
+
+  (b) SUPPRESS THE FIRE. Not available. Checked exhaustively: `Fire.burning`
+      and `Fire.fuel` are written in exactly three places, all of them inside
+      `Fire.step()` / `Fire.advance()` (agents.py:108, 111, 123, 125). No
+      firefighter, no UAV, no model method and nothing in src_extension ever
+      extinguishes a cell or removes fuel. Despite the name, the Firefighter
+      agent in this model rescues victims; it does not fight fire. "Clear a
+      cell to escape through" is not a capability that exists to be invoked.
+
+  (c) CALL THE RETREAT LOGIC. Already done, in the same step, before the
+      release, in 4 of 4 enclosed cases (section 3.4). `_survival_move()`
+      builds `_retreat_candidates` from non-burning neighbours; with none, the
+      candidate list is empty by construction and the function returns without
+      moving. Calling it a second time re-derives the empty list from the same
+      grid state. This is a no-op by construction, not by measurement.
+
+  (d) WAIT. This is the only thing that ever works, and it is not an action.
+      A cell stops being an obstacle when its fuel runs out (agents.py:110-112,
+      `burnt = True; burning = False`), and burnt cells are passable - the
+      movement filters test `is_burning()`, never `is_burnt()`. That is
+      precisely what saved the one enclosed release that survived: E/h seed
+      202, released enclosed at [39,25] on step 57, regained a free neighbour
+      on step 63 and a genuinely safe cell on step 65, purely because the fire
+      around it burned out. Nothing the unit or the model did caused that.
+
+  This matches, from a completely different direction, what the idle-retreat
+  round already found in its synthetic labs (standby_investigation.txt Part
+  1.4): suppressing the stall latch every step did NOT save a unit against a
+  solid front, and against a front that crosses the grid every starting
+  position dies. The conclusion there was "removing the latch is necessary,
+  not sufficient". The conclusion here is stronger, because it is about the
+  action space rather than about one filter: for genuine full enclosure there
+  is no sufficient action, because there is no action.
+
+4.3  SO THE C1 CASE HAS NO FIX, AND THE ROUND'S TARGET IS NARROWER THAN THE
+     FRAMING SUGGESTS - BUT NOT IN THE DIRECTION THE FRAMING EXPECTS
+----------------------------------------------------------------------------
+The brief anticipated that genuine enclosure might be unfixable and asked for
+that to be said plainly if so. It is: 4 of the 8 releases are into genuine
+enclosure, 2 of those die in the same step already standing in fire, and no
+release-point branch can change any of them.
+
+What the brief did NOT anticipate is that the other half is not fixable
+either, and for the opposite reason: those 4 units were NOT abandoned
+passively. Each had exactly one legal cell, and the existing code already
+moved them onto it in the same step (section 3.3). There is no idle interval
+during which nothing prompts them to act, because there is no idle interval
+at all - the release and the move happen inside one `_move_toward` call.
+
+
+================================================================================
+5. DOES AN EXPLICIT "CHECK DANGER AND MOVE NOW" CALL AT THE UNASSIGN SITE
+   HELP?  MEASURED, NOT ASSUMED.   (Part 2 step 5)
+================================================================================
+
+5.1  HOW IT WAS TESTED
+------------------------
+Nothing was written to source. Each variant was applied as a runtime
+monkeypatch on top of 62b4fbe (outputs/_ui_whatif.py), the same
+design-before-implementation discipline as outputs/_ir_whatif.py in the
+previous round. Three arms:
+
+  none     control.
+  abort    end the remainder of the `_move_toward` call at the release, i.e.
+           stop stepping toward the target the unit no longer has.
+  retreat  call the already-fixed `Firefighter._survival_move()` from the
+           unassign site - the literal step-5 proposal, reusing the retreat
+           logic rather than duplicating it. IMPLIES `abort`.
+
+  `retreat` cannot be tested (or shipped) without `abort`, for the reason in
+  section 2.5: `_move_toward` builds `scored` from `_neighbor_cells()` at
+  agents.py:1093, BEFORE the release at 1117. If the release handler moves the
+  unit, the trailing `grid.move_agent(self, chosen)` at 1163 places it on a
+  neighbour of the cell it has just left - a teleport of up to two cells back
+  toward the fire. That is a property of the code, not of the arm.
+
+  IMPLEMENTATION NOTE, since it constrains any real fix too: `abort` cannot be
+  done by raising out of `apply_physical_rescue_command`.
+  `_process_rescue_incidents` wraps the handler in a bare
+  `except Exception: continue` (wildfire_model.py:2869-2875), which swallows
+  it; and even re-raised, it would skip the replacement dispatch at
+  wildfire_model.py:2831-2840, which is not part of what the arm changes. The
+  probe instead flags the released agent and suppresses that one trailing
+  `grid.move_agent`.
+
+  Run over the 8 seeds that actually produce a release - the other 5 never
+  execute the arm code path at all, so they cannot differ. Control arm checked
+  for neutrality first:
+
+      arm=none, E/h 404 -> MATCH stock;  arm=none, E/d 101 -> MATCH stock
+
+5.2  THE ANSWER: THE EXTRA CALL IS A MEASURED NO-OP, 9 TIMES OUT OF 9
+-----------------------------------------------------------------------
+    combo seed unit        step  cell      enclosed n_free | ran   MOVED
+    E/d   101  ff_unit_0     38  [42,41]      -        1   | yes    NO
+    E/d   303  ff_unit_0     55  [41,23]      -        1   | yes    NO
+    E/d   303  ff_unit_0     68  [37,26]      -        2   | yes    NO
+    E/h   101  ff_unit_0     30  [44,40]      Y        0   | yes    NO
+    E/h   202  ff_unit_0     57  [39,25]      Y        0   | yes    NO
+    E/h   303  ff_unit_0     55  [41,23]      -        1   | yes    NO
+    E/h   404  ff_unit_0     29  [31,38]      -        1   | yes    NO
+    E/h   505  ff_unit_0     49  [45,23]      Y        0   | yes    NO
+    S/h   404  ff_unit_1     57  [ 3,20]      Y        0   | yes    NO
+
+  `_survival_move()` was invoked at every single release and moved the unit
+  ZERO times. This is a direct measurement of the proposed mechanism, not a
+  sampling result: the same function had already run that step and latched
+  (section 3.4), and re-running it re-derives the same verdict from the same
+  grid state.
+
+  Note the arms produce 9 releases where stock produces 8 - E/d 303 acquires a
+  second one at step 68 once its trajectory diverges. That extra case is
+  useful rather than noise: it had TWO free neighbours and was still refused,
+  so the no-op is not an artefact of the "only one free cell" geometry.
+  `_pick_improving_retreat` requires a genuine improvement and neither cell
+  was one.
+
+  Consequently `retreat` and `abort` are IDENTICAL on every metric, on every
+  seed, and at every trajectory divergence step. The step-5 proposal
+  contributes exactly nothing on top of the abort it is forced to carry.
+
+5.3  AND THE ABORT IT REQUIRES COSTS TWO FIREFIGHTERS
+-------------------------------------------------------
+Seed-matched against stock over the 8 release-bearing seeds
+(outputs/_ui_wicompare_out.txt):
+
+    combo seed   ff_deaths        rescued   victims dead   diverges at step
+    E/d   101      1 -> 1          2 -> 2      2 -> 2        38
+    E/d   303      0 -> 1  <--     2 -> 2      2 -> 2        55
+    E/h   101      1 -> 1          2 -> 2      2 -> 2        never
+    E/h   202      0 -> 0          2 -> 2      2 -> 2        never
+    E/h   303      0 -> 1  <--     1 -> 1      3 -> 3        55
+    E/h   404      1 -> 1          2 -> 2      2 -> 2        29
+    E/h   505      1 -> 1          2 -> 2      2 -> 2        never
+    S/h   404      1 -> 1          2 -> 2      2 -> 2        never
+    ---------------------------------------------------------------------
+    TOTAL          5 -> 7         15 -> 15    17 -> 17
+
+  Identical for both `abort` and `retreat`. Two seeds get worse, none gets
+  better, and there is no compensating gain anywhere: rescued and victims-dead
+  are unchanged, so the whole effect falls on firefighter survival.
+
+  WHAT THE MECHANISM IS, AND HOW FAR I WILL PUSH THE CAUSAL CLAIM.
+  The suppressed step is direct and visible - E/h seed 303 ff_unit_0 at step
+  55 goes [41,23] -> [42,23] in stock and stays at [41,23] under the arm. What
+  follows is trajectory divergence, and I am not going to dress that up as a
+  clean causal chain:
+
+      step   STOCK                      ARM
+       54    [41,23]                    [41,23]
+       55    [42,23]  <- its only       [41,23]  <- suppressed
+                          free cell
+       57    [42,23]                    [40,23]
+       60    [42,23]                    [39,24]
+       66    [41,22]                    [38,26]
+       69    [41,22]                    [36,26]
+       75    [43,22]  mfd 2, ESCAPES    [36,26]  DEAD
+       77    [43,20]  mfd 4, alive      -
+
+  The unit does not freeze and burn where it stood; it takes a different route
+  westward and dies 20 steps later somewhere else. With two divergences in a
+  chaotic spread model, "-2 deaths" is a real measured outcome on this sample
+  but is NOT proof that aborting is lethal per se.
+
+  What it does prove is narrower and sufficient: the change has no measured
+  upside anywhere in the sample, 2 of 8 seeds regress and 0 improve, and the
+  one thing it definitely removes is the continued `_move_toward` step - which
+  section 3.3 showed is the ONLY thing moving these units, onto the only free
+  cell they have, after the retreat logic declined it. Removing a compensating
+  behaviour while leaving the thing it compensates for untouched is not a fix.
+
+5.4  WHY THE PROPOSAL FAILS, IN ONE SENTENCE
+----------------------------------------------
+There is no window to act in: the release, the retreat attempt and the move
+all happen inside a single `advance()` of the released unit, in that order,
+and the retreat attempt has already failed before the release is even issued -
+so "act now rather than wait for the next natural step-cycle" describes a wait
+that does not exist.
+
+
+================================================================================
+6. SHOULD THE ROOT DISPATCH DECISION BE REVISITED INSTEAD?   (Part 2 step 6)
+================================================================================
+Scoped as instructed to the narrow question - could ANYTHING flag "this route
+may become blocked" before commitment - and not to the pairing question
+verdict C already settled.
+
+6.1  THE DEFECT IS STILL THERE
+--------------------------------
+`select_rescue_assignment` (src_extension/planning/rescue_planner.py:624-630)
+still sorts purely on `_manhattan_distance`, and its availability filter
+(600-612: dead / assigned / route_blocked / available / has-position) contains
+no reachability test of any kind. `get_rescue_operational_snapshot`
+(wildfire_model.py:2497-2570) emits no reachability field for the planner to
+use even if it wanted one. Exactly as verdict C described.
+
+6.2  IT IS NOT WHAT PRODUCES THESE RELEASES
+---------------------------------------------
+Measured at HEAD, at the moment each of the 8 commitments was made
+(section 3.7):
+
+    route was OPEN at commitment                8 / 8
+    route was ALREADY CLOSED at commitment      0 / 8
+    transit before the route closed             12 to 37 steps, median 23
+    commitments with any alternative at all     4 / 8
+    of those, the alternative's route also OPEN 4 / 4
+
+  A "do not dispatch into a blocked route" gate has nothing to fire on: no
+  route was blocked at dispatch. A "prefer the reachable unit" tiebreak has
+  nothing to prefer: wherever a choice existed, both were reachable.
+
+6.3  COULD ANYTHING PREDICT IT RATHER THAN DETECT IT?
+-------------------------------------------------------
+That would mean forecasting which corridor a wind-driven front will cut,
+across a 12-to-37-step transit. The model has the ingredients - wind
+direction, per-cell burn probability via `Fire.probability_of_fire`, fuel - so
+it is not unimaginable, but it is a new predictive subsystem, not a narrow
+flag, and the brief scopes this step to a flag. It would also be built on a
+population of 8 events in 13 runs in a scenario that fields 2 firefighters and
+where half the commitments had no alternative to choose. I am not proposing
+it, and I would not propose it on this evidence.
+
+6.4  THIS ROUND'S NUMBERS DO NOT REOPEN VERDICT C - THEY REPRODUCE IT
+-----------------------------------------------------------------------
+outputs/ffdeath_investigation.txt measured, pre-f2827ed, 1 of 57 dispatches
+with no live path and 0 of 16 deaths in that category. At a HEAD where
+route_blocked actually fires, the equivalent numbers are 0 of 8 releases and
+0 of 5 release-linked deaths. The conclusion survives the change in regime
+that prompted re-opening it.
+
+
+================================================================================
+7. CONCLUSION FOR THIS ROUND
+================================================================================
+
+  NO FURTHER FIX IS INDICATED AT THIS LAYER. Part 3 should not be run.
+
+This is the answer, not a failure to find one, and each of the three candidate
+levers is closed for a different, independently checked reason:
+
+  STEP 4 - the fully-enclosed release (4 of 8). The model CAN tell that the
+  release is unsafe (section 4.1) and there is nothing for it to do (section
+  4.2). Burning cells are a hard filter in every movement path; no agent in
+  this simulation can extinguish fire at all - `Fire.burning` and `Fire.fuel`
+  are written only inside `Fire.step()`/`advance()`; and the retreat logic has
+  already been called and returned empty in the same step. Two of these four
+  units are already standing IN fire when released and die in that same step.
+  Waiting for burnout is the only escape, and it is not an action. This is the
+  irreducible floor, and it is the same floor the previous round's synthetic
+  labs found from the other direction.
+
+  STEP 5 - the proactive retreat call, which would apply to the other 4.
+  Measured rather than assumed: `_survival_move()` fired at 9 of 9 releases
+  and moved the unit 0 times, so the proposal is a no-op by measurement as
+  well as by construction. It cannot be applied without also aborting the rest
+  of `_move_toward`, and that abort removes the one behaviour that is actually
+  moving these units - costing 2 firefighters over 8 seeds, with 0 improved
+  and no change in victims rescued or lost.
+
+  STEP 6 - the upstream dispatch decision. 8 of 8 commitments had an open BFS
+  route, the corridor closed 12-37 steps into transit, and every alternative
+  that existed was equally open. There is nothing to flag.
+
+WHAT I AM CORRECTING IN THE FRAMING, RATHER THAN QUIETLY WORKING AROUND IT
+  The brief's premise - "that branch clears assigned/target_pos/rescued_victim
+  but does NOT relocate the released unit; the unit is left standing there" -
+  is exactly right about the CODE and half wrong about the CONSEQUENCE. For
+  the 4 enclosed releases the unit is indeed left standing, and nothing could
+  be otherwise. For the other 4 it is not left standing: the same
+  `_move_toward` call continues past the release and steps it onto its only
+  free cell - the best cell available, and the one the retreat logic had just
+  refused. The "downstream half" that 62b4fbe fixed and the "upstream half"
+  this round was asked to fix turn out not to be two halves of one problem.
+
+  It follows that the deferred option (d) from standby_investigation.txt -
+  "pair the replacement with an explicit retreat/withdraw for the released
+  unit" - is, on measurement, already happening, and doing better than the
+  explicit version would.
+
+THE ONE THING WORTH RECORDING FOR A SEPARATE DECISION - NOT IMPLEMENTED HERE
+  In all 4 non-enclosed releases, the single free cell that `_survival_move`
+  refused was `_idle_retreat_last_cell`, excluded by the anti-oscillation
+  guard at agents.py:882-883. That is the same C4 shape the idle-retreat
+  report named in its section 4.4 and deliberately left alone, alongside the
+  C3 leash case, with the evidenced proposal "suspend the leash and the
+  last_cell exclusion specifically when the unit's own cell is on fire". This
+  round adds four more instances to that file's evidence, seen from the
+  release side rather than the death side.
+
+  I am NOT implementing it and NOT proposing it as this round's fix. It lives
+  in the agents.py retreat logic that 62b4fbe just changed and that this round
+  is explicitly forbidden to reopen; it is a retreat-logic question, not an
+  unassign-inflow question; and doing it here would be exactly the "manufacture
+  a fix to have something to ship" the brief warns against. It is recorded so
+  that the next decision has the evidence in front of it.
+
+HONEST BOUNDS ON ALL OF THIS
+  * 8 releases and 7 deaths over 13 runs is a small sample and every count
+    above should be read as one. The two firmest results are the ones that are
+    NOT sampling results: the 9-of-9 no-op is a direct measurement of the
+    proposed mechanism, and "nothing can be done for an enclosed unit" is a
+    property of the model's action space, established by reading every write
+    site of `Fire.burning` / `Fire.fuel`.
+  * The -2 deaths under `abort` is the weakest number here and is reported as
+    weak: two divergences in a chaotic model. It is not used to claim aborting
+    is lethal, only that the proposal has a measured downside and no measured
+    upside.
+  * Only scenario D, winds east and south, 240 steps, was examined. The
+    route_blocked release population is small enough that another scenario
+    could show a different mix.
+
+ARTEFACTS
+  probe            outputs/_ui_probe.py         release-point instrumentation
+  analysis         outputs/_ui_analyze.py    -> outputs/_ui_analyze_out.txt
+  baseline check   outputs/_ui_basecheck.py     13/13 MATCH vs 62b4fbe
+  what-if          outputs/_ui_whatif.py        arms none / abort / retreat
+  what-if compare  outputs/_ui_wicompare.py  -> outputs/_ui_wicompare_out.txt
+  Part 1 data      outputs/_ui_p1_*.json        13 runs
+  what-if data     outputs/_ui_wi_*.json        2 + 8 + 8 seed-runs
+  runners          outputs/_ui_run_p1.sh, outputs/_ui_run_wi.sh
+================================================================================
