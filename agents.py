@@ -762,7 +762,24 @@ class Firefighter(mesa.Agent):
             return
 
         origin = getattr(self, "_idle_retreat_origin", None)
-        if origin is None:
+        if origin is None or (
+            not self.target_pos
+            and abs(cell[0] - origin[0]) + abs(cell[1] - origin[1])
+            > IDLE_RETREAT_MAX_CELLS
+        ):
+            # The leash below is measured from where the retreat began, and the
+            # scan only ever steps to cells within IDLE_RETREAT_MAX_CELLS of it.
+            # For an idle unit that scan is the only thing that moves it here,
+            # so standing further out than the leash allows proves something
+            # else did: a walk to a victim, an assigned one-step retreat, or an
+            # unassign that left it wherever it happened to be. The recorded
+            # origin then belongs to a manoeuvre that is over, and leashing to
+            # it tethers a stranded unit to a cell it left long ago. Anchor a
+            # fresh manoeuvre here instead. The stall flag goes with it: that
+            # verdict was reached through the old leash, so correcting the
+            # leash invalidates it. Assigned units are excluded because
+            # `_assigned_one_step_retreat` moves them without any leash test,
+            # so for them the same distance proves nothing.
             self._idle_retreat_origin = cell
             self._idle_retreat_steps = 0
             self._idle_retreat_stalled = False
@@ -770,8 +787,10 @@ class Firefighter(mesa.Agent):
             origin = cell
 
         if bool(getattr(self, "_idle_retreat_stalled", False)):
-            if self.target_pos and self._assigned_one_step_retreat(fire_cells):
+            if self.target_pos:
+                self._assigned_one_step_retreat(fire_cells)
                 return
+            self._revalidate_idle_retreat_stall(cell, origin, fire_cells)
             return
 
         steps = int(getattr(self, "_idle_retreat_steps", 0) or 0)
@@ -780,29 +799,9 @@ class Firefighter(mesa.Agent):
         current_risk = self._firefighter_cell_risk(cell)
         last_cell = getattr(self, "_idle_retreat_last_cell", None)
 
-        candidates: list[dict[str, object]] = []
-        for ncell in self._neighbor_cells():
-            if self._cell_contains_active_fire(ncell):
-                continue
-            if ncell == last_cell:
-                continue
-            from_origin = abs(ncell[0] - origin[0]) + abs(ncell[1] - origin[1])
-            if from_origin > IDLE_RETREAT_MAX_CELLS:
-                continue
-            risk = self._firefighter_cell_risk(ncell)
-            new_dist = self._min_fire_distance(ncell, fire_cells)
-            candidates.append(
-                {
-                    "cell": ncell,
-                    "risk": risk,
-                    "dist": new_dist,
-                    "improvement": new_dist - current_dist,
-                    "ideal": self._cell_is_ideal_idle_standoff(ncell, fire_cells),
-                    "required": self._cell_meets_required_idle_safety(
-                        ncell, fire_cells
-                    ),
-                }
-            )
+        candidates = self._retreat_candidates(
+            cell, origin, last_cell, fire_cells, current_dist
+        )
 
         if not candidates:
             if self.target_pos and self._assigned_one_step_retreat(fire_cells):
@@ -812,38 +811,16 @@ class Firefighter(mesa.Agent):
 
         chosen: dict[str, object] | None = None
         if not at_cap:
-            ideal_reachable = [c for c in candidates if c["ideal"]]
-            if ideal_reachable:
+            chosen = self._pick_improving_retreat(
+                candidates, current_dist, current_risk
+            )
+            if chosen is None:
                 chosen = max(
-                    ideal_reachable,
-                    key=lambda c: (c["dist"], -int(c["risk"])),
+                    candidates,
+                    key=lambda c: (int(c["dist"]), -int(c["risk"])),
                 )
-            else:
-                improving = [
-                    c
-                    for c in candidates
-                    if int(c["improvement"]) > 0
-                    or (
-                        int(c["risk"]) < current_risk
-                        and int(c["dist"]) >= current_dist
-                    )
-                ]
-                if improving:
-                    chosen = max(
-                        improving,
-                        key=lambda c: (
-                            int(c["improvement"]),
-                            int(c["dist"]),
-                            -int(c["risk"]),
-                        ),
-                    )
-                else:
-                    chosen = max(
-                        candidates,
-                        key=lambda c: (int(c["dist"]), -int(c["risk"])),
-                    )
-                    if not self.target_pos:
-                        self._idle_retreat_stalled = True
+                if not self.target_pos:
+                    self._idle_retreat_stalled = True
         else:
             required_reachable = [c for c in candidates if c["required"]]
             if required_reachable:
@@ -884,6 +861,131 @@ class Firefighter(mesa.Agent):
             (at_cap or self._idle_retreat_stalled) and not self.target_pos
         ):
             self._reset_idle_retreat_state()
+
+    def _retreat_candidates(
+        self,
+        cell: tuple[int, int],
+        origin: tuple[int, int],
+        last_cell: tuple[int, int] | None,
+        fire_cells: set[tuple[int, int]],
+        current_dist: int,
+    ) -> list[dict[str, object]]:
+        """Neighbour cells that survive the retreat filter chain.
+
+        One definition, shared by the normal scan and by
+        `_revalidate_idle_retreat_stall`, so the two can never drift apart
+        about what "nowhere to go" means.
+        """
+        candidates: list[dict[str, object]] = []
+        for ncell in self._neighbor_cells():
+            if self._cell_contains_active_fire(ncell):
+                continue
+            if ncell == last_cell:
+                continue
+            from_origin = abs(ncell[0] - origin[0]) + abs(ncell[1] - origin[1])
+            if from_origin > IDLE_RETREAT_MAX_CELLS:
+                continue
+            risk = self._firefighter_cell_risk(ncell)
+            new_dist = self._min_fire_distance(ncell, fire_cells)
+            candidates.append(
+                {
+                    "cell": ncell,
+                    "risk": risk,
+                    "dist": new_dist,
+                    "improvement": new_dist - current_dist,
+                    "ideal": self._cell_is_ideal_idle_standoff(ncell, fire_cells),
+                    "required": self._cell_meets_required_idle_safety(
+                        ncell, fire_cells
+                    ),
+                }
+            )
+        return candidates
+
+    def _pick_improving_retreat(
+        self,
+        candidates: list[dict[str, object]],
+        current_dist: int,
+        current_risk: int,
+    ) -> dict[str, object] | None:
+        """Best candidate that genuinely beats standing still, else None.
+
+        An ideal standoff ends the retreat outright, so it wins even when it
+        is no further from the fire; otherwise a step must gain fire distance,
+        or lower risk without giving distance up. The "take the least-bad
+        neighbour anyway" fallback is deliberately not here: repeating that
+        step is what the stall latch legitimately exists to stop, so the
+        normal scan keeps it and the revalidation pass does not.
+        """
+        ideal_reachable = [c for c in candidates if c["ideal"]]
+        if ideal_reachable:
+            return max(
+                ideal_reachable,
+                key=lambda c: (c["dist"], -int(c["risk"])),
+            )
+        improving = [
+            c
+            for c in candidates
+            if int(c["improvement"]) > 0
+            or (
+                int(c["risk"]) < current_risk
+                and int(c["dist"]) >= current_dist
+            )
+        ]
+        if improving:
+            return max(
+                improving,
+                key=lambda c: (
+                    int(c["improvement"]),
+                    int(c["dist"]),
+                    -int(c["risk"]),
+                ),
+            )
+        return None
+
+    def _revalidate_idle_retreat_stall(
+        self,
+        cell: tuple[int, int],
+        origin: tuple[int, int],
+        fire_cells: set[tuple[int, int]],
+    ) -> None:
+        """Re-test a stalled idle unit's retreat instead of trusting the flag.
+
+        `_idle_retreat_stalled` only records that on one earlier step nothing
+        nearby was worth stepping to. Read as permanent it is fatal: for an
+        idle unit the check in `_survival_move` used to return before the
+        candidate scan, and the only resets that could clear the flag - the
+        ideal-standoff test at the top of `_survival_move`, and the standby
+        branch of `advance` - both require the unit to already be safe, which
+        is the exact complement of the condition that calls this. So while
+        fire stayed near, a stalled idle unit never looked again even as the
+        fire moved and its neighbourhood changed.
+
+        Re-run the same filter chain and move only on a genuine improvement.
+        A neighbour that is merely reachable is still refused, so when nothing
+        has actually changed the unit holds its cell and stays latched exactly
+        as before.
+        """
+        last_cell = getattr(self, "_idle_retreat_last_cell", None)
+        current_dist = self._min_fire_distance(cell, fire_cells)
+        current_risk = self._firefighter_cell_risk(cell)
+        chosen = self._pick_improving_retreat(
+            self._retreat_candidates(
+                cell, origin, last_cell, fire_cells, current_dist
+            ),
+            current_dist,
+            current_risk,
+        )
+        if chosen is None:
+            return
+        steps = int(getattr(self, "_idle_retreat_steps", 0) or 0)
+        self._idle_retreat_last_cell = cell
+        self.model.grid.move_agent(self, chosen["cell"])
+        self._idle_retreat_steps = steps + 1
+        # Only the stall flag is cleared. `_reset_idle_retreat_state` would
+        # also drop `_idle_retreat_last_cell`, the anti-oscillation memory, on
+        # the one path being added here. The existing reset sites still fire
+        # normally once the unit is genuinely safe.
+        self._idle_retreat_stalled = False
 
     def _assigned_one_step_retreat(
         self, fire_cells: set[tuple[int, int]] | None = None,

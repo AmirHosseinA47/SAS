@@ -1,0 +1,480 @@
+================================================================================
+IDLE-RETREAT LATCH AND LEASH - PART 3 (IMPLEMENTATION) AND PART 4 (VALIDATION)
+================================================================================
+
+VERDICT: ALL GATE ITEMS PASS.
+
+  13-run sample, seed-matched   firefighter_deaths  13 -> 7   (-6)
+                                rescued             29 -> 30  (+1)
+                                victims dead        22 -> 22  (+0)
+  No seed regressed on rescued. No seed increased firefighter_deaths.
+  There is no tradeoff to report on this sample: every changed number moved
+  in the good direction.
+
+  Direct evidence the fix does what it was built to do:
+      latched idle calls that ESCAPED     0 -> 25
+      of the units that escaped, alive at the end of the run   7
+      of the units that escaped, died later                    3
+      deaths where a latched unit had an improving cell and
+        did not take it (the defect itself)          9 -> 0
+
+  RESIDUAL, REPORTED SEPARATELY AND NOT FOLDED INTO THE HEADLINE (section 4):
+      5 of the 7 remaining deaths are units that were latched and had NOTHING
+      better to move to. Three were genuinely enclosed. TWO were blocked by a
+      filter this round deliberately left in place - one by the leash at its
+      legitimate limit, one by the anti-oscillation guard. Both are analysed
+      individually below, because a bucket count would hide them.
+
+  Route_blocked gate (70e1b33): ALL ITEMS PASS, and east/333 - the case that
+  round was built around - is BIT-IDENTICAL. Recoveries went 3 -> 6.
+
+  Tests: 8 failed / 427 passed, failure set identical name-for-name.
+
+  HEAD 70e1b33, branch claude/position-rename-and-hazard-revalidation.
+  ONE FILE CHANGED: agents.py, +157 / -55. wildfire_model.py untouched, as
+  agreed. Line endings preserved (1177 CRLF, 0 bare-LF).
+
+
+================================================================================
+1. WHAT WAS IMPLEMENTED
+================================================================================
+Exactly the design confirmed in outputs/idleretreat_part1.txt, applied by
+outputs/_ir_patch.py (idempotent, CRLF-preserving, --check/--apply/--revert).
+
+  4a  THE LATCH. agents.py:772-775, the unconditional early return, becomes:
+
+        if bool(getattr(self, "_idle_retreat_stalled", False)):
+            if self.target_pos:
+                self._assigned_one_step_retreat(fire_cells)
+                return
+            self._revalidate_idle_retreat_stall(cell, origin, fire_cells)
+            return
+
+      Assigned units are behaviourally unchanged (the original
+      `if target_pos and _assigned_one_step_retreat(): return` / `return`
+      is the same statement, restructured only to give the idle arm a body).
+      `_revalidate_idle_retreat_stall` re-runs the SAME filter chain and moves
+      only on a genuine improvement, then clears the stall flag alone.
+
+  4b  THE LEASH. agents.py:764-770 gains a second anchoring condition:
+
+        if origin is None or (
+            not self.target_pos
+            and abs(cell[0]-origin[0]) + abs(cell[1]-origin[1])
+            > IDLE_RETREAT_MAX_CELLS
+        ):
+
+      For an idle unit the leashed scan is the only mover inside
+      `_survival_move`, so d > 6 proves an external mechanism moved it and the
+      origin belongs to a finished manoeuvre. The `not self.target_pos` guard
+      is load-bearing: `_assigned_one_step_retreat` moves assigned units with
+      no leash test, so for them d > 6 proves nothing.
+
+  THREE NEW METHODS, inserted before `_assigned_one_step_retreat`:
+      _retreat_candidates          the filter chain, extracted verbatim and
+                                   now shared by the normal scan and the
+                                   revalidation pass
+      _pick_improving_retreat      tiers 1-2 of the existing choice (ideal
+                                   standoff, else strictly improving),
+                                   extracted verbatim. Tier 3 - the
+                                   take-the-least-bad-cell-anyway fallback -
+                                   is deliberately NOT in the helper; the
+                                   normal path keeps it, revalidation does not
+      _revalidate_idle_retreat_stall   the recheck
+
+  NOT TOUCHED, as scoped: `_move_toward`, route_blocked, rescue_planner.py,
+  exit_target selection, `_recycle_firefighter_after_exit`, and every
+  assigned-unit path.
+
+  THE PATCH FAITHFULLY IMPLEMENTS WHAT PART 2 VALIDATED. The Part 2 what-if
+  probe ran the same logic as a monkeypatch. Running the PATCHED SOURCE on the
+  same two seeds reproduces those trajectories exactly:
+      D/east  seed 101   480 trace rows compared, 0 differing
+      D/south seed 101   480 trace rows compared, 0 differing
+  So the Part 2 evidence transfers to the shipped code without reinterpretation.
+
+
+================================================================================
+2. THE 13-RUN SEED-MATCHED SAMPLE
+================================================================================
+Same combos, seeds, params and harness as the pre-fix baseline
+(D, 240 steps, FIRE_SPREAD_MULTIPLIER 0.75, BATCH_SIZE 300,
+PROBABILITY_MAP False, counts from BUILTIN_SCENARIOS["D"]). Pre-fix data is
+outputs/_ir_p2_BASE_*.json, post-fix outputs/_ir_p3_POST_*.json; the two
+probes were shown trajectory-identical in Part 1, so the instrument does not
+move between arms.
+
+  D/east  roles=default, 3 seeds
+    seed      rescued        victims dead      ff_deaths
+    101       2 ->  2         2 ->  2          2 ->  1   (-1)
+    202       3 ->  3         1 ->  1          1 ->  1
+    303       2 ->  2         2 ->  2          2 ->  0   (-2)
+    TOTAL     7 ->  7         5 ->  5          5 ->  2   (-3)
+
+  D/east  roles=half, 5 seeds
+    101       2 ->  2         2 ->  2          1 ->  1
+    202       2 ->  2         2 ->  2          1 ->  0   (-1)
+    303       1 ->  1         3 ->  3          1 ->  0   (-1)
+    404       2 ->  2         2 ->  2          1 ->  1
+    505       2 ->  2         2 ->  2          1 ->  1
+    TOTAL     9 ->  9        11 -> 11          5 ->  3   (-2)
+
+  D/south roles=half, 5 seeds
+    101       2 ->  3  (+1)   1 ->  1          2 ->  1   (-1)
+    202       3 ->  3         1 ->  1          0 ->  0
+    303       3 ->  3         1 ->  1          0 ->  0
+    404       2 ->  2         2 ->  2          1 ->  1
+    505       3 ->  3         1 ->  1          0 ->  0
+    TOTAL    13 -> 14  (+1)   6 ->  6          3 ->  2   (-1)
+
+  GRAND TOTAL  rescued 29 -> 30 (+1)   victims dead 22 -> 22 (+0)
+               firefighter_deaths 13 -> 7 (-6)
+
+  ON THE TRADEOFF THE GATE ASKED ABOUT. The gate allows for deaths rising if
+  rescues rise with them - "trying and failing is different from never
+  trying". That allowance is not needed here. firefighter_deaths fell on five
+  seeds and rose on none; rescued rose on one seed and fell on none; victim
+  deaths are unchanged on every seed. The one rescued gain (D/south 101) is a
+  second-order effect of exactly the kind the investigation predicted: the
+  firefighter saved at step 111 went on to complete a rescue, enlarging the
+  dispatch pool.
+
+2.1  LATCH BEHAVIOUR, ALL 13 RUNS POOLED
+-----------------------------------------
+                                                    pre-fix   post-fix
+    idle _survival_move calls                          282        355
+      already latched on entry                          92         97
+        ESCAPED (latched and still moved)                0         25
+        stayed put                                      92         72
+          though a free cell existed                    82         43
+          though a strictly BETTER free cell existed    46         12
+    firefighter deaths                                  13          7
+      latched at the moment of death                    13          7
+
+  The pre-fix column is the defect in one line: 92 of 92 latched calls did
+  nothing, 82 with somewhere free to go. Post-fix the population still latches
+  (97 calls - the flag is still SET as often, which is correct, since the
+  set-sites are unchanged) but it is no longer a one-way door: 25 of those
+  calls now end in a move.
+
+  THE 12 REMAINING "A STRICTLY BETTER FREE CELL EXISTED AND IT STAYED" CASES
+  WERE EACH CHECKED, because at face value they look like the defect
+  surviving. None is:
+      8   the better free cell WAS `last_cell` - the anti-oscillation guard
+          declined it, by design
+      3   the only free cell was `last_cell`
+      1   the leash excluded it (this is the C3 death, section 4.2)
+      0   a cell that survived the filter chain was better and was refused
+  "strictly better free cell exists" is computed over raw neighbours ignoring
+  the filters; the fix operates on filtered candidates. So all 12 are the
+  guards doing their job, and the count that would indicate a bug is zero.
+
+
+================================================================================
+3. ESCAPES - DID THEY ESCAPE, OR ONLY MOVE?
+================================================================================
+The investigation's own standard: judge on whether min-fire-distance actually
+improved, not on whether the unit moved. 25 escape events across 10 units.
+
+  ESCAPED AND ALIVE AT THE END OF THE RUN - 7 units
+    combo/seed/ff        escapes  steps      dist at 1st   min-fire-dist t..t+10
+    E/d 101 ff_unit_1        1    177        1 -> 2        2,3,4,3,4,4,5,5,5,6,6
+    E/d 303 ff_unit_0        4    63..75     0 -> 1        1,1,1,1,1,1,1,1,1,1,1
+    E/d 303 ff_unit_1        2    191..198   1 -> 2        2,1,1,2,1,1,1,2,3,2,3
+    E/h 101 ff_unit_1        1    211        2 -> 3        3,3,4,4,4,4,4,4,7,7,7
+    E/h 202 ff_unit_0        4    60..75     0 -> 1        1,1,1,1,1,2,3,2,3,1,1
+    E/h 303 ff_unit_0        4    63..75     0 -> 1        1,1,1,1,1,1,1,1,1,1,1
+    S/h 101 ff_unit_0        2    103..104   2 -> 2        2,3,3,4,4,3,4,4,4,4,4
+
+  ESCAPED BUT DIED LATER - 3 units
+    E/d 202 ff_unit_0        3    216..222   0 -> 1        1,1,1,1,1,1,1,1,1,0,0
+    E/h 404 ff_unit_0        1    30         0 -> 1        1,1,1,0,0,0,0,0,0,0,0
+    E/h 505 ff_unit_0        3    51..57     0 -> 1        1,1,1,1,1,1,1,1,1,1,1
+
+  HONEST READING OF THIS TABLE. Three of the seven survivors show a clear,
+  sustained distance gain (to 4-7 cells). The other four get OUT of the
+  burning cell and then hug the fire at distance 1 for the rest of the run
+  without being caught. Both are survival, but only the first is "escape" in
+  the strong sense; the second is closer to "kept its head above water". Said
+  plainly: the fix reliably gets units off a burning cell, and less reliably
+  gets them somewhere genuinely safe. That distinction is the same one the
+  investigation drew when it warned the fix was necessary but not sufficient.
+
+  The three that escaped and died later are the clearest illustration: each
+  stepped out of the fire one or more times and was caught anyway. They bought
+  9, 3 and 12 steps respectively. That is the reactive-and-greedy limit of
+  retreat, not a failure of the recheck.
+
+
+================================================================================
+4. THE RESIDUAL - REPORTED SEPARATELY, AS REQUESTED
+================================================================================
+Every death is placed in exactly one bucket, pre and post, by
+outputs/_ir_residual.py. The pre-fix column is a control: it should be, and
+is, dominated by the defect.
+
+    bucket                                                    pre    post
+    A   not latched at death - outside this fix's scope         2       2
+    B   latched, TOOK a better cell, died anyway (outrun)       0       0
+    C1  latched, enclosed - every neighbour burning             1       3
+    C2  latched, free cell(s) but none improving - DECLINED     0       0
+    C3  latched, free cell(s) excluded by the LEASH             1       1
+    C4  latched, only free cell was last_cell                   0       1
+    D   latched, improving cell existed, DID NOT MOVE  <-BUG    9       0
+    ------------------------------------------------------------------
+    TOTAL DEATHS                                               13       7
+
+  BUCKET D IS THE DEFECT, AND IT IS GONE: 9 -> 0. Nine of thirteen pre-fix
+  deaths were a latched unit standing next to an improving cell it never
+  looked at. Post-fix there are none.
+
+  THE RESIDUAL IS 5 DEATHS (C1+C2+C3+C4), and it must not be read as a single
+  number, because the four sub-buckets mean different things:
+
+4.1  C1 - THREE DEATHS, GENUINELY ENCLOSED. NOTHING COULD BE DONE.
+       E/d 101 ff_unit_0  step  42  (41,41)   0 free neighbours
+       E/h 404 ff_unit_0  step  33  (31,38)   0 free neighbours
+       S/h 101 ff_unit_1  step 135  (1,0)     0 free neighbours
+     Every in-bounds neighbour was burning at the lethal step. No candidate
+     filter, no latch and no design choice is implicated. This is the
+     irreducible floor the investigation's synthetic labs predicted.
+     C1 rose from 1 to 3, which is not a regression: units that used to die
+     frozen with an escape available now die after moving, in places where
+     they really are surrounded. The composition of the residual shifted
+     toward "nothing could be done", which is the intended direction.
+
+4.2  C3 - ONE DEATH, KILLED BY THE LEASH AT ITS LEGITIMATE LIMIT.
+     E/d seed 202 ff_unit_0, died step 225 at (34,49).
+     This is EXACTLY the case predicted in the design as "accepted residual 2"
+     and explicitly instrumented for rather than assumed away. The trace:
+
+       step  pos       origin    d   free cand xlsh cur_d  moved
+        210  (29,49)   (28,49)   1     2    1    0    1     yes
+        216  (30,49)   (28,49)   2     2    2    0    0     yes   <- out of fire
+        219  (32,49)   (28,49)   4     1    1    0    0     yes   <- out of fire
+        222  (33,49)   (28,49)   5     2    2    0    0     yes   <- out of fire
+        225  (34,49)   (28,49)   6     1    0    1    0     NO    <- burns
+
+     The origin is NOT stale. The unit walked d = 1,2,3,4,5,6 by its own legal
+     leashed retreat moves along the x=49 wall, escaping the fire three times.
+     At step 225 it stands ON fire at exactly d = 6, its single free neighbour
+     is at d = 7, and the leash refuses it. The 4b re-anchor correctly did not
+     fire, because the origin was never invalid - the leash was working as
+     designed, and it killed the unit.
+     Note the fix still bought this unit 9 steps and three escapes: pre-fix it
+     died at step 216 at (30,49).
+
+4.3  C4 - ONE DEATH, KILLED BY THE ANTI-OSCILLATION GUARD.
+     E/h seed 505 ff_unit_0, died step 63 at (41,22).
+     Pre-fix this unit died at step 51 at (45,23). Post-fix the recheck walked
+     it (45,23) -> (45,22) -> (44,22) -> (43,22) -> (42,22) -> (41,22), out of
+     the fire twice on the way. At step 63 it stands ON fire with exactly one
+     free neighbour - (42,22), the cell it came from at step 57, which is
+     `_idle_retreat_last_cell`. The last_cell filter excludes it, the
+     candidate set is empty, and the unit burns.
+     The anti-oscillation guard that this round deliberately preserved is what
+     closed the last door. The fix bought it 12 steps.
+
+4.4  WHAT C3 AND C4 HAVE IN COMMON, AND WHAT I AM NOT DOING ABOUT IT
+     Both are the same shape: a filter that exists for a NON-EMERGENCY purpose
+     - bound the excursion, prevent ping-pong - refusing the last available
+     step off a BURNING cell. In both cases cur_dist was 0.
+
+     There is an obvious and principled follow-up: when the unit's own cell is
+     on fire (cur_dist == 0), neither containment nor anti-oscillation is the
+     operative concern, and both the leash and the last_cell exclusion could
+     be suspended for that one step. On this sample that would address 2 of
+     the 7 remaining deaths.
+
+     I HAVE NOT IMPLEMENTED IT. It is a third change, outside the two pieces
+     confirmed for this round, and implementing it now would be tuning the
+     code to improve this round's own numbers after seeing them. It is
+     recorded here as an evidenced proposal with two concrete cases attached,
+     for a separate decision.
+
+4.5  BUCKET A - TWO DEATHS OUTSIDE THIS FIX'S SCOPE, UNCHANGED
+     E/h 101 ff_unit_0 step 30 (44,40) and S/h 404 ff_unit_1 step 57 (3,20)
+     were not latched at death; the first dies while `moving_to_victim`, i.e.
+     an assigned in-transit death on a path this round does not touch. Both
+     are identical pre and post.
+
+
+================================================================================
+5. OSCILLATION
+================================================================================
+The gate requires no new oscillation, and the investigation warned that a
+latch removal can look like a fix while the unit merely ping-pongs. Measured
+three ways (outputs/_ir_osc.py):
+
+                                                       pre-fix   post-fix
+    survival-move moves (all units)                       285        372
+    move-pair reversals, ANY step gap                      22         24
+    TIGHT reversals (consecutive steps - real ping-pong)    3          5
+    reversals where either move came from a LATCHED state   0          0
+    DIRECT last_cell violations                            n/a         0
+
+  THE DECISIVE ROW IS THE LAST ONE. The post-fix probe records
+  `_idle_retreat_last_cell` before every call, so a violation is detected
+  directly rather than inferred: a unit moving onto the cell the guard
+  forbids. There are ZERO across all 13 runs. The anti-oscillation filter is
+  intact.
+
+  THE SECOND-DECISIVE ROW IS THE ONE ABOVE IT. Zero reversals originate from
+  the path this round adds. All five tight reversals have
+  `latched_pre = (False, False)` - both moves came from the existing unlatched
+  normal path.
+
+  ON THE +2. Tight reversals went 3 -> 5. Both new ones are on the untouched
+  path, and their mechanism is the PRE-EXISTING hole documented in the design
+  (agents.py:883-886: a tier-3 move landing on a required-safe cell calls
+  `_reset_idle_retreat_state()`, which clears `last_cell` and permits a
+  reversal on the next step). The fix produces 87 more moves overall, which
+  gives that pre-existing hole more opportunities to fire. Reported as a real
+  +2, attributed to existing code rather than waved away, and not fixed here
+  because it is outside the agreed scope.
+
+  Also unchanged and worth restating: `_assigned_one_step_retreat` has no
+  anti-oscillation term at all and is untouched this round.
+
+
+================================================================================
+6. THE 70e1b33 ROUTE_BLOCKED GATE, RE-RUN
+================================================================================
+Per the investigation's explicit warning, this was re-run rather than assumed.
+Same harness that produced its baseline (_rblatch_campaign2.py), same 18 runs,
+same params; the 13 east seeds were sharded across processes for wall-clock
+only, and the merge verifies the shard union equals the baseline seed set
+exactly with no duplicates.
+
+  D/east, 13 seeds     rescued 30 -> 30    victims dead 19 -> 19   ff 12 -> 10
+  D/south, 5 seeds     rescued 13 -> 14    victims dead  6 ->  6   ff  3 ->  2
+  ALL 18 RUNS          rescued 43 -> 44    victims dead 25 -> 25   ff 15 -> 12
+  seeds bit-identical on all three metrics: 15 of 18
+
+  GATE ITEMS, against outputs/rblatch_report.txt section 2:
+    [PASS] rescued does not decrease on any seed        - zero regressions
+    [PASS] recovery pass still recovers units           - recoveries 3 -> 6
+    [PASS] no unit left latched as route_blocked at end - 0 -> 0
+    [PASS] ff_deaths do not increase                    - 15 -> 12, none up
+    [PASS] the east/333 case still behaves              - see below
+
+  EAST/333 - THE CASE THE ROUTE_BLOCKED ROUND WAS BUILT AROUND - IS
+  BIT-IDENTICAL:
+                            70e1b33        + idle-retreat fix
+      rescued / dead / ff    2 / 2 / 2        2 / 2 / 2
+      route_blocked firings  ff_unit_0 @42, ff_unit_1 @45, ff_unit_1 @153
+                             (identical)
+      recovery               ff_unit_1 @45 at [1,25] -> en_route
+                             (identical)
+
+  THE INTERACTION IS REAL AND IT IS POSITIVE. Recoveries doubled, 3 -> 6, and
+  `reval_calls_with_blocked_unit` went 33 -> 66 on east. This is the coupling
+  predicted in the design: `_revalidate_route_blocked_firefighters` BFSes from
+  the unit's CURRENT position, and the pass runs AFTER movement in the same
+  step, so units that the recheck moved present different connectivity. Three
+  units recovered that previously did not (east 202 ff_unit_0 @63, east 303
+  ff_unit_0 @75, east 808 ff_unit_1 @156) - all of them units that are alive
+  to be revalidated only because they escaped. The "trapped" guard became more
+  permissive exactly as predicted, never less.
+
+  On south, route_blocked firings fell 2 -> 1 and
+  `reval_calls_with_blocked_unit` 8 -> 0: on seed 101 the firefighter that
+  used to be stranded and blocked now escapes and is dispatched instead.
+
+
+================================================================================
+7. TEST SUITE
+================================================================================
+  pre-fix   8 failed, 427 passed, 5 warnings in 2065.84s
+  post-fix  8 failed, 427 passed, 5 warnings in 2123.84s
+
+  FAILURE SET IDENTICAL NAME FOR NAME. Diffed as sorted sets: zero NEW
+  failures, zero newly-passing. All eight are pre-existing:
+
+    test_behavior_regression.py::test_descriptive_next_action_uses_target_position
+    test_dashboard_panel.py::test_dashboard_panel_render_returns_string
+    test_firefighter_dispatch_replacement.py::
+      test_no_replacement_available_marks_victim_unreachable_once
+    test_rescue_planner_authority.py::
+      test_no_firefighter_planner_delay_or_unreachable
+    test_uav_sector_assignment.py::
+      test_fire_tracker_still_overridden_by_search_mode_fail_safe
+    test_uav_sector_assignment.py::test_fire_tracker_uavs_receive_different_target_sets
+    test_wind_aware_trajectory_regression.py::
+      test_north_vs_south_trajectories_diverge_over_40_steps
+    test_wind_aware_victim_search.py::
+      test_victim_search_wind_aware_action_when_downwind_exists
+
+  Raw: outputs/_ir_pytest_baseline.txt, outputs/_ir_pytest_fixed.txt
+
+
+================================================================================
+8. GATE SUMMARY
+================================================================================
+  [PASS] latched units demonstrably escape when escape was available
+         -> 25 escape events, 0 pre-fix. 7 units escaped and survived to the
+            end of the run. The defect bucket (latched + improving cell +
+            did not move) went 9 -> 0.
+  [PASS] no new oscillation pattern introduced
+         -> 0 direct last_cell violations; 0 reversals originating from the
+            new path. The +2 tight reversals are both on the untouched
+            unlatched path, via a pre-existing reset, and are reported as such.
+  [PASS] firefighter_deaths do not increase without a rescued gain
+         -> deaths 13 -> 7 and rescued 29 -> 30. The allowance was not needed:
+            no seed got worse on any metric.
+  [PASS] route_blocked recovery pass still passes its own prior gate
+         -> all items pass; east/333 bit-identical; recoveries 3 -> 6.
+  [PASS] no NEW test failures
+         -> 8/427 both sides, failure set identical name for name.
+
+  NOTHING WAS TUNED TO FORCE A PASS. No constant was adjusted, no threshold
+  moved, and the two residual deaths that a third change would have addressed
+  (4.4) were deliberately left in place and reported rather than fixed after
+  the fact.
+
+
+================================================================================
+9. HOW MUCH OF THIS IS THE FIX, AND HOW MUCH IS LUCK
+================================================================================
+Stated plainly, because a -6 on 13 runs is a small sample.
+
+  * The MECHANISM is certain, not statistical. Bucket D going 9 -> 0 is not a
+    sampling result: it is the direct measurement that no latched unit with an
+    improving cell now fails to take it. The pre-fix control shows the same
+    classifier finding 9 such deaths.
+  * The MAGNITUDE is a 13-run estimate and should not be quoted precisely.
+    -6 deaths on 13 runs, +1 rescued on 13 runs.
+  * PART 1 ALREADY PREDICTED THE SPLIT that this round confirms. Ten fresh
+    seeds showed the latch finding replicating (78% vs 77%) while the
+    leash-staleness finding did not appear at all. In this post-fix sample,
+    4b's re-anchor is again a minor contributor: only one of the 25 escapes
+    (D/south 101 step 103) depended on it, and one death (4.2) shows the leash
+    binding legitimately. 4a is doing most of the work, exactly as Part 1 said
+    it would.
+  * WHAT THE FIX CANNOT DO remains what the investigation said it could not:
+    three of the seven remaining deaths are units with every neighbour
+    burning. Against an advancing front, a reactive greedy retreat gets
+    outrun. Option (d) - not stranding units next to fire in the first place -
+    is still the larger lever, and this round's numbers do not change that.
+
+
+================================================================================
+ARTEFACTS
+================================================================================
+  source change      agents.py only, +157 / -55
+  patch script       outputs/_ir_patch.py  (--check / --apply / --revert)
+  design + Part 1    outputs/idleretreat_part1.txt
+  pre-fix data       outputs/_ir_p2_BASE_*.json      (13 runs)
+  post-fix data      outputs/_ir_p3_POST_*.json      (13 runs)
+  fresh-seed data    outputs/_ir_p2_FRESH_*.json     (10 runs, Part 1)
+  route_blocked      outputs/_rblatch_camp2_irfix*_D_*.json (18 runs, 4 shards)
+  tests              outputs/_ir_pytest_baseline.txt, _ir_pytest_fixed.txt
+  analysis           outputs/_ir_compare.py     seed-matched outcomes + latch
+                     outputs/_ir_residual.py    per-death bucket classification
+                     outputs/_ir_osc.py         oscillation audit
+                     outputs/_ir_rbmerge.py     route_blocked shard merge+gate
+                     outputs/_ir_shape.py       fresh-seed shape check
+                     outputs/_ir_stale.py       origin-staleness attribution
+                     outputs/_ir_invariant.py   leash invariant test
+                     outputs/_ir_whatif.py      the Part 2 what-if probe
+================================================================================

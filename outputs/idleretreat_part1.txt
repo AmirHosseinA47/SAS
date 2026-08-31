@@ -1,0 +1,1221 @@
+================================================================================
+IDLE-RETREAT LATCH AND LEASH - PART 1 (RE-VERIFICATION) AND PART 2 (DESIGN)
+No production code changed. agents.py and wildfire_model.py are byte-identical
+to HEAD; `git status` is clean apart from new files under outputs/.
+================================================================================
+
+SUMMARY
+-------
+  PART 1. The brief's description of `_survival_move` is ACCURATE. Three
+  refinements are recorded (1.1) - the latch is usually set by a call that DID
+  move, there are five `_reset_idle_retreat_state()` call sites rather than
+  two (all three extra ones sit below the early return, so the conclusion is
+  unaffected), and two of the eight latch-set sites are unreachable. The
+  8-write-site claim and the no-external-reset claim both hold; a THIRD
+  origin-drift source the investigation did not name was found
+  (`_assigned_one_step_retreat`, agents.py:888-916), and it turns out to be
+  load-bearing for the fix.
+
+  The investigation's 13-run measurement was re-run here with a re-derived
+  harness and reproduces EXACTLY, number for number, including the 77%
+  headline (1.3a).
+
+  TEN FRESH SEEDS SPLIT THE TWO FINDINGS, AND THIS IS THE MOST IMPORTANT
+  RESULT IN PART 1 (1.3b):
+    * the LATCH finding replicates almost exactly - 7 of 9 deaths (78%) burned
+      while latched with a free escape cell, against 10 of 13 (77%); and
+      latched idle calls did nothing 41/41 (100%) against 92/92 (100%);
+    * the LEASH-STALENESS finding does NOT replicate - ZERO idle calls in the
+      fresh sample had a stale origin, and zero of its zero-candidate verdicts
+      were leash-caused, against 17/17 in the reference sample.
+  So 4a is carried by both samples; 4b's frequency is seed-dependent. 4b is
+  still correct and is a no-op when the condition is absent, but it must not
+  be sold as a general win, and Part 4 should be read expecting 4a to do most
+  of the visible work.
+
+  ONE NEW LOAD-BEARING MEASUREMENT: all 17 of the leash-caused zero-candidate
+  verdicts on idle units in the reference sample have a PROVABLY STALE origin
+  (1.4). That is what makes the leash fix precise rather than heuristic.
+
+  PART 2. Two separable changes, in agents.py ONLY:
+    4a  the latched idle path re-runs the SAME filter chain and moves only on
+        a genuine improvement (an ideal standoff, or a strictly better step),
+        staying put and staying latched otherwise - which preserves the
+        anti-drift intent the latch actually has (2.0, 2.1);
+    4b  a provably stale `_idle_retreat_origin` is re-anchored, for IDLE units
+        only, using the negation of an invariant the code itself maintains
+        (2.4).
+  The brief pre-authorised editing wildfire_model.py for 4b. That expansion is
+  DECLINED, with reasons: the chosen design covers strictly more cases than
+  the offered one and stays in the file that owns the field.
+
+  THE WHAT-IF CHECK EARNED ITS KEEP. It refuted the first form of the leash
+  invariant on recorded data before any code was written, which is what forces
+  the `not self.target_pos` guard on the re-anchor (2.4, 2.6.1) - and the
+  fresh sample then independently vindicated that guard, since all seven of
+  its d>6 calls are assigned units the guard correctly excludes.
+
+  Applied on the two hardest cases in the sample: D/south seed 101 goes
+  2 deaths -> 1, with the saved unit's min-fire-distance rising from 2 to a
+  sustained 3-4; D/east seed 101 saves a unit stranded by a 40-cell stale
+  leash (distance 2 -> 7) while its unrelated death is unchanged.
+
+  SEPARABILITY IS DEMONSTRATED, NOT ASSERTED (2.6.5b). Each half was run alone
+  on D/south 101: 4a alone leaves the unit dead (the stale leash empties its
+  candidate set), 4b alone gets it one move and then it freezes on the early
+  return, and only both together save it.
+
+  AND THE REFACTOR IS PROVED NEUTRAL (2.6.5c): with both pieces disabled, the
+  restructured `_survival_move` reproduces the stock run with ZERO differing
+  rows across the full 480-row firefighter trace. Every difference observed
+  anywhere is attributable to 4a or 4b.
+
+  HONEST LIMITS, stated up front. On D/south 101 the second firefighter still
+  dies - cornered with one free neighbour and no improving move. That is the
+  "necessary but not sufficient" case the investigation warned about, and it
+  appeared on the very first seed tested. The fix should be judged on "did it
+  escape when escape was possible", not on zero deaths.
+
+  agents.py IS UNCHANGED. The patch is written but NOT APPLIED
+  (outputs/_ir_patch.py); it has been dry-run against a copy, which parses,
+  imports, resolves, and preserves CRLF exactly. Awaiting confirmation before
+  Part 3.
+
+
+PROVENANCE
+----------
+  branch  claude/position-rename-and-hazard-revalidation
+  HEAD    70e1b33  "route_blocked consumer latch: fix, gate passes, latch
+                    category now empty"
+  tree    clean at start of work (verified before anything else was done)
+  python  3.10.11  (E:\Projects\SAS\.venv)
+  mesa    1.2.1
+
+  SOURCE INVESTIGATION. The brief cites outputs/standby_investigation.txt.
+  That file is NOT in this worktree's outputs/. It was located at
+      .claude/worktrees/route-blocked-fire-suppression-57e3a2/outputs/
+        standby_investigation.txt
+  and read in full (705 lines). That worktree is checked out at the same
+  commit 70e1b33 and its agents.py is byte-identical to this one (verified by
+  diff), so its findings transfer unchanged. Its harness (_sb_probe.py,
+  _sb_analyze.py) and raw data (_sb_E_half.json, _sb_S_half.json,
+  _sb_E_def.json) were reused rather than reinvented.
+
+  HARNESS PROVENANCE, per the project's own "one harness for baseline and
+  treatment" rule. _sb_probe.py was copied here unmodified as _ir_probe.py,
+  then extended to _ir_probe2.py by four purely additive changes, all AFTER
+  the simulation loop, so trajectories are unaffected:
+      + import _build_evaluation
+      + an EVALS accumulator
+      + one _build_evaluation() call after the step loop
+      + "evals" in the output dict
+  _ir_probe3.py is _ir_probe2.py plus one extra RECORDED field
+  (_idle_retreat_last_cell), for auditing last_cell violations post-fix.
+
+  CROSS-HARNESS VALIDATION (this is what makes the numbers usable, and is the
+  project's own recorded rule after the lane-matrix baseline trap). The outcome
+  metrics _ir_probe2.py produces were checked seed-for-seed against the
+  ROUTE_BLOCKED round's own campaign harness (_rblatch_campaign2.py, whose
+  70e1b33 results are in outputs/_rblatch_camp2_exact_D_{east,south}.json), on
+  every seed the two samples share:
+
+      combo/seed     _ir_probe2 (rescued/dead/ff_deaths)   _rblatch_campaign2
+      D/east   101            2 / 2 / 1                       2 / 2 / 1
+      D/east   202            2 / 2 / 1                       2 / 2 / 1
+      D/east   303            1 / 3 / 1                       1 / 3 / 1
+      D/east   404            2 / 2 / 1                       2 / 2 / 1
+      D/east   505            2 / 2 / 1                       2 / 2 / 1
+      D/east   707            4 / 0 / 0                       4 / 0 / 0
+      D/south  101            2 / 1 / 2                       2 / 1 / 2
+      D/south  202            3 / 1 / 0                       3 / 1 / 0
+      D/south  303            3 / 1 / 0                       3 / 1 / 0
+      D/south  404            2 / 2 / 1                       2 / 2 / 1
+      D/south  505            3 / 1 / 0                       3 / 1 / 0
+      agreement: 11/11
+
+  PROBE2 vs PROBE3 EQUIVALENCE, measured rather than assumed. _ir_probe3.py
+  was run on a pre-fix seed (D/east half 101) and compared field-by-field with
+  the _ir_probe2.py run of the same seed: deaths, evals, fftrace and lifecycle
+  are byte-identical, and the per-call survival-move records are identical
+  once the single added `last_cell` field is dropped. So using probe2 pre-fix
+  and probe3 post-fix introduces no instrument bias.
+
+  NEW ARTEFACTS THIS ROUND
+    outputs/_ir_probe.py       unmodified copy of _sb_probe.py
+    outputs/_ir_analyze.py     unmodified copy of _sb_analyze.py
+    outputs/_ir_probe2.py      probe + end-of-run outcome metrics
+    outputs/_ir_probe3.py      probe2 + recorded last_cell (post-fix audit)
+    outputs/_ir_stale.py       offline origin-staleness attribution
+    outputs/_ir_invariant.py   offline test of the leash invariant (see 2.4)
+    outputs/_ir_whatif.py      the PROPOSED logic as a monkeypatch, with
+                               observe (non-applied) and apply modes
+    outputs/_ir_wianalyze.py   what-if analysis
+    outputs/_ir_shape.py       fresh-seed shape check
+    outputs/_ir_compare.py     seed-matched pre/post comparison (for Part 4)
+    outputs/_ir_patch.py       the source patch, written but NOT APPLIED
+    outputs/_ir/               batch runners, job lists, run logs
+
+
+================================================================================
+PART 1 - RE-VERIFICATION
+================================================================================
+
+1.1  _survival_move AS IT EXISTS AT 70e1b33 - FULL QUOTE
+--------------------------------------------------------
+agents.py:754-886, verbatim:
+
+   754      def _survival_move(self) -> None:
+   755          if self.pos is None:
+   756              return
+   757          cell = (int(self.pos[0]), int(self.pos[1]))
+   758          fire_cells = self._fire_cells()
+   759
+   760          if self._cell_is_ideal_idle_standoff(cell, fire_cells):
+   761              self._reset_idle_retreat_state()
+   762              return
+   763
+   764          origin = getattr(self, "_idle_retreat_origin", None)
+   765          if origin is None:
+   766              self._idle_retreat_origin = cell
+   767              self._idle_retreat_steps = 0
+   768              self._idle_retreat_stalled = False
+   769              self._idle_retreat_last_cell = None
+   770              origin = cell
+   771
+   772          if bool(getattr(self, "_idle_retreat_stalled", False)):
+   773              if self.target_pos and self._assigned_one_step_retreat(fire_cells):
+   774                  return
+   775              return
+   776
+   777          steps = int(getattr(self, "_idle_retreat_steps", 0) or 0)
+   778          at_cap = steps >= IDLE_RETREAT_MAX_CELLS
+   779          current_dist = self._min_fire_distance(cell, fire_cells)
+   780          current_risk = self._firefighter_cell_risk(cell)
+   781          last_cell = getattr(self, "_idle_retreat_last_cell", None)
+   782
+   783          candidates: list[dict[str, object]] = []
+   784          for ncell in self._neighbor_cells():
+   785              if self._cell_contains_active_fire(ncell):
+   786                  continue
+   787              if ncell == last_cell:
+   788                  continue
+   789              from_origin = abs(ncell[0] - origin[0]) + abs(ncell[1] - origin[1])
+   790              if from_origin > IDLE_RETREAT_MAX_CELLS:
+   791                  continue
+   792              risk = self._firefighter_cell_risk(ncell)
+   793              new_dist = self._min_fire_distance(ncell, fire_cells)
+   794              candidates.append(
+   795                  {
+   796                      "cell": ncell,
+   797                      "risk": risk,
+   798                      "dist": new_dist,
+   799                      "improvement": new_dist - current_dist,
+   800                      "ideal": self._cell_is_ideal_idle_standoff(ncell, fire_cells),
+   801                      "required": self._cell_meets_required_idle_safety(
+   802                          ncell, fire_cells
+   803                      ),
+   804                  }
+   805              )
+   806
+   807          if not candidates:
+   808              if self.target_pos and self._assigned_one_step_retreat(fire_cells):
+   809                  return
+   810              self._idle_retreat_stalled = True
+   811              return
+   812
+   813          chosen: dict[str, object] | None = None
+   814          if not at_cap:
+   815              ideal_reachable = [c for c in candidates if c["ideal"]]
+   816              if ideal_reachable:
+   817                  chosen = max(
+   818                      ideal_reachable,
+   819                      key=lambda c: (c["dist"], -int(c["risk"])),
+   820                  )
+   821              else:
+   822                  improving = [
+   823                      c
+   824                      for c in candidates
+   825                      if int(c["improvement"]) > 0
+   826                      or (
+   827                          int(c["risk"]) < current_risk
+   828                          and int(c["dist"]) >= current_dist
+   829                      )
+   830                  ]
+   831                  if improving:
+   832                      chosen = max(
+   833                          improving,
+   834                          key=lambda c: (
+   835                              int(c["improvement"]),
+   836                              int(c["dist"]),
+   837                              -int(c["risk"]),
+   838                          ),
+   839                      )
+   840                  else:
+   841                      chosen = max(
+   842                          candidates,
+   843                          key=lambda c: (int(c["dist"]), -int(c["risk"])),
+   844                      )
+   845                      if not self.target_pos:
+   846                          self._idle_retreat_stalled = True
+   847          else:
+   848              required_reachable = [c for c in candidates if c["required"]]
+   849              if required_reachable:
+   850                  chosen = max(
+   851                      required_reachable,
+   852                      key=lambda c: (int(c["dist"]), -int(c["risk"])),
+   853                  )
+   854                  if not self.target_pos:
+   855                      self._reset_idle_retreat_state()
+   856              else:
+   857                  chosen = max(
+   858                      candidates,
+   859                      key=lambda c: (int(c["dist"]), -int(c["risk"])),
+   860                  )
+   861                  if not self.target_pos:
+   862                      self._idle_retreat_stalled = True
+   863
+   864          if chosen is None:
+   865              if self.target_pos and self._assigned_one_step_retreat(fire_cells):
+   866                  return
+   867              self._idle_retreat_stalled = True
+   868              return
+   869
+   870          target = chosen["cell"]
+   871          if target == cell:
+   872              if self.target_pos and self._assigned_one_step_retreat(fire_cells):
+   873                  return
+   874              self._idle_retreat_stalled = True
+   875              return
+   876
+   877          self._idle_retreat_last_cell = cell
+   878          self.model.grid.move_agent(self, target)
+   879          self._idle_retreat_steps = steps + 1
+   880
+   881          if self._cell_is_ideal_idle_standoff(target, self._fire_cells()):
+   882              self._reset_idle_retreat_state()
+   883          elif self._cell_meets_required_idle_safety(target, self._fire_cells()) and (
+   884              (at_cap or self._idle_retreat_stalled) and not self.target_pos
+   885          ):
+   886              self._reset_idle_retreat_state()
+
+Supporting definitions, verbatim:
+
+   748      def _reset_idle_retreat_state(self) -> None:
+   749          self._idle_retreat_origin = None
+   750          self._idle_retreat_steps = 0
+   751          self._idle_retreat_stalled = False
+   752          self._idle_retreat_last_cell = None
+
+   675      def _neighbor_cells(self) -> list[tuple[int, int]]:
+   676          cx, cy = self.pos
+   677          neighbors: list[tuple[int, int]] = []
+   678          for ox, oy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+   679              cell = (cx + ox, cy + oy)
+   680              if not self.model.grid.out_of_bounds(cell):
+   681                  neighbors.append(cell)
+   682          return neighbors
+
+   375  IDLE_RETREAT_SAFETY_BUFFER = 3
+   376  IDLE_RETREAT_MAX_CELLS = 6
+
+
+VERDICT ON THE BRIEF'S DESCRIPTION: ACCURATE. Three refinements follow, none
+of which overturn it.
+
+  CONFIRMED. The three candidate filters are exactly as described - fire
+  (:785-786), anti-oscillation `last_cell` (:787-788), and the
+  IDLE_RETREAT_MAX_CELLS=6 leash from `_idle_retreat_origin` (:789-791) - and
+  the hard early return at :772-775 sits above all of them. For an idle unit
+  `self.target_pos` is falsy, so :773 short-circuits and :775 is a bare
+  `return`: no candidate scan, no hazard re-evaluation, no move.
+
+  REFINEMENT 1 - the latch is usually set by a call that DID move.
+  Two of the three live idle set-sites (:846 and :862) fire on a call that
+  goes on to move the unit at :878. Their meaning is not "I could not move"
+  but "nothing I could reach was any better, so I took the least-bad step and
+  I am marking that stepping again is pointless". Only :810 means "no
+  candidates at all". This matters for the fix: the latch's legitimate content
+  is anti-drift, not anti-null-result.
+
+  REFINEMENT 2 - there are five `_reset_idle_retreat_state()` call sites, not
+  two: :597 (the standby branch of `advance`), :761, :855, :882 and :886. The
+  investigation named only :597 and :761. Its conclusion is nevertheless
+  correct: :855, :882 and :886 all sit BELOW the early return at :772-775, so
+  once the flag is set control never reaches them again for an idle unit.
+  Three more reset sites than stated; exactly zero of them reachable while
+  latched.
+
+  REFINEMENT 3 - :864-868 and :871-875 are unreachable. `chosen` is assigned
+  `max(...)` over `candidates` in every branch, and `candidates` is non-empty
+  at that point (:807 returned otherwise), so `chosen is None` at :864 cannot
+  happen. `target` comes from `_neighbor_cells()`, which only emits
+  `(cx +/- 1, cy)` or `(cx, cy +/- 1)`, so `target == cell` at :871 cannot
+  happen. Both are harmless and are NOT touched. The live idle latch sites are
+  :810, :846 and :862.
+
+WHY THE LATCH IS PERMANENT FOR AN IDLE UNIT - re-derived from source:
+  * `_survival_move` is reached for an idle unit only from `advance():460` ->
+    `_needs_immediate_survival_retreat()` true, which for an idle unit
+    (agents.py:684-702) means: on fire, OR smoke on the cell, OR orthogonally
+    adjacent to fire, OR min-Manhattan fire distance <= 3.
+  * `_cell_is_ideal_idle_standoff` (:738-746) requires: not on fire, not
+    adjacent to fire, no smoke, AND min fire distance >= 4. That is the exact
+    logical complement, so the reset at :761 can never fire on the call path
+    that reaches it.
+  * The standby branch at :589-603 is an `elif` in a chain whose first arm
+    (:460) already returned at :497 whenever the unit is threatened, so :597
+    is unreachable while fire is near.
+  * The unit does not move, so it cannot change its own distance to the fire.
+  The only exits are: the fire burns out and recedes, the unit is reassigned
+  (which masks but does not clear the flag), or it dies. CONFIRMED.
+
+
+1.2  EVERY WRITE SITE OF _idle_retreat_stalled AND _idle_retreat_origin
+------------------------------------------------------------------------
+Repo-wide grep over all *.py, excluding .venv, .git, __pycache__ and the
+sibling worktrees.
+
+  _idle_retreat_stalled - 8 ASSIGNMENT sites, all in agents.py:
+
+    agents.py:396    = False    __init__
+    agents.py:751    = False    _reset_idle_retreat_state
+    agents.py:768    = False    origin-init, _survival_move
+    agents.py:810    = True     no candidates
+    agents.py:846    = True     moved, but nothing improved
+    agents.py:862    = True     at cap, nothing required-safe
+    agents.py:867    = True     UNREACHABLE (refinement 3)
+    agents.py:874    = True     UNREACHABLE (refinement 3)
+
+  and 2 READ sites: agents.py:772, agents.py:884.
+
+  _idle_retreat_origin - 3 ASSIGNMENT sites, all in agents.py:
+
+    agents.py:394    = None     __init__
+    agents.py:749    = None     _reset_idle_retreat_state
+    agents.py:766    = cell     anchor, _survival_move
+
+  and 1 READ site: agents.py:764.
+
+  Companion fields, for completeness:
+    _idle_retreat_steps      writes :395, :750, :767, :879   reads :777, :879
+    _idle_retreat_last_cell  writes :397, :752, :769, :877   read  :781
+
+CLAIM "8 write sites, all in agents.py, no external reset": CONFIRMED. The
+count of 8 is exact if "write site" means an assignment (:772 and :884 are
+reads), and the investigation's list - 396, 751, 768, 810, 846, 862, 867,
+874 - matches name-for-name. Two of the eight are unreachable, so only six can
+ever execute.
+
+NO EXTERNAL RESET: CONFIRMED, with both named model-side transitions read
+directly rather than inferred:
+
+  * unassign, wildfire_model.py:3510-3524. Sets `assigned=False`,
+    `target_pos=None`, `rescued_victim=None`, `exiting=False`,
+    `exit_target=None`, then updates `managed_firefighters[ff_id]`. It touches
+    no `_idle_retreat_*` field and does not move the unit - it is abandoned
+    exactly where it stood.
+  * recycle, `_recycle_firefighter_after_exit`, wildfire_model.py:2077-2118.
+    Reads `standby_pos` from `ff_marker.pos`, `move_agent`s to that same cell
+    (a no-op for a live unit), then clears status/assigned/target_pos/exiting/
+    exit_target/rescued_victim/rescue_completed/dead. No `_idle_retreat_*`
+    field is touched.
+
+  So a stale latch and a stale origin both survive an unassign, and survive a
+  full assign -> walk -> rescue -> exit -> recycle cycle on the same marker
+  object. CONFIRMED.
+
+  A THIRD MOVER THE INVESTIGATION DID NOT NAME, found here and load-bearing
+  for the fix (see 2.4): `_assigned_one_step_retreat` (agents.py:888-916)
+  moves the unit with `grid.move_agent` and neither consults the leash nor
+  updates the origin. It is called from :773, :808, :865 and :872, all four
+  guarded by `self.target_pos`, so it only ever runs for an ASSIGNED unit. It
+  lives in agents.py, so the "all write sites in agents.py" claim stands - but
+  it means the origin can go stale with no model-side event at all.
+
+
+1.3  RE-MEASUREMENT
+--------------------
+Two separate things were done here, because "is the finding real" and "is the
+finding seed-specific" are different questions.
+
+(a) EXACT RE-RUN OF THE INVESTIGATION'S OWN 13 RUNS, in this worktree, with a
+    re-derived harness (_ir_probe2.py), one seed per process:
+        D/east  roles=half     seeds 101,202,303,404,505
+        D/south roles=half     seeds 101,202,303,404,505
+        D/east  roles=default  seeds 101,202,303
+    240 steps, FIRE_SPREAD_MULTIPLIER 0.75, BATCH_SIZE 300,
+    PROBABILITY_MAP False, counts from BUILTIN_SCENARIOS["D"].
+
+    EVERY HEADLINE NUMBER REPRODUCES EXACTLY - not approximately:
+
+        measure                                    re-run   investigation
+        firefighter deaths                             13        13
+          burned while LATCHED with a free escape   10 (77%)  10 (77%)
+        latched idle _survival_move calls               92        92
+          that did nothing                         92 (100%) 92 (100%)
+          noop though a free cell existed           82 (89%)  82 (89%)
+          noop though a strictly BETTER cell existed 46 (50%)  46 (50%)
+        idle zero-candidate verdicts                    30        30
+          genuine enclosure                              10        10
+          filter artifact                                20        20
+            by the leash                                 17        17
+            by last_cell                                  3         3
+
+    The 77% figure is therefore not a reporting artifact and not a harness
+    artifact: it is reproducible from the model.
+
+(b) FRESH SEEDS - the actual test of whether the SHAPE is seed-specific.
+        D/east  roles=half  seeds 606,707,808,909,111
+        D/south roles=half  seeds 606,707,808,909,111
+    Ten runs, none of which appear in the investigation's sample. Nine
+    firefighter deaths.
+
+    THE RESULT SPLITS THE TWO FINDINGS, AND THAT MATTERS FOR THE FIX.
+
+    THE LATCH FINDING REPLICATES, essentially exactly:
+
+        measure                                    FRESH(10)   ref 13-run
+        deaths burned while LATCHED with a free
+          escape cell available                     7/9 (78%)  10/13 (77%)
+        latched idle _survival_move calls                 41           92
+          that did nothing                        41/41 (100%) 92/92 (100%)
+          noop though a free cell existed          30/41 (73%)  82/92 (89%)
+          noop though a strictly BETTER cell
+            existed                                 9/41 (22%)  46/92 (50%)
+
+      The headline 77% is NOT an artifact of the investigation's 13 seeds:
+      independent seeds give 78%. And the core mechanical claim - a latched
+      idle unit never moves - is 100% in both samples, as it must be, since it
+      follows from the code.
+
+    THE LEASH-STALENESS FINDING DOES NOT REPLICATE ON THESE SEEDS:
+
+        measure                                    FRESH(10)   ref 13-run
+        idle zero-candidate verdicts                      14           30
+          genuine enclosure                       11/14 (79%)  10/30 (33%)
+          filter artifact                          3/14 (21%)  20/30 (67%)
+            by the LEASH                            0/14 (0%)  17/30 (57%)
+            by last_cell                           3/14 (21%)   3/30 (10%)
+        idle calls with a provably stale origin (d>6)      0           19
+
+      ZERO. In these ten runs the stale-origin condition never arose on an
+      idle unit at all, so the change in 2.4 would have fired zero times. The
+      mix inverts: here "nowhere to retreat" really is enclosure 79% of the
+      time, where in the reference sample it was a filter artifact 67% of the
+      time.
+
+      Seven calls in the fresh sample DO show d > 6, but every one is an
+      ASSIGNED unit (e.g. E/half 808 ff_unit_1 at steps 144-147, origin 7-8
+      cells back after `_assigned_one_step_retreat` walked it). Those are
+      exactly the calls the `not self.target_pos` guard excludes. So the fresh
+      sample independently validates the guard decision from 2.4: without it,
+      the re-anchor would have fired on assigned units seven times here on a
+      premise that does not hold for them.
+
+    WHAT THIS MEANS FOR THE DESIGN, stated plainly rather than smoothed over:
+      * 4a (the latch) is justified by BOTH samples and is the piece that
+        carries the result.
+      * 4b (the leash) is justified by the reference sample - where it is
+        17/17 of the leash exclusions and is load-bearing in the one case that
+        saves a life (2.6.3) - but had NO opportunity to fire in the fresh
+        sample. Its frequency is seed-dependent, which is consistent with the
+        investigation's own tracing of the idle population to
+        `unassign / replacement_after_blocked` churn: stale origins need a
+        unit to be stranded far from where its retreat began, and these seeds
+        produced less of that.
+      * 4b is a no-op when the condition is absent, so carrying it costs
+        nothing. But it should NOT be sold as a general win. Part 4 should be
+        read expecting 4a to do most of the visible work.
+
+
+1.4  OFFLINE ATTRIBUTION ON THE INVESTIGATION'S OWN RAW DATA
+-------------------------------------------------------------
+Before running anything new, the investigation's raw per-call traces were
+re-analysed here (outputs/_ir_stale.py) to test a claim the fix depends on but
+which the investigation asserted rather than measured: that the leash
+exclusions are caused specifically by a STALE origin.
+
+  FIRST, THE INVESTIGATION'S OWN IDLE-ONLY NUMBERS REPRODUCE EXACTLY:
+      idle zero-candidate verdicts                   30   (reported 30)
+        genuine enclosure, no free neighbour          10   (reported 10)
+        filter artifact                               20   (reported 20)
+          by the leash                                17   (reported 17)
+          by last_cell                                 3   (reported  3)
+
+  AND THE NEW MEASUREMENT, WHICH IS THE ONE THE LEASH FIX RESTS ON:
+      of those 17 leash-caused verdicts, the number where the origin was
+      provably stale (|pos - origin| > IDLE_RETREAT_MAX_CELLS):   17 / 17
+
+  Every single leash-caused zero-candidate verdict on an idle unit had a stale
+  origin. Widening to all calls (idle and assigned): 29 of 31, the two
+  exceptions being assigned units at exactly d=6 that had genuinely retreated
+  six cells - the leash doing its job, correctly left alone.
+
+  |pos - origin| over all 394 recorded calls:
+      origin None (no leash yet)                     142
+      d = 0..6  (leash in normal range)              218
+      d = 7, 8, 9, 40 (beyond the leash)              34    of which idle: 19
+
+  THE 92 ALREADY-LATCHED IDLE CALLS, AGAINST THE PROPOSED PREDICATE:
+      genuinely enclosed, no free neighbour           10  -> stay (correct)
+      a free neighbour existed                        82
+        no strictly better cell                       36  -> stay (by design)
+        a strictly better cell existed                46  -> WOULD MOVE
+          of which the origin was stale (d>6)         18
+
+  This sizes the fix honestly: it acts on 46 of 92 latched calls, not 82. The
+  36 it declines are where the latch's anti-drift intent is legitimate and is
+  preserved. 46 is a LOWER bound - the offline data records only fire distance
+  per neighbour, so the "strictly lower risk at equal distance" half of the
+  improving predicate cannot be evaluated offline and can only add cases. The
+  live probe in 2.6 confirms it does.
+
+
+================================================================================
+PART 2 - DESIGN
+================================================================================
+
+2.0  WHAT THE LATCH IS FOR - STATED BEFORE ANYTHING IS REMOVED
+---------------------------------------------------------------
+There is no commit that explains it. `git log -S "_idle_retreat_stalled"` and
+`-S "IDLE_RETREAT_MAX_CELLS"` over agents.py each return exactly one commit,
+a4a01b4 "Add core project files and update README" - the bulk initial import.
+Nothing in docs/ or README.md mentions it. So the intent has to be read off
+the three live set sites, and here is that reading:
+
+  `_idle_retreat_stalled` is a FUTILITY marker on a retreat manoeuvre:
+    :810  "the filter chain gave me nothing to step to."
+    :846  "I could step somewhere, but nothing I can reach improves my
+           position. I took the least-bad step and I am marking that stepping
+           again is pointless."
+    :862  "I have spent my six-cell retreat budget and still cannot reach a
+           safe cell."
+  Together with `_idle_retreat_last_cell` (block the immediate reversal) and
+  IDLE_RETREAT_MAX_CELLS (bound the total excursion), the design intent is: a
+  retreat is a bounded, monotonically-improving manoeuvre, and when it stops
+  improving it should stop, rather than let an idle unit drift or ping-pong
+  across the map making moves that achieve nothing.
+
+  THAT INTENT IS LEGITIMATE AND IS KEPT. What is defective is not the futility
+  verdict but its LIFETIME. The verdict is computed against one fire geometry
+  at one step and then read as permanent. Fire spreads every step; at :846 and
+  :862 the unit's own position changed as well. And 1.1 proves no reset is
+  reachable while the unit is still threatened. So a statement about one step
+  silently becomes a statement about the rest of the run.
+
+  This is the same defect shape as the route_blocked consumer latch fixed in
+  70e1b33: a flag raised on a specific failure, consumed as a permanent
+  property, clearable only by the very action it suppresses.
+
+2.1  (4a) THE LATCH - REPLACE THE EARLY RETURN WITH A REAL RECHECK
+-------------------------------------------------------------------
+PROPOSED, agents.py only. Replacing :772-775:
+
+      if bool(getattr(self, "_idle_retreat_stalled", False)):
+          if self.target_pos:
+              self._assigned_one_step_retreat(fire_cells)
+              return
+          self._revalidate_idle_retreat_stall(cell, origin, fire_cells)
+          return
+
+  ASSIGNED UNITS ARE BYTE-IDENTICAL. The existing code is
+  `if self.target_pos and self._assigned_one_step_retreat(...): return` /
+  `return`; because `and` short-circuits and both arms return, that is exactly
+  "if assigned, try a one-step retreat; return either way". The rewrite is the
+  same statement, restructured only so the idle arm can be given a body. No
+  assigned-unit behaviour changes this round.
+
+  THE NEW METHOD:
+
+      def _revalidate_idle_retreat_stall(self, cell, origin, fire_cells):
+          last_cell = getattr(self, "_idle_retreat_last_cell", None)
+          current_dist = self._min_fire_distance(cell, fire_cells)
+          current_risk = self._firefighter_cell_risk(cell)
+          chosen = self._pick_improving_retreat(
+              self._retreat_candidates(
+                  cell, origin, last_cell, fire_cells, current_dist),
+              current_dist, current_risk)
+          if chosen is None:
+              return                    # nothing changed: stay put, stay latched
+          steps = int(getattr(self, "_idle_retreat_steps", 0) or 0)
+          self._idle_retreat_last_cell = cell
+          self.model.grid.move_agent(self, chosen["cell"])
+          self._idle_retreat_steps = steps + 1
+          self._idle_retreat_stalled = False
+
+  SAME FILTER CHAIN BY CONSTRUCTION, NOT BY COPY. The loop at :783-805 is
+  extracted verbatim into `_retreat_candidates(cell, origin, last_cell,
+  fire_cells, current_dist)` and the main path rewritten to call it. Both
+  paths then share one definition of "no candidates" and cannot drift apart in
+  a future edit. Same iteration order, same three filters, same dict keys, so
+  the unlatched path stays bit-identical.
+
+  SELECTION IS SHARED TOO, AND THAT IS THE HEART OF THE DESIGN.
+  `_pick_improving_retreat(candidates, current_dist, current_risk)` is tiers 1
+  and 2 of the existing not-at-cap choice, extracted verbatim:
+      tier 1  an `ideal` standoff, best by (dist, -risk)          :815-820
+      tier 2  else a strictly `improving` cell, best by
+              (improvement, dist, -risk)                          :821-839
+      else    None
+  The existing tier 3 - `max(candidates)` taken even though nothing improves,
+  then latch (:841-846) - is deliberately NOT in the helper. That tier is
+  precisely the move the latch exists to stop repeating. The main path keeps
+  it (calls the helper, falls back to tier 3 on None); revalidation does not.
+
+  So the rule is exactly: WHEN LATCHED, RE-RUN THE SAME SCAN; MOVE ONLY ON A
+  GENUINE IMPROVEMENT; OTHERWISE STAY PUT AND STAY LATCHED. When nothing has
+  changed, the observable behaviour is identical to today - same position,
+  same flag - which is what keeps this from being a behavioural rewrite.
+
+  WHY "IDEAL" IS TAKEN EVEN WHEN IT IS NOT DISTANCE-IMPROVING. An ideal
+  standoff is the terminal state of the manoeuvre - it is what triggers the
+  resets at :761 and :881-882. Reaching one ends the retreat and puts the unit
+  outside the condition that calls `_survival_move` at all, so it cannot feed
+  an oscillation. A unit standing in smoke at fire-distance 5 should take a
+  smoke-free neighbour at distance 4; tier 1 allows that and tier 2 alone
+  would not.
+
+  WHY at_cap IS NOT CONSULTED ON THE REVALIDATION PATH. `at_cap` gates a step
+  COUNT; the leash already bounds the spatial excursion, which is the real
+  containment. An at_cap arm on revalidation would add a second way to become
+  permanently stuck - the exact bug class being removed. The at_cap arm on the
+  main path is untouched.
+
+  WHY THE TAIL CLEARS ONLY THE STALL FLAG, RATHER THAN CALLING
+  `_reset_idle_retreat_state()`. The main path's post-move rule (:881-886)
+  resets when the landing cell is ideal, or required-safe with
+  `(at_cap or stalled)`. Mirroring that here was implemented and MEASURED, and
+  rejected: `_reset_idle_retreat_state` also clears `_idle_retreat_last_cell`,
+  the anti-oscillation memory, on the very path being added. Clearing only the
+  stall flag keeps the leash anchor, the step budget and the last_cell guard
+  intact, and the existing reset sites still fire normally once the unit is
+  genuinely safe (the standby branch at :597 handles exactly that). Both
+  variants were run on D/south seed 101: deaths identical, movelog identical,
+  and the full 480-row firefighter trace differed in 2 rows, in the `origin`
+  bookkeeping field only - positions and death flags identical. So this is a
+  free choice on the evidence, taken in the direction that preserves more
+  anti-oscillation state.
+
+2.2  (4a) RECHECK FREQUENCY - EVERY STEP, AND WHY THAT IS NOT ARBITRARY
+------------------------------------------------------------------------
+  * The rechecked condition is "is a neighbour strictly better", a function of
+    the fire geometry. Fire spreads once per model step, so the condition
+    changes at exactly step granularity; a lower rate would sample below the
+    rate of the thing being measured.
+  * It is not a background poll. `_survival_move` is entered only when the
+    unit is on fire, in smoke, adjacent to fire, or within 3 cells of it, so
+    "every step" already means "every step in which this unit is in danger".
+  * Cost is negligible against work the same call already does.
+    `_survival_move` calls `_fire_cells()` unconditionally at :758, sweeping
+    every agent in the schedule. The added work is at most four
+    `_firefighter_cell_risk` + `_min_fire_distance` evaluations.
+  * The measured windows are short. Idle-to-death in the investigation's
+    sample is [1,2,3,4,8,8,8,9,36,47,77] - median 8, and four of eleven at 4
+    steps or fewer. Rechecking every N>1 steps would miss (1 - 1/N) of the
+    windows in which escape was available, and would miss the short mode
+    almost entirely.
+
+  RELATIONSHIP TO THE 70e1b33 TEMPLATE. That fix added an out-of-band
+  model-level pass because the stale flag's owner - an unassigned unit - had
+  no per-step code path of its own that could re-test it. Here the opposite is
+  true: `_survival_move` is ALREADY called every step for exactly the
+  population that needs rechecking. The pattern is the same (re-test the real
+  condition instead of trusting a flag set under an older world state); the
+  placement is in-band because the natural hook already exists. A second
+  model-level pass would duplicate a call that already happens.
+
+2.3  (4a) ANTI-OSCILLATION - WHY THIS CANNOT PING-PONG
+-------------------------------------------------------
+The investigation warns that removing the latch without a genuine
+anti-ping-pong term risks a unit alternating forever, which "would look like a
+fix (no more stalls) while still never escaping". Four independent reasons
+this design cannot do that:
+
+  1. `last_cell` STAYS IN THE CHAIN. `_retreat_candidates` keeps the
+     `ncell == last_cell` filter verbatim, and every revalidation move sets
+     `_idle_retreat_last_cell = cell` before moving. The immediate A->B->A
+     reversal is blocked exactly as today. The tail deliberately does not
+     clear it (2.1).
+  2. EVERY REVALIDATION MOVE IS STRICTLY IMPROVING. Tier 2 requires
+     `improvement > 0`, or strictly lower risk at not-lower distance. Within a
+     fixed fire geometry the key (dist, -risk) strictly increases on every
+     such move, so no cycle is possible within a step's geometry. Tier 1
+     terminates the manoeuvre outright.
+  3. THE LEASH STILL BOUNDS THE EXCURSION. Revalidation moves go through the
+     unchanged `from_origin > IDLE_RETREAT_MAX_CELLS` filter, so the unit
+     stays inside a 6-cell Manhattan diamond around its (re-anchored) origin.
+     Worst case is a bounded walk driven by real fire movement, not drift.
+  4. REVALIDATION IS STRICTLY MORE CONSERVATIVE ABOUT MOVING THAN THE CODE
+     ALREADY IS. The existing unlatched path at :841-846 WILL take a
+     non-improving move; revalidation refuses to. On the "moves when it
+     shouldn't" axis the new path is a subset of behaviour the unlatched path
+     already exhibits, so the fix cannot introduce a class of movement the
+     current code would not already make.
+
+  MEASURED IN THE WHAT-IF RUNS (2.6): across both applied seeds, zero
+  reversals originated from a latched escape. The two reversals observed are
+  both on paths this round does not change - see the two notes below.
+
+  NOTED, NOT FIXED (1): `_assigned_one_step_retreat` (:888-916) has NO
+  anti-oscillation term at all - no last_cell, no leash. The recorded stock
+  traces already show it ping-ponging: D/south seed 101 ff_unit_0 moves
+  (45,29)->(46,29) at step 99 AND again at step 101, so it moved back at step
+  100. Pre-existing, on the assigned path, out of scope. Recorded so that a
+  Part 4 reversal is not misattributed to this change.
+
+  NOTED, NOT FIXED (2): on the EXISTING path, a tier-3 move that lands on a
+  required-safe cell triggers `_reset_idle_retreat_state()` at :883-886, which
+  clears `last_cell` and so permits an immediate reversal on the next step.
+  This was observed directly in the applied run (D/south 101 ff_unit_1,
+  (0,3)->(1,3) at step 127 and back at step 128, both moves unlatched). It is
+  entirely pre-existing code; the revalidation tail avoids adding new
+  instances of it by not resetting (2.1).
+
+2.4  (4b) THE LEASH
+--------------------
+THE DEFECT. `from_origin` at :789 is measured against `_idle_retreat_origin`,
+set only at :766 and cleared only by `_reset_idle_retreat_state()`. A unit
+that was assigned, walked across the map, and was then unassigned or recycled
+is still leashed to wherever it stood when its ORIGINAL retreat began.
+Measured: 17 of 17 leash-caused zero-candidate verdicts on idle units are
+this (1.4); observed staleness distances of 7, 9 and 40 cells.
+
+TWO DESIGNS WERE OFFERED IN THE BRIEF. Neither was chosen; a third was, and
+the reasoning below includes the part where the first attempt at it was WRONG
+and the check caught it.
+
+  (i) RESET THE ORIGIN AT unassign (wildfire_model.py:3520-3524) AND recycle
+      (2077-2101). Correct as far as it goes, but it enumerates transitions,
+      and 1.2 found a third drift source those two do not cover:
+      `_assigned_one_step_retreat` moves the unit with no leash test and never
+      touches the origin, entirely inside agents.py. Any future mover would
+      need adding to the list too. It also requires wildfire_model.py to know
+      about firefighter retreat bookkeeping it has no other reason to know
+      about, and puts an edit inside the unassign path the previous two rounds
+      worked in.
+
+  (ii) COMPARE AGAINST A "CURRENT ASSIGNMENT-START POSITION". This needs a new
+      persisted field recording the assignment-start cell - the same class of
+      object with the same staleness exposure - and a never-assigned unit has
+      no assignment start at all.
+
+  (iii) CHOSEN: RE-ANCHOR A PROVABLY STALE ORIGIN, IN agents.py, AT :764-770.
+
+      origin = getattr(self, "_idle_retreat_origin", None)
+      if origin is None or (
+          not self.target_pos
+          and abs(cell[0] - origin[0]) + abs(cell[1] - origin[1])
+          > IDLE_RETREAT_MAX_CELLS
+      ):
+          self._idle_retreat_origin = cell
+          self._idle_retreat_steps = 0
+          self._idle_retreat_stalled = False
+          self._idle_retreat_last_cell = None
+          origin = cell
+
+      This is not a heuristic. It is the negation of an invariant the code
+      itself maintains, so "the origin is stale" is DECIDED, not guessed.
+
+      THE INVARIANT, AND THE CORRECTION THE CHECK FORCED. The first form of
+      the claim was: "_survival_move alone can never leave a unit more than
+      IDLE_RETREAT_MAX_CELLS from its origin, because the origin is set to the
+      unit's own cell (d=0) and every move it makes passed the
+      `from_origin > 6 -> continue` filter (d<=6)."
+
+      That claim was tested against the recorded traces BEFORE any code was
+      written (outputs/_ir_invariant.py) and it was REFUTED: 10 of 143 moves
+      landed at d = 7 to 10. The reason is that `_survival_move` has TWO
+      movers, not one - the leashed candidate move at :878, and
+      `_assigned_one_step_retreat`, which has no leash test. All 10 violations
+      were the second mover.
+
+      CORRECTED INVARIANT, which the design now rests on: all four call sites
+      of `_assigned_one_step_retreat` (:773, :808, :865, :872) are guarded by
+      `self.target_pos`, so it can only ever run for an ASSIGNED unit. For an
+      IDLE unit the leashed move at :878 is the only mover inside
+      `_survival_move`. Re-tested on the same traces, split by engagement:
+
+          idle moves with an origin        64      landings beyond leash:  0
+          assigned moves with an origin    79      landings beyond leash: 10
+
+      So for an IDLE unit, d > IDLE_RETREAT_MAX_CELLS is sound proof that its
+      position or origin changed during an earlier assigned/exiting spell -
+      the origin belongs to a manoeuvre that is over.
+
+      THE `not self.target_pos` GUARD IS LOAD-BEARING, not decoration. Without
+      it the re-anchor would fire on assigned units, where d>6 is normal and
+      proves nothing, and would change assigned-unit behaviour - out of scope,
+      and squarely in the population entangled with the route_blocked rounds.
+
+      WHY THE STALL FLAG IS CLEARED TOO. The stall verdict in these cases was
+      REACHED THROUGH the stale leash: the unit latched at :810 because
+      `n_candidates == 0`, and the candidates were empty because every
+      neighbour was leash-excluded. Correcting the leash invalidates the
+      premise the verdict was derived from, so keeping the verdict would be
+      exactly the bug being fixed - trusting a conclusion drawn from input now
+      known to be wrong. The conservative variant (re-anchor, keep the latch,
+      let revalidation decide) was considered and is measurably worse: see
+      2.6, where the re-anchor's fresh-manoeuvre step is what moves D/south
+      101 ff_unit_0 off the cell that later burns.
+
+      THIS CANNOT SELF-SUSTAIN. After a re-anchor, d = 0, and the unit's own
+      leashed moves keep d <= 6. So it cannot re-anchor itself; another
+      re-anchor requires another external relocation, which requires a real
+      dispatch event.
+
+      WHY THIS IS BETTER THAN (i):
+        * exact, not enumerated: it fires on staleness however it arose -
+          unassign, recycle, `_move_toward` drift, `_assigned_one_step_retreat`
+          drift, or any mover added later;
+        * it cannot loosen the leash. After re-anchoring the unit is bounded
+          to six cells from its CURRENT cell, a tighter and correctly-centred
+          constraint. It never gets a larger per-manoeuvre excursion;
+        * it stays in agents.py, next to the field it owns.
+
+      COVERAGE, MEASURED: 17 of 17 leash-caused zero-candidate verdicts on
+      idle units have d>6 (1.4). 100% of the measured idle leash harm.
+
+      ACCEPTED RESIDUAL 1: an origin can be stale while d<=6 - a unit
+      assigned, walked three cells, then unassigned. The re-anchor will not
+      fire and the unit keeps a leash centred three cells away. The sample
+      contains no idle zero-candidate event of this shape, so it is not a
+      measured harm; and with 4a in place such a unit is no longer frozen - it
+      rescans every step within its narrower diamond. Detecting it would need
+      new per-unit state to spot the engaged->idle edge, which nothing in the
+      data justifies.
+
+      ACCEPTED RESIDUAL 2, stated because it is a real hole in "escape when
+      escape was possible": a unit standing at exactly d=6 from a LEGITIMATE
+      origin, whose only free neighbours are the outward ones at d=7, is still
+      leash-blocked - even when standing in fire. This is pre-existing, is not
+      made worse by this change, and did not occur on any idle unit in the
+      sample. Part 4 instruments for it explicitly rather than assuming it
+      away; if it appears it will be reported, not silently patched.
+
+SCOPE DECISION, STATED EXPLICITLY AS THE BRIEF REQUIRES:
+  The brief pre-authorised touching wildfire_model.py at the two named reset
+  points if 4b required it. IT DOES NOT. Design (iii) covers every case (i)
+  would, plus the `_assigned_one_step_retreat` drift source (i) would miss,
+  and does so inside agents.py. THIS ROUND TOUCHES agents.py ONLY; the offered
+  scope expansion is declined rather than taken and left unused.
+
+2.5  INTERACTION WITH THE 70e1b33 route_blocked RECOVERY PASS
+--------------------------------------------------------------
+The brief asks whether the two mechanisms can conflict - both acting on the
+same unit in the same step - and how ordering resolves it. Answer: they are
+strictly sequenced within a step and cannot race; the coupling through
+position is real and is measured in Part 4, not assumed away.
+
+  THE ORDERING, TRACED FROM SOURCE.
+    WildFireModel.step()                              wildfire_model.py:4523
+      ...
+      self.schedule.step()                            :4564
+          mesa SimultaneousActivation (:127): every agent's step(), then every
+          agent's advance(). Firefighter.step() is a no-op (agents.py:453);
+          all movement, `_survival_move` included, happens in advance().
+      self._run_post_move_decision_cycle(...)          :4565
+        -> AdaptationManager._run_post_move_cycle   adaptation_manager.py:130
+             _process_pending_agent_removals          :144  (recycle here)
+             ...
+             _check_fire_casualties                   :170  (deaths decided here)
+             _process_rescue_incidents                :171
+             _sync_firefighter_marker_status          :172
+               -> _revalidate_route_blocked_firefighters  wildfire_model.py:2139
+
+  So within one step: FIREFIGHTERS MOVE FIRST, CASUALTIES ARE DECIDED SECOND,
+  THE ROUTE_BLOCKED PASS RUNS THIRD. The pass reads `ff_marker.pos` live
+  (:2199), so it always sees post-move positions. No torn state, no ordering
+  ambiguity to resolve.
+
+  A DIRECT CONSEQUENCE OF THAT ORDERING, worth stating because it is where the
+  lives are saved: a unit that steps off a burning cell during advance() is
+  no longer on a fire cell when `_check_fire_casualties` runs. In the applied
+  what-if runs this is exactly what happens - see 2.6.
+
+  DISJOINT WRITE SETS.
+    `_survival_move` writes `self.pos` (via grid.move_agent) and the four
+      `_idle_retreat_*` fields. It never reads or writes `status`.
+    `_revalidate_route_blocked_firefighters` reads `status`, `dead`,
+      `assigned`, `exiting`, `pos`; writes `status` ("route_blocked" ->
+      "available") and may call `_try_dispatch_unresolved_confirmed_victims()`,
+      which sets `assigned`/`target_pos`. It never touches `_idle_retreat_*`
+      and never moves anything.
+  The ONLY coupling is position. They cannot contend for the same unit in any
+  meaningful sense: one moves and does not judge, the other judges and does
+  not move.
+
+  CONSEQUENCES THAT ARE REAL, AND THEIR DIRECTION.
+    a) The BFS verdict changes. `_path_exists_avoiding_fire` runs from the
+       unit's current cell to live victim cells, so a unit that escaped
+       presents a different source cell. The pass can clear a unit it
+       previously would not, or fail to clear one it previously would. This is
+       the specific risk the investigation flagged, and it is why the 18-run
+       route_blocked campaign is re-run seed-matched in Part 4 rather than
+       assumed unaffected.
+    b) The "trapped" guard at :2196-2198 (`all neighbours burning -> skip`)
+       becomes MORE permissive, not less: a unit that escapes is by definition
+       no longer surrounded, so it moves from "skipped as trapped" to
+       "eligible to be tested". The reverse - moving INTO a cell whose
+       neighbours all burn - requires a destination at fire-distance 1, which
+       revalidation can only choose from fire-distance 0, i.e. from standing
+       inside the fire. That is still an improvement, and it is a move the
+       existing unlatched path would also make.
+    c) Dispatch churn, second-order. If the pass clears a unit and dispatch
+       follows, `target_pos` is set; on the NEXT step `_survival_move` sees
+       `self.target_pos` truthy and takes the assigned arm, so this fix stops
+       applying to that unit - correct, it is no longer idle. Separately,
+       `select_rescue_assignment` sorts candidates on Manhattan distance with
+       no reachability test, so moving idle units changes who is nearest.
+       Part 4 therefore reports `rescued` and victim deaths alongside
+       `firefighter_deaths`, never deaths alone.
+
+2.6  WHAT-IF / COUNTERFACTUAL CHECK, RUN BEFORE ANY SOURCE EDIT
+----------------------------------------------------------------
+agents.py is UNCHANGED. The proposed logic lives in outputs/_ir_whatif.py as a
+monkeypatch, in two modes:
+  observe - stock behaviour runs; at every latched idle `_survival_move` call
+            the proposed decision is additionally computed and recorded but
+            NOT applied, so the trajectory stays identical to baseline;
+  apply   - the proposed `_survival_move` is installed and the run diverges.
+Two cases from the 13-run sample were used: D/south seed 101 (the
+investigation's own "single clearest instance") and D/east seed 101 (the most
+extreme stale origin in the sample, d=40).
+
+2.6.1  IT ALREADY CAUGHT ONE DESIGN BUG - which is the point of doing it
+  The leash invariant as first stated was WRONG, and outputs/_ir_invariant.py
+  refuted it on recorded data before any code was written (2.4). The corrected
+  form forces the `not self.target_pos` guard on the re-anchor. Without that
+  check the fix would have silently changed assigned-unit behaviour on the
+  basis of a false premise - the direct analogue of the trapped-guard need
+  discovered before route_blocked's Part 3.
+
+2.6.2  OBSERVE MODE - what the fix would decide, at moments it did not act
+  D/east seed 101, ff_unit_1, stuck at (29,7) for steps 211-218 with its
+  origin at (25,43), 40 cells away:
+
+     step  pos      d_org  free  cand  cur_d   the fix would...
+      211  (29,7)      40     4     4      2   MOVE (29,8)  d 2->3
+      212  (29,7)      40     4     4      2   MOVE (29,8)  d 2->3
+      213  (29,7)      40     3     3      1   MOVE (30,7)  d 1->2  risk 100->0
+      214  (29,7)      40     3     3      1   MOVE (30,7)  d 1->2  risk 100->0
+      215  (29,7)      40     3     3      1   MOVE (30,7)  d 1->2  risk 100->0
+      216  (29,7)      40     4     4      3   MOVE (29,8)  d 3->4  IDEAL
+      217  (29,7)      40     4     4      3   MOVE (29,8)  d 3->4  IDEAL
+      218  (29,7)      40     4     4      3   MOVE (29,8)  d 3->4  IDEAL
+     stock moved on 0 of these 8 calls.  fix: 8 of 8, every one gaining fire
+     distance, three of them reaching an ideal standoff outright.
+     (`cand` here is after re-anchoring; under the stale origin the real code
+     recorded n_candidates = 0 on every one of these steps.)
+
+  D/south seed 101 shows the OTHER half of the design working - the refusal:
+     ff_unit_1 at (0,5), origin 3 cells away so NOT stale, steps 133-137:
+     one candidate each step, none improving -> the fix stays put and stays
+     latched, exactly as today. At step 138 the unit is standing in fire
+     (cur_d 0) and the single candidate is now improving (0->1) -> it moves.
+     5 refusals, 1 move. The latch's anti-drift intent is preserved, and the
+     unit still gets its escape attempt at the moment one exists.
+
+2.6.3  APPLY MODE - the intended recovery, and the side effects
+  D/south seed 101   stock 2 deaths  ->  fix 1 death
+     ff_unit_0, which stock kills at step 111 on (46,30) after 30 latched
+     steps, instead moves at 103 and 104 and SURVIVES. Its min-fire-distance
+     over the ten steps after the escape is 3,4,4,3,4,4,4,4,4,3 - up from 2
+     and held. That is escape by the investigation's own standard, not merely
+     movement.
+     ff_unit_1 still dies, at step 135 on (1,0) instead of step 138 on (0,5).
+     At its death it is cornered with ONE free neighbour and no improving
+     move: a genuine no-escape case. This is the "necessary but not
+     sufficient" residual the investigation warned about, showing up on the
+     very first seed tested.
+
+  D/east seed 101    stock 1 death   ->  fix 1 death
+     The death is UNCHANGED - ff_unit_0, step 30, cell (44,40), killed while
+     `moving_to_victim`, i.e. an assigned in-transit death this round does not
+     touch. Meanwhile ff_unit_1 escapes the 40-cell stale leash at step 211
+     and its min-fire-distance runs 3,4,4,4,4,4,4,7,7,7. A unit is saved with
+     no cost anywhere else in the run.
+
+  WHY BOTH HALVES ARE NEEDED, traced step by step on D/south 101 ff_unit_0:
+     step 103  d_org = 9 -> the re-anchor (4b) fires, the leash is corrected,
+               and the fresh-manoeuvre scan takes (46,30)->(46,31). Without
+               4b this call sees n_candidates = 0 and the unit does not move.
+     step 104  origin is now 1 cell away, so no re-anchor; the unit is latched
+               again, and REVALIDATION (4a) finds (46,32) at distance 3 vs 2
+               and takes it. Without 4a this call is the bare `return` and the
+               unit freezes on (46,31).
+     Neither half alone carries the unit to safety. Section 2.6.5 measures
+     this directly by running each half on its own.
+
+  MOVES ATTRIBUTABLE TO THE NEW PATH ARE FEW AND NEVER HARMFUL:
+     seed          total survival-moves   from a latched idle state
+     S/half 101            63                      2
+     E/half 101            22                      1
+     Of those 3 new-path moves: fire distance rose on 2 and was unchanged on
+     1; it fell on none.
+
+2.6.4  OSCILLATION, MEASURED
+  One A->B->A reversal in each applied run, and NEITHER originates from the
+  new path:
+     E/half 101  ff_unit_0, steps 15 then 21 - six steps apart, and the
+                 second move is an ASSIGNED `_assigned_one_step_retreat`,
+                 which has no anti-oscillation term and is untouched here.
+     S/half 101  ff_unit_1, steps 127 then 128 - both moves UNLATCHED, i.e.
+                 the existing normal path. The mechanism is the pre-existing
+                 reset at :883-886: a tier-3 move that lands on a
+                 required-safe cell calls `_reset_idle_retreat_state()`, which
+                 clears `last_cell` and so permits the reversal on the next
+                 step. Recorded in 2.3 as a pre-existing hole; the
+                 revalidation tail avoids adding new instances of it by not
+                 resetting.
+  Zero reversals from a latched escape, across both seeds.
+
+2.6.5  DESIGN VARIANTS TESTED RATHER THAN ARGUED
+  (a) REVALIDATION TAIL. Both candidate tails were run on D/south 101:
+      mirroring the main path's `_reset_idle_retreat_state()` versus clearing
+      only the stall flag. Deaths identical, movelog identical, and the full
+      480-row firefighter trace differed in 2 rows, in the `origin`
+      bookkeeping field only. The same pair was run on D/east 101 with
+      identical results. So the choice made in 2.1 is free on the evidence and
+      was taken in the direction that keeps more anti-oscillation state.
+
+  (b) SEPARABILITY - each half run ALONE on the same seed, D/south 101.
+      The brief asks for two separable pieces. Rather than assert it, the
+      what-if probe takes a `--pieces` flag and each arm was run:
+
+        arm                     deaths   what happens to ff_unit_0
+        ---------------------   ------   --------------------------------------
+        stock                     2      never moves; dies step 111 at (46,30)
+        4a only (latch recheck)   2      STILL dies step 111 at (46,30). The
+                                         stale leash empties the candidate set,
+                                         so the recheck has nothing to find.
+        4b only (leash re-anchor) 2      moves once at step 103 to (46,31), then
+                                         re-latches and freezes; dies step 111
+                                         at (46,31). Fire distance 2,3,3,3 then
+                                         1,1,1,0.
+        both                      1      escapes at 103 and 104; fire distance
+                                         2 -> sustained 3-4; SURVIVES
+
+      NEITHER HALF ALONE SAVES THE UNIT. 4a cannot act because 4b has not
+      corrected the leash; 4b gets one move and then hits the very early
+      return 4a removes. This is the clearest possible demonstration that the
+      two changes are separable AND that both are required for this case.
+
+      Side note from the 4a-only arm, worth recording because it illustrates
+      the investigation's "necessary but not sufficient" caveat exactly:
+      ff_unit_1 there escapes the fire cell three times (steps 138, 141, 144,
+      each 0 -> 1) and is caught again each time, dying at 147 instead of 138.
+      It bought nine steps in a position it could not win. Retreat is reactive
+      and greedy; against a front that keeps coming it only buys time.
+
+  (c) REFACTOR EQUIVALENCE - the control that makes the above readable.
+      The proposed `_survival_move` is not only two behaviour changes; it also
+      extracts the candidate scan and the tier-1/tier-2 selection into shared
+      helpers and restructures the assigned arm of the latch check. Running it
+      with BOTH pieces disabled (`--pieces none`) on D/south 101 reproduces
+      the stock run exactly:
+
+          deaths            (111, ff_unit_0, (46,30)), (138, ff_unit_1, (0,5))
+                            - identical to stock, step for step and cell for cell
+          firefighter trace 480 rows, 480 matching keys, and ZERO rows differing
+                            in (position, dead, stalled)
+
+      So the refactor introduces no behaviour of its own; every difference
+      observed anywhere above is attributable to 4a or 4b and nothing else.
+
+
+================================================================================
+PART 3 / PART 4 READINESS
+================================================================================
+
+3.1  TEST BASELINE - RE-CONFIRMED IN THIS WORKTREE
+---------------------------------------------------
+  .venv/Scripts/python.exe -m pytest tests -q
+      8 failed, 427 passed, 5 warnings in 2065.84s (0:34:25)
+  Raw output: outputs/_ir_pytest_baseline.txt
+
+  This matches the brief's stated baseline exactly. The failure set, recorded
+  by name so Part 4 can classify any difference as pass / pre-existing / NEW
+  rather than by count alone:
+
+    tests/test_behavior_regression.py::
+      test_descriptive_next_action_uses_target_position
+    tests/test_dashboard_panel.py::
+      test_dashboard_panel_render_returns_string
+    tests/test_firefighter_dispatch_replacement.py::
+      test_no_replacement_available_marks_victim_unreachable_once
+    tests/test_rescue_planner_authority.py::
+      test_no_firefighter_planner_delay_or_unreachable
+    tests/test_uav_sector_assignment.py::
+      test_fire_tracker_still_overridden_by_search_mode_fail_safe
+    tests/test_uav_sector_assignment.py::
+      test_fire_tracker_uavs_receive_different_target_sets
+    tests/test_wind_aware_trajectory_regression.py::
+      test_north_vs_south_trajectories_diverge_over_40_steps
+    tests/test_wind_aware_victim_search.py::
+      test_victim_search_wind_aware_action_when_downwind_exists
+
+  NO TEST EXERCISES THE LATCH DIRECTLY. A repo-wide grep for
+  `_idle_retreat`, `_survival_move` and `IDLE_RETREAT` across tests/ returns
+  exactly one hit: test_dashboard_explanations_export.py:205, a NEGATIVE
+  assertion that the explanation kind "idle_firefighter_survival_move" is
+  absent after three steps of scenario A. That kind is produced nowhere in the
+  codebase, and this change adds no new explanation kind, so the assertion is
+  unaffected. A revalidation move is recorded through the existing
+  "survival_retreat" category in `advance()` (agents.py:486-495) - no
+  dashboard or telemetry surface changes.
+
+3.2  THE PATCH IS WRITTEN BUT NOT APPLIED
+------------------------------------------
+  outputs/_ir_patch.py  --check | --apply | --revert [--target FILE]
+
+  Dry-run against a COPY of agents.py (agents.py itself untouched):
+    * all three replacement anchors match exactly once each; the insertion
+      anchor matches exactly once
+    * the patched copy PARSES, IMPORTS, and resolves - `_retreat_candidates`,
+      `_pick_improving_retreat` and `_revalidate_idle_retreat_stall` are
+      present with signatures matching their call sites
+    * line endings preserved: 1075 CRLF / 0 bare-LF before, 1177 CRLF /
+      0 bare-LF after. The script refuses to write if it would introduce a
+      bare-LF line. (The route_blocked round recorded a CRLF-churn incident
+      from a patch script; this guards against a repeat.)
+    * size of change: +157 / -55 lines, of which the three new methods are
+      the bulk
+
+3.3  WHAT PART 4 WILL MEASURE, AND WHAT IS ALREADY STAGED
+----------------------------------------------------------
+  Pre-fix baselines are already on disk, so Part 4 is a treatment run plus a
+  comparison, not a re-baselining:
+    outputs/_ir_p2_BASE_*.json          13 runs, forensics + outcome metrics
+    outputs/_ir_p2_FRESH_*.json         10 fresh-seed runs
+    outputs/_rblatch_camp2_exact_D_*.json   the 70e1b33 route_blocked gate
+    outputs/_ir_pytest_baseline.txt     8 failed / 427 passed, named
+
+  Staged and syntax-checked, not yet run:
+    outputs/_ir/batch3.sh + jobs_post.txt   the 13-run post-fix sample under
+                                            _ir_probe3.py (records last_cell,
+                                            so a last_cell violation can be
+                                            detected directly rather than
+                                            inferred from reversals)
+    outputs/_ir/rbgate.sh                   the 18-run route_blocked campaign
+                                            under the SAME harness that
+                                            produced its 70e1b33 baseline
+    outputs/_ir_compare.py                  seed-matched pre/post comparison:
+                                            rescued / victims dead /
+                                            firefighter_deaths per combo, plus
+                                            latched-then-ESCAPED vs
+                                            latched-and-still-DIED, the
+                                            min-fire-distance trajectory after
+                                            each escape, A->B->A reversals, and
+                                            direct last_cell violations
+
+  ONE RESIDUAL TO INSTRUMENT FOR EXPLICITLY (from 2.4, residual 2): a unit at
+  exactly d=6 from a LEGITIMATE origin whose only free neighbours are the
+  outward ones is still leash-blocked, even standing in fire. Pre-existing, not
+  worsened here, and absent from every idle event in both samples - but Part 4
+  will count it rather than assume it away.
+
+3.4  STOPPING HERE
+-------------------
+  Per the brief's protocol, Part 3 is not started. agents.py and
+  wildfire_model.py are byte-identical to 70e1b33. Everything new is under
+  outputs/. Awaiting confirmation of the design before implementing.

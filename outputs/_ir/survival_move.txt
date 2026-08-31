@@ -1,0 +1,134 @@
+ 754      def _survival_move(self) -> None:
+ 755          if self.pos is None:
+ 756              return
+ 757          cell = (int(self.pos[0]), int(self.pos[1]))
+ 758          fire_cells = self._fire_cells()
+ 759  
+ 760          if self._cell_is_ideal_idle_standoff(cell, fire_cells):
+ 761              self._reset_idle_retreat_state()
+ 762              return
+ 763  
+ 764          origin = getattr(self, "_idle_retreat_origin", None)
+ 765          if origin is None:
+ 766              self._idle_retreat_origin = cell
+ 767              self._idle_retreat_steps = 0
+ 768              self._idle_retreat_stalled = False
+ 769              self._idle_retreat_last_cell = None
+ 770              origin = cell
+ 771  
+ 772          if bool(getattr(self, "_idle_retreat_stalled", False)):
+ 773              if self.target_pos and self._assigned_one_step_retreat(fire_cells):
+ 774                  return
+ 775              return
+ 776  
+ 777          steps = int(getattr(self, "_idle_retreat_steps", 0) or 0)
+ 778          at_cap = steps >= IDLE_RETREAT_MAX_CELLS
+ 779          current_dist = self._min_fire_distance(cell, fire_cells)
+ 780          current_risk = self._firefighter_cell_risk(cell)
+ 781          last_cell = getattr(self, "_idle_retreat_last_cell", None)
+ 782  
+ 783          candidates: list[dict[str, object]] = []
+ 784          for ncell in self._neighbor_cells():
+ 785              if self._cell_contains_active_fire(ncell):
+ 786                  continue
+ 787              if ncell == last_cell:
+ 788                  continue
+ 789              from_origin = abs(ncell[0] - origin[0]) + abs(ncell[1] - origin[1])
+ 790              if from_origin > IDLE_RETREAT_MAX_CELLS:
+ 791                  continue
+ 792              risk = self._firefighter_cell_risk(ncell)
+ 793              new_dist = self._min_fire_distance(ncell, fire_cells)
+ 794              candidates.append(
+ 795                  {
+ 796                      "cell": ncell,
+ 797                      "risk": risk,
+ 798                      "dist": new_dist,
+ 799                      "improvement": new_dist - current_dist,
+ 800                      "ideal": self._cell_is_ideal_idle_standoff(ncell, fire_cells),
+ 801                      "required": self._cell_meets_required_idle_safety(
+ 802                          ncell, fire_cells
+ 803                      ),
+ 804                  }
+ 805              )
+ 806  
+ 807          if not candidates:
+ 808              if self.target_pos and self._assigned_one_step_retreat(fire_cells):
+ 809                  return
+ 810              self._idle_retreat_stalled = True
+ 811              return
+ 812  
+ 813          chosen: dict[str, object] | None = None
+ 814          if not at_cap:
+ 815              ideal_reachable = [c for c in candidates if c["ideal"]]
+ 816              if ideal_reachable:
+ 817                  chosen = max(
+ 818                      ideal_reachable,
+ 819                      key=lambda c: (c["dist"], -int(c["risk"])),
+ 820                  )
+ 821              else:
+ 822                  improving = [
+ 823                      c
+ 824                      for c in candidates
+ 825                      if int(c["improvement"]) > 0
+ 826                      or (
+ 827                          int(c["risk"]) < current_risk
+ 828                          and int(c["dist"]) >= current_dist
+ 829                      )
+ 830                  ]
+ 831                  if improving:
+ 832                      chosen = max(
+ 833                          improving,
+ 834                          key=lambda c: (
+ 835                              int(c["improvement"]),
+ 836                              int(c["dist"]),
+ 837                              -int(c["risk"]),
+ 838                          ),
+ 839                      )
+ 840                  else:
+ 841                      chosen = max(
+ 842                          candidates,
+ 843                          key=lambda c: (int(c["dist"]), -int(c["risk"])),
+ 844                      )
+ 845                      if not self.target_pos:
+ 846                          self._idle_retreat_stalled = True
+ 847          else:
+ 848              required_reachable = [c for c in candidates if c["required"]]
+ 849              if required_reachable:
+ 850                  chosen = max(
+ 851                      required_reachable,
+ 852                      key=lambda c: (int(c["dist"]), -int(c["risk"])),
+ 853                  )
+ 854                  if not self.target_pos:
+ 855                      self._reset_idle_retreat_state()
+ 856              else:
+ 857                  chosen = max(
+ 858                      candidates,
+ 859                      key=lambda c: (int(c["dist"]), -int(c["risk"])),
+ 860                  )
+ 861                  if not self.target_pos:
+ 862                      self._idle_retreat_stalled = True
+ 863  
+ 864          if chosen is None:
+ 865              if self.target_pos and self._assigned_one_step_retreat(fire_cells):
+ 866                  return
+ 867              self._idle_retreat_stalled = True
+ 868              return
+ 869  
+ 870          target = chosen["cell"]
+ 871          if target == cell:
+ 872              if self.target_pos and self._assigned_one_step_retreat(fire_cells):
+ 873                  return
+ 874              self._idle_retreat_stalled = True
+ 875              return
+ 876  
+ 877          self._idle_retreat_last_cell = cell
+ 878          self.model.grid.move_agent(self, target)
+ 879          self._idle_retreat_steps = steps + 1
+ 880  
+ 881          if self._cell_is_ideal_idle_standoff(target, self._fire_cells()):
+ 882              self._reset_idle_retreat_state()
+ 883          elif self._cell_meets_required_idle_safety(target, self._fire_cells()) and (
+ 884              (at_cap or self._idle_retreat_stalled) and not self.target_pos
+ 885          ):
+ 886              self._reset_idle_retreat_state()
+ 887  
