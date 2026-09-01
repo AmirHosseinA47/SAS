@@ -1,0 +1,170 @@
+======================================================================
+VERDICT 1  REFUTED=False
+REASONING:
+The claim survives on all three substantive parts; only the phrase "no modelled hazard" needs narrowing to "no modelled LETHAL hazard".
+
+(a) ABSORBING - CONFIRMED, three independent locks. Only two writes to .burnt exist in the live tree (agents.py:25 False in __init__, agents.py:110 True), neither clears it. Only two writes to .fuel (agents.py:23 init, agents.py:107-108 a strict subtraction), so the fuel<=0 half of the latch can never un-satisfy. has_burned is one-way (agents.py:26, :106); no has_burned=False exists. A grep for indirect writes setattr(...,"burning"|"burnt"|"has_burned"|"fuel",...) returns ZERO hits tree-wide. The only external mutations are in tests/ fixtures.
+
+(b) CANNOT RE-IGNITE - CONFIRMED, triple-guarded: probability_of_fire short-circuits to 0 (agents.py:53-55); the burnt branch of step() returns before probability_of_fire is even called (agents.py:91-95); advance() re-pins burning=False and returns, bypassing the normal commit (agents.py:121-125).
+
+(c) NO HAZARD TO A FIREFIGHTER - CONFIRMED for lethality, TOO BROAD as worded. wildfire_model.py:4139-4140 is the ONLY site in the live tree that marks a firefighter dead (grep for `dead = True` / `status = "dead"` outside tests/ returns only :4045 for victims and :4139-4140), and it is gated on `cell not in fire_cells` where fire_cells is built from is_burning() alone (wildfire_model.py:4016-4028). Burnt implies burning=False (agents.py:111), so a burnt cell can never enter that set. No adjacency, smoke, health, HP, or exposure mechanic exists (grep for health|hp|exposure|inhal|injur|damage|regrow|respawn|reignit outside tests returns only unrelated analysis-reporting hits and UAV-side P_smoke utility terms).
+
+NARROWING REQUIRED: the model DOES apply a real, transient, non-lethal hazard to a freshly-burnt cell via residual smoke. The burnt branch keeps ticking the smoke clock (agents.py:94) and _cell_has_active_smoke (agents.py:641-656) never checks burnt state, so for ~3-4 model steps after going burnt the cell (i) triggers _needs_immediate_survival_retreat on the firefighter's own cell (agents.py:688), (ii) scores risk += 10 (agents.py:671-672), and (iii) fails _cell_meets_required_idle_safety (agents.py:734-735). Timing is reachable: smoke activation costs 3 burning ticks against SMOKE_PRE_DISPELLING_COUNTER=2, while burnt needs >= FUEL_BOTTOM_LIMIT=7 burning ticks, so smoke is always already active at the moment of burnt with counter=3; the burnt branch then decrements every model step because it sits ABOVE the % FIRE_SPREAD_SPEED gate (agents.py:97), clearing on step 4.
+
+REFUTATION AVENUES TRIED AND CLOSED:
+1. Mid-run Fire re-creation: agents.Fire(...) is constructed at exactly one live site (wildfire_model.py:1987), reached only via new_fire_agent (:1985) <- set_fire_agents (:1980,:1982) <- reset() (:129), and reset() has exactly ONE caller in the live tree: wildfire_model.py:115 inside __init__. Its docstring (wildfire_model.py:117-119) claims the GUI reset button calls it - that docstring is STALE: Mesa 1.2.1 ModularServer.reset_model (ModularVisualization.py:369-370, "Reinstantiate the model object") builds a fresh model_cls and never calls model.reset(). Both live entry points construct fresh models anyway (serve_dashboard.py:345, evaluate_scenarios.py:122). Even if reachable, reset() rebuilds the entire grid and schedule - a new run, not a burnt cell reverting.
+2. Fire removal/replacement: the removal dispatch (wildfire_model.py:2226-2266) handles PathMarker, Victim, and Firefighter only; Fire appears in no branch. The only appends to _agents_pending_removal are agents.py:540 and :542 (exiting firefighter + carried victim).
+3. Two Fire agents per cell: set_fire_agents (wildfire_model.py:1972-1982) iterates each (i,j) once, so a burnt cell cannot be shadowed by a second burning Fire at the same position.
+4. Fail-dangerous branch: wildfire_model.py:4022-4027 wraps the is_burning test in try/except Exception: pass and falls through to fire_cells.add(...), so a raising is_burning() would be treated as fire. Unreachable - agents.py:37-38 is `return self.burning` and cannot raise. Worth knowing the guard is fail-dangerous, but it does not refute the claim.
+
+CORRECTION FOR THE AUDIT: the reset docstring at wildfire_model.py:117-119 is factually wrong about Mesa's behaviour. It is the only text in the tree suggesting a live mid-run path out of burnt state, and no such path exists.
+
+EVIDENCE:
+ABSORBING (only writes, both in E:\Projects\SAS\agents.py):
+agents.py:25 "        self.burnt = False"
+agents.py:110 "                self.burnt = True"
+agents.py:23 "        self.fuel = random.randint(FUEL_BOTTOM_LIMIT, FUEL_UPPER_LIMIT)"
+agents.py:107-108 "                if self.fuel > 0:" / "                    self.fuel = self.fuel - BURNING_RATE"  (sole post-construction fuel write; a subtraction)
+agents.py:26 "        self.has_burned = bool(burning)"; agents.py:106 "                self.has_burned = True"
+Tree-wide grep for setattr(...,"burning"|"burnt"|"has_burned"|"fuel",...) excluding .venv/.claude/worktrees/outputs/tests: zero hits.
+
+CANNOT RE-IGNITE:
+agents.py:53-55 "    def probability_of_fire(self):" / "        if self.burnt:" / "            return 0"
+agents.py:91-95 "        if self.burnt:" / "            self.next_burning_state = False" / "            if ACTIVATE_SMOKE:" / "                self.smoke.smoke_step(False)" / "            return"
+agents.py:121-125 "        if self.steps_counter % FIRE_SPREAD_SPEED == 0:" / "            if self.burnt:" / "                self.burning = False" / "                return" / "            self.burning = self.next_burning_state"
+
+NON-LETHAL (sole death mechanic):
+wildfire_model.py:4016-4028 "        for agent in self.schedule.agents:" / "            if type(agent).__name__ != \"Fire\":" / "                continue" / ... / "                is_burning = getattr(agent, \"is_burning\", None)" / "                if callable(is_burning) and not is_burning():" / "                    continue" / "            except Exception:" / "                pass" / "            fire_cells.add((int(pos[0]), int(pos[1])))"
+wildfire_model.py:4118-4119 "            if cell not in fire_cells:" / "                continue"
+wildfire_model.py:4139-4140 "            ff_marker.dead = True" / "            ff_marker.status = \"dead\""
+agents.py:111 "                self.burning = False"  (burnt implies not burning, so never in fire_cells)
+agents.py:37-38 "    def is_burning(self):" / "        return self.burning"  (cannot raise; the try/except at wildfire_model.py:4022-4027 is fail-dangerous but unreachable)
+
+TRANSIENT SMOKE HAZARD ON A BURNT CELL (the clause that needs narrowing):
+agents.py:94 "                self.smoke.smoke_step(False)"  (burnt branch, ABOVE the gate at agents.py:97 "        if self.steps_counter % FIRE_SPREAD_SPEED == 0:")
+agents.py:641-656 "    def _cell_has_active_smoke(self, cell: tuple[int, int]) -> bool:" ... "                if callable(is_smoke_active) and is_smoke_active():" / "                    return True"  (no burning/burnt guard)
+agents.py:688 "        if self._cell_contains_active_fire(cell) or self._cell_has_active_smoke(cell):" / "            return True"  (_needs_immediate_survival_retreat)
+agents.py:671-672 "        if self._cell_has_active_smoke(cell):" / "            risk += 10"
+agents.py:734-735 "        if self._cell_has_active_smoke(cell):" / "            return False"  (_cell_meets_required_idle_safety)
+agents.py:133 "        self.dispelling_counter_start_value = fire_cell_fuel"; common_fixed_variables.py:69 "SMOKE_PRE_DISPELLING_COUNTER = 2"; common_fixed_variables.py:31 "FUEL_BOTTOM_LIMIT = 7"; common_fixed_variables.py:23 "FIRE_SPREAD_SPEED = 3"
+
+NO RE-CREATION PATH:
+wildfire_model.py:1987 "        source_fire = agents.Fire(self.unique_agents_id, self, burning)"  (only live Fire() construction)
+wildfire_model.py:1980/1982 "                        self.new_fire_agent(i, j, True)" / "                        self.new_fire_agent(i, j, False)"  (only callers)
+wildfire_model.py:129 "        self.set_fire_agents()"  (only caller)
+wildfire_model.py:115 "        self.reset()"  (only caller of reset(), inside __init__)
+wildfire_model.py:117-119 stale docstring: "reset method with attributes initialization. This method should be used whenever it is needed to reset the environment in execution time. For example, when the graphical interface is up, and reset button is pressed, this method is called"
+.venv/Lib/site-packages/mesa/visualization/ModularVisualization.py:369-370 "    def reset_model(self):" / "        \"\"\"Reinstantiate the model object, using the current parameters.\"\"\""  (library cross-check: builds a new model_cls, never calls model.reset())
+serve_dashboard.py:345 "        model = WildFireModel()"; evaluate_scenarios.py:122 "        model = WildFireModel()"
+
+NO REMOVAL PATH FOR FIRE:
+wildfire_model.py:2227 "                if type(agent) is agents.PathMarker or type(agent).__name__ == \"PathMarker\":"
+wildfire_model.py:2239 "                elif type(agent) is agents.Victim or type(agent).__name__ == \"Victim\":"
+wildfire_model.py:2257 "                elif type(agent) is agents.Firefighter or type(agent).__name__ == \"Firefighter\":"  (Fire absent from every branch)
+agents.py:540/542 are the only appends to _agents_pending_removal.
+
+ONE FIRE PER CELL:
+wildfire_model.py:1972-1976 "        for i in range(HEIGHT):" / "            for j in range(WIDTH):" / "                if SYSTEM_RANDOM.random() < DENSITY_PROB or (i in x and j in y):"
+
+======================================================================
+VERDICT 2  REFUTED=True
+REASONING:
+The claim is a conjunction and the two halves get different verdicts. I am marking it refuted because the second half is demonstrably false, but the parent must not read that as vindicating the originating audit item — the audit-relevant half survived a hard attempt to break it.
+
+HALF 1 — "No movement, pathing, hazard, targeting, or scoring code anywhere in the live tree reads burnt state." I could NOT refute this, and I hunted specifically for the indirect routes named in my brief. (i) fuel<=0 inference: `fuel`/`get_fuel()` has zero readers outside class Fire except four colour-index lookups (main.py:75,80; serve_dashboard.py:62,65) — no planner, executor, or predicate reads fuel, so nobody can infer exhaustion. (ii) has_burned inference: outside class Fire it appears only at main.py:77, serve_dashboard.py:63/133, dashboard_state_builder.py:300 — all render/count. (iii) cached grid/belief array: FireBeliefRuntimeState has no burnt field, and fire_probability_map is fed exclusively by is_burning()/smoke observations (local_uav_monitor.py:87-91, :151) and by time decay — it is never seeded from ground-truth probability_of_fire(), because get_prob() has only two readers, both renderers. (iv) serialized state dict: mesa.DataCollector is constructed with no reporters; latest_dashboard_state is written last thing in step() and read only by a test harness; burnt_cells/has_burned_cells never re-enter logic. (v) colour/label feedback: serve_dashboard's cell colours go to browser JS only, and Canvas_Grid_Visualization.py has zero burn/fuel tokens. (vi) dynamic getattr: the read_value helpers are only ever passed literal names, and a tree-wide string grep proves no burn-related literal exists at any of them. The decisive local check is that the entire Firefighter class body (agents.py:379-1178) contains not one occurrence of burnt, has_burned, fuel, cell_prob, probability_of_fire, or next_burning_state.
+
+HALF 2 — "it is consumed only by rendering and metrics." False on two counts. Directly, the Fire agent's own state machine reads .burnt at agents.py:54, :91, :122 and has_burned at :109; that is simulation dynamics — neither rendering nor metrics — and agents.py:54 is arguably a scoring function (it computes the per-cell ignition probability), though its output never reaches any agent's decision. More interestingly, there is a genuine causal channel from burnt-ness into firefighter hazard SCORING that no previous sweep framed as consumption: the burnt early-return at agents.py:91-95 calls smoke_step(False) on EVERY model step because it sits above the `% FIRE_SPREAD_SPEED` throttle at :97, whereas a live cell's smoke_step runs once per three steps (:114-115). A burnt cell therefore drains its dispelling counter 3x faster and clears smoke sooner, which flips _cell_has_active_smoke, which subtracts 10 from _firefighter_cell_risk (:671-672) and flips _cell_meets_required_idle_safety from False to True (:734-736). Burnt-ness measurably changes retreat and idle-safety decisions — without any consumer ever reading the burnt flag. That is exactly the "indirect consumption" the brief told me to hunt for, and it is real, though it is a side effect of a throttle asymmetry rather than a designed rule.
+
+CORRECTION worth carrying forward: the prior sweep's claim that serve_dashboard.py:132-145 is "the only place burnt state of one cell influences the RENDERING of a DIFFERENT cell" is wrong. Line 119 writes every Fire cell into `cells` unconditionally, so the `if key in cells: continue` guard at :135 always fires and the whole spared-vegetation block (:137-145) is unreachable. _is_dark is never called and #2f4a1a is never emitted. That removes a burnt consumer rather than adding one, so it reinforces half 1 while exposing a live rendering defect and a stale comment at :118.
+
+Also verified as still true: wildfire_model.py contains exactly one "burnt" token (the :3769 docstring) and zero has_burned; the burnt_status probe at local_adaptation_generator.py:3319 is a phantom attribute defined nowhere in the tree. That last one is the closest thing to a refutation — it is targeting code reaching for a ground-truth burn-status field, and it would misclassify "burned" as active fire — but since nothing ever sets the attribute, it reads nothing and cannot refute half 1.
+
+Bottom line for the parent: the audit concern as stated ("operational layers silently consume burnt state") is NOT supported. The correct finding remains "no opinion" — burnt-ness is absent from every movement, pathing, hazard, targeting and scoring predicate — with the two caveats above: burnt is read by the fire dynamics itself, and it leaks into firefighter risk scoring through smoke timing.
+
+EVIDENCE:
+CLAUSE 1 (operational layers) — CONFIRMED, could not refute:
+- agents.py:379-1178 (class Firefighter, bounded by `class Firefighter(mesa.Agent):` at :379 and `class PathMarker(mesa.Agent):` at :1179): an awk scan of that exact line range for /burnt|has_burned|fuel|cell_prob|probability_of_fire|next_burning_state/ returns ZERO hits.
+- agents.py:637 "            if type(agent) is Fire and agent.is_burning():" (sole content test in _cell_contains_active_fire, agents.py:629-639); agents.py:622 "            if not agent.is_burning():" (_fire_cells).
+- wildfire_model.py:3769 '        """4-connected BFS; active fire cells are impassable, burnt cells are not."""'; body tests only set membership: wildfire_model.py:3784 "                if nxt in reachable or nxt in burning:". wildfire_model.py:3754 "                if not agent.is_burning():" builds that set. wildfire_model.py:4024 "                if callable(is_burning) and not is_burning():" (sole death mechanic).
+- FUEL cannot leak burnt-ness into logic: every read of `fuel`/`get_fuel()` outside class Fire is a colour lookup — main.py:75 and main.py:80 "                    idx = normalize_fuel_values(agent.get_fuel(), FUEL_UPPER_LIMIT)"; serve_dashboard.py:62 "        return _fire_color(c.get_fuel())" and :65 "    return _veg_color(c.get_fuel())". Only other tree hit: src_extension/planning/rescue_planner.py:43 (a comment).
+- PROBABILITY cannot leak it either: `get_prob()`/`cell_prob` read outside class Fire only at main.py:63 "            idx = int(round(agent.get_prob(), 1) * 10)" and serve_dashboard.py:121 "            pv = float(c.get_prob())" — both rendering.
+- No cached/serialized back door: wildfire_model.py:159 "        self.datacollector = mesa.DataCollector()" registers no reporters; wildfire_model.py:4569 "            self.latest_dashboard_state = self.get_dashboard_state()" is read only by tests/_validate_movement_explainability.py:65. `burnt_cells`/`has_burned_cells` are produced at src_extension/dashboard/dashboard_state_builder.py:312-313 and consumed only at serve_dashboard.py:311/630/672, src_extension/dashboard/live_dashboard_panel.py:206-207, evaluate_scenarios.py:49/260.
+- No dynamic-name back door: a tree-wide grep for the strings burnt|has_burned|is_burnt|charred|scorch|burned (excluding .claude/worktrees, .venv, outputs) returns only the 12 known files; the `read_value(source, name, default)` helpers (e.g. src_extension/adaptation/global_adaptation_generator.py:102) are only ever passed literals none of which are burn-related.
+- Grep for burnt|has_burned in *.json/*.js/*.html/*.yaml/*.toml/*.txt in the live tree: zero hits. Canvas_Grid_Visualization.py: grep -c "burnt\|has_burned\|fuel" = 0.
+
+CLAUSE 2 ("consumed only by rendering and metrics") — REFUTED:
+(a) Direct non-render, non-metric reads, all in the Fire state machine:
+  agents.py:53-55 "    def probability_of_fire(self):\n        if self.burnt:\n            return 0"
+  agents.py:91-95 "        if self.burnt:\n            self.next_burning_state = False\n            if ACTIVATE_SMOKE:\n                self.smoke.smoke_step(False)\n            return"
+  agents.py:109-112 "            if self.has_burned and self.fuel <= 0:\n                self.burnt = True\n                self.burning = False\n                self.next_burning_state = False"
+  agents.py:121-125 "        if self.steps_counter % FIRE_SPREAD_SPEED == 0:\n            if self.burnt:\n                self.burning = False\n                return\n            self.burning = self.next_burning_state"
+(b) Indirect but behaviourally real: burnt-ness → smoke timing → firefighter hazard SCORING.
+  The burnt branch calls smoke_step every model step because it sits ABOVE the throttle: agents.py:94 "                self.smoke.smoke_step(False)" then agents.py:95 "            return", whereas agents.py:97 "        if self.steps_counter % FIRE_SPREAD_SPEED == 0:" gates the live path at agents.py:114-115 "            if ACTIVATE_SMOKE:\n                self.smoke.smoke_step(self.burning)".
+  smoke_step's only reachable branch for a burnt cell drains the counter: agents.py:169-177 "        elif self.smoke:\n            if 0 < self.dispelling_counter <= self.dispelling_counter_start_value:\n                self.subtract_dispelling_counter()\n            elif self.dispelling_counter == 0:\n                self.smoke = False".
+  Firefighter scoring reads exactly that flag: agents.py:671-672 "        if self._cell_has_active_smoke(cell):\n            risk += 10" (in _firefighter_cell_risk, agents.py:665-673) and agents.py:734-736 "        if self._cell_has_active_smoke(cell):\n            return False\n        return True" (in _cell_meets_required_idle_safety, agents.py:727-736). _cell_has_active_smoke (agents.py:641-656) has no burning/burnt guard.
+
+CORRECTION to prior sweep — a catalogued "rendering consumer" is unreachable dead code:
+  serve_dashboard.py:119 "        cells[\"%d,%d\" % (x, y)] = col" writes EVERY Fire cell into `cells` unconditionally, so the guard at serve_dashboard.py:135-136 "        if \"%d,%d\" % (x, y) in cells:\n            continue  # already fire/smoke/charred" always fires. Therefore serve_dashboard.py:137-145 never executes, the `_is_dark` closure at serve_dashboard.py:132-133 "    def _is_dark(cc):\n        return cc.is_burnt() or getattr(cc, \"has_burned\", False)" is never called, and "#2f4a1a" at serve_dashboard.py:145 is never emitted. The comment at serve_dashboard.py:118 ("Non-veg cells (fire/smoke/charred) were already sent before") is stale and false.
+
+NEAR-MISS confirmed (does not refute clause 1 — it reads nothing):
+  src_extension/adaptation/local_adaptation_generator.py:3319 "                    status = getattr(agent, \"burnt_status\", None)" with :3326 "                    if status_str not in (\"burning\", \"burned\", \"on_fire\", \"fire\"):". Tree-wide grep for `burnt_status` outside .claude/worktrees and .venv matches only this line plus four throwaway probe scripts in outputs/ (_diag_sweep_coverage.py:237, _diag_target_following.py:216, _diag_target_following_COMMITLOG.py:216, _diag_target_following_FIX14.py:228). No class in the live tree defines it; Fire's fields are agents.py:23-35. This IS targeting code (_collect_active_fire_cells, feeding _fire_activity_present at :3292 and the searcher fire_cells set) that reaches for a ground-truth burn-status field — and it whitelists "burned" as ACTIVE fire — but it is inert today.
+
+======================================================================
+VERDICT 3  REFUTED=False
+REASONING:
+CORE CLAIM CONFIRMED — I tried to refute it and could not. The model contains exactly TWO harm mechanics in the entire live tree, both inside _check_fire_casualties, both gated on is_burning(): victim death (wildfire_model.py:4045) and firefighter death (wildfire_model.py:4139). There is no third harm site — a grep for `dead = True|status = "dead"|crashed|destroyed` across agents.py, wildfire_model.py, main.py, serve_dashboard.py and src_extension/ returns only those two plus a reporting-only string (wildfire_model.py:3160) and two prose comments. UAVs have NO harm mechanic at all. A burnt cell can never enter the casualty set: `burnt = True` forces `burning = False` in the same block (agents.py:110-111) and advance() re-forces it (agents.py:122-123), so is_burning() is permanently False and the `continue` at wildfire_model.py:4023-4024 always skips it. probability_of_fire() short-circuits to 0 (agents.py:53-55) and the burnt branch of step() returns before it is even called (agents.py:91-95). Smoke persists on a burnt cell but smoke is never read by _check_fire_casualties. Burnt ground is physically 100% survivable forever. The audit framing IS backwards; the claim is right about that.
+
+I also checked and cleared the most plausible objection: there is no window in which a Fire agent is simultaneously burnt and lethal. step() sets burnt=True and burning=False in one block (agents.py:109-112) and advance() is gated on the same steps_counter value, so the absorbing transition is atomic to any observer.
+
+WHERE THE CLAIM IS UNDERSTATED — two corrections, both on the direction the claim already predicts, but far stronger than "if anything is suboptimal".
+
+(1) NOT MERELY "NOT PREFERRED" — ACTIVELY DEPRIORITIZED. Burnt ground is not neutral in the scoring; it systematically ACCUMULATES the model's penalties, because a burnt cell by construction lies immediately behind the fire front. _firefighter_cell_risk (agents.py:665-673) charges +100 for _cell_adjacent_to_fire and +10 for _cell_has_active_smoke, and the freshly-burnt rim is typically both: 4-adjacent to the still-burning front, and carrying residual smoke for ~4 model steps (agents.py:91-95 ticks smoke_step(False) every step, above the FIRE_SPREAD_SPEED gate at agents.py:97, draining a dispelling_counter that stands at 3 when the cell turns burnt). So the scar rim scores risk=110. Unburnt fuel ahead of the front scores risk=0 AND has a larger `dist`, since _min_fire_distance (agents.py:719-725) measures Manhattan distance to CURRENTLY BURNING cells only. _pick_improving_retreat maximises (improvement, dist, -risk) at agents.py:946-955, so the ranking is doubly biased: it steers a retreating firefighter OUT of the permanently-safe black and INTO unburnt fuel the front will reach. The front advances up to 3 cells per FIRE_SPREAD_SPEED=3 tick (radius-3 spread) while a firefighter moves 1 cell/step — a matched race that ends at the grid boundary. This is the real-wildfire "escape into the black" rule inverted.
+
+(2) NOT "NOT PREFERRED" — HARD REFUSED, with a lethal path. Two predicates do not merely score the scar rim down, they exclude it outright: _cell_meets_required_idle_safety (agents.py:727-736) returns False on fire-adjacency OR smoke, and _assigned_one_step_retreat (agents.py:1014-1020) `continue`s on all three. The lethal chain is concrete: once _idle_retreat_stalled latches, agents.py:789-792 makes _assigned_one_step_retreat the ONLY mover for an assigned firefighter on every subsequent step. Its three hard filters refuse the entire scar rim; it returns False (agents.py:1027); _survival_move returns without moving (agents.py:806-809, :842-844, :849-851); the firefighter holds position while the front advances onto its cell and is killed at wildfire_model.py:4118+4139, invoked every step from src_extension/adaptation_manager.py:170. A permanently non-ignitable cell was available and was refused. The repo's own history records firefighter_deaths at 13->7 and 16->14, so this is not hypothetical headroom.
+
+Note the harm is still caused by ORDINARY treatment, not by mistaken-safe treatment: a burnt fire-adjacent cell is refused on exactly the same terms an unburnt fire-adjacent cell is. That is why I rate the claim confirmed rather than refuted. But "if anything is suboptimal" undersells a mechanism with a demonstrable death path. Worth noting the contrast: the PRIMARY retreat path (agents.py:880-887) DOES admit burnt ground — it scores adjacency and smoke rather than filtering on them. The hard refusal bites only on the fallback/stalled path, which is exactly the path a cornered unit reaches.
+
+(3) THE UAV HALF IS ALSO WORSE THAN STATED. Belief decay is asymmetric in the wrong direction: fire_runtime_model.py:219-225 decays prob>=0.75 at 0.005/step versus 0.02 for low-probability cells, so a cell that was strongly believed burning and then burned out retains tracker attractiveness 4x LONGER than a cell nothing was ever believed about. Compounding this, wildfire_model.py:389-409 re-anchors the tracker sector on a bounding box unioning is_burning() ground truth with belief >= 0.45, so a fully burnt-out region can keep a fire tracker's sector pinned to it.
+
+SEPARATE DEFECT (operator/metric harm, not agent harm): main.py:77 and serve_dashboard.py:63/133 paint a cell charcoal on `is_burnt() OR has_burned`, so a has_burned-but-not-burnt cell — fuel remaining, CAN reignite, asserted by tests/test_executor_routing_and_burnt.py:218 — renders visually identical to permanently-safe burnt ground. Meanwhile the headline eval metric `burnt_cells` (evaluate_scenarios.py:49, sourced from serve_dashboard.py:301-302) counts only raw `.burnt`, so it under-reports fire damage by exactly that population. The renderer conflates the two; the metric splits them; a reader moving between the dashboard picture and the CSV is comparing two different populations.
+
+EVIDENCE:
+SAFETY CONFIRMED (burnt cannot harm any agent class):
+- wildfire_model.py:4013-4014 `def _check_fire_casualties(self) -> None:` / `"""Mark victims/firefighters dead when fire reaches their cell."""`
+- wildfire_model.py:4022-4028 `is_burning = getattr(agent, "is_burning", None)` / `if callable(is_burning) and not is_burning():` / `continue` ... `fire_cells.add((int(pos[0]), int(pos[1])))`
+- wildfire_model.py:4118 `if cell not in fire_cells:` / `continue`; wildfire_model.py:4139-4140 `ff_marker.dead = True` / `ff_marker.status = "dead"`; wildfire_model.py:4045 `marker.status = "dead"` (victims)
+- Exhaustive harm-site grep over agents.py, wildfire_model.py, main.py, serve_dashboard.py, src_extension/ for `dead = True|status = "dead"|crashed|destroyed` returns ONLY wildfire_model.py:3160 (reporting string), :4045, :4053, :4139, :4140, plus prose comments at local_adaptation_generator.py:900-901. No UAV harm mechanic exists anywhere.
+- agents.py:109-112 `if self.has_burned and self.fuel <= 0:` / `self.burnt = True` / `self.burning = False` / `self.next_burning_state = False`
+- agents.py:121-125 `if self.steps_counter % FIRE_SPREAD_SPEED == 0:` / `if self.burnt:` / `self.burning = False` / `return` / `self.burning = self.next_burning_state`
+- agents.py:53-55 `def probability_of_fire(self):` / `if self.burnt:` / `return 0`
+- agents.py:91-95 `if self.burnt:` / `self.next_burning_state = False` / `if ACTIVATE_SMOKE:` / `self.smoke.smoke_step(False)` / `return`
+
+CORRECTION 1 — burnt ground accumulates penalties:
+- agents.py:665-673 `def _firefighter_cell_risk(self, cell: tuple[int, int]) -> int:` / `if self._cell_contains_active_fire(cell):` / `return 1_000_000` / `risk = 0` / `if self._cell_adjacent_to_fire(cell):` / `risk += 100` / `if self._cell_has_active_smoke(cell):` / `risk += 10` / `return risk`
+- agents.py:641-656 `_cell_has_active_smoke` — iterates cell contents, returns True on `is_smoke_active()`, with NO burning/burnt guard
+- agents.py:719-725 `def _min_fire_distance(...)` / `if not fire_cells:` / `return 999` / `return min(abs(cx - fx) + abs(cy - fy) for fx, fy in fire_cells)`, fed by agents.py:621-622 `if not agent.is_burning():` / `continue`
+- agents.py:946-955 `improving = [c for c in candidates if int(c["improvement"]) > 0 or (int(c["risk"]) < current_risk and int(c["dist"]) >= current_dist)]` / `return max(improving, key=lambda c: (int(c["improvement"]), int(c["dist"]), -int(c["risk"]),),)`
+- Smoke-tail arithmetic: agents.py:134 `self.dispelling_counter_start_value = fire_cell_fuel`; counter stands at 3 when the cell turns burnt, then agents.py:91-95 drains it once per MODEL step (above the gate at agents.py:97 `if self.steps_counter % FIRE_SPREAD_SPEED == 0:`), versus agents.py:114-115 `if ACTIVATE_SMOKE:` / `self.smoke.smoke_step(self.burning)` once per 3 steps while alive — ~4 model steps of smoke on the scar rim.
+
+CORRECTION 2 — hard refusal + lethal chain:
+- agents.py:727-736 `def _cell_meets_required_idle_safety(self, cell, fire_cells) -> bool:` / `if self._cell_contains_active_fire(cell): return False` / `if self._cell_adjacent_to_fire(cell): return False` / `if self._cell_has_active_smoke(cell): return False` / `return True`
+- agents.py:1014-1027 `for ncell in self._neighbor_cells():` / `if self._cell_contains_active_fire(ncell): continue` / `if self._cell_adjacent_to_fire(ncell): continue` / `if self._cell_has_active_smoke(ncell): continue` / `score = self._min_fire_distance(ncell, fire_cells)` ... `if best is not None and best != cell:` / `self.model.grid.move_agent(self, best)` / `return True` / `return False`
+- agents.py:789-792 `if bool(getattr(self, "_idle_retreat_stalled", False)):` / `if self.target_pos:` / `self._assigned_one_step_retreat(fire_cells)` / `return`   <-- once latched, the ONLY mover for an assigned unit
+- agents.py:806-809 `if not candidates:` / `if self.target_pos and self._assigned_one_step_retreat(fire_cells):` / `return` / `self._idle_retreat_stalled = True` (pattern repeats at :842-844 and :849-851)
+- src_extension/adaptation_manager.py:170 `_call_stage(model, "_check_fire_casualties")` — every step in the post-move cycle
+- Contrast (primary path DOES admit burnt ground): agents.py:880-887 `if self._cell_contains_active_fire(ncell): continue` / `if ncell == last_cell: continue` / `if from_origin > IDLE_RETREAT_MAX_CELLS: continue` — adjacency and smoke are scored, not filtered
+- Constants: agents.py:375-376 `IDLE_RETREAT_SAFETY_BUFFER = 3` / `IDLE_RETREAT_MAX_CELLS = 6`
+
+CORRECTION 3 — UAV belief keeps burnt cells attractive:
+- src_extension/knowledge/fire_runtime_model.py:219-225 `# Preserve high-probability beliefs while still decaying over time.` / `if prob >= 0.75:` / `prob_rate = 0.005` / `elif prob >= 0.4:` / `prob_rate = 0.01` / `else:` / `prob_rate = 0.02`
+- wildfire_model.py:389-409 `def _collect_fire_cells_for_sector_update(self) -> set[tuple[int, int]]:` ... `if callable(is_burning) and is_burning():` ... `if float(raw_prob) < 0.45:` / `continue` / `cells.add(...)`
+
+NO OPERATIONAL CONSUMER (re-verified independently): a live-tree grep for `is_burnt|has_burned|\.burnt\b|burnt_status` (excluding .claude/worktrees, .venv, outputs) returns hits in only 8 files — agents.py (Fire state machine only: :25,26,41,42,54,91,106,109,110,122), main.py:77, serve_dashboard.py:63/133/672, src_extension/dashboard/dashboard_state_builder.py:287/297/300/301/313, src_extension/dashboard/live_dashboard_panel.py:207, src_extension/adaptation/local_adaptation_generator.py:3319 (the dead `burnt_status` probe), and tests. Zero hits in wildfire_model.py code (only the docstring at :3769), zero in uav_executor.py, zero in any movement, hazard, pathing, or targeting predicate.
+
+RENDERING/METRIC CONFLATION:
+- main.py:77 `elif agent.is_burnt() or getattr(agent, "has_burned", False):  # burnt/scorched`
+- serve_dashboard.py:63 `if c.is_burnt() or getattr(c, "has_burned", False):`; serve_dashboard.py:133 `return cc.is_burnt() or getattr(cc, "has_burned", False)`
+- serve_dashboard.py:301-302 `burnt = sum(1 for c in model.schedule.agents` / `if type(c).__name__ == "Fire" and getattr(c, "burnt", False))`
+- evaluate_scenarios.py:48-49 `"firefighter_deaths",` / `"burnt_cells",` inside METRIC_KEYS
+- tests/test_executor_routing_and_burnt.py:218 `def test_has_burned_cell_with_fuel_may_reignite() -> None:`
+

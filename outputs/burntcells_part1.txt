@@ -1,0 +1,543 @@
+================================================================================
+DEFECT #9 - "CHARRED CELLS TREATED AS SAFE"
+Part 1-2 diagnosis. Read-only investigation. No source file was modified.
+================================================================================
+
+BRANCH   claude/position-rename-and-hazard-revalidation
+HEAD     e02377b  (terminal_step statistics: disclose contributing-run count)
+ENV      Python 3.10.11, mesa 1.2.1  (confirmed at run time)
+SAMPLE   the campaign's canonical 13 runs, 240 steps, scenario D,
+         FIRE_SPREAD_MULTIPLIER 0.75, BATCH_SIZE 300, PROBABILITY_MAP False:
+           D/east  half-roles (2 trackers / 2 searchers) seeds 101,202,303,404,505
+           D/south half-roles                            seeds 101,202,303,404,505
+           D/east  default-roles (legacy n-1,1)          seeds 101,202,303
+PROVENANCE  the instrumented runs reproduce firefighter_deaths = 6 on this
+         sample, the figure this chain expected at HEAD after the last four
+         rounds. The probe observes only; it never writes model state.
+
+ORIGINAL AUDIT TEXT UNDER TEST
+  "Charred (burnt-out) cells are treated as safe/passable by movement and
+   hazard logic, when they arguably should not be."
+
+VERDICT IN ONE PARAGRAPH
+  The item is REAL, but both of its halves invert, and it names the wrong
+  population. There are two distinct states that this codebase itself
+  conflates. `burnt` (fuel exhausted) is provably the SAFEST ground in the
+  model, and treating it as ordinary passable ground is CORRECT - that half of
+  the audit is closed as verdict (C), and the "prefer burnt cells for retreat"
+  inversion is separately closed as verdict (D), inert, because burnt ground is
+  essentially never adjacent to a firefighter in danger. But
+  `has_burned and not burnt` - which BOTH renderers paint the identical
+  charcoal #2b2b2b, i.e. what a human operator actually sees as "charred" - is
+  the MOST DANGEROUS ground in the model: 96% of such cells re-ignite, they
+  carry a ~15x elevated per-step death rate, and three of the six remaining
+  firefighter deaths are precisely this ground igniting under a stationary
+  unit. That is verdict (A), REAL DEFECT, ACTIONABLE - but scoped narrowly to
+  the HAZARD MODEL, because the Fire-level semantics AND the shared charcoal
+  rendering both turn out to be specified and test-locked (section 2.4). The
+  actionable gap is that nothing carries the specified re-ignition risk into
+  firefighter movement or scoring.
+
+================================================================================
+PART 1 - WHAT "BURNT" ACTUALLY MEANS, AND WHO IGNORES IT
+================================================================================
+
+1.1  THE FIRE STATE MACHINE, QUOTED IN FULL
+--------------------------------------------
+
+Constructor (agents.py:22-26):
+    self.fuel = random.randint(FUEL_BOTTOM_LIMIT, FUEL_UPPER_LIMIT)   # 7..10
+    self.burning = burning
+    self.burnt = False
+    self.has_burned = bool(burning)
+
+Accessor (agents.py:41-42):
+    def is_burnt(self):
+        return self.burnt
+
+Spread probability (agents.py:53-55):
+    def probability_of_fire(self):
+        if self.burnt:
+            return 0
+
+step() (agents.py:89-115), the only producer of `burnt`:
+    self.steps_counter += 1
+    if self.burnt:
+        self.next_burning_state = False
+        if ACTIVATE_SMOKE:
+            self.smoke.smoke_step(False)
+        return                               # <-- NOTE: above the throttle
+    if self.steps_counter % FIRE_SPREAD_SPEED == 0:
+        self.cell_prob = self.probability_of_fire()
+        self.cell_prob = self.cell_prob * FIRE_SPREAD_MULTIPLIER
+        self.cell_prob = max(0.0, min(1.0, self.cell_prob))
+        generated = random.random()
+        self.next_burning_state = generated < self.cell_prob
+        if self.burning:
+            self.has_burned = True
+            if self.fuel > 0:
+                self.fuel = self.fuel - BURNING_RATE
+        if self.has_burned and self.fuel <= 0:
+            self.burnt = True
+            self.burning = False
+            self.next_burning_state = False
+        if ACTIVATE_SMOKE:
+            self.smoke.smoke_step(self.burning)
+
+advance() (agents.py:119-125):
+    if self.steps_counter % FIRE_SPREAD_SPEED == 0:
+        if self.burnt:
+            self.burning = False
+            return
+        self.burning = self.next_burning_state
+
+RELATIONSHIPS, established from the code above:
+  * `has_burned` is a one-way latch: set at construction for the seed cell and
+    at agents.py:106 whenever the cell is burning. No assignment to False
+    exists anywhere in the live tree.
+  * `burnt` is written in exactly two places tree-wide: False at agents.py:25
+    and True at agents.py:110. Nothing ever clears it.
+  * `fuel` is written in exactly two places: the constructor and the strict
+    subtraction at agents.py:107-108. It can never increase, so the
+    `fuel <= 0` half of the latch can never become unsatisfied.
+  * A tree-wide grep for indirect writes - setattr(..., "burnt"/"has_burned"/
+    "fuel"/"burning", ...) - returns ZERO hits outside tests/ fixtures.
+
+CAN A CELL LEAVE `burnt`? NO. It is an absorbing state, triple-guarded:
+  (i)   probability_of_fire() short-circuits to 0                 agents.py:54
+  (ii)  step() returns before probability_of_fire is even called  agents.py:91-95
+  (iii) advance() re-pins burning=False, bypassing the normal
+        "self.burning = self.next_burning_state" commit           agents.py:122-124
+  MEASURED: 0 burnt -> burning transitions over a full 240-step run
+  (outputs/_bc_reignite.py). The absorbing property is not merely argued, it is
+  observed.
+
+THE CRITICAL DISTINCTION THIS INVESTIGATION TURNS ON
+  `next_burning_state` is computed from probability_of_fire(), which reads the
+  cell's BURNING NEIGHBOURS (agents.py:64-79). It does NOT read the cell's own
+  fuel. So a cell that is currently burning stops burning whenever its
+  neighbours stop sustaining it - with fuel still in the tank. That produces a
+  third, unnamed state:
+
+    burning   : is_burning() == True                  -> LETHAL
+    burnt     : has_burned and fuel <= 0              -> PERMANENTLY SAFE
+    "scorched": has_burned and fuel > 0 and not burning
+                -> ORDINARY IGNITABLE GROUND, and empirically far worse
+
+  This report calls the third state "scorched". The codebase has no name for
+  it, which is the root of the whole defect.
+
+1.2  EVERY CONSUMER OF BURNT STATE, WHOLE TREE
+------------------------------------------------
+(Live tree only. .claude/worktrees/** are stale copies and were excluded.)
+
+FIRE DYNAMICS (the Fire agent's own state machine) - reads `.burnt`
+  agents.py:54     probability_of_fire early-return 0
+  agents.py:91     step() early-return branch (also the ONLY route by which
+                   burnt-ness reaches the smoke subsystem)
+  agents.py:109    reads has_burned as the write-condition for burnt
+  agents.py:122    advance() absorbing-state enforcement
+
+RENDERING / VISUALIZATION - all read `is_burnt() OR has_burned`
+  main.py:77                 portrayal -> "#2b2b2b"
+  serve_dashboard.py:63      _cell_color -> "#2b2b2b"
+  serve_dashboard.py:133,142 _is_dark(), the "spared vegetation" muting pass;
+                             the only place one cell's burn state affects the
+                             rendering of a DIFFERENT cell
+  serve_dashboard.py:630,672 dashboard JS stat tiles
+  src_extension/dashboard/live_dashboard_panel.py:206-207
+  Canvas_Grid_Visualization.py: ZERO references - confirmed. It is stock Mesa
+  CanvasGrid with no colour logic; it delegates to main.agent_portrayal.
+
+METRICS / REPORTING
+  serve_dashboard.py:301-302 _build_evaluation counts raw `.burnt` -> the
+                             single provenance root of every burnt_cells number
+  src_extension/dashboard/dashboard_state_builder.py:296-301
+                             the ONLY consumer that keeps `burnt_cells` and
+                             `has_burned_cells` as separate published numbers
+  evaluate_scenarios.py:49,260,274-275  opaque scalar pass-through
+
+MOVEMENT / PATHING / HAZARD / KNOWLEDGE-VISIBILITY
+  NOTHING. Zero reads, confirmed. The standby investigation's grep is upheld.
+  wildfire_model.py contains exactly ONE "burnt" token in 205KB, and it is a
+  docstring recording the decision deliberately:
+      wildfire_model.py:3769
+      """4-connected BFS; active fire cells are impassable, burnt cells are not."""
+  The entire Firefighter class body (agents.py:379-1178) contains not one
+  occurrence of burnt, has_burned, fuel, cell_prob, probability_of_fire, or
+  next_burning_state.
+
+  Indirect-consumption routes were hunted and closed: fuel<=0 inference (fuel
+  has no reader outside class Fire except four colour-index lookups),
+  has_burned inference (render/count only), cached belief arrays (the fire
+  belief map is fed only by is_burning()/smoke observations and time decay),
+  serialized dashboard state (never re-enters logic), and dynamic getattr.
+
+  ONE GENUINE INDIRECT CHANNEL EXISTS, and it runs the opposite way to the
+  audit's concern. The burnt branch at agents.py:91-95 sits ABOVE the
+  `% FIRE_SPREAD_SPEED` throttle at agents.py:97, so a burnt cell ticks its
+  smoke dispelling counter every step while a live cell ticks it every third
+  step. A burnt cell therefore clears its smoke ~3x faster, which flips
+  _cell_has_active_smoke, which removes the +10 from _firefighter_cell_risk
+  (agents.py:671-672) and flips _cell_meets_required_idle_safety from False to
+  True (agents.py:734-736). Burnt-ness measurably makes a cell MORE attractive
+  to a firefighter - an accidental, unnamed, partial implementation of exactly
+  the "prefer the black" behaviour the inversion hypothesis would recommend.
+
+THE COMPLETE FIREFIGHTER EXCLUSION SET (four predicates, all present-tense)
+  agents.py:629-638  _cell_contains_active_fire   -> agent.is_burning()
+  agents.py:658-663  _cell_adjacent_to_fire       -> 4-neighbour lift of same
+  agents.py:641-656  _cell_has_active_smoke       -> smoke.is_smoke_active()
+  agents.py:675-682  grid.out_of_bounds
+  Scoring (agents.py:665-673): fire 1_000_000 / adjacent-to-fire +100 / smoke +10.
+  Ranking (agents.py:946-955): max by (improvement, dist, -risk), where `dist`
+  is Manhattan distance to the nearest CURRENTLY BURNING cell.
+
+  TWO CORRECTIONS TO THE BRIEF I WAS GIVEN, both verified:
+   (a) _cell_contains_active_fire is NOT the sole impassability predicate.
+       _assigned_one_step_retreat (agents.py:1014-1020) and
+       _cell_meets_required_idle_safety (agents.py:727-736) additionally
+       hard-exclude fire-adjacent AND smoky cells.
+   (b) _cell_is_hazard (agents.py:1076-1079), the only function in agents.py
+       that unifies bounds+fire into a "hazard" notion, is DEAD CODE - zero
+       callers tree-wide.
+
+1.3  PHYSICAL SEMANTICS OF A BURNT CELL
+----------------------------------------
+SMOKE - still emitting, briefly, then clears FASTER than a live cell.
+  Smoke needs SMOKE_PRE_DISPELLING_COUNTER=2 burning ticks to activate, while
+  burnt needs >= FUEL_BOTTOM_LIMIT=7, so smoke is always already active at the
+  moment a cell turns burnt, with its dispelling counter at 3. The burnt branch
+  then drains it every step (see the throttle note above), clearing on step 4.
+  A burnt cell can never START new smoke: smoke_step(False) cannot enter the
+  activation branch (agents.py:159-166).
+
+HAZARD TO AN AGENT STANDING ON IT - NONE. This is the load-bearing fact.
+  wildfire_model.py:4139-4140 is the ONLY site in the live tree that marks a
+  firefighter dead, and wildfire_model.py:4045 the only one for a victim. Both
+  live inside _check_fire_casualties (wildfire_model.py:4013), whose fire_cells
+  set is built from is_burning() alone (:4016-4028). `burnt = True` forces
+  `burning = False` in the same block, so a burnt cell can NEVER enter that
+  set. There is no health, HP, exposure, inhalation, or injury mechanic
+  anywhere; UAVs have no harm mechanic at all.
+  NARROWING: residual smoke on a freshly-burnt cell is a real but NON-LETHAL
+  hazard - it triggers _needs_immediate_survival_retreat, adds +10 risk, and
+  fails _cell_meets_required_idle_safety, for about 4 steps.
+
+FIREBREAK - YES, above a measured critical width of exactly 3.
+  probability_of_fire sums over a Moore radius-3 neighbourhood with NO
+  line-of-sight or occlusion test, so burnt cells never shield anything
+  geometrically; they stop fire only by ceasing to be fuel. Measured directly
+  (outputs/_bc_firebreak.py), probability of ignition for the first unburnt
+  cell beyond a burnt band:
+        width 0 -> 1.0000   crosses
+        width 1 -> 0.9298   crosses
+        width 2 -> 0.9111   crosses
+        width 3 -> 0.0000   BLOCKED
+        width 4 -> 0.0000   BLOCKED
+        width 5 -> 0.0000   BLOCKED
+  Because burnt is absorbing, a band this wide is a PERMANENT firebreak. The
+  critical width is 3 because distance_rate is euclidean**-2 for d <= 3 and 0
+  beyond (common_fixed_variables.py:156-161).
+
+UAV OBSERVATION - cannot represent burnt-ness at all.
+  UAV.surrounding_states() (agents.py:294-306) encodes every observed cell as
+  a single bit, int(agent.is_burning() is True). A burnt cell, a scorched cell
+  and virgin green ground all produce the identical value 0 - as does an
+  out-of-grid cell, which wildfire_model.py:2406-2409 pads with 0 as well.
+  This is a sensor-level limitation, not a scoring omission.
+
+WHERE THE MODEL SIMPLY HAS NO OPINION
+  * No agent may prefer, avoid, or reason about burnt ground.
+  * No notion of future fire risk, predicted spread, or time-to-arrival
+    anywhere in any agent's scoring. Every hazard term is present-tense.
+  * No concept that an already-ignited cell with fuel left differs from virgin
+    fuel - the omission this whole report turns on.
+  * No victim survival mechanic beyond binary "cell is burning now".
+
+================================================================================
+PART 2 - IS THE CURRENT BEHAVIOR ACTUALLY WRONG?
+================================================================================
+
+2.1  FIREFIGHTERS
+------------------
+For `burnt` ground: treating it as ordinary passable ground is CORRECT, and the
+audit's premise is simply false. Burnt ground cannot ignite (measured: 0
+transitions) and cannot kill (it can never enter the casualty set). It is the
+only tile type in the model with a guaranteed-zero future hazard. MEASURED:
+firefighters stood on burnt ground for 759 steps across the 13 runs and died
+there zero times.
+
+The inversion - "the real defect is that retreat does not PREFER burnt cells" -
+is mechanically well-founded but EMPIRICALLY INERT. The mechanism is real:
+`dist` in _pick_improving_retreat measures distance to currently-burning cells,
+and burnt ground lies behind the front, so maximising `dist` steers a retreating
+unit out of the black and into unburnt fuel. But it never gets the chance to
+matter, for a physical reason:
+
+  A cell burns for 21-30 model steps (fuel 7-10, BURNING_RATE 1, one tick per
+  FIRE_SPREAD_SPEED=3 steps) while the front keeps advancing. The burning
+  annulus is therefore several cells thick, and the black always sits well
+  behind the flame. Reaching it means crossing live fire, which is the thing
+  that kills.
+
+  MEASURED over the six runs containing a death (outputs/_bc_gap.py), across
+  215 firefighter-steps with active fire within 2 cells:
+      no burnt cell existed anywhere on the grid ......  36 steps
+      mean distance to the nearest burnt cell .........  7.1 cells
+      a burnt cell adjacent (d <= 1), i.e. reachable ...  6 steps  (2.8%)
+
+  And the direct answer to the question this round was asked:
+      deaths with >= 1 safe BURNT neighbour at ANY point
+      in the unit's entire life ....................... 0 of 6
+
+  A "prefer burnt cells in retreat" change would have had ZERO opportunities to
+  act on any of the six remaining deaths. Same shape as the dispatch-
+  reachability closure: real, unarguable, and without measurable consequence at
+  current scale.
+
+For `has_burned and not burnt` ground: this is where the defect is.
+
+  MEASURED (outputs/_bc_reignite.py, 240 steps, five seeds):
+
+    seed/wind    scorched     re-ignited    rate    re-ignition   burnt->
+                 (distinct)   (distinct)            events        burning
+    101/east         1509         1449      96.0%       3985         0
+    202/east         1121         1048      93.5%       2874         0
+    303/east         2012         1952      97.0%       5036         0
+    101/south        2199         2140      97.3%       5490         0
+    404/south        2259         2206      97.7%       5741         0
+    ---------------------------------------------------------------------
+    TOTAL            9100         8795      96.6%      23126         0
+
+  So "charred-looking" ground re-ignites ~96% of the time (range 93.5-97.7%
+  across five seeds), about 2.5 times per cell, while the burnt population
+  re-ignited exactly ZERO times in the same runs. Yet _firefighter_cell_risk
+  scores a scorched cell identically to virgin green ground, and both renderers
+  paint it identically to permanently-safe burnt ground.
+
+  PER-STEP DEATH RATE BY GROUND TYPE, 13 runs, 5316 firefighter-steps alive:
+      on BURNT ground .............. 759 steps,  0 deaths  ( 0.00% )
+      on SCORCHED ("charred") ...... 179 steps,  3 deaths  ( 1.68% )
+      all ground ................... 5316 steps, 6 deaths  ( 0.11% )
+  Scorched ground carries a ~15x elevated per-step death rate, and it is the
+  ground the UI paints the same colour as the safest ground in the model.
+
+  ALL SIX DEATHS are "died in place": the unit's last living step and its death
+  step are the same cell. Three of the six are the charred cell igniting under a
+  stationary unit:
+      east/half  seed 404  ff_unit_0  stood on [31,38] charred at s28,30,31,32,
+                                      died there s33
+      east/def   seed 101  ff_unit_0  stood on [41,41] charred at s36,38-41,
+                                      died there s42
+      east/def   seed 202  ff_unit_0  stood on [34,49] charred at s222-224,
+                                      died there s225
+
+  In each of the three the unit walked in from genuinely safe ground:
+      seed 404 (e/h) : 4 truly-green free neighbours at s26; entered s28
+      seed 101 (e/d) : 3 truly-green free neighbours at s35; entered s36
+      seed 202 (e/d) : stepped at s219 into a cell with ZERO free neighbours
+  and was then enclosed by active fire before it died.
+
+  HONEST LIMIT ON THIS ATTRIBUTION. At the moment of death all three were
+  already surrounded by burning cells, so a scorched-cell penalty would have had
+  to act during the APPROACH (roughly s26-s36), not at the death step. That the
+  penalty would in fact have saved them is a hypothesis, not a measured result;
+  it needs an A/B experiment. The sample is also small - 6 deaths over 13 runs.
+  What IS measured and not in doubt: the re-ignition rate (96%), the rate
+  enrichment (~15x), and that 3 of 6 deaths occurred on ground the UI renders as
+  charred.
+
+2.2  UAVs / FIRE TRACKERS
+--------------------------
+A burnt cell has no remaining fire-tracking information value, and nothing in
+the stack distinguishes it. Targeting draws candidates ENTIRELY from the belief
+fire_probability_map at a fixed 0.3 threshold
+(local_adaptation_generator.py:3065-3092 _classify_fire_cells), then filters
+smoke, scores a lateral/upwind flank, and splits north/south. No ground-truth
+cell state is consulted at any stage. Burnt-ness is not a term, not a filter,
+not a penalty, and no belief layer stores it. The only way dead ground loses
+attractiveness is generic and indirect: a UAV overflies it, emits a negative
+observation, and update_no_fire_observation (fire_runtime_model.py:130) halves
+the probability; apply_time_decay (:209) bleeds all probabilities down with age.
+The model cannot distinguish "cold because it never burned" from "cold because
+it is permanently over."
+
+  MEASURED, 13 runs, 3,316,022 cell-observations (UAV x cell x step, radius 8):
+      on BURNT ground ............  613,751   (18.51%)
+      on SCORCHED ground .........  373,347   (11.26%)
+      on ACTIVELY BURNING ground .  252,165   ( 7.60%)
+      on unburnt / green ground .. 2,076,759  (62.63%)
+
+  So 18.5% of all observation effort lands on ground that is permanently over,
+  against 7.6% on live fire. That is the one place the audit's concern has real
+  mass - but it is the INVERTED form: the problem is not that burnt cells are
+  treated as safe, it is that they are not deprioritized as observation targets.
+  Note this is bounded and self-correcting: one overflight collapses the belief,
+  so trackers are not repeatedly drawn back. The cost is a wasted visit, not
+  persistent waste, and no measured mission outcome is attributed to it.
+
+2.3  VICTIM SEARCHERS AND VICTIMS
+----------------------------------
+Burnt-ness is entirely absent from the victim subsystem, and correctly so.
+Victims are placed on a deterministic ring computed from NUM_VICTIMS geometry
+with no fire-state check (wildfire_model.py:508-555), and they never move. Their
+mortality (wildfire_model.py:4045) keys strictly on is_burning(); there is no
+health, injury, or graded-survival concept - the Victim class has three fields
+and no-op step/advance.
+
+A LIVE VICTIM CAN NEVER STAND ON A BURNT CELL. Reaching `burnt` requires
+passing through `burning`, and any victim present during that passage is killed
+in the same step. So the question "does a burnt cell affect victim detection or
+survival" is vacuous by construction, not merely unmodelled. Dead victim markers
+do persist on burnt ground, since only rescued victims are removed. Searcher
+scoring uses distance-to-active-fire, wind, interior margin and coverage, and
+never mentions burnt-ness. NO DEFECT HERE.
+
+2.4  WHAT THE EXISTING TEST SUITE ALREADY SPECIFIES
+----------------------------------------------------
+CORRECTION TO MY OWN METHOD: my first consumer sweep excluded ./tests, and so
+initially missed tests/test_executor_routing_and_burnt.py (11KB, 12 tests). That
+file specifies most of the physics reported above as INTENTIONAL. Everything in
+Part 1 is therefore confirmation of documented intent, not discovery of
+accident:
+
+  test_fire_cell_becomes_burnt_when_fuel_depleted        (:159)
+  test_burnt_cell_never_reignites                        (:172)
+      - the absorbing property is a specified invariant.
+  test_cell_becomes_burnt_only_when_fuel_depleted        (:238)
+  test_has_burned_cell_may_stop_burning_before_fuel_depleted  (:263)
+      - asserts has_burned and not is_burnt() and not is_burning() and fuel > 0.
+        The "scorched" state is DELIBERATE and named in a test.
+  test_has_burned_cell_with_fuel_may_reignite            (:218)
+      - asserts such a cell DOES re-ignite. The 96% figure measured above is
+        the intended behaviour operating at scale, not a bug.
+  test_burnt_cell_portrayal_is_not_green                 (:189)
+  test_burned_cell_renders_dark_not_green_when_fire_stops (:202)
+      - constructs has_burned=True, burnt=False, fuel>0 and asserts the
+        portrayal colour is exactly "#2b2b2b". THE RENDERING CONFLATION IS
+        TEST-LOCKED AND INTENTIONAL.
+
+WHAT THIS CHANGES
+  * A2 is downgraded from "defect" to "deliberate design decision with an
+    operator-facing consequence". Any colour change breaks :202 by design.
+  * A1 is UNAFFECTED and remains the real gap: no test anywhere asserts
+    anything about firefighter risk, retreat, or movement on a scorched cell.
+    The Fire-level semantics are specified; their consequences for the hazard
+    model are not. That is precisely the untested seam the deaths fall through.
+
+================================================================================
+2.5  VERDICT
+================================================================================
+
+The audit item names one population but describes two. Split it:
+
+(C) NOT A DEFECT - `burnt` cells (has_burned and fuel <= 0).
+    Treating them as ordinary passable ground is CORRECT for this model, and
+    the original framing is mistaken. They are absorbing (0 re-ignitions
+    measured), cannot enter the casualty set, are the only ground with a
+    guaranteed-zero future hazard, and form permanent firebreaks above a
+    measured critical width of 3. Firefighters occupied them for 759 steps and
+    died there 0 times. CLOSE THIS HALF.
+
+(D) INERT - the inversion, "burnt cells should be PREFERRED as retreat targets".
+    Mechanically real: retreat ranks by distance to currently-burning cells, and
+    the black lies behind the front, so the ranking steers units out of it. But
+    burnt ground is adjacent in only 2.8% of danger-steps, sits 7.1 cells away
+    on average, and was available in 0 of 6 deaths. A preference change would
+    have had no opportunity to act. Quantified as inert; same disposition as the
+    dispatch-reachability closure.
+
+(A) REAL DEFECT, ACTIONABLE - `has_burned and not burnt` cells: the ground both
+    renderers paint charcoal #2b2b2b, i.e. what an operator sees as "charred".
+    ONE defect (A1, the hazard model) plus ONE deliberate design choice I am
+    flagging but NOT calling a defect (A2, the shared rendering):
+
+    A1. HAZARD MODEL. A cell that has already ignited and retains fuel
+        re-ignites 96% of the time, yet _firefighter_cell_risk
+        (agents.py:665-673) scores it identically to virgin ground, and no
+        predicate anywhere distinguishes it. Per-step death rate on this ground
+        is ~15x baseline; 3 of the 6 remaining firefighter deaths are this
+        ground igniting under a stationary unit. The signal is already present
+        on the agent object (has_burned and fuel) and is simply never read.
+
+    A2. RENDERING - NOT A DEFECT, A DELIBERATE CHOICE I AM QUESTIONING.
+        main.py:77 and serve_dashboard.py:63 both colour on
+        "is_burnt() OR has_burned", merging the safest ground in the model with
+        the most dangerous into one indistinguishable charcoal. At step 60 the
+        scorched population is 1.73x the burnt population, so early in a run the
+        charcoal region is MAJORITY not-safe.
+        CRITICAL CORRECTION: this is NOT an oversight. It is specified and
+        locked by an existing test - see section 2.4. Changing it means changing
+        a documented behaviour and updating that test, which is a design
+        argument, not a bug fix. I am flagging the operator-facing consequence
+        only; the call is the maintainer's.
+        Note serve_dashboard.py:133 propagates the same merge into the "spared
+        vegetation" muting pass. dashboard_state_builder.py:296-301 already
+        publishes the two counts separately, so if a third colour were wanted
+        the data is on hand.
+
+FIX SCOPE - NOT IMPLEMENTED, AWAITING GO-AHEAD, per this chain's protocol.
+  A1 would add a re-ignition risk term keyed on (has_burned and not burnt and
+     fuel > 0) to _firefighter_cell_risk, and would need an A/B run on this
+     13-run sample plus the 10 extra seeds to show it actually moves
+     firefighter_deaths. The attribution above is suggestive, not proven, and
+     the change must be justified by measured deaths, not by the 96% figure
+     alone. Risk to watch: the scar rim already accumulates +100 (fire-adjacent)
+     and +10 (smoke); adding more penalty there could push units further into
+     unburnt fuel and make things worse. That is exactly why it needs the A/B.
+  A2 is a display-only change and carries no simulation risk: give
+     has_burned-and-still-fuelled its own colour, distinct from burnt.
+  A1 and A2 are independent and can be taken separately or in either order.
+
+================================================================================
+TEST BASELINE
+================================================================================
+This was a read-only investigation. `git status` confirms ZERO tracked files
+modified - every artifact is a new untracked file under outputs/ - so the
+8 failed / 427 passed baseline cannot have shifted as a result of this work.
+
+Positively confirmed: pytest collects 435 items, which is exactly 8 + 427.
+A full verbose run was launched to confirm the 8/427 split directly. Note for
+future rounds: the suite contains several 300-step full-scenario simulation
+tests (e.g. tests/test_firefighter_fire_avoidance.py:206
+test_scenario_a_east_seed42_firefighter_survival_validation, and
+tests/test_executor_routing_and_burnt.py:280 test_fire_self_limits_...), each of
+which takes many minutes. A bare `pytest -q` looks hung for long stretches; it
+is not. Budget accordingly.
+
+RELEVANT TO ANY A1 FIX: test_scenario_a_east_seed42_firefighter_survival_
+validation computes ff_deaths but asserts only `all_terminal` and
+`not silent_candidate`. It would therefore NOT lock a firefighter-death count
+against a hazard-model change - the A/B evidence would have to come from the
+evaluate_scenarios sample, not from this test.
+
+================================================================================
+INCIDENTAL FINDINGS (not defect #9; recorded, not acted on)
+================================================================================
+1. src_extension/adaptation/local_adaptation_generator.py:3319 reads
+   getattr(agent, "burnt_status", None) - an attribute that exists on NO agent
+   class anywhere in the tree. Every agent therefore fails the status test and
+   `continue`s, so the ground-truth agent-scan half of _collect_active_fire_cells
+   is dead code and the function is belief-only in practice. It would also
+   classify the string "burned" as ACTIVE fire if the attribute ever appeared.
+2. agents.py:1076-1079 _cell_is_hazard is dead code, zero callers tree-wide.
+3. tests/test_dashboard_state.py:96
+   test_dashboard_state_contains_fire_wind_and_burnt_summary asserts only
+   wind_direction and wind_vector. Despite its name it makes no assertion about
+   the dashboard's burnt_cells / has_burned_cells counters. (The Fire-agent
+   semantics ARE well covered, by tests/test_executor_routing_and_burnt.py -
+   it is specifically the dashboard counter pair that is unasserted.)
+
+================================================================================
+REPRODUCE
+================================================================================
+  .venv/Scripts/python.exe outputs/_bc_firebreak.py
+  .venv/Scripts/python.exe outputs/_bc_reignite.py --seed 101 --wind east --steps 240
+  bash outputs/_bc_runall.sh                       # the 13 instrumented runs
+  .venv/Scripts/python.exe outputs/_bc_analyze.py   # -> outputs/_bc_analysis.txt
+  .venv/Scripts/python.exe outputs/_bc_gap.py --seed 101 --wind east --roles half \
+      --out outputs/_bc_gap_e101h.json
+Artifacts: outputs/_bc_{east_half,south_half,east_def}_<seed>.json,
+           outputs/_bc_gap_*.json, outputs/_bc_analysis.txt,
+           outputs/_bc_sweeps_raw.txt, outputs/_bc_verdicts_raw.txt
