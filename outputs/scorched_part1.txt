@@ -1,0 +1,518 @@
+================================================================================
+DEFECT #9-A1 - SCORCHED GROUND IS NOT DISTINGUISHED FROM VIRGIN GROUND
+Part 1: both arms built as monkeypatches, measured, and decided.
+NO SOURCE FILE WAS MODIFIED.
+================================================================================
+
+BRANCH   claude/position-rename-and-hazard-revalidation
+HEAD     e02377b  (terminal_step statistics: disclose contributing-run count)
+ENV      .venv Python 3.10, mesa 1.2.1
+SAMPLE   13-run canonical + the 10 extra seeds from the last_cell round = 23,
+         240 steps, scenario D, FIRE_SPREAD_MULTIPLIER 0.75, BATCH_SIZE 300,
+         PROBABILITY_MAP False:
+           D/east  half-roles (2 trackers / 2 searchers) 101,202,303,404,505
+           D/south half-roles                            101,202,303,404,505
+           D/east  default-roles (legacy n-1,1)          101,202,303
+           extra: D/east half + D/south half             606,707,808,909,1010
+
+--------------------------------------------------------------------------------
+VERDICT IN ONE PARAGRAPH
+--------------------------------------------------------------------------------
+A1 closes as DIAGNOSED, FIX ATTEMPTED, MEASURED HARMFUL. Three penalty
+magnitudes spanning two orders of magnitude (+1, +10, +100) were run seed-matched
+over all 23 runs. All three produce the SAME outcome: firefighter_deaths 6 -> 8
+on the 13-run sample and 14 -> 17 pooled, against a small victim-side gain
+(rescued 29 -> 30 / 51 -> 52, victims dead 23 -> 22 / 37 -> 36). None of the
+three named deaths moved - two of those three runs came out trajectory-identical
+under every arm, so the penalty did not act on them at all. The displacement
+check, which the brief named as the specific failure mode to guard against,
+fails decisively: on the runs an arm actually perturbed, firefighter time on
+unburnt green ground rose +19.8 pp while time on scorched ground fell only
+-1.0 pp, because the penalty evicted units from BURNT ground (-18.8 pp) - the
+only ground in the model with a guaranteed-zero future hazard. Two independent
+measurements explain why this is structural rather than a tuning failure:
+(i) at matched ignition probability, scorched and virgin ground ignite at
+indistinguishable rates, so `has_burned` carries no hazard information that the
+existing fire-adjacency term does not already carry; and (ii) burnt ground is
+essentially never adjacent to green ground (1 of 10,933 burnt-cell observations),
+so the scorched band is the mandatory boundary layer of the scar and taxing it
+puts a toll on the only door to the safest ground in the model. RECOMMENDATION:
+ship nothing. The diagnosis in outputs/burntcells_part1.txt stands as a correct
+description of the code; the proposed remedy is measured to be counterproductive.
+
+================================================================================
+1. WHERE A NEW TERM WOULD ENTER, AND WHAT IT COMPETES AGAINST
+================================================================================
+
+1.1  THE FUNCTION, QUOTED IN FULL (agents.py:665-673)
+------------------------------------------------------
+    def _firefighter_cell_risk(self, cell: tuple[int, int]) -> int:
+        if self._cell_contains_active_fire(cell):
+            return 1_000_000
+        risk = 0
+        if self._cell_adjacent_to_fire(cell):
+            risk += 100
+        if self._cell_has_active_smoke(cell):
+            risk += 10
+        return risk
+
+Every term is present-tense. There is no notion of future risk anywhere.
+
+1.2  EVERY CALLER, WHOLE TREE (4 sites, all in agents.py)
+----------------------------------------------------------
+  :799  _survival_move                 current_risk = risk(own cell)
+  :888  _retreat_candidates            risk = risk(each neighbour candidate)
+  :983  _revalidate_idle_retreat_stall current_risk = risk(own cell)
+  :1119 _move_toward                   risk = risk(each free neighbour)
+There are no others; the grep is clean tree-wide.
+
+1.3  THE RANKING THAT CONSUMES IT (_pick_improving_retreat, agents.py:917-956)
+------------------------------------------------------------------------------
+        ideal_reachable = [c for c in candidates if c["ideal"]]
+        if ideal_reachable:
+            return max(ideal_reachable, key=lambda c: (c["dist"], -int(c["risk"])))
+        improving = [
+            c for c in candidates
+            if int(c["improvement"]) > 0
+            or (int(c["risk"]) < current_risk and int(c["dist"]) >= current_dist)
+        ]
+        if improving:
+            return max(improving, key=lambda c: (int(c["improvement"]),
+                                                 int(c["dist"]), -int(c["risk"])))
+        return None
+
+  plus three more consumers of the same per-candidate `risk`, all in
+  _survival_move: the no-improvement fallback max(candidates, (dist, -risk)),
+  and the at-cap branch max(required_reachable, (dist, -risk)).
+
+  In EVERY one of those keys `risk` is the LAST component. It never outranks
+  fire distance; it only breaks exact distance ties. The one place `risk` is
+  load-bearing rather than a tiebreak is the `improving` admission clause:
+  raising current_risk widens the set of neighbours that count as an
+  improvement without gaining fire distance.
+
+1.4  THE APPROACH PATH (_move_toward, agents.py:1081-1176) - THE KEY FINDING
+----------------------------------------------------------------------------
+The tier chain that moves an assigned unit toward its victim is:
+
+    tier 1: improving   and not adjacent_fire and not smoke   -> min(dist_after, preferred)
+    tier 2: maintaining and not adjacent_fire and not smoke   -> min(dist_after, preferred)
+    tier 3:                 not adjacent_fire and not smoke   -> min(dist_after, preferred)
+    tier 4 (chosen is None): min(scored, key=(risk, dist_after, preferred))
+
+TIERS 1, 2 AND 3 NEVER READ `risk` AT ALL. They filter on adjacent_fire/smoke
+and rank on distance-to-target. `risk` is consulted only in the tier-4 fallback,
+which is reached only when EVERY free neighbour is fire-adjacent or smoky - and
+a scorched cell that is neither would have been taken by tiers 1-3 before tier 4
+was ever reached, so in tier 4 the new term is again only a within-class
+tiebreak among already-bad cells.
+
+CONSEQUENCE, DERIVABLE BEFORE ANY RUN: on the normal approach to a victim -
+which is exactly the s26-s36 window the three named deaths need - a term added
+to _firefighter_cell_risk is INERT AT ANY MAGNITUDE, because the code path that
+chooses the step does not consult risk. This is a structural property of the
+tier chain, not a question of how large the penalty is. Section 4.5 confirms it
+empirically: all three named units still enter their death cell under every arm.
+
+1.5  WHAT A NEW TERM OF SIZE S WOULD COMPETE AGAINST
+-----------------------------------------------------
+Stock risk values are drawn from {0, 10, 100, 110}. Adding S to scorched cells:
+  S <  10  cannot reorder any smoke-vs-clean or adjacent-vs-clear decision;
+           acts only where those present-tense terms already tie.
+  S == 10  a scorched clean cell ties a green smoky cell, so risk can no longer
+           separate them and the -risk tiebreak falls through to list order.
+  S == 100 a scorched clean cell ties a green fire-adjacent cell.
+This is what the three arms in section 3 were chosen to span.
+
+================================================================================
+2. CONFIRMING THE PREDICATE
+================================================================================
+
+Proposed: scorched == has_burned and not burnt and fuel > 0 and not burning.
+
+JOINTLY NECESSARY AND SUFFICIENT, verified against the Fire state machine
+(agents.py:22-125):
+
+  * `burnt` is written True only at agents.py:109-110, guarded by
+    `if self.has_burned and self.fuel <= 0`. `fuel` is written in exactly two
+    places - the constructor (7..10) and the strict subtraction at :107-108 -
+    so it can never increase. Therefore burnt => fuel <= 0 permanently, and
+    `fuel > 0` already implies `not burnt`. The `not burnt` clause is redundant
+    but harmless, and it is kept as a guard in case the two ever diverge.
+  * The decrement and the burnt test sit in the same throttled block, on
+    consecutive lines, so fuel <= 0 sets burnt in the same tick. There is no
+    reachable state with has_burned and fuel <= 0 and not burnt.
+  * `not burning` is necessary because a burning cell must keep returning
+    1_000_000 from the fire branch, which precedes any new term.
+  * SUFFICIENT for "already burned once and can still ignite":
+    probability_of_fire (agents.py:53-84) short-circuits to 0 only when burnt,
+    and otherwise gates on `self.fuel > 0`. A cell satisfying the predicate
+    therefore has a live, non-zero ignition path.
+
+  The four states are mutually exclusive and exhaustive: burning / burnt /
+  scorched / virgin-green, with green == not has_burned exactly.
+
+READABLE AT SCORING TIME WITHOUT ANY NEW REFERENCE - YES. `has_burned`,
+`burnt`, `fuel` and `is_burning()` all live on the Fire agent, reachable through
+the identical `self.model.grid.get_cell_list_contents([cell])` +
+`type(agent) is Fire` path that _cell_contains_active_fire (agents.py:629-638)
+and _cell_has_active_smoke (agents.py:641-656) already use.
+_firefighter_cell_risk already holds `self.model.grid`. No model reference, no
+new plumbing, no cached state. The helper used in the arms is 15 lines and
+mirrors the two existing predicates exactly.
+
+  IMPORTANT COROLLARY, established from the same source read and confirmed
+  empirically in section 5.1: probability_of_fire NEVER READS has_burned. It
+  reads the cell own fuel as a gate and then sums over BURNING neighbours in a
+  Moore radius-3 disc. A scorched cell and a virgin cell facing the same burning
+  neighbourhood therefore draw from the identical distribution. `has_burned` is
+  a POSITIONAL PROXY for "inside or on the rim of the scar", not a material
+  property of the ground. This is the fact the whole round turns on.
+
+================================================================================
+3. THE ARMS
+================================================================================
+
+All arms are runtime monkeypatches installed by outputs/_sc_probe.py. Nothing is
+written to source. Each arm replaces _firefighter_cell_risk with EXACTLY the
+source edit under test, so the Part 2 equivalence check would be trivial:
+
+    if self._cell_contains_active_fire(cell): return 1_000_000
+    risk = 0
+    if self._cell_adjacent_to_fire(cell): risk += 100
+    if self._cell_has_active_smoke(cell):  risk += 10
+    if _cell_is_scorched(self, cell):      risk += PENALTY
+    return risk
+
+  ARM stock  no monkeypatch at all - HEAD e02377b untouched. Provenance control.
+  ARM none   the same harness with PENALTY = 0. Must be bit-identical to stock.
+  ARM a      +1.   One rung BELOW the lowest existing rung on the model own
+                   1_000_000 / 100 / 10 ladder. Justified from that scale rather
+                   than as a round number: it is the largest penalty that
+                   provably cannot reorder any smoke or adjacency decision, so
+                   it isolates "break ties, change nothing else".
+  ARM b      +10.  Equal to the smoke term - re-ignition risk treated as roughly
+                   equivalent to current smoke presence, and able to reorder
+                   against smoke.
+  ARM c      +100. THE THIRD ARM THE BRIEF ALLOWED FOR, and the reason it was
+                   added: arms a and b came out TRAJECTORY-IDENTICAL on all 23
+                   runs (section 4.4). Two arms that are trajectory-identical
+                   have not tested two magnitudes, they have tested one twice.
+                   Without a third point at a rung that CAN reorder against a
+                   present-tense term, the round would have reported two
+                   magnitudes while having measured one. +100 is the next
+                   EXISTING rung (fire-adjacency), not a swept parameter.
+
+PROVENANCE CHECK (arm stock vs arm none, 13-run sample)
+  Per-step signature = sha1 over (sorted burning cells, firefighter positions
+  and death flags, UAV positions), 240 steps per run.
+      13 of 13 runs IDENTICAL on all 240 step signatures, 0 differ
+      firefighter_deaths  stock = 6   none = 6
+  This reproduces the committed 6-death figure at e02377b and confirms the arm
+  harness itself perturbs nothing.
+
+================================================================================
+4. RESULTS
+================================================================================
+
+4.1  OUTCOMES - 13-RUN SAMPLE FIRST, THEN POOLED 23 (this chain convention)
+----------------------------------------------------------------------------
+                                arm none   arm a     arm b     arm c
+                                (+0)       (+1)      (+10)     (+100)
+  13-RUN CANONICAL SAMPLE
+    firefighter_deaths            6          8         8         8
+    victims rescued              29         30        30        30
+    victims dead                 23         22        22        22
+    deaths on SCORCHED ground     3          4         4         4
+
+  POOLED 23-RUN SAMPLE
+    firefighter_deaths           14         17        17        17
+    victims rescued              51         52        52        52
+    victims dead                 37         36        36        36
+    deaths on SCORCHED ground     8          9         9         9
+
+  Arm none reproduces every published baseline figure exactly: ff_deaths 6 on
+  13 runs, 14 pooled (the last_cell round post-fix figure), 3 of 6 deaths on
+  scorched ground, 179 scorched firefighter-steps, 759 burnt firefighter-steps,
+  5316 alive-steps.
+
+  ALL THREE MAGNITUDES GIVE THE SAME ANSWER. firefighter_deaths rises by 2 on
+  the 13-run sample and by 3 pooled, identically at +1, +10 and +100.
+
+4.2  GROUND-TYPE OCCUPANCY, ALL 23 RUNS
+----------------------------------------
+                                arm none   arm a     arm b     arm c
+    ff-steps alive (total)        8800       8422      8422      8422
+      on SCORCHED ground           297        244       244       243
+      on UNBURNT GREEN ground     7358       7665      7665      7666
+      on BURNT ground             1145        513       513       513
+      on BURNING ground              0          0         0         0
+    green share                 83.61%     91.01%    91.01%    91.02%
+    scorched share               3.38%      2.90%     2.90%     2.89%
+    burnt share                 13.01%      6.09%     6.09%     6.09%
+
+4.3  THE DISPLACEMENT CHECK - THE GATE ITEM, AND IT FAILS
+----------------------------------------------------------
+Restricted to the runs each arm actually perturbed. On a run left
+trajectory-identical the delta is zero by construction, so pooling all 23
+dilutes the effect roughly threefold and understates it.
+
+  arm a (+1) and arm b (+10) - 7 of 23 runs perturbed, identically:
+      ff-steps total       2968 -> 2590   -378
+      ff-steps GREEN       1617 -> 1924   +307    54.48% -> 74.29%  (+19.80 pp)
+      ff-steps scorched     206 ->  153    -53     6.94% ->  5.91%  ( -1.03 pp)
+      ff-steps BURNT       1145 ->  513   -632    38.58% -> 19.81%  (-18.77 pp)
+
+  arm c (+100) - 8 of 23 runs perturbed:
+      ff-steps GREEN       1968 -> 2276   +308    58.89% -> 76.79%  (+17.90 pp)
+      ff-steps scorched     229 ->  175    -54     6.85% ->  5.90%  ( -0.95 pp)
+      ff-steps BURNT       1145 ->  513   -632    34.26% -> 17.31%  (-16.95 pp)
+
+  READ THAT RATIO. The penalty bought a 1.0 pp reduction in time on scorched
+  ground and paid for it with an 18.8 pp eviction from BURNT ground - the only
+  ground in the model that provably cannot ignite and provably cannot kill
+  (0 re-ignitions and 0 deaths in 759 firefighter-steps, verdict C). The
+  displaced time went to unburnt green ground, +19.8 pp, which is the ground
+  that actually burns. This is precisely the failure mode the brief named, and
+  it is roughly 19x larger than the effect the change was aiming at.
+
+  PER-RUN, arm a (arm b identical; arm c adds south_half_101 with no
+  outcome change):
+      east_default_303  r2/d2/ff0 -> r2/d2/ff1   burnt 182->46   scorched 60->7
+      east_half_101     r2/d2/ff1 -> r2/d2/ff0   burnt  73->155  scorched  7->32
+      east_half_202     r2/d2/ff0 -> r2/d2/ff0   burnt 177->43   scorched  6->20
+      east_half_303     r1/d3/ff0 -> r1/d3/ff1   burnt 168->0    scorched 26->5
+      east_half_505     r1/d3/ff0 -> r2/d2/ff1   burnt 159->0    scorched 34->9
+      south_half_606    r2/d1/ff0 -> r2/d1/ff0   burnt 262->264  scorched 24->22
+      south_half_1010   r1/d2/ff1 -> r1/d2/ff2   burnt 124->5    scorched 49->58
+
+  Note the signature: all four runs that got WORSE show burnt-ground occupancy
+  collapsing (182->46, 168->0, 159->0, 124->5). The single run that got BETTER
+  is the only one where burnt occupancy ROSE (73->155). One run collapsed
+  without changing the outcome (east_half_202), so the collapse is necessary but
+  not sufficient for harm in this sample.
+
+4.4  ARM-vs-ARM IDENTITY - THE MAGNITUDE QUESTION IS EMPIRICALLY MOOT
+----------------------------------------------------------------------
+  arm a (+1)  vs arm b (+10):   23 identical, 0 differ
+  arm a (+1)  vs arm c (+100):  22 identical, 1 differ  (south_half_101)
+  arm b (+10) vs arm c (+100):  22 identical, 1 differ  (south_half_101)
+  and south_half_101 has the same r3/d1/ff1 outcome in all four arms.
+
+  A hundredfold change in the penalty moves ONE run and changes NO outcome.
+  Every decision the term ever touched was a tie between cells of equal stock
+  risk with exactly one of them scorched, so any positive penalty produces the
+  same ordering. This is the answer to "does the magnitude question matter more
+  than two arms capture": it matters less. Sweeping further values would be
+  measuring the same point repeatedly, which is why no fourth arm was run.
+
+4.5  THE THREE NAMED DEATHS - THE PENALTY NEVER TOUCHED THEM
+--------------------------------------------------------------
+The hypothesis under test was that a scorched penalty would act during the
+APPROACH (roughly s26-s36), not at the death step. It is REFUTED.
+
+  east_half_404    ff_unit_0  (31,38)  stock death s33
+      every arm: entered s28..32, ground scorched, died s33. Run is
+      TRAJECTORY-IDENTICAL to stock in all four arms.
+  east_default_101 ff_unit_0  (41,41)  stock death s42
+      every arm: entered s22..41, died s42. TRAJECTORY-IDENTICAL.
+  east_default_202 ff_unit_0  (34,49)  stock death s225
+      every arm: entered s222..224, died s225. TRAJECTORY-IDENTICAL.
+
+  Not one of the three units was deflected, at any magnitude. Two independent
+  reasons, both established above:
+   (a) STRUCTURAL (section 1.4): the approach runs through _move_toward tiers
+       1-3, which never read risk. In east_default_101 the fatal step s35->s36
+       was an approach step; no risk value could have changed it.
+   (b) FORCED (traces from outputs/_bc_*.json): at the decisive step two of the
+       three units had exactly ONE free neighbour, and it was the scorched cell.
+       east_half_404 stood on (31,39) at s27 with free=1; east_default_202 stood
+       on (32,49) at s218 with free=1. A ranking term cannot reorder a
+       one-element list.
+
+4.6  PER-DEATH DIFF vs ARM NONE (identical in arms a, b and c)
+---------------------------------------------------------------
+  east_default_303   none []                  -> arm [(57, ff_unit_0, (38,26), green)]
+  east_half_101      none [(30, ..., green)]  -> arm []                      <- the only save
+  east_half_303      none []                  -> arm [(57, ff_unit_0, (38,26), green)]
+  east_half_505      none []                  -> arm [(66, ff_unit_0, (48,27), scorched)]
+  south_half_1010    none [(60, ..., scorched)] -> arm [(60, ...), (195, ff_unit_0, (49,33), green)]
+
+  Net +3 pooled: one death removed, four added. Three of the four added deaths
+  are on GREEN ground - units pushed off the scar and killed in fresh fuel. The
+  fourth (east_half_505) is on SCORCHED ground, i.e. the penalty created a
+  scorched-ground death that did not exist in stock.
+
+  THE FLIPPED STEPS, read from the traces:
+    east_half_505  s48  stock (45,24)->(45,23) scorched, unit shelters on
+                        scorched (45,23)/(44,22)/(43,22) and SURVIVES to s240.
+                        Arm deflects to (46,24)->(47,24)->(48,24), all green,
+                        moving east into unburnt fuel ahead of an east wind;
+                        reaches (47,25) at s54 and dies at s66.
+    east_half_303  s51  stock (40,24)->(41,24) scorched, settles on (42,23)
+                        scorched, SURVIVES. Arm deflects west to (38,24)..(38,27)
+                        green and dies at s57 on (38,26).
+    south_half_1010 s108 stock oscillates on scorched (42,25)/(43,25), SURVIVES
+                        to s240. Arm is pushed to green (42,26)..(44,27) and
+                        dies at s195.
+    east_half_101  s27  stock (42,41)->(43,41)->(44,41) scorched, dies s30 on
+                        (44,40). Arm goes (42,42)->(42,43)->(41,43), away from
+                        the front, and SURVIVES. THIS IS THE ONE BENEFIT.
+
+  A HYPOTHESIS I TESTED AND COULD NOT SUPPORT: that the asymmetry is "unit
+  sheltering inside the scar (harm) vs unit arriving at its rim (benefit)".
+  Measuring ground over the 10 steps before divergence refutes it -
+  east_half_505 was 0/10 on scar ground and still harmful, south_half_606 was
+  10/10 and neutral. Recorded as tested and not supported; the burnt-occupancy
+  signature in 4.3 is the pattern that does hold.
+
+4.7  OPPORTUNITY COUNT
+-----------------------
+  arm none  (+0)   23 runs  risk-calls 13076  scorched 887 (6.78%)  applied 0
+  arm a     (+1)   23 runs  risk-calls 13244  scorched 841 (6.35%)  applied 841
+  arm b     (+10)  23 runs  risk-calls 13244  scorched 841 (6.35%)  applied 841
+  arm c     (+100) 23 runs  risk-calls 13244  scorched 840 (6.34%)  applied 840
+
+  The term was live on 6.35% of all risk evaluations - not a rare edge case.
+  It fired 841 times and changed the trajectory of 7 runs. The round is NOT an
+  inert-for-lack-of-opportunity result like the dispatch-reachability closure;
+  the term acted, and what it did was harmful.
+
+================================================================================
+5. WHY IT IS HARMFUL - TWO INDEPENDENT MECHANISM MEASUREMENTS
+================================================================================
+
+5.1  SCORCHED GROUND IS NOT MORE IGNITABLE. IT IS BETTER POSITIONED.
+---------------------------------------------------------------------
+outputs/_sc_mech2.py snapshots every non-burning cell with fuel > 0 BEFORE each
+model.step() and resolves it after (mesa runs step() and advance() inside one
+model.step(), so ignition is already committed on return). cell_prob read
+afterwards is exactly the clamped probability that step drew against.
+
+  IGNITION RATE PER EXPOSURE, BY cell_prob BAND    (D/east 101 | D/south 404)
+      cell_prob band     scorched    virgin  |  scorched    virgin
+      0.02 - 0.05           3.4%      3.2%   |     3.3%      3.4%
+      0.05 - 0.10           7.7%      8.1%   |     6.7%      7.4%
+      0.10 - 0.20          16.0%     14.6%   |    14.4%     15.1%
+      0.20 - 0.35          25.3%     26.5%   |    26.4%     23.0%
+      0.50 - 0.75          69.0%     68.6%   |    72.4%     70.2%
+      0.75 - 1.01          74.3%     78.1%   |    74.2%     77.1%
+
+  AT MATCHED PROBABILITY THE TWO POPULATIONS ARE INDISTINGUISHABLE, in every
+  band, in both seeds - exactly as the source predicts, since
+  probability_of_fire never reads has_burned. The entire difference is exposure:
+
+      mean cell_prob per exposure   scorched 0.2104  virgin 0.0119   (east 101)
+                                    scorched 0.1978  virgin 0.0291   (south 404)
+
+  Virgin cells sit at cell_prob exactly 0 in 117,499 of 129,420 exposures
+  (90.8%, east 101) because nothing near them is burning. Scorched cells are, by
+  construction, the cells that were near the fire.
+
+  THIS ALSO RECALIBRATES THE 96% FIGURE. Part 2 reported that 96.6% of scorched
+  cells re-ignite, against 0 for burnt cells. Both halves are correct, but the
+  comparator that makes 96% look alarming was never measured. Over the same
+  runs the VIRGIN population ignites at 63.5% (east 101) and 95.7% (south 404) -
+  because by step 240 the fire has reached most of the grid. The 96% figure is
+  mostly "the fire eventually gets nearly everywhere", not evidence that
+  scorched ground is a distinct hazard class.
+
+  And the one real physical difference runs the wrong way for the fix: a
+  scorched cell has partially depleted fuel, so if it does relight it burns for
+  FEWER steps than virgin ground would. On physics, scorched ground is weakly
+  SAFER than virgin ground at equal neighbour configuration.
+
+5.2  SCORCHED GROUND IS THE ONLY DOOR INTO THE BLACK
+------------------------------------------------------
+FIREFIGHTER STEP TRANSITIONS, arm none, all 23 runs:
+
+      from \ to    green     scorched   burnt     burning
+      green        2881      53         0         0
+      scorched     36        103        32        0
+      burnt        0         24         162       0
+      burning      0         0          0         0
+
+  green -> burnt: ZERO, ever. burnt -> green: ZERO, ever. All 32 first entries
+  onto burnt ground came off a scorched cell - 100.0%.
+
+GRID GEOMETRY (outputs/_sc_geom.py, 3 seeds x 4 snapshots at steps 60/120/180/240):
+
+      burnt cells with at least one GREEN 4-neighbour:
+          1 of 10,933 burnt-cell observations   (0.009%)
+      4-neighbour mix of burnt cells, across all snapshots:
+          green 0.00-0.02%   scorched 15.3-31.4%   burnt 48.2-82.6%
+
+  This is structural, not seed-specific. A cell only becomes burnt after 21-30
+  steps of burning, and probability_of_fire spreads over a Moore radius-3 disc,
+  so every 4-neighbour of a long-burning cell has itself ignited well before
+  that cell burns out. The outer boundary of the scar against virgin ground is
+  therefore ALWAYS a band of scorched or burning cells.
+
+  CONCLUSION: the scorched band is the mandatory boundary layer of the burn
+  scar. A penalty on scorched ground is a toll on the only route into - and out
+  of - the safest ground in the model. That is the mechanism behind the -632
+  burnt firefighter-steps in section 4.3, and it is why the harm does not go
+  away by tuning the magnitude down.
+
+================================================================================
+6. DECISION
+================================================================================
+
+Against the brief acceptance list, this round lands on the fourth outcome:
+BOTH (ALL THREE) ARMS MAKE THINGS WORSE.
+
+  GATE ITEM                                        RESULT
+  firefighter_deaths decreases                     FAILS  6 -> 8 / 14 -> 17
+  victims dead does not increase                   passes 23 -> 22 / 37 -> 36
+  ff-steps on unburnt green does not rise          FAILS  +19.8 pp on perturbed
+                                                          runs (+307 steps)
+
+RECOMMENDATION: ship nothing. Close A1 as "diagnosed, fix attempted, measured
+harmful". Specifically:
+
+  * The DIAGNOSIS in outputs/burntcells_part1.txt is upheld as a description of
+    the code. _firefighter_cell_risk really does score scorched ground
+    identically to virgin ground, the signal really is present on the agent and
+    never read, and 3 of the 6 baseline deaths really are on scorched ground.
+  * The REMEDY is refuted. `has_burned` adds no hazard information the existing
+    fire-adjacency term does not already carry (5.1), and the population it
+    selects is the gateway to the safest ground in the model (5.2), so
+    penalising it is net harmful at every magnitude tested.
+  * The victim-side gain (+1 rescued, -1 victim dead on both samples) is real
+    but small and comes essentially from one run (east_half_505, r1->r2), where
+    it was bought with a firefighter death. It is not a reason to ship.
+  * The outcome delta is small-sample: +3 deaths over 23 runs, from 5 runs whose
+    death set changed. What is NOT small-sample is the displacement measurement
+    (-632 burnt steps, +307 green steps) and the two mechanism results, which
+    are structural and reproduce across seeds and wind directions.
+
+IF THE THREAD IS EVER REOPENED, the evidence says the fix is not in
+_firefighter_cell_risk. Section 1.4 shows the approach path never reads risk at
+all, so the window the three named deaths need is unreachable from this
+function. Any future attempt would have to change the _move_toward tier filters
+themselves, which is a materially larger design change than this round was
+scoped for, and section 5.1 argues it would still be keying on the wrong signal.
+Not recommended.
+
+NOTHING WAS COMMITTED AND NO TRACKED FILE WAS MODIFIED. `git status` shows only
+new untracked artifacts under outputs/. The 8-failed / 427-passed test baseline
+is therefore untouched by this work.
+
+================================================================================
+REPRODUCE
+================================================================================
+  bash outputs/_sc_run.sh                 # 105 runs: stock x13, none/a/b/c x23
+                                          # SCP=<n> sets concurrency (default 14;
+                                          # RAM-bound, jobs that OOM leave
+                                          # zero-byte outputs and are refilled by
+                                          # re-running the same script)
+  .venv/Scripts/python.exe outputs/_sc_analyze.py    > outputs/_sc_analysis.txt
+  .venv/Scripts/python.exe outputs/_sc_mech2.py --seed 101 --wind east  --steps 240
+  .venv/Scripts/python.exe outputs/_sc_mech2.py --seed 404 --wind south --steps 240
+  .venv/Scripts/python.exe outputs/_sc_geom.py  --seed 101 --wind east  --steps 240
+  .venv/Scripts/python.exe outputs/_sc_decide.py --wind east --roles default --seed 101
+
+Artifacts: outputs/_sc_{stock,none,a,b,c}_<wind>_<roles>_<seed>.json,
+           outputs/_sc_analysis.txt, outputs/_sc_mech2_*.json,
+           outputs/_sc_geom_*.json, outputs/_sc_run*.out
+================================================================================

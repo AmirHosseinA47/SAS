@@ -1,0 +1,171 @@
+================================================================================
+DEFECT #9-A1 - CLOSING REPORT
+Round disposition, gate status, and the closure of defect #9 as a whole.
+Full measurement and reasoning: outputs/scorched_part1.txt
+================================================================================
+
+BRANCH   claude/position-rename-and-hazard-revalidation
+HEAD     e02377b  (unchanged - this round modified no tracked file)
+
+--------------------------------------------------------------------------------
+DISPOSITION
+--------------------------------------------------------------------------------
+A1 is CLOSED as "diagnosed, fix attempted, measured harmful".
+
+The diagnosis in outputs/burntcells_part1.txt is upheld as a description of the
+code: _firefighter_cell_risk (agents.py:665-673) does score scorched ground
+identically to virgin green ground, the signal (has_burned, fuel) is present on
+the Fire agent and never read by the Firefighter class, and 3 of the 6 baseline
+firefighter deaths are on scorched ground.
+
+The proposed remedy is refuted by measurement. Three penalty magnitudes spanning
+two orders of magnitude were run seed-matched over 23 runs as monkeypatches.
+All three raise firefighter_deaths identically:
+
+                      arm none   arm a    arm b     arm c
+                      (+0)       (+1)     (+10)     (+100)
+  ff_deaths 13-run       6          8        8         8
+  ff_deaths pooled 23   14         17       17        17
+  victims rescued 13/23 29 / 51  30 / 52  30 / 52   30 / 52
+  victims dead    13/23 23 / 37  22 / 36  22 / 36   22 / 36
+
+NOTHING IS SHIPPED. No source file was modified.
+
+--------------------------------------------------------------------------------
+GATE STATUS
+--------------------------------------------------------------------------------
+  firefighter_deaths decreases .................. FAILS  6->8 (13), 14->17 (23)
+  victims dead does not increase ................ passes 23->22, 37->36
+  ff-steps on unburnt green does not rise ....... FAILS  +19.80 pp / +307 steps
+                                                         on the perturbed runs
+  route_blocked gate still passes ............... NOT RUN - see below
+  no new test failures .......................... NOT RUN - see below
+
+WHY PARTS 2 AND 3 WERE NOT RUN. Part 2 (implement) has nothing to implement: the
+measurement says ship nothing. Part 3 (validate) was deliberately skipped on the
+maintainer decision, on the ground that no tracked file changed, so the test
+suite and the route_blocked campaign have byte-identical inputs to the run at
+e02377b and cannot move. `git status` shows zero tracked modifications; every
+artifact of this round is a new file under outputs/. This is the same
+disposition the dispatch-reachability round (9dfdb07) took. The 8-failed /
+427-passed baseline and the route_blocked gate both stand as last measured.
+
+Note this is the first round in the chain since f2827ed not to re-run the
+route_blocked gate. The justification is the absence of a source change, not a
+judgement that the gate stopped mattering - the next round that touches source
+must run it again.
+
+--------------------------------------------------------------------------------
+THE FOUR VERDICTS OF DEFECT #9 - ALL NOW CLOSED
+--------------------------------------------------------------------------------
+The original audit item was "charred (burnt-out) cells are treated as
+safe/passable by movement and hazard logic, when they arguably should not be."
+It named one population but described two, and it splits into four threads. All
+four are now resolved; the item should not be reopened for a fifth pass.
+
+(C) NOT A DEFECT - `burnt` cells (has_burned and fuel <= 0).
+    Treating them as ordinary passable ground is CORRECT. Absorbing state,
+    0 re-ignitions measured, cannot enter the casualty set, 759 firefighter-
+    steps with 0 deaths, permanent firebreak above a measured critical width
+    of 3. The audit premise is simply inverted here.  [burntcells_part1.txt]
+
+(D) INERT - the inversion, "burnt cells should be PREFERRED as retreat targets".
+    Mechanically real but without opportunity to act: burnt ground is adjacent
+    in 2.8% of danger-steps, 7.1 cells away on average, and was available in
+    0 of 6 deaths.  [burntcells_part1.txt]
+
+(A1) REAL DEFECT, FIX MEASURED HARMFUL - the hazard model does not distinguish
+    scorched ground from virgin ground. Diagnosis correct; remedy refuted at
+    every magnitude tested. Two structural reasons, both measured this round:
+    scorched ground is not more ignitable (only better positioned), and it is
+    the mandatory boundary layer of the burn scar, so penalising it evicts units
+    from the safest ground in the model.  [scorched_part1.txt]
+
+(A2) DELIBERATE DESIGN CHOICE, OUT OF SCOPE, FLAGGED FOR THE MAINTAINER -
+    main.py:77 and serve_dashboard.py:63 paint burnt and scorched the identical
+    charcoal #2b2b2b, merging the safest ground in the model with the most
+    dangerous into one colour an operator cannot tell apart. This is specified
+    and locked by tests/test_executor_routing_and_burnt.py:202, so changing it
+    is a design decision and a test change, not a bug fix. NOT touched this
+    round by instruction. The data is already on hand if a third colour is ever
+    wanted: dashboard_state_builder.py:296-301 publishes burnt_cells and
+    has_burned_cells separately. The call is the maintainer's.
+    NOTE: A1 being harmful does NOT settle A2. A1 is about what the MODEL should
+    do with scorched ground - and the answer turned out to be "nothing". A2 is
+    about what the OPERATOR should be able to see, which is a different
+    question and is untouched by this round's result.
+
+--------------------------------------------------------------------------------
+FINDINGS WORTH CARRYING FORWARD
+--------------------------------------------------------------------------------
+1. _move_toward tiers 1-3 never read `risk`.  (agents.py:1081-1176)
+   The tier chain that moves an assigned firefighter toward a victim filters on
+   adjacent_fire/smoke and ranks on distance-to-target. `risk` is consulted only
+   in the tier-4 fallback, reached only when every free neighbour is already
+   fire-adjacent or smoky. So _firefighter_cell_risk CANNOT INFLUENCE APPROACH
+   MOVEMENT AT ALL, at any magnitude - it influences retreat only. This is why
+   none of the three named deaths could move, and it is the single most
+   important thing for anyone who later wants approach-time hazard aversion:
+   that work belongs in the tier filters, not in the risk score.
+
+2. The 96% re-ignition figure was uncompared, and the comparison changes it.
+   Part 2 reported 96.6% of scorched cells re-ignite vs 0 for burnt cells. Both
+   halves are correct, but the virgin-ground comparator was never measured. Over
+   the same runs virgin ground ignites at 63.5% (D/east 101) and 95.7%
+   (D/south 404), because by step 240 the fire has reached most of the grid.
+   The 96% figure is therefore mostly "the fire eventually gets nearly
+   everywhere", not evidence that scorched ground is a distinct hazard class.
+   This CORRECTS the previous round's headline number - it should not be quoted
+   again as a hazard measurement without its comparator.
+
+3. probability_of_fire never reads has_burned.  (agents.py:53-84)
+   It gates on the cell own fuel and sums over BURNING neighbours in a Moore
+   radius-3 disc. Measured confirmation: at matched cell_prob, scorched and
+   virgin ground ignite at indistinguishable rates in every probability band in
+   both seeds (7.7% vs 8.1%, 16.0% vs 14.6%, 69.0% vs 68.6%, ...). The whole
+   difference is exposure - mean cell_prob per exposure 0.21 scorched vs 0.012
+   virgin. `has_burned` is a lagging POSITIONAL PROXY for "near the fire", and
+   _cell_adjacent_to_fire is already a leading positional term for the same
+   thing. The one real physical difference runs the wrong way for the fix:
+   scorched ground has partially depleted fuel, so it burns for FEWER steps if
+   it relights.
+
+4. Scorched ground is the only door into the black.
+   Firefighter step transitions, 23 runs: green->burnt 0, burnt->green 0, and
+   all 32 first entries onto burnt ground came off a scorched cell (100%). Grid
+   geometry, 3 seeds x 4 snapshots: 1 of 10,933 burnt-cell observations has a
+   green 4-neighbour (0.009%). This is structural - a cell burns for 21-30 steps
+   before going out, and spread is Moore radius-3, so every 4-neighbour has
+   itself ignited long before that cell burns out. Consequence: a penalty on
+   scorched ground is a toll on the only route into and out of the safest ground
+   in the model. That is the mechanism behind the displacement failure.
+
+5. Arms A and B were trajectory-identical, so a third arm was required.
+   +1 and +10 produced identical per-step signatures on all 23 runs. Two arms
+   that identical have tested one magnitude twice, not two. Arm C at +100 - the
+   next EXISTING rung on the model 1_000_000 / 100 / 10 ladder, not a swept
+   parameter - moved exactly one run (south_half_101) and changed no outcome.
+   A hundredfold change in the penalty is therefore measured to be immaterial:
+   every decision the term touched was a tie between cells of equal stock risk.
+
+6. A hypothesis tested and NOT supported, recorded so it is not re-proposed:
+   that the harm/benefit split tracked "unit sheltering inside the scar" versus
+   "unit arriving at its rim". Measuring ground over the 10 steps before each
+   divergence refutes it - east_half_505 was 0/10 on scar ground and harmful,
+   south_half_606 was 10/10 and neutral. The pattern that DOES hold is the
+   burnt-occupancy signature: all four runs that got worse show burnt-ground
+   occupancy collapsing, and the single run that improved is the only one where
+   it rose.
+
+--------------------------------------------------------------------------------
+PROVENANCE
+--------------------------------------------------------------------------------
+Arm `stock` (HEAD e02377b, no monkeypatch of any kind) vs arm `none` (the arm
+harness at penalty 0): 13 of 13 runs identical across all 240 per-step
+signatures, where a signature is sha1 over (sorted burning cells, firefighter
+positions and death flags, UAV positions). firefighter_deaths 6 in both,
+matching the figure committed at e02377b. Arm none also reproduces every
+published baseline exactly: 14 deaths pooled over 23 runs, 3 of 6 deaths on
+scorched ground, 179 scorched firefighter-steps, 759 burnt firefighter-steps,
+5316 alive-steps.
+================================================================================
