@@ -269,20 +269,33 @@ def main(argv: list[str] | None = None) -> int:
     if not rows:
         print("No successful runs.")
         return 1
-    print("Summary (mean +/- std) over %d successful run(s):" % len(rows))
+    total = len(rows)
+    print("Summary (mean +/- std) over %d successful run(s):" % total)
     for key in METRIC_KEYS:
         nums = [float(r[key]) for r in rows if r.get(key) is not None]
         mean, std = _mean_std(nums)
-        if mean is None:
-            continue
-        if key == "rescue_rate":
-            print("  %s: %.2f +/- %.2f" % (key, mean, std or 0.0))
-        elif key == "terminal_step":
-            present = [float(v) for v in nums]
-            mean, std = _mean_std(present)
-            print("  %s: %.1f +/- %.1f" % (key, mean or 0.0, std or 0.0))
+        # terminal_step is None on runs that never reached an all-victims-terminal
+        # state, so its mean is computed over a subset of rows. Always disclose the
+        # contributing count for it; disclose it for any other metric only when that
+        # metric is actually partial, so a future nullable field cannot be averaged
+        # over a silent subset. Values are unchanged either way.
+        if key == "terminal_step" or len(nums) < total:
+            suffix = " (n=%d/%d)" % (len(nums), total)
         else:
-            print("  %s: %.2f +/- %.2f" % (key, mean, std or 0.0))
+            suffix = ""
+        if mean is None:
+            print("  %s: n/a%s" % (key, suffix))
+        elif key == "rescue_rate":
+            print("  %s: %.2f +/- %.2f%s" % (key, mean, std or 0.0, suffix))
+        elif key == "terminal_step":
+            print("  %s: %.1f +/- %.1f%s" % (key, mean, std or 0.0, suffix))
+        else:
+            print("  %s: %.2f +/- %.2f%s" % (key, mean, std or 0.0, suffix))
+    non_terminal = sum(1 for r in rows if r.get("terminal_step") is None)
+    print(
+        "  non_terminal_runs: %d/%d (never reached all-victims-terminal within steps=%d)"
+        % (non_terminal, total, args.steps)
+    )
 
     if args.csv:
         out = io.StringIO()

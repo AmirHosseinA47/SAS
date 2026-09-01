@@ -1,0 +1,347 @@
+================================================================
+DEFECT #12 - terminal_step statistics mask non-terminal runs
+FINAL REPORT (Parts 3 and 4)
+Branch: claude/position-rename-and-hazard-revalidation
+Base HEAD: 9dfdb07
+Diagnosis and design: outputs/terminalstep_part1.txt
+================================================================
+
+OUTCOME: FIXED. Option C implemented in evaluate_scenarios.py only.
+Simulation outcomes proven unchanged by byte-identical control runs.
+No committed analysis script broken. No new test failures.
+
+
+================================================================
+PART 3 - WHAT CHANGED
+================================================================
+
+One file, one region: evaluate_scenarios.py, the summary block in main().
+21 insertions, 8 deletions. No other file touched.
+
+    -    print("Summary (mean +/- std) over %d successful run(s):" % len(rows))
+    +    total = len(rows)
+    +    print("Summary (mean +/- std) over %d successful run(s):" % total)
+         for key in METRIC_KEYS:
+             nums = [float(r[key]) for r in rows if r.get(key) is not None]
+             mean, std = _mean_std(nums)
+    +        # terminal_step is None on runs that never reached an all-victims-terminal
+    +        # state, so its mean is computed over a subset of rows. Always disclose the
+    +        # contributing count for it; disclose it for any other metric only when that
+    +        # metric is actually partial, so a future nullable field cannot be averaged
+    +        # over a silent subset. Values are unchanged either way.
+    +        if key == "terminal_step" or len(nums) < total:
+    +            suffix = " (n=%d/%d)" % (len(nums), total)
+    +        else:
+    +            suffix = ""
+             if mean is None:
+    -            continue
+    -        if key == "rescue_rate":
+    -            print("  %s: %.2f +/- %.2f" % (key, mean, std or 0.0))
+    +            print("  %s: n/a%s" % (key, suffix))
+    +        elif key == "rescue_rate":
+    +            print("  %s: %.2f +/- %.2f%s" % (key, mean, std or 0.0, suffix))
+             elif key == "terminal_step":
+    -            present = [float(v) for v in nums]
+    -            mean, std = _mean_std(present)
+    -            print("  %s: %.1f +/- %.1f" % (key, mean or 0.0, std or 0.0))
+    +            print("  %s: %.1f +/- %.1f%s" % (key, mean, std or 0.0, suffix))
+             else:
+    -            print("  %s: %.2f +/- %.2f" % (key, mean, std or 0.0))
+    +            print("  %s: %.2f +/- %.2f%s" % (key, mean, std or 0.0, suffix))
+    +    non_terminal = sum(1 for r in rows if r.get("terminal_step") is None)
+    +    print(
+    +        "  non_terminal_runs: %d/%d (never reached all-victims-terminal within steps=%d)"
+    +        % (non_terminal, total, args.steps)
+    +    )
+
+All five approved points, as designed:
+  C1  terminal_step ALWAYS carries "(n=k/N)", including n=N/N, so the
+      absence of a suffix is never load-bearing.
+  C2  other metrics carry it only when len(nums) < total. Never fires on a
+      current run (verified below), so 12 of 13 lines stay byte-identical
+      to every committed baseline.
+  C3  a metric with zero contributors prints "n/a (n=0/N)" instead of
+      vanishing.
+  C4  new "non_terminal_runs: k/N (...)" line, always printed.
+  C5  the dead "elif key == terminal_step" recomputation removed; its only
+      real effect, the "%.1f" format, preserved.
+
+CSV: NOT CHANGED, per the positional-parsing risk identified in Part 2
+(_summarize_fix13.py:52 reads the LAST field positionally to recover
+unreachable_causes; appending a column would silently redirect that read).
+
+
+================================================================
+PART 4 - VALIDATION
+================================================================
+
+4.0 SCOPE (V4)
+
+    git diff --stat
+      evaluate_scenarios.py | 29 +++++++++++++++++--------
+      1 file changed, 21 insertions(+), 8 deletions(-)
+
+    Zero diff lines touching agents.py, wildfire_model.py or
+    src_extension/. Gate condition met by construction.
+
+4.1 BEFORE/AFTER CONTROL RUNS - SIMULATION BYTE-IDENTICAL
+
+    Method. The pre-edit binary was extracted with
+    "git show HEAD:evaluate_scenarios.py" and run with PYTHONPATH set to
+    the repo root, so both sides import the identical serve_dashboard,
+    agents and wildfire_model. stdout and stderr were captured to separate
+    files (D/west was observed emitting [RescueInvariant] lines on stderr;
+    merging streams would have made the comparison unreliable). Each output
+    was split into three regions and compared as bytes:
+      - banner + per-seed lines + "causes:" lines   [SIMULATION RESULT]
+      - summary block                               [EXPECTED TO DIFFER]
+      - CSV block + REPRODUCE line                  [SIMULATION RESULT]
+
+    CONTROL 1 - D/north, steps=240, seeds 101,202,303,404,505
+    (all five runs terminate; exercises the n=N/N path)
+
+        region                              before/after bytes   identical
+        banner + per-seed lines + causes         1084 / 1084         YES
+        CSV block + REPRODUCE line                720 / 720          YES
+        summary block                             470 / 558          differs
+
+    CONTROL 2 - D/north, steps=150, same seeds
+    (three runs non-terminal; exercises the n<N path)
+
+        region                              before/after bytes   identical
+        banner + per-seed lines + causes         1044 / 1044         YES
+        CSV block + REPRODUCE line                689 / 689          YES
+        summary block                                 - / +          differs
+
+    SIMULATION-RESULT REGIONS IDENTICAL IN BOTH CONTROLS. The only textual
+    difference anywhere is inside the summary block, and there only the
+    appended suffix and the added line - no printed value moved.
+
+    Note on the steps=150 control. The brief permitted a reduced --steps
+    fallback because no combo tested at HEAD still produces a non-terminal
+    run (see 4.5). Reducing the budget is a CLI argument, not a code
+    change, and it truncates rather than perturbs the run: the loop body,
+    the RNG draw order and the terminal_step latch are identical for the
+    first 150 steps regardless of budget. Verified rather than assumed -
+    the two runs that terminate under steps=150 latch at 130 and 125, the
+    exact values they latch at under steps=240:
+
+        steps=240   101:223  202:210  303:130  404:125  505:211
+        steps=150   101:-    202:-    303:130  404:125  505:-
+
+    So the steps=150 control is a faithful truncation of the steps=240
+    control, not a different simulation.
+
+4.2 THE FIX ON THE ACTUAL DEFECT, SIDE BY SIDE
+
+    D/north steps=150 - the masked case, at current HEAD:
+
+      BEFORE (old code)                     AFTER (new code)
+      ------------------------------------  --------------------------------------
+      Summary (mean +/- std) over 5 succ..  Summary (mean +/- std) over 5 succ..
+        rescued: 1.80 +/- 0.84                rescued: 1.80 +/- 0.84
+        dead: 1.40 +/- 0.55                   dead: 1.40 +/- 0.55
+        unreachable: 0.00 +/- 0.00            unreachable: 0.00 +/- 0.00
+        geographically_isolated: 0.00 ..      geographically_isolated: 0.00 ..
+        never_detected: 0.00 +/- 0.00         never_detected: 0.00 +/- 0.00
+        horizon_unresolved: 0.00 +/- 0.00     horizon_unresolved: 0.00 +/- 0.00
+        unreachable_other: 0.00 +/- 0.00      unreachable_other: 0.00 +/- 0.00
+        candidate: 0.80 +/- 0.84              candidate: 0.80 +/- 0.84
+        rescue_rate: 45.00 +/- 20.92          rescue_rate: 45.00 +/- 20.92
+        firefighter_deaths: 0.20 +/- 0.45     firefighter_deaths: 0.20 +/- 0.45
+        burnt_cells: 564.00 +/- 193.78        burnt_cells: 564.00 +/- 193.78
+        terminal_step: 127.5 +/- 3.5          terminal_step: 127.5 +/- 3.5 (n=2/5)
+        steps_run: 150.00 +/- 0.00            steps_run: 150.00 +/- 0.00
+                                              non_terminal_runs: 3/5 (never reached
+                                                all-victims-terminal within steps=150)
+
+    This is the defect at its sharpest, on live data rather than an old
+    committed file. "terminal_step: 127.5 +/- 3.5" reads as a tight,
+    highly reproducible termination across the batch. Three of the five
+    runs never terminated at all, and the small standard deviation is the
+    spread of the only two that did - so the number actively signals a
+    confidence the underlying data does not support. After the fix the same
+    line states n=2/5 and the next line states 3/5 non-terminal.
+
+4.3 VALUE PRESERVATION ACROSS EVERY COMMITTED BASELINE
+
+    Rather than trusting two control runs, both code paths were replayed
+    over the row data of every committed baseline that carries a CSV block
+    (138 summary blocks, reconstructed from the committed CSV rows with
+    empty cells restored to None):
+
+        committed summary blocks replayed:            138
+        old code reproduced the committed file:   138 / 138   (ground truth)
+        lines that gained an (n=k/N) suffix:          138  (all terminal_step)
+        lines whose VALUE changed:                      0
+        lines that disappeared:                         0
+
+    138 of 138 is the important row: the replayed old code reproduced each
+    committed summary block exactly, which validates the replay harness
+    itself before it is used to judge the new code.
+
+    ZERO printed values change across every baseline in the repository.
+    Seed-matched comparison against all committed matrices remains valid.
+
+4.4 ALL FOUR BRANCHES EXERCISED THROUGH THE REAL main()
+
+    _run_seed was stubbed with canned rows so the actual patched summary and
+    CSV code ran unmodified. Non-summary regions (banner, seed lines, CSV,
+    REPRODUCE) were byte-identical to the old code in all four cases:
+
+      case                       old code                     new code
+      -------------------------  ---------------------------  ------------------------
+      all terminal   (n=5/5)     terminal_step: 179.8+/-48.0  ... (n=5/5)
+      mixed          (n=3/5)     terminal_step: 187.7+/-50.4  ... (n=3/5)
+      none terminal  (n=0/5)     LINE SILENTLY ABSENT         terminal_step: n/a (n=0/5)
+      key missing    (2b guard)  LINE SILENTLY ABSENT         never_detected: n/a (n=0/5)
+
+    The bottom two rows are sibling defects 2c and 2b from Part 1,
+    reproduced live: the old code deletes a metric line with no note. They
+    are now stated rather than hidden.
+
+    Corroboration on real data: 38 committed files (the eval_* / fix1-fix3
+    era, predating the four unreachable-cause columns) contain row-sets
+    where geographically_isolated, never_detected, horizon_unresolved and
+    unreachable_other have zero contributors. Fed through the old code all
+    four lines vanish silently. Those files predate the columns, so this is
+    a demonstration that 2c/2b are reachable, not 38 historical
+    corruptions. On any fresh run _build_evaluation supplies all 13 keys,
+    so the n/a path cannot fire - confirmed by the replay in 4.3 finding
+    zero unexpected suffixes on non-terminal_step metrics.
+
+4.5 A FINDING WORTH RECORDING: D/north NOW TERMINATES 5/5 AT HEAD
+
+    Three combos were run at HEAD looking for a naturally non-terminal
+    batch. All three now terminate on all five seeds:
+
+        combo      committed baseline        at HEAD 9dfdb07
+        D/north    fix12: 3/5 terminal       5/5 terminal
+        C/north    fix13: 4/5 terminal       5/5 terminal
+        D/west     fix12/13: 4/5 terminal    5/5 terminal
+
+    The campaign's fixes closed the non-terminal cases on these combos.
+    This is incidental to the defect but it is exactly the comparison the
+    defect obscures: on D/north the summary terminal_step moved 210.0
+    (fix12) -> 179.8 (HEAD), which reads as "terminates ~30 steps earlier".
+    Part of that shift is two previously-EXCLUDED runs entering the
+    average. Without the n= disclosure the two effects are indistinguishable
+    in the summary block. After the fix the fix12 file would read
+    "210.0 +/- 0.0 (n=3/5)" against "179.8 +/- 48.0 (n=5/5)" and the
+    difference in basis is immediate.
+
+    Also recorded, as direct support for rejecting Option B: D/west seed
+    303 at HEAD has a genuine terminal_step of 239, and fix14's real
+    maximum is 239. Imputing 240 for non-terminal runs would be
+    indistinguishable from these real values.
+
+4.6 COMMITTED ANALYSIS SCRIPTS - ALL STILL RUN (verified by EXECUTION)
+
+    _summarize_fix9.py  - the only committed script that parses the summary
+    metric lines (line 62 regex). Executed via _parse_file against both
+    formats, on the worst committed masked case (fix12_D_north, n=3/5) and
+    on the four real control files:
+
+        metric                   OLD capture      NEW capture      match
+        burnt_cells              (948.4, 309.85)  (948.4, 309.85)  OK
+        candidate                (0.4, 0.55)      (0.4, 0.55)      OK
+        dead                     (1.6, 1.14)      (1.6, 1.14)      OK
+        firefighter_deaths       (1.0, 0.71)      (1.0, 0.71)      OK
+        geographically_isolated  (0.0, 0.0)       (0.0, 0.0)       OK
+        never_detected           (0.4, 0.55)      (0.4, 0.55)      OK
+        rescue_rate              (40.0, 22.36)    (40.0, 22.36)    OK
+        rescued                  (1.6, 0.89)      (1.6, 0.89)      OK
+        terminal_step            (210.0, 0.0)     (210.0, 0.0)     OK
+        unreachable              (0.4, 0.55)      (0.4, 0.55)      OK
+        rows / nonterm / nd_causes    5 / 2 / 2        5 / 2 / 2    OK
+
+      and on the real control outputs:
+        OLD@150 rows=5 terminal_step=(127.5,3.5)  all_terminal=2/5  nonterm=3
+        NEW@150 rows=5 terminal_step=(127.5,3.5)  all_terminal=2/5  nonterm=3
+        OLD@240 rows=5 terminal_step=(179.8,48.0) all_terminal=True nonterm=0
+        NEW@240 rows=5 terminal_step=(179.8,48.0) all_terminal=True nonterm=0
+
+      PASS. The regex is start-anchored but not end-anchored, so the
+      appended suffix is ignored; the added line matches no searched key.
+
+    _summarize_fix13.py / _summarize_fix14.py - parse the CSV block only.
+    Their parse() and totals() were executed over all 16 committed files
+    per prefix, in old and new format:
+
+        fix13 OLD  runs=45  nd=4 rescued=105 dead=44 ff=39 non_terminal=2
+        fix13 NEW  runs=45  nd=4 rescued=105 dead=44 ff=39 non_terminal=2
+        fix14 OLD  runs=40  nd=6 rescued= 99 dead=39 ff=31 non_terminal=0
+        fix14 NEW  runs=40  nd=6 rescued= 99 dead=39 ff=31 non_terminal=0
+
+      Identical, including the tstep() 240-imputation path. PASS - and the
+      positional last-column read at line 52 is untouched because the CSV
+      was deliberately not changed.
+
+    All other outputs/*.py that mention terminal_step are producers writing
+    per-run values to JSON, or per-run equality checkers (_ui_basecheck.py);
+    none parses the summary block. Classified in full in
+    outputs/terminalstep_part1.txt section 4.
+
+    NO COMMITTED ANALYSIS SCRIPT IS BROKEN.
+
+4.7 TEST SUITE
+
+    .venv/Scripts/python.exe -m pytest tests -q
+        8 failed, 427 passed, 5 warnings in 1993.90s (0:33:13)
+
+    Baseline is 8 failed / 427 passed. UNCHANGED.
+
+    The 8 failures, all pre-existing and none in the reporting path:
+        tests/test_behavior_regression.py::test_descriptive_next_action_uses_target_position
+        tests/test_dashboard_panel.py::test_dashboard_panel_render_returns_string
+        tests/test_firefighter_dispatch_replacement.py::test_no_replacement_available_marks_victim_unreachable_once
+        tests/test_rescue_planner_authority.py::test_no_firefighter_planner_delay_or_unreachable
+        tests/test_uav_sector_assignment.py::test_fire_tracker_uavs_receive_different_target_sets
+        tests/test_uav_sector_assignment.py::test_fire_tracker_still_overridden_by_search_mode_fail_safe
+        tests/test_wind_aware_trajectory_regression.py::test_north_vs_south_trajectories_diverge_over_40_steps
+        tests/test_wind_aware_victim_search.py::test_victim_search_wind_aware_action_when_downwind_exists
+
+    None of these imports or exercises evaluate_scenarios.py. Nothing under
+    tests/ parses its output; only tests/_run_scenario_a_coverage_validation.py
+    references the module name, and it is a helper script, not a test.
+
+
+================================================================
+GATE
+================================================================
+
+  [PASS] simulation outcomes provably unchanged
+         - byte-identical per-seed lines and CSV in two controls
+           (1084/1084 and 720/720 bytes; 1044/1044 and 689/689 bytes)
+         - zero value changes when both code paths are replayed over all
+           138 committed baselines
+  [PASS] contributing-run count visible wherever terminal_step is reported
+         - "(n=k/N)" printed unconditionally on the terminal_step line
+         - "non_terminal_runs: k/N" printed unconditionally
+         - "n/a (n=0/N)" instead of a silently missing line
+  [PASS] no committed analysis script broken by the format change
+         - _summarize_fix9 / _summarize_fix13 / _summarize_fix14 executed
+           against both formats, identical results
+         - CSV unchanged, so the positional last-column read is untouched
+  [PASS] no NEW test failures
+         - 8 failed / 427 passed, identical to the stated baseline; all 8
+           pre-existing and none in the reporting path
+
+
+================================================================
+SCOPE STATEMENT
+================================================================
+
+Files changed: evaluate_scenarios.py (only).
+Files deliberately NOT changed:
+  - agents.py, wildfire_model.py, src_extension/  (out of scope by brief)
+  - the CSV field list                            (positional-parse risk)
+  - _mean_std single-sample std                   (would change values)
+  - evaluate_extended_metrics.py                  (does not aggregate
+                                                   terminal_step; already
+                                                   handles empty sets)
+Deferred, documented in Part 1 section 2d/2f and not fixed here:
+  - "+/- 0.0" remains ambiguous at n=1. Disclosure now makes it readable
+    ("216.0 +/- 0.0 (n=1/5)") without altering any committed value.
+  - the header count still silently excludes crashed seeds; the word
+    "successful" and the printed ERROR line already disclose this.

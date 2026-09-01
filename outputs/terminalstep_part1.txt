@@ -1,0 +1,558 @@
+================================================================
+DEFECT #12 - terminal_step statistics mask non-terminal runs
+PART 1 (DIAGNOSE) + PART 2 (DESIGN)
+Branch: claude/position-rename-and-hazard-revalidation
+HEAD at diagnosis: 9dfdb07
+No source file was edited before this document was written.
+================================================================
+
+VERDICT ON THE ORIGINAL AUDIT ITEM: CONFIRMED, with one correction.
+
+The defect is real and still present at HEAD 9dfdb07. The original
+description is accurate about the summary block. It is OVERSTATED on one
+point: it says "The masking is invisible in the output - nothing indicates
+how many runs contributed to the statistic." That is true of the SUMMARY
+BLOCK only. The same file already discloses per-run termination twice, in
+the per-seed lines (terminal=- / all_terminal=False) and in the CSV block
+(empty terminal_step cell, all_terminal=False). The defect is therefore
+narrower than described: it is confined to the aggregate line, where a
+reader who does not hand-count the seed lines above gets no signal.
+
+That narrowing matters for impact (section 3) and it does not excuse the
+defect: the summary block is precisely the part that gets copied into
+comparison tables.
+
+
+================================================================
+1. THE AGGREGATION CODE, QUOTED IN FULL
+================================================================
+
+evaluate_scenarios.py:38-52 - the metric list
+
+    METRIC_KEYS = (
+        "rescued",
+        "dead",
+        "unreachable",
+        "geographically_isolated",
+        "never_detected",
+        "horizon_unresolved",
+        "unreachable_other",
+        "candidate",
+        "rescue_rate",
+        "firefighter_deaths",
+        "burnt_cells",
+        "terminal_step",
+        "steps_run",
+    )
+
+evaluate_scenarios.py:138-143 - the mean/std helper
+
+    def _mean_std(values: list[float]) -> tuple[float | None, float | None]:
+        if not values:
+            return None, None
+        if len(values) == 1:
+            return values[0], 0.0
+        return statistics.mean(values), statistics.stdev(values)
+
+evaluate_scenarios.py:268-285 - the summary block (THE DEFECT)
+
+    print("-" * 72)
+    if not rows:
+        print("No successful runs.")
+        return 1
+    print("Summary (mean +/- std) over %d successful run(s):" % len(rows))
+    for key in METRIC_KEYS:
+        nums = [float(r[key]) for r in rows if r.get(key) is not None]
+        mean, std = _mean_std(nums)
+        if mean is None:
+            continue
+        if key == "rescue_rate":
+            print("  %s: %.2f +/- %.2f" % (key, mean, std or 0.0))
+        elif key == "terminal_step":
+            present = [float(v) for v in nums]
+            mean, std = _mean_std(present)
+            print("  %s: %.1f +/- %.1f" % (key, mean or 0.0, std or 0.0))
+        else:
+            print("  %s: %.2f +/- %.2f" % (key, mean, std or 0.0))
+
+1a. IS THE None-FILTERING STILL PRESENT?  YES.
+
+    Line 274: "if r.get(key) is not None". This is a generic filter applied
+    to every key in METRIC_KEYS, not a terminal_step special case. The
+    "elif key == terminal_step" branch at 280-283 is DEAD CODE with
+    respect to the filtering: "present = [float(v) for v in nums]" is an
+    identity copy of an already-filtered, already-float list, and
+    re-running _mean_std on it returns exactly the values computed at 275.
+    The branch's only real effect is the "%.1f" format instead of "%.2f".
+    Whoever wrote that branch appears to have intended to handle the None
+    case there and instead duplicated work the generic filter had already
+    done.
+
+1b. IS THE CONTRIBUTING-RUN COUNT REPORTED ANYWHERE IN THE OUTPUT?  NO.
+
+    The header at line 272 prints len(rows) - the number of seeds that
+    ran to completion without raising. It is NOT the number of runs that
+    contributed to any given metric. A seed that ran fine but never reached
+    a terminal state is counted in that header and silently excluded from
+    the terminal_step mean. The header word "successful" refers to "did not
+    throw", not "did terminate".
+
+    Concretely, from committed outputs/fix12_D_north.txt:
+
+        Summary (mean +/- std) over 5 successful run(s):
+          ...
+          terminal_step: 210.0 +/- 0.0
+          steps_run: 240.00 +/- 0.00
+
+    "210.0 +/- 0.0" is computed over 3 runs. Two runs (seeds 404, 505)
+    never terminated. The line reads as a perfectly reproducible
+    termination step across the whole batch; it is a 3-of-5 figure, and the
+    "+/- 0.0" is real zero variance across those 3, which makes it look
+    MORE trustworthy than it is. This is exactly the shape the original
+    audit described.
+
+1c. WHAT DOES terminal_step == None ACTUALLY MEAN?
+
+    Verified against how it is SET, not just how it is consumed.
+
+    evaluate_scenarios.py:114-132 (the producer):
+
+        terminal_step = None
+        step = 0
+        ...
+            for _ in range(steps):
+                model.step()
+                step += 1
+                if terminal_step is None:
+                    panel = model.get_dashboard_state()
+                    mission = panel.get("mission_status", {}) or {}
+                    if mission.get("all_victims_terminal"):
+                        terminal_step = step
+
+    It is a latch: first step at which the dashboard reports
+    all_victims_terminal. It is never reset and never set from any other
+    path. It is passed through _build_evaluation
+    (serve_dashboard.py:272, 311) verbatim: "terminal_step": terminal_step.
+
+    all_victims_terminal is built in
+    src_extension/dashboard/dashboard_state_builder.py:95-153:
+
+        all_terminal = bool(managed)
+        for _, state in managed.items():
+            ...
+            if status not in _TERMINAL_VICTIM and not bool(getattr(state, "rescued", False)):
+                all_terminal = False
+        ...
+        "all_victims_terminal": all_terminal and len(managed) > 0,
+
+    So terminal_step is None means, unambiguously: at no step within the
+    --steps budget did every managed victim hold a terminal status
+    (rescued / dead / unreachable). It is "never terminated within the step
+    budget". There is no second meaning - not "model crashed", not "no
+    victims", not "field missing". The "len(managed) > 0" guard means a
+    zero-victim model would also yield None, but no committed run has
+    total_victims == 0.
+
+    Cross-check: steps_run in the same summary is 240.00 +/- 0.00 for every
+    affected file, i.e. every run consumed the full budget. Confirms the
+    "budget exhausted" reading.
+
+
+================================================================
+2. SIBLING DEFECTS IN THE SAME REPORTING PATH
+================================================================
+
+2a. Is terminal_step the only field that can be None?  YES, empirically and
+    by construction.
+
+    By construction: _build_evaluation (serve_dashboard.py:304-314) returns
+    every other METRIC_KEYS field as an unconditionally-computed int or
+    float. terminal_step is the only pass-through of a nullable argument.
+
+    Empirically: parsed every CSV block in every committed outputs/*.txt -
+    687 run rows across 170 files. Count of empty cells per column,
+    excluding the free-text unreachable_causes:
+
+        terminal_step          54
+        (every other column)    0
+
+    54/687 = 7.9% of all committed runs never terminated. So the generic
+    None filter at line 274 fires on exactly one field today.
+
+2b. THE FILTER IS STILL A LATENT TRAP FOR THE OTHER TWELVE.
+
+    "r.get(key)" - note .get, not [] - means a key that is MISSING from a
+    row is dropped just as silently as a None. If a future field were added
+    to METRIC_KEYS but not to _build_evaluation, its summary line would
+    quietly average over whichever rows happened to have it. Nothing warns.
+    Same defect class, not yet triggered.
+
+2c. A METRIC WITH ZERO CONTRIBUTORS VANISHES ENTIRELY (line 276-277).
+
+    If every run is non-terminal, nums == [], _mean_std returns
+    (None, None), and "if mean is None: continue" DROPS THE LINE. The
+    summary then contains no terminal_step row at all, with no note. A
+    diffing reader would see a missing line, not a stated "no data".
+    Not triggered in committed data (0 of 170 blocks have all runs
+    non-terminal - the worst is 2 of 5) but it is live.
+
+2d. "+/- 0.0" IS AMBIGUOUS AT n=1 (_mean_std lines 140-141).
+
+    "if len(values) == 1: return values[0], 0.0" returns a std of 0.0 for a
+    single sample. That is not zero variance, it is no variance
+    information. Combined with 2c this means the audit's literal example -
+    "216.0 +/- 0.0" over 1 of 5 runs - would print a fabricated-looking
+    confidence interval. No committed block hits n=1 for terminal_step
+    (minimum observed is n=3), but the code will do it.
+
+2e. THE TERMINATION RATE IS NEVER SUMMARIZED AT ALL.
+
+    all_terminal is produced per-run by _build_evaluation and printed on
+    each seed line and in the CSV, but it is NOT in METRIC_KEYS. So the
+    single number that would make the masking self-evident - how many of N
+    runs terminated - appears nowhere in the summary block. This is the
+    actual missing signal, more than the absent n= suffix.
+
+2f. THE HEADER COUNT EXCLUDES CRASHED SEEDS SILENTLY-ISH.
+
+    Line 239-245: a seed that raises prints an ERROR line and is continue'd
+    out of rows. The header then says "over K successful run(s)" where
+    K < N. The top-of-file banner says N=<requested>. The discrepancy is
+    recoverable by comparing two lines but is not called out. Lower
+    severity than the rest - the word "successful" and the printed ERROR
+    line do disclose it. Reporting for completeness, not proposing a change.
+
+2g. evaluate_extended_metrics.py - RELATED FILE, NOT DEFECTIVE ON THIS AXIS.
+
+    It computes terminal_step per run (lines 45-64, 85) but never
+    aggregates it. Its summary block (lines 148-151) averages only
+    tracker_smoke_total, tracker_fire_total, firefighter_deaths, rescued,
+    dead - all never-None - and uses no None filter at all
+    ("nums = [float(r[key]) for r in random_rows]"). _fmt_ms prints "n/a"
+    on an empty list, which is the correct behaviour and is what
+    evaluate_scenarios.py should have done at 2c. It does not print the
+    size of random_rows next to the means; the seed list is printed at the
+    top, so the count is recoverable. Minor, out of the stated blast radius.
+
+
+================================================================
+3. IMPACT ON COMMITTED DATA
+================================================================
+
+Method: parsed every committed outputs/*.txt, matched per-seed lines
+(terminal=- marks a non-terminal run) against the summary terminal_step
+line in the same file.
+
+    committed summary blocks carrying a terminal_step mean:  170
+    blocks where >=1 contributing run was excluded:           30  (17.6%)
+    blocks where ALL runs were excluded (line vanishes):       0
+    total run rows scanned:                                  687
+    run rows with terminal_step = None:                       54  (7.9%)
+
+Every affected block is a 5-seed batch. 29 of 30 are 4-of-5; one is 3-of-5.
+
+file                              runs  excl  AS PRINTED        WOULD READ
+--------------------------------  ----  ----  ----------------  ---------------------
+fix12_D_north.txt                  5     2    210.0 +/- 0.0     210.0 +/- 0.0 (n=3/5)
+fix10_A_north.txt                  5     1    153.2 +/- 39.7    153.2 +/- 39.7 (n=4/5)
+fix10_B_north.txt                  5     1    174.5 +/- 38.7    174.5 +/- 38.7 (n=4/5)
+fix12_D_west.txt                   5     1    154.8 +/- 49.6    154.8 +/- 49.6 (n=4/5)
+fix13_C_north.txt                  5     1    129.5 +/- 59.1    129.5 +/- 59.1 (n=4/5)
+fix13_D_west.txt                   5     1    154.8 +/- 49.6    154.8 +/- 49.6 (n=4/5)
+fix6_A_north.txt                   5     1    176.2 +/- 46.3    176.2 +/- 46.3 (n=4/5)
+fix6_B_north.txt                   5     1    132.0 +/- 54.5    132.0 +/- 54.5 (n=4/5)
+fix6_C_north.txt                   5     1    130.2 +/- 75.0    130.2 +/- 75.0 (n=4/5)
+fix6_D_north.txt                   5     1    198.8 +/- 22.5    198.8 +/- 22.5 (n=4/5)
+fix6_D_south.txt                   5     1    138.8 +/- 48.6    138.8 +/- 48.6 (n=4/5)
+fix6_D_west.txt                    5     1    170.0 +/- 47.8    170.0 +/- 47.8 (n=4/5)
+fix7_A_north.txt                   5     1    176.2 +/- 46.3    176.2 +/- 46.3 (n=4/5)
+fix7_B_north.txt                   5     1    132.0 +/- 54.5    132.0 +/- 54.5 (n=4/5)
+fix7_C_north.txt                   5     1    130.2 +/- 75.0    130.2 +/- 75.0 (n=4/5)
+fix7_D_north.txt                   5     1    198.8 +/- 22.5    198.8 +/- 22.5 (n=4/5)
+fix7ms_C_north.txt                 5     1    100.0 +/- 22.3    100.0 +/- 22.3 (n=4/5)
+fix7ms_D_east.txt                  5     1    144.2 +/- 47.0    144.2 +/- 47.0 (n=4/5)
+fix7ms_D_north.txt                 5     1    198.2 +/- 24.2    198.2 +/- 24.2 (n=4/5)
+fix8_A_north.txt                   5     1    176.2 +/- 46.3    176.2 +/- 46.3 (n=4/5)
+fix8_B_north.txt                   5     1    132.0 +/- 54.5    132.0 +/- 54.5 (n=4/5)
+fix8_C_north.txt                   5     1    130.2 +/- 75.0    130.2 +/- 75.0 (n=4/5)
+fix8_D_north.txt                   5     1    198.8 +/- 22.5    198.8 +/- 22.5 (n=4/5)
+fix8_bug6_after_D_west.txt         5     1    155.8 +/- 48.2    155.8 +/- 48.2 (n=4/5)
+fix8_bug6_before_D_west.txt        5     1    155.8 +/- 48.2    155.8 +/- 48.2 (n=4/5)
+fix9_A_north.txt                   5     1    167.2 +/- 49.7    167.2 +/- 49.7 (n=4/5)
+fix9_B_east.txt                    5     1     71.0 +/-  2.2     71.0 +/-  2.2 (n=4/5)
+fix9_D_north.txt                   5     1    187.0 +/- 46.0    187.0 +/- 46.0 (n=4/5)
+fix9oos_B_south.txt                5     1     86.2 +/- 37.2     86.2 +/- 37.2 (n=4/5)
+fix9oos_D_east.txt                 5     1    158.8 +/- 65.4    158.8 +/- 65.4 (n=4/5)
+
+3a. WAS ANY CONCLUSION DRAWN DURING THIS CAMPAIGN ACTUALLY CORRUPTED?
+
+    Searched every committed .txt/.md for prose citing a terminal_step
+    figure. Three consumers of the number exist. NONE of them was corrupted.
+    Reporting this honestly rather than inflating the finding:
+
+    (i) outputs/fix9_part1.txt:136 - "D/north 505 ever_any_r8=True
+        min_any=3.16 is almost certainly a tracker AFTER the never_detected
+        timeout (terminal_step=210 in fix8)". This drove the DECISION GATE
+        line "Do NOT stop for confirmation/lifecycle (the one ever_any_r8
+        is post-timeout)".
+
+        CHECKED: this cites the PER-SEED value, not the masked mean.
+        fix8_D_north.txt seed=505 reads terminal=210, all_terminal=True.
+        The masked summary mean in that same file is 198.8 (n=4/5). The
+        citation used the right number. Conclusion stands.
+
+    (ii) outputs/fix14_matrix_report.txt (3 occurrences) - reports
+        "terminal_step (240 = never terminated)". That comes from
+        _summarize_fix13.py:253, which imputes 240 for non-terminal runs
+        and LABELS the convention in the header. That is Option B semantics,
+        applied deliberately and disclosed. Not defective.
+
+    (iii) outputs/_summarize_fix9.py dump_matrix - prints the parsed
+        terminal_step mean, but prints _mean_bool_all_terminal(rows) in the
+        adjacent column, which renders "3/5" or "4/5" when runs are mixed.
+        The masking was incidentally mitigated there by an adjacent
+        disclosure. A reader of that table could see the n.
+
+    RESIDUAL RISK, stated plainly: no conclusion on this branch is known to
+    be wrong because of this defect. 30 committed baseline files
+    nonetheless carry a terminal_step mean whose contributing count is not
+    on the line, and future seed-matched comparisons against those files
+    would be reading a partial-set number against a partial-set number
+    without knowing it. Two of those files (fix8_bug6_before_D_west.txt vs
+    fix8_bug6_after_D_west.txt) are an explicit before/after pair where
+    both sides are 4-of-5; the comparison happens to be valid, but only by
+    luck of both sides excluding the same seed.
+
+
+================================================================
+4. ANALYSIS SCRIPTS UNDER outputs/ THAT CONSUME terminal_step
+================================================================
+
+12 of the 96 committed outputs/*.py mention terminal_step. Classified:
+
+PRODUCERS (compute it per run, pass to _build_evaluation, never aggregate):
+    _delaybonus_gate.py     141-153, prints per-seed only (line 214)
+    _delaybonus_probe.py    170-184, prints per-seed only (line 309)
+    _lane_matrix.py         138-165, 219-224, per-run into JSON
+    _rb_campaign.py         148-186, per-run into JSON
+    _rblatch_campaign.py     96-140, per-run into JSON
+    _rblatch_campaign2.py   144-188, per-run into JSON
+    _rblatch_trace.py       119-145, per-run into JSON
+    -> CLEAN. JSON preserves null explicitly. 286 of 304 committed
+       outputs/*.json contain at least one "terminal_step": null and none
+       of them is averaged anywhere.
+
+    _fix4_eval.py           52-66, 154, 190 - mirrors evaluate_scenarios.py
+                            per-seed line and CSV column, and prints
+                            "Summary (mean) over %d run(s)" at line 162.
+    -> Its summary loop does not include terminal_step in the averaged
+       keys, so it does not inherit the defect. It reproduces the per-seed
+       "-" convention correctly.
+
+CONSUMERS THAT AGGREGATE:
+    _summarize_fix13.py:253  tstep(r) -> int(r["terminal_step"]) if r["terminal_step"] else 240
+                      :262  log("terminal_step (240 = never terminated):")
+    -> NOT DEFECTIVE. It imputes the budget and states the convention in
+       the header line. This is Option B done correctly and explicitly.
+       _summarize_fix14.py reuses this parser and additionally reports a
+       "non_terminal" total (line 90).
+
+    _summarize_fix9.py:62    re.search(r"^  %s: ([0-9.]+) \+/- ([0-9.]+)" % key, text, re.M)
+                      :134   prints g("terminal_step") in the 16-row matrix
+    -> INHERITS THE DEFECT ONE LAYER UP, PARTIALLY MITIGATED. It re-prints
+       whatever masked mean evaluate_scenarios.py produced. Mitigated
+       because column 11 of the same table is
+       _mean_bool_all_terminal(rows), which prints "4/5" when mixed.
+
+CONSUMER, PER-RUN EQUALITY ONLY (no averaging):
+    _ui_basecheck.py:50      compares terminal_step field-by-field between a
+                             stored baseline and a fresh run
+    -> CLEAN, and note None == None compares correctly, so a non-terminal
+       run matches a non-terminal run. No defect.
+
+MENTION ONLY:
+    _prepend_fix9_answers.py:141 - prose, the fix9_part1 citation examined
+                             in section 3a.
+
+The _rb_analyze / _ir_analyze / _ui_analyze / _ffdeath_analyze /
+_lc_analyze / _delaybonus_analyze / _rblatch_analyze / _dr_cost / _dr_prov
+families named in the brief were checked and do NOT reference terminal_step
+at all. _lane_matrix_summarize.py aggregates other fields with
+"statistics.mean(xs) if xs else float(nan)", which surfaces an empty set
+as nan rather than dropping it - correct handling, and a useful precedent.
+
+NET: exactly one analysis script (_summarize_fix9.py) re-publishes the
+masked number, and it does so next to a column that discloses the n.
+
+
+================================================================
+PART 2 - DESIGN
+================================================================
+
+5. CHOSEN FIX: OPTION C (report both), implemented as a strict superset of
+   Option A. Option B is REJECTED.
+
+WHY NOT OPTION B (impute step_budget for non-terminal runs)
+
+    Option B changes what the printed number MEANS. fix12_D_north.txt would
+    go from 210.0 to 222.0 with no change to a single simulation outcome.
+    This branch carries ~15 committed matrix baselines that later rounds
+    compare against seed-matched; 30 committed summary blocks would become
+    silently non-comparable with any newly-generated file, and the
+    non-comparability would be invisible - both files would show a
+    plausible three-digit number under the same label. That is precisely
+    the failure mode this campaign has caught by hand five times already
+    (stale baselines across HEADs in the idleretreat and standby rounds;
+    the CSV-flag encoding mismatch in the lane-clamp round). Introducing a
+    sixth instance deliberately, in the reporting layer, to fix a
+    disclosure bug, is a bad trade.
+
+    Option B also destroys information: once imputed, the mean cannot
+    distinguish "terminated at 240" from "never terminated", because the
+    budget is a legal terminal_step value (outputs/_delaybonus_gate_post_
+    Dwest.txt has a real terminal_step=239). _summarize_fix13.py gets away
+    with it only because it states the convention in its own header and its
+    own consumers know it.
+
+WHY NOT OPTION A ALONE (disclose n only)
+
+    A "(n=4/5)" suffix fixes the stated defect and nothing else. It leaves
+    2c (metric vanishes at n=0), 2d ("+/- 0.0" at n=1) and 2e (termination
+    rate never summarized) in place. 2e is the one that actually makes the
+    masking legible at a glance, and it costs one line.
+
+OPTION C AS SPECIFIED
+
+    C1. terminal_step line ALWAYS carries its contributing count:
+            terminal_step: 210.0 +/- 0.0 (n=3/5)
+        Always, including n=5/5, so that absence of a suffix is never
+        load-bearing and the gate "the count is visible wherever
+        terminal_step is reported" holds unconditionally.
+
+    C2. Every OTHER metric line carries the suffix ONLY when n < total.
+        Today this never fires (section 2a proves terminal_step is the only
+        nullable field across 687 committed rows), so 12 of 13 summary
+        lines stay byte-identical to every committed baseline. It is a
+        guard against 2b: if a future field is missing or None, it
+        announces itself instead of quietly averaging a subset.
+
+    C3. n == 0 no longer vanishes (fixes 2c). Instead of continue:
+            terminal_step: n/a (n=0/5)
+        Matches the "n/a" convention already used by
+        evaluate_extended_metrics.py:_fmt_ms and the nan convention in
+        _lane_matrix_summarize.py.
+
+    C4. One new summary line, always printed, giving the termination rate
+        directly (fixes 2e):
+            non_terminal_runs: 2/5 (never reached all-victims-terminal within steps=240)
+        This is the number a reader actually wants and it is currently
+        nowhere in the summary block.
+
+    C5. Remove the dead "elif key == terminal_step" recomputation
+        (2a / lines 280-283) while preserving its only real effect, the
+        "%.1f" format. Pure cleanup, zero output change.
+
+    NOT DOING: 2d ("+/- 0.0" at n=1). Changing _mean_std's single-sample
+    return would alter printed values in committed baselines for EVERY
+    metric on any 1-seed run, which is the Option B trap again. With C1 and
+    C4 in place, an n=1 line reads "216.0 +/- 0.0 (n=1/5)" and the reader
+    can see the std is meaningless. Disclosure solves it without touching a
+    value. Documented here so it is a decision, not an oversight.
+
+    NOT DOING: any change to evaluate_extended_metrics.py. Section 2g shows
+    it does not aggregate terminal_step and already handles empty sets
+    correctly. Out of blast radius.
+
+VALUE-PRESERVATION GUARANTEE
+
+    No printed NUMBER changes. Every mean and std keeps its current value
+    and current format. The changes are: (a) a suffix appended to the
+    terminal_step line, (b) a suffix appended to other lines only in a case
+    that cannot occur today, (c) a line that currently disappears now
+    printing "n/a", (d) one added line. Seed-matched comparison against all
+    ~15 committed matrix baselines remains valid on every existing figure.
+
+CSV: NOT CHANGED. Deliberate.
+
+    The CSV already encodes this per row - terminal_step is empty and
+    all_terminal is False for non-terminal runs (verified: 54 empty
+    terminal_step cells across 687 committed rows, and all_terminal is
+    already a column). Adding a column would buy nothing and would carry
+    real risk: outputs/_summarize_fix13.py:52 reads the LAST CSV field
+    positionally -
+
+        for tok in (parts[len(cols) - 1] if len(parts) >= len(cols) else "").split(";"):
+
+    - to recover unreachable_causes. Appending a column to fieldnames would
+    silently redirect that read to the new column and break the
+    never_detected victim extraction that _summarize_fix13.py and
+    _summarize_fix14.py both depend on. Checked before proposing, per the
+    brief. Not adding a column avoids the issue entirely.
+
+DOWNSTREAM PARSER COMPATIBILITY, CHECKED IN ADVANCE
+
+    Only one committed script parses the summary metric lines:
+        outputs/_summarize_fix9.py:62
+        re.search(r"^  %s: ([0-9.]+) \+/- ([0-9.]+)" % key, text, re.M)
+    It is anchored at the start and NOT at the end, so a trailing
+    " (n=4/5)" is ignored and the captured groups are unchanged. Verified
+    by inspection; will be verified by execution in Part 4.
+
+    The new non_terminal_runs line: _summarize_fix9.py only searches for
+    named keys, so an extra line is invisible to it. _summarize_fix13.py
+    and _summarize_fix14.py only consume lines after the "seed,rescued,"
+    header whose first character is a digit; the new line begins with two
+    spaces and is skipped. No committed script matches on
+    "Summary (mean +/- std) over" (grepped: zero hits outside
+    evaluate_scenarios.py itself).
+
+    Nothing under tests/ imports or parses evaluate_scenarios.py output.
+    Only tests/_run_scenario_a_coverage_validation.py references the
+    module name, and it is a helper script, not a test.
+
+
+6. CONFIRMING THE FIX CANNOT CHANGE A SIMULATION OUTCOME
+
+Argument: every edit is inside main()'s summary block
+(evaluate_scenarios.py:268-300), which executes after the seed loop has
+finished and every model has been stepped and discarded. It reads rows and
+writes stdout. It touches no RNG, no module-level global, no import order,
+no cfv/wf/am state. _run_seed, _scenario_params, _build_evaluation and the
+WildFireModel construction path are untouched. No file under agents.py,
+wildfire_model.py or src_extension/ is opened.
+
+An argument is not the standard this campaign has used. The verification
+will be executional, matching the standard set in the lane-clamp and
+dispatchreach rounds:
+
+    V1. A control run was captured BEFORE any source edit, at HEAD 9dfdb07:
+            python evaluate_scenarios.py --scenario D --wind north --n 5 \
+              --steps 240 --seeds 101,202,303,404,505 --csv
+        (chosen because D/north is the historically non-terminal-heavy
+        combo; launched during Part 1, output held in the session
+        scratchpad, not committed.)
+
+    V2. After the edit, the same command is re-run and the two outputs are
+        compared with an exact byte diff after stripping ONLY the summary
+        block. The banner line, all five per-seed lines, every "causes:"
+        line, the full CSV block (header plus all data rows) and the
+        REPRODUCE line must be byte-identical. Any difference in those
+        regions fails the gate and the change is reverted.
+
+    V3. A second combo with zero non-terminal runs is run the same way, to
+        exercise the n=5/5 path and confirm it too is byte-identical
+        outside the summary block.
+
+    V4. git diff --stat must show evaluate_scenarios.py and nothing else.
+        Any diff line touching agents.py, wildfire_model.py or
+        src_extension/ aborts the round.
+
+    V5. outputs/_summarize_fix9.py is executed against the new-format
+        output to prove its regex still captures the same two groups.
+
+    V6. Test suite re-run; baseline is 8 failed / 427 passed and must be
+        unchanged.
+
+================================================================
+END OF PARTS 1 AND 2 - STOPPING FOR CONFIRMATION BEFORE PART 3
+================================================================
