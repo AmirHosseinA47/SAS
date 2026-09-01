@@ -1,0 +1,841 @@
+================================================================================
+REACHABILITY IN RESCUE DISPATCH - PART 1 (MEASUREMENT) AND PART 2 (BOTH ARMS)
+Branch claude/position-rename-and-hazard-revalidation, from HEAD c4d5a25
+Prior verdicts: ffdeath_investigation.txt (C), unassigninflow_report.txt (step 6),
+                lastcell_report.txt (sections 4 and 9)
+================================================================================
+
+HEADLINE, STATED BEFORE THE EVIDENCE SO IT CANNOT BE READ AS A CONCLUSION
+DRAWN TO FIT ONE:
+
+  THE REACHABILITY CONSTRAINT IS ALMOST NEVER VIOLATED AT COMMITMENT - 1
+  DISPATCH IN 108 - AND IT NEVER ONCE SEPARATES TWO CANDIDATES.
+
+      dispatches measured .................................. 91 over 23 runs
+      chosen unit with NO live BFS route at commitment ......  0 / 91  (0.0%)
+      multi-candidate dispatches ...........................  38 / 91
+      ... in which candidates DIFFER on reachability ........  0 / 38
+
+  That is the chain's standard 23-run sample.  Four EXTENSION seeds were run
+  because ffdeath_investigation.txt had found one no-path dispatch in a seed
+  set this chain does not use, and that one is still there - see 2.7.  Over
+  everything run this round the rate is 1 in 108, not 0 in 91.
+
+  BOTH SPECIFIED DESIGNS ARE THEREFORE INERT on this sample, by construction
+  and then in fact.  That includes the case that motivated the round: at
+  D/east 505 step 97 - the one-cell margin that cost c4d5a25 a rescue - BOTH
+  units have an OPEN route.  Neither a hard filter nor a soft tiebreak
+  recovers that rescue, because reachability is not what went wrong there.
+
+  BUT THE ROUND DID NOT STOP THERE, AND THE SECOND MEASUREMENT CHANGES THE
+  RECOMMENDATION.  The binary test was pushed to its graded form - the BFS
+  path LENGTH, which the same BFS already computes - and that does separate
+  candidates:
+
+      candidate evaluations with detour (bfs - manhattan) > 0 .... 13 / 129
+      multi-candidate dispatches whose candidates differ in detour   3 / 38
+      ... where the ORDERING actually reverses ...................   1 / 38
+
+  The one reversal is an EXACT Manhattan tie in which the stock code falls
+  back to choosing by the firefighter's NAME and picks a unit whose only
+  walkable route is 71 cells over one whose route is 39.  The victim dies.
+  See 2.8, and section 5 for what follows from it.
+
+================================================================================
+1. WHERE THE CODE ACTUALLY LIVES - ONE CORRECTION TO THE BRIEF
+================================================================================
+The brief names "wildfire_model.py (where select_rescue_assignment lives -
+confirm)".  Confirmed and corrected: IT DOES NOT LIVE THERE.
+
+    select_rescue_assignment          src_extension/planning/rescue_planner.py:523-644
+    the snapshot it consumes          wildfire_model.get_rescue_operational_snapshot:2497
+    the availability predicate        wildfire_model._firefighter_available_for_dispatch:2464
+
+wildfire_model.py imports the planner at line 68 and calls it at :2832, :2915
+and :3952; src_extension/execution/rescue_executor.py imports it at line 13
+and calls it at :186.  Those five call sites are the whole surface.
+
+1.1  select_rescue_assignment, QUOTED IN FULL AT THE PARTS THAT DECIDE
+-----------------------------------------------------------------------
+The sort, rescue_planner.py:624-630 - the entire scoring logic of the
+function, unabridged:
+
+      best_ff: str | None = None
+      best_dist: int | None = None
+      for ff_s, ff_pos in available:
+          dist = _manhattan_distance(victim_pos, ff_pos)
+          if best_dist is None or dist < best_dist or (dist == best_dist and ff_s < str(best_ff)):
+              best_ff = ff_s
+              best_dist = dist
+
+and _manhattan_distance, :418-422:
+
+      def _manhattan_distance(pos_a, pos_b) -> int:
+          return abs(int(pos_a[0]) - int(pos_b[0])) + abs(int(pos_a[1]) - int(pos_b[1]))
+
+  CONFIRMED: MANHATTAN ONLY.  One key, straight-line distance.  The only
+  tiebreak is the firefighter ID string, lexicographic.  No route test as a
+  filter, as a penalty, or as a secondary key.  Nothing downstream
+  re-validates the choice: the RescueDecision goes to
+  RescueExecutor.apply_physical_pairing_decision, which applies it.
+
+  The victim side is not scored at all: needy is sorted by victim ID string
+  and needy[0] is taken (:568-577).
+
+1.2  "AVAILABLE" - EVERY CONDITION, BOTH LAYERS
+------------------------------------------------
+Layer 1, the planner's own filter, rescue_planner.py:582-598:
+
+      for ff_id, entry in firefighters.items():
+          ff_s = str(ff_id or "").strip()
+          if not ff_s or not isinstance(entry, dict):      continue
+          if bool(entry.get("dead", False)):               continue
+          if bool(entry.get("assigned", False)):           continue
+          if bool(entry.get("route_blocked", False)):      continue
+          if not bool(entry.get("available", True)):       continue
+          pos = entry.get("position")
+          if pos is None or len(pos) < 2:                  continue
+          available.append((ff_s, (int(pos[0]), int(pos[1]))))
+
+Layer 2, what feeds entry["available"], wildfire_model.py:2464-2476:
+
+      def _firefighter_available_for_dispatch(self, ff_marker) -> bool:
+          if getattr(ff_marker, "dead", False):                   return False
+          status = str(getattr(ff_marker, "status", "") or "").strip().lower()
+          if status in ("dead", "route_blocked"):                 return False
+          if getattr(ff_marker, "assigned", False):               return False
+          if getattr(ff_marker, "exiting", False):                return False
+          if getattr(ff_marker, "rescue_completed", False):       return False
+          return getattr(ff_marker, "pos", None) is not None
+
+  "Available" means: not dead, status not in {dead, route_blocked}, not
+  assigned, not exiting, not rescue_completed, and on the grid.  SIX
+  CONDITIONS, NONE OF THEM A REACHABILITY TEST.  Verdict C's characterisation
+  is accurate, at this HEAD, verbatim.
+
+1.3  IS FIRE STATE REACHABLE AT THE CALL SITE?  NO - AND THIS IS STRUCTURAL
+-----------------------------------------------------------------------------
+  IN THE PLANNER: NO.  rescue_planner.py imports TriggerBatch,
+  RescueDecision, planner_selection, mission_goal_integration and
+  utility_evaluation - and nothing else.  No mesa, no grid, no wildfire_model,
+  no agents.  select_rescue_assignment receives one argument that carries
+  state, `snapshot: dict`, and that dict contains only step, victims,
+  firefighters and incidents (built at wildfire_model.py:2578-2582).  There is
+  no fire field, no grid handle and no model reference.
+
+  A live BFS is therefore IMPOSSIBLE inside select_rescue_assignment without
+  handing the planner a model reference, which is the managed/managing
+  separation this codebase documents in docs/02_managed_vs_managing.md and
+  which ffdeath_investigation.txt section 8 explicitly said not to break.
+
+  IN THE MODEL: YES, and the precedent is already in the file.
+  _revalidate_route_blocked_firefighters (wildfire_model.py:2139-2213, added
+  in 70e1b33) does exactly this, on the model side, by borrowing the marker
+  agent's helpers:
+
+      fire_cells = ff_marker._fire_cells()                       # agents.py:617
+      ff_marker._path_exists_avoiding_fire(cell, vcell, fire_cells)   # agents.py:1030
+
+  So model-side code calling the marker's BFS is established practice in this
+  exact file, added by this exact chain, and needs no change to agents.py.
+
+  WHERE THE DATA WOULD HAVE TO BE COMPUTED, THEN:
+    * COMPUTED in wildfire_model.get_rescue_operational_snapshot (:2497), in
+      the firefighter loop at :2544-2568 - the same loop that already calls
+      _firefighter_available_for_dispatch, so the availability set is already
+      in hand there;
+    * CARRIED as a new per-firefighter snapshot field, alongside "available"
+      and "route_blocked";
+    * CONSUMED in rescue_planner.select_rescue_assignment at the sort, :624.
+
+  ONE WRINKLE THAT SHAPES THE FIELD: reachability is per (firefighter,
+  victim) PAIR, but the snapshot is built before the planner picks a victim.
+  A scalar per firefighter cannot express it.  The field would have to be the
+  set of victim IDs that firefighter can currently reach - which one
+  flood-fill per available unit produces for all victims at once.  This is the
+  same objection ffdeath_investigation.txt section 8 raised against putting
+  reachability on "available", and it survives: "available" is a fleet-status
+  concept consumed by the dashboard, the knowledge model and
+  adaptation_manager, and it is not per-victim.
+
+  COST OF PUTTING IT IN THE SNAPSHOT: the snapshot is built on EVERY step, not
+  only at dispatch - _build_mission_goal_runtime_context calls it at :2583.
+  So a snapshot-resident field is a per-step cost, not a per-dispatch cost.
+  Section 3 measures both.
+
+================================================================================
+2. THE DECIDING MEASUREMENT
+================================================================================
+Instrument: outputs/_dr_probe.py, which wraps select_rescue_assignment in all
+three modules that hold the name (wildfire_model, rescue_executor,
+rescue_planner) and records, for every call returning "assign", the complete
+candidate pool, each candidate's Manhattan distance to the chosen victim, and
+each candidate's LIVE reachability via the production predicate
+_path_exists_avoiding_fire against a fire set taken at that instant.
+
+  It then FOLLOWS each dispatch forward, re-testing reachability from every
+  original candidate's current position to the victim's current position, once
+  per step, until the victim resolves or the run ends.  That is what makes
+  question (d) answerable from data instead of from argument.
+
+SAMPLE: the 13 runs this chain has used throughout - D/east half-roles
+101-505, D/south half-roles 101-505, D/east default-roles 101/202/303 - plus
+the 10 fresh seeds from the last two rounds (east/half and south/half
+606/707/808/909/1010).  23 runs, 240 steps, scenario D, FIRE_SPREAD_MULTIPLIER
+0.75, BATCH_SIZE 300, PROBABILITY_MAP False.
+
+2.0  THE CONTROL, RUN FIRST
+-----------------------------
+Arm none must reproduce c4d5a25's committed data or nothing below transfers.
+outputs/_dr_prov.py compares it against outputs/_lc_post_*.json on the FULL
+per-step firefighter trace (step, unit, cell, dead, status, assigned, target,
+exiting, fire-distance, free-neighbour count), on the exact (step, unit, cell)
+of every death, and on the run outcomes.
+
+      23 of 23 runs IDENTICAL.  0 differing, 0 missing.
+
+  So the probe observes without perturbing, and the 91 dispatches below are
+  c4d5a25's own dispatches.
+
+  Drift check on the replicated availability filter: the unit the real planner
+  chose was absent from the probe's reconstructed pool in 0 of 91 dispatches.
+  The denominators are the planner's, not an approximation of them.
+
+2.1  (a) DISPATCHED WITH NO ROUTE AT COMMITMENT
+------------------------------------------------
+      chosen unit had NO live BFS route to the victim ....  0 / 91   (0.0%)
+      any candidate, chosen or not, with no route ........  0 / 129
+
+  CONFIRMED, NOT REFUTED, ON A SAMPLE 11x LARGER THAN THE ONE THAT FIRST
+  REPORTED IT.  unassigninflow_report.txt measured 8/8 open on release-linked
+  commitments; this is 91/91 open across every dispatch of every kind.
+
+  ONE HISTORICAL COUNTEREXAMPLE, AND WHY IT IS NOT SAMPLED AWAY.
+  ffdeath_investigation.txt section 5 found exactly one no-path dispatch in
+  57: D/east seed 333, step 42.  Seeds 111/222/333/444 are in the
+  route_blocked gate's seed set but NOT in this 23-run sample, so a null
+  result here could be an artefact of which seeds this chain settled on.  They
+  were run as an explicit extension rather than left as a caveat - see 2.7.
+
+2.2  (b) DOES THE TIEBREAK DECIDE ANYTHING?
+--------------------------------------------
+      pool size 1 (no choice exists) .............  53 / 91   (58.2%)
+      pool size 2 (the tiebreak decides) .........  38 / 91   (41.8%)
+      pool size 3+ ...............................   0
+
+  Scenario D runs two firefighters, so the pool is never larger than two and
+  the "sort" is a two-way comparison in the 42% of dispatches where it runs at
+  all.
+
+  TOP-TWO MANHATTAN MARGIN, FULL HISTOGRAM (38 multi-candidate dispatches):
+
+        margin   0 :  2      margin  19 :  3
+        margin   1 :  4      margin  20 :  1
+        margin   4 :  3      margin  25 :  3
+        margin   6 :  1      margin  28 : 19
+        margin   7 :  1      margin  32 :  1
+
+      margin <=  0 :  2 / 38   ( 2.2% of all dispatches)   exact ties
+      margin <=  1 :  6 / 38   ( 6.6%)
+      margin <=  2 :  6 / 38   ( 6.6%)
+      margin <=  5 :  9 / 38   ( 9.9%)
+      margin <= 10 : 11 / 38   (12.1%)
+
+  THE DISTRIBUTION IS SHARPLY BIMODAL, WHICH IS THE USEFUL PART.  Either the
+  two units are effectively co-located (margin 0-7: 11 of 38) or they are on
+  opposite sides of the map (margin >= 19: 27 of 38, and 19 of those sit at
+  exactly 28).  There is nothing in between.  A threshold, if one were needed,
+  would be read off that gap - anywhere in [8, 18] partitions the sample
+  identically - and NOT off a round number.  That is what a justified
+  threshold would look like; section 5 explains why none is needed.
+
+2.3  (c) DO THE CLOSE CANDIDATES DIFFER IN REACHABILITY?  NO.  NOT ONCE.
+-------------------------------------------------------------------------
+  This is the population a soft tiebreak acts on, and it is empty.
+
+      margin <=   n   differ-on-reach   differ-in-top-2   would-flip
+         0        2          0                 0              0
+         1        6          0                 0              0
+         2        6          0                 0              0
+         5        9          0                 0              0
+        10       11          0                 0              0
+       any       38          0                 0              0
+
+      dispatches a SOFT TIEBREAK would flip ......  0 / 91
+      dispatches a HARD FILTER would change ......  0 / 91
+      dispatches where the hard filter empties the pool ....  0 / 91
+
+  Every one of the 129 candidate evaluations came back reachable.  There is no
+  subpopulation to act on at any margin, so the threshold question in the
+  brief's Arm B is moot: every threshold from 0 to infinity selects the same
+  zero dispatches.
+
+2.4  (d) DOES THE CHOSEN UNIT COMPLETE THE RESCUE?  OFTEN NOT - FOR OTHER
+     REASONS.
+--------------------------------------------------------------------------
+      completed .....................  51 / 91   (56.0%)
+      victim died ...................  19
+      chosen unit died ..............  10
+      re-assigned ...................   7
+      chosen unit route_blocked .....   4
+      ------------------------------------------
+      DID NOT COMPLETE ..............  40 / 91   (44.0%)
+
+  Of those 40, only 11 had any alternative in the pool at all - the other 29
+  were pool-size-1 dispatches where no decision was available to be wrong.
+
+      failed dispatches with an alternative ...................  11
+      ... alternative's route open at EVERY followed step .....  11
+      ... alternative's route open at the last observation ....  11
+      ... chosen unit's route open at commitment ..............  11
+
+  ALL ELEVEN, BOTH SIDES, ALL THE WAY THROUGH.  In every failed dispatch that
+  had a choice, the passed-over unit's route stayed open the entire time AND
+  the chosen unit's route was open when it was picked.  Reachability
+  distinguishes the two units in none of the 11 cases, at commitment or at any
+  step afterwards.  A reachability-aware sort has no signal here.
+
+  The eleven, untruncated, are listed in outputs/_dr_p1_none.txt.  Nine of the
+  eleven have a margin of 19 or more - the chosen unit was not marginally
+  closer, it was dramatically closer, and it still failed.
+
+2.5  THE CASE THAT MOTIVATED THE ROUND - D/EAST 505 STEP 97
+-------------------------------------------------------------
+  Read straight out of the trace, at the moment of commitment:
+
+      victim_1 at (25,48)
+      ff_unit_0   pos (43,20)   Manhattan 46   route OPEN
+      ff_unit_1   pos (13,13)   Manhattan 47   route OPEN
+
+  BOTH ROUTES ARE OPEN.  The one-cell margin that lastcell_report.txt section
+  4 traced, and that section 9 called "where the next real win is", is a
+  choice between two reachable units.  A hard filter removes neither.  A soft
+  tiebreak prefers neither.  The dispatch still goes to ff_unit_0, it still
+  fails to arrive, and victim_1 still dies at 86 steps of follow-up during
+  which ff_unit_1's route never closed either.
+
+  THE PREVIOUS ROUND'S DIAGNOSIS WAS RIGHT ABOUT THE DEFECT AND WRONG ABOUT
+  THE REMEDY.  It said, correctly, that a 1-cell Manhattan tiebreak with no
+  reachability test decided which unit chased a victim across 46 cells.  What
+  it could not know without this measurement is that the reachability test it
+  proposed would have returned True for both units and changed nothing.  The
+  defect it identified is real; the fix it named does not reach it.
+
+2.6  THE OBVIOUS CHALLENGE TO A NULL RESULT - AND IT LANDS
+------------------------------------------------------------
+  The challenge is "your reachability test was too permissive".  The test is
+  the production one - _path_exists_avoiding_fire, the predicate 70e1b33 uses
+  to release a route_blocked unit - so an appeal to provenance was available.
+  It was not taken, because the objection deserves a measurement.  The
+  near-continuous version of the same question was instrumented on the same
+  91 dispatches: BFS SHORTEST PATH LENGTH, and detour = bfs - manhattan.
+
+  THE OBJECTION IS CORRECT, AND THIS ROUND HAD DRAFTED THE OPPOSITE.  An
+  earlier draft of this section asserted that every route was geodesically
+  straight.  The measurement refuted it:
+
+      candidate evaluations with a path length ......... 129 / 129
+      ... with detour (bfs - manhattan) > 0 ............  13
+      detour histogram: 2->3  4->2  6->3  12->2  20->1  28->1  32->1
+      ... with no path at all ..........................   0
+
+      multi-candidate dispatches whose two candidates
+        DIFFER in detour ...............................   3 / 38
+      ... of those, where the ORDERING actually flips ..   1 / 38
+
+  SO THE BINARY TEST AND THE GRADED TEST GIVE DIFFERENT ANSWERS.  Binary
+  reachability separates nothing, 0 of 38.  Route LENGTH separates the
+  candidates on 3 of 38 and actually reverses the choice on 1 of 38.  That one
+  is section 2.8, and it is the reason this round did not stop at "correct but
+  inert".
+
+  WHY THE BINARY TEST IS THE ONE THAT COMES BACK EMPTY - the mechanism, so
+  the zeros in 2.1/2.3 are understood rather than merely observed.  The fire
+  is a wind-driven front, not an enclosure.  A moving band across a 50x50 open
+  grid disconnects almost nothing: to make a unit unreachable the band must
+  close a full cut between it and the victim, which on this geometry
+  essentially only happens when the unit is locally enclosed - and a locally
+  enclosed unit is ALREADY excluded from the pool, by route_blocked
+  (agents.py:961, all four neighbours burning), which the availability filter
+  reads at rescue_planner.py:589.
+
+      THE POOL IS ALREADY PRE-FILTERED BY THE ONE CONDITION THAT WOULD MAKE
+      THE BFS SAY NO.  A hard reachability filter is very nearly a second copy
+      of route_blocked, applied to a pool route_blocked has already cleaned.
+
+  That is a structural argument, not a sample-size one: it says the zeros in
+  2.1 and 2.3 should be expected to hold, not merely that they held here.
+  What the band DOES do is bend routes around itself - which is why the graded
+  test finds signal where the binary one cannot.
+
+2.7  THE EXTENSION SEEDS - AND 2.1's ZERO DOES NOT SURVIVE THEM
+-----------------------------------------------------------------
+  D/east half-roles seeds 111/222/333/444, the seed set in which
+  ffdeath_investigation.txt found its single no-path dispatch, run at this
+  HEAD as an explicit extension rather than left as a caveat.  4 runs, 17
+  dispatches, same params.
+
+      chosen unit had NO live BFS route at commitment ....  1 / 17   (5.9%)
+      multi-candidate dispatches ..........................  7 / 17
+      ... in which candidates DIFFER on reachability ......  0 / 7
+      ... in which the ordering flips on route length .....  0 / 7
+
+  THE HISTORICAL COUNTEREXAMPLE IS STILL THERE, AND THE 23-RUN SAMPLE HAD
+  SAMPLED AROUND IT.  east/half 333, step 44:
+
+      victim_0 at (49,29)
+      ff_unit_1  pos (0,25)   Manhattan 53   BFS none   ROUTE CLOSED
+      pool size 1 - it is the only candidate
+      reason "initial"
+
+  ffdeath_investigation.txt recorded this as seed 333 step 42; at this HEAD it
+  is step 44, which is what four rounds of retreat and route_blocked changes
+  in between should be expected to do to a step number.  Same seed, same
+  victim, same mechanism.
+
+  SO 2(a) IS 0/91 ON THE CHAIN'S STANDARD SAMPLE AND 1/108 ON EVERYTHING RUN
+  THIS ROUND.  The honest rate is "about 1%", not "zero", and the difference
+  matters because that one dispatch is the ONLY place in 108 where the hard
+  filter is not a no-op.  Section 4.2 measures what it does there.
+
+  WHY IT DOES NOT RESCUE THE HARD FILTER, READ FROM THE TRACE:
+
+      step 42   victim_0 confirmed at (49,29); the planner is asked twice
+                for a replacement_after_blocked and finds a pool of 0 both
+                times - it already returns "delay" on its own
+      step 44   ff_unit_1 is dispatched into the closed route
+      step 45   victim_0 DIES
+
+  The victim dies one step after the bad dispatch.  Nothing a better dispatch
+  decision could have done at step 44 would have reached (49,29) from (0,25)
+  in one step, at Manhattan 53.  This is the single strongest case in the
+  whole campaign for a hard reachability filter, and even here the filter buys
+  nothing - it converts a futile assign into a futile delay.
+
+2.8  THE ONE DISPATCH ANY OF THIS WOULD HAVE CHANGED - S/HALF 606 STEP 49
+---------------------------------------------------------------------------
+  An EXACT Manhattan tie, so the stock code falls through to its last resort:
+  the alphabetical firefighter ID.
+
+      victim_2 at (10,25)
+      ff_unit_0   pos (49,25)   Manhattan 39   BFS 71   detour 32   route OPEN
+      ff_unit_1   pos (24, 0)   Manhattan 39   BFS 39   detour  0   route OPEN
+
+  Both reachable, so neither Arm A nor Arm B touches this.  Both exactly 39
+  cells away in straight-line terms, so the Manhattan key cannot separate them
+  either.  The tiebreak that actually decides is `ff_s < str(best_ff)` -
+  the unit's NAME - and it selects ff_unit_0, whose only walkable route is
+  nearly twice as long as the alternative's.
+
+  WHAT FOLLOWS, FROM THE TRACE:
+      step  49   victim_2 assigned to ff_unit_0 (bfs 71) on the name tiebreak
+      step  90   re-assigned to ff_unit_1  (man 25, bfs 29)
+      step 102   re-assigned back to ff_unit_0 (man 38, bfs 58)
+      step 120   victim_2 DIES at (10,25)
+
+  HOW FAR THIS CAUSAL CLAIM IS PUSHED: to the decision, and no further.  That
+  the step-49 choice was the worse of two available choices is exact and
+  reproducible - 39 against 39 on the key that was used, 71 against 39 on the
+  key that was not.  Whether ff_unit_1 would have completed the rescue is 71
+  steps of transit away in a chaotic spread model, and is not claimed.  This
+  is the same discipline lastcell_report.txt section 4 applied to its own
+  one-seed result, and it cuts the same way here.
+
+================================================================================
+3. COST OF A BFS PER CANDIDATE PER DISPATCH
+================================================================================
+Measured on the sample itself, not extrapolated.
+
+      BFS calls at DISPATCH ONLY ......  129 in 0.2289 s   (1.774 ms each)
+      BFS calls incl. per-step follow .. 4498 in 5.9136 s   (1.315 ms each)
+      simulation wall clock ............ 13080.2 s over 23 runs (568.7 s/run)
+      dispatch BFS as a share of wall ..  0.00175 %
+      mean pool size (BFS per dispatch)   1.4
+      dispatches per run ...............  4.0
+
+  CONFIRMED AT THE DISPATCH CALL FREQUENCY SPECIFICALLY, which is what the
+  brief asked and what prior rounds had not isolated: about 4 dispatches per
+  240-step run, 1.4 candidates each, so ~5.6 BFS calls per run, ~10 ms per
+  run, against a 569-second run.  Cost is not an argument for or against
+  either arm.
+
+  THE ONE PLACE COST WOULD NOT BE FREE is the snapshot-resident field from
+  section 1.3: get_rescue_operational_snapshot is called every step, so the
+  same BFS moves from ~5.6 calls per run to a per-step cost.  Section 6 of
+  the Part 3 design would have to account for that; on these numbers it is
+  still small, but it is 240x larger than the dispatch-only figure and should
+  not be quoted as "free" by borrowing the dispatch-only number.
+
+3.1  THE SAME COST AS A MICROBENCHMARK, INCLUDING THE TRUE WORST CASE
+----------------------------------------------------------------------
+The aggregate above divides total BFS time by total wall clock, which hides
+what a single call costs at a single moment.  outputs/_dr_cost.py times the
+three pieces directly at eight points through a D/east 505 run, 200
+repetitions each.  Milliseconds:
+
+    step  fires   model.step()  _fire_cells()   BFS open   BFS full-flood
+      30    119      2875.4         0.209         0.99          1.71
+      60    403      2424.9         0.243         0.005         0.005
+      90    263      1853.7         0.229         1.02          1.63
+     120    197      1818.6         0.209         1.21          1.68
+     150    154      2342.8         0.203         1.22          1.67
+     180     49      2152.8         0.193         1.48          1.78
+     210     31       933.3         0.182         1.77          1.76
+     240     27      1011.1         0.184         1.53          1.75
+
+  "BFS full-flood" is the TRUE worst case - a destination the search can never
+  match, so it exhausts the entire reachable component instead of
+  short-circuiting on arrival.  (An earlier version of this benchmark walled
+  off the SOURCE's four neighbours to force a False; that drains the queue on
+  the first iteration and measures the FASTEST case, not the slowest.  The
+  number it produced, 0.001 ms, was wrong by three orders of magnitude and is
+  not used anywhere in this report.)
+
+  READ AGAINST THE ONLY DENOMINATOR THAT MATTERS: one model.step() costs
+  0.9 to 2.9 SECONDS.  A worst-case full-flood BFS costs 1.8 MILLISECONDS -
+  between 0.06% and 0.19% of a single step, incurred about four times in a
+  240-step run.
+
+  The step-60 row reads 0.005 ms on both BFS columns because at peak fire
+  (403 burning cells) the sampled unit is enclosed and the flood drains
+  immediately.  It is not a measurement error; it is the enclosed case, which
+  is also the case route_blocked already catches (2.6).
+
+  WHAT THIS MEANS FOR THE TWO PLACEMENTS OF THE FIELD:
+    * dispatch-only (the 5.4 design): ~4 dispatches per run x up to 2 units x
+      up to 4 needy victims = at most ~32 BFS per run, under 60 ms against a
+      569-second run.  Free.
+    * snapshot-resident on every step (the naive placement): up to 8 BFS plus
+      one _fire_cells() per step, ~14 ms against a ~1800 ms step, so under 1%.
+      Still small - but it is ~240x the dispatch-only figure, and quoting the
+      dispatch-only number for it would be wrong.  This is why 5.4 opts the
+      per-step caller out rather than paying it.
+
+================================================================================
+4. THE ARMS, BUILT AND RUN
+================================================================================
+Every arm is a runtime monkeypatch; NOTHING was written to source for this
+section.  All four are applied the same way, and the way matters: the arm
+SHRINKS THE CANDIDATE POOL AND RE-CALLS THE REAL PLANNER.  No arm reimplements
+the sort.  So an arm's RescueDecision is exactly what production would emit -
+same payload, same decision_id, and, for the hard filter, the planner's own
+no-firefighter branch rather than a probe's imitation of it.
+
+    none  stock c4d5a25, passthrough                              CONTROL
+    a     HARD FILTER      candidates = [ff for ff in available
+                                         if has_bfs_route(ff, victim)]
+    b     SOFT TIEBREAK    key = (manhattan, not has_bfs_route, id)
+    c     ROUTE-LENGTH TIEBREAK   key = (manhattan, bfs_length, id)
+    d     ROUTE-LENGTH PRIMARY    key = (bfs_length, id)
+
+  ARMS C AND D ARE NOT IN THE BRIEF.  They were added after arm A's run
+  produced the section 2.6 result, which showed the brief's two arms could not
+  act on anything in the sample.  They are reported as an addition, not
+  presented as one of the two the brief specified.
+
+4.1  RESULTS, SEED-MATCHED, ALL FIVE ARMS
+------------------------------------------
+      POOLED, 23 RUNS          rescued   victims dead   firefighter_deaths
+        arm none  (= c4d5a25)     51          37                14
+        arm a     hard filter     51          37                14
+        arm b     soft tiebreak   51          37                14
+        arm c     route tiebreak  51          37                14
+        arm d     route primary   51          37                14
+
+      13-RUN SEED-MATCHED       r29 / d23 / ff6   - identical in all 5 arms
+      10 FRESH SEEDS            r22 / d14 / ff8   - identical in all 5 arms
+
+  NO SEED MOVES ON ANY METRIC IN ANY ARM.  Not rescued, not victims dead, not
+  firefighter deaths.  The pooled row also reproduces c4d5a25's own committed
+  figures (51 / 37 / 14 in lastcell_report.txt), which is the same provenance
+  statement as 2.0 seen through the outcome totals.  Per-cell tables in
+  outputs/_dr_arms_all.txt.
+
+4.2  WHAT EACH ARM ACTUALLY DID, COUNTED
+-----------------------------------------
+                        dispatches   cells whose FULL per-step
+                        changed      trace differs from stock
+      arm a                 0              0 / 23
+      arm b                 0              0 / 23
+      arm c                 1              1 / 23   (south_half_606)
+      arm d                 1              1 / 23   (south_half_606)
+
+  ARM A AND ARM B ARE BIT-IDENTICAL TO STOCK ON ALL 23 RUNS.  Not merely equal
+  on totals - the full per-step firefighter trace matches, cell for cell.  The
+  hard filter's empty-pool branch fired 0 times.  This is the prediction
+  recorded in outputs/_dr_prediction.txt BEFORE either arm was run, confirmed
+  without amendment.
+
+  ARM C AND ARM D ARE BIT-IDENTICAL TO EACH OTHER on all 23 runs, and differ
+  from stock on exactly one.  THAT SETTLES C-VERSUS-D WITH DATA RATHER THAN
+  TASTE: making route length the PRIMARY key buys nothing that using it as a
+  TIEBREAK does not already buy, so the larger change has no justification.
+
+4.3  THE ONE DISPATCH THAT CHANGED, AND WHAT CAME OF IT
+--------------------------------------------------------
+  S/half 606, step 49 - the exact-tie case from 2.8.
+
+      stock   victim_2 -> ff_unit_0   (Manhattan 39, BFS 71)  chosen by NAME
+      arm c   victim_2 -> ff_unit_1   (Manhattan 39, BFS 39)  chosen by ROUTE
+
+  What follows, read from both traces:
+
+                                     stock            arm c
+        re-dispatches of victim_2    2 (s90, s102)    1 (s85)
+        victim_2 dies                step 120         step 120
+        run outcome                  r2/d1/ff0        r2/d1/ff0
+
+  THE DECISION IMPROVES AND THE OUTCOME DOES NOT.  The unit sent is the one
+  that can actually get there in 39 steps instead of 71, and the churn of
+  re-assigning that victim drops from two re-dispatches to one.  The victim
+  still dies, on the same step.  Stated plainly rather than dressed up: on the
+  only dispatch any arm changed in 23 runs, the change was correct and made no
+  difference to who lived.
+
+4.4  THE EXTENSION SEEDS - THE ONLY PLACE THE HARD FILTER IS NOT A NO-OP
+-------------------------------------------------------------------------
+  All four arms were re-run over D/east half-roles 111/222/333/444, because
+  2.7 found the one dispatch in 108 where a candidate has no route and the
+  hard filter therefore has something to remove.  4 runs x 5 arms = 20 runs.
+
+    cell             none        a           b           c           d       diverges
+    east_half_111    r4/d0/ff0   r4/d0/ff0   r4/d0/ff0   r4/d0/ff0   r4/d0/ff0    -
+    east_half_222    r3/d1/ff1   r3/d1/ff1   r3/d1/ff1   r3/d1/ff1   r3/d1/ff1    -
+    east_half_333    r2/d2/ff2   r2/d2/ff2   r2/d2/ff2   r2/d2/ff2   r2/d2/ff2    a
+    east_half_444    r3/d0/ff0   r3/d0/ff0   r3/d0/ff0   r3/d0/ff0   r3/d0/ff0    -
+    TOTAL            r12/d3/ff3  r12/d3/ff3  r12/d3/ff3  r12/d3/ff3  r12/d3/ff3
+
+      arm a   1 changed dispatch, 1 empty-pool firing
+      arm b   0 changed dispatches
+      arm c   0 changed dispatches   (no exact Manhattan tie occurs here)
+      arm d   0 changed dispatches
+
+  THE HARD FILTER'S ONE FIRING IN 108 DISPATCHES, IN FULL:
+
+      east/half 333, step 44, victim_0, reason "initial"
+        pool = [ff_unit_1]  Manhattan 53  route CLOSED
+        arm a strikes it -> pool empty -> planner's no-firefighter branch
+        -> rescue_action "delay"
+        victim_0 dies at step 45
+
+  WHAT THAT BUYS: nothing.  The trace diverges - ff_unit_1 is not given a
+  target at step 44 - and every outcome is unchanged, r2/d2/ff2 either way.
+  A futile assign became a futile delay one step before the victim died.
+
+  AND THE BRANCH IT REACHED WAS THE SAFE ONE BY LUCK OF THE REASON STRING,
+  WHICH IS THE POINT OF 5.1(iii).  It returned "delay" because the reason was
+  "initial".  Had the same empty pool been produced under a
+  replacement_after_casualty reason, the same branch returns
+  "mark_unreachable", which the executor applies permanently.  One sample of
+  one firing does not establish that the branch is safe; it establishes that
+  this firing happened to hit the harmless side of it.
+
+  THE GATE ITEM THE BRIEF ASKS FOR, ANSWERED IN ADVANCE OF ANY DECISION: if
+  the hard filter WERE chosen, the empty-pool branch is reached 1 time in 108
+  dispatches (0.9%), it behaved sanely on that one occasion, and its behaviour
+  on the dangerous reason strings is UNTESTED because no such case arose.
+
+================================================================================
+5. THE DECISION
+================================================================================
+5.1  WHAT THE EVIDENCE RULES OUT
+---------------------------------
+  ARM A, THE HARD FILTER: REJECTED.  Three reasons, in descending order of
+  force.
+
+    (i)  IT IS VERY NEARLY A SECOND COPY OF route_blocked.  Section 2.6's
+         mechanism argument: the only realistic way this geometry makes a unit
+         BFS-unreachable is local enclosure, and locally enclosed units are
+         already struck from the pool by route_blocked, which the availability
+         filter reads at rescue_planner.py:589.  The filter would re-derive,
+         with a BFS, a condition the pool has already been cleaned of.
+    (ii) ITS ONE MEASURED FIRING BUYS NOTHING.  In 108 dispatches it has
+         exactly one candidate to remove (east/half 333 step 44); the pool
+         there is size 1, so removing it converts a futile assign into a
+         futile delay - and the victim dies the next step either way, at
+         Manhattan 53 from the only unit alive.  See 2.7.
+    (iii) IT CARRIES A DOWNSIDE THE OTHERS DO NOT.  Emptying the pool routes
+         into the planner's no-firefighter branch, which returns "delay" for
+         initial and blocked reasons but "mark_unreachable" otherwise - and
+         mark_unreachable is PERMANENT: the executor applies it
+         (rescue_executor.py:349-372) and the planner's needy filter then
+         skips that victim for the rest of the run (rescue_planner.py:556).
+         Turning a transient route closure into a permanent write-off is a
+         strictly worse failure mode than dispatching a unit that may still
+         arrive.  This is exactly the risk ffdeath_investigation.txt section 8
+         predicted, and nothing measured this round reduces it.
+
+  ARM B, THE SOFT TIEBREAK ON BINARY REACHABILITY: REJECTED AS VACUOUS.  It is
+  harmless - it cannot regress, because it only reorders when one candidate is
+  unroutable and another is not.  But that population is EMPTY: 0 of 38
+  multi-candidate dispatches on the standard sample, 0 of 7 on the extension.
+  It would add a snapshot field, a planner branch and a BFS to express a
+  preference that never once fires.  The brief calls this the honest fix on
+  the assumption that 2(a) is near-zero.  2(a) IS near-zero - and the honest
+  reading of that is that this particular fix has nothing to do.  SHIPPING IT
+  WOULD BE ADDING MACHINERY TO DECIDE SOMETHING THAT IS NEVER IN DOUBT.
+
+  ARM D, ROUTE LENGTH AS PRIMARY KEY: REJECTED.  Bit-identical to arm C on all
+  23 runs (4.2), so it is a strictly larger change with a measured-identical
+  effect.  The brief's own rule decides it: prefer the smaller change.
+
+5.2  THE RECOMMENDATION
+------------------------
+  RECOMMENDED: ARM C - ROUTE LENGTH AS THE TIEBREAK, key (manhattan,
+  bfs_length, id).
+
+  THIS IS NOT AN OUTCOME ARGUMENT, AND IT WOULD BE DISHONEST TO DRESS IT AS
+  ONE.  Arm C changed one dispatch in 108 and moved no seed's rescued,
+  victims-dead or firefighter-deaths count.  ON OUTCOMES IT IS INERT - the
+  same result the _DELAY_CANCEL_BONUS round reported, and it should be
+  described in the same terms.
+
+  The argument is that of the four designs it is the only one that is both
+  correct and non-vacuous, and it is the smallest such change:
+
+    * IT REPLACES AN ARBITRARY TIEBREAK WITH AN INFORMED ONE.  Where Manhattan
+      ties, the stock code decides by (ff_s < str(best_ff)) - the firefighter's
+      NAME.  That is not a policy, it is a deterministic coin flip, and
+      section 2.8 catches it picking a 71-cell route over a 39-cell one.
+      Replacing a coin flip with the route length the BFS already computed is
+      an unambiguous improvement in decision quality, whatever the outcome.
+    * IT CANNOT REGRESS THE PRIMARY KEY.  Manhattan stays first, so arm C is
+      inactive except where the existing code has already declared the two
+      units equally good.  Measured blast radius: 2 exact ties in 91
+      dispatches.  It fired on one and left the other unchanged.
+    * IT SUBSUMES ARM B AT NO EXTRA COST.  An unreachable candidate has BFS
+      length None, which sorts last - so arm C already prefers the routable
+      unit on a tie.  It delivers arm B's stated benefit and adds the graded
+      case arm B is blind to.
+    * ITS SIGNAL IS REAL WHERE ARM B'S IS EMPTY.  13 of 129 candidate
+      evaluations have a nonzero detour and 3 of 38 multi-candidate dispatches
+      differ on it.  Binary reachability: 0 and 0.
+
+  WHAT IT DOES NOT DO, SAID BEFORE ANYONE ASKS:
+    * IT DOES NOT RECOVER THE D/EAST 505 RESCUE.  That dispatch has margin 1,
+      not 0, so arm C never consults route length there; and both routes were
+      open AND geodesic, so nothing in the reachability family touches it.
+      The gate item c4d5a25 failed stays failed by this change.
+    * IT DOES NOT REDUCE FIREFIGHTER DEATHS.  14 in every arm.
+    * IT DOES NOT ADDRESS THE DOMINANT FAILURE MODE.  Section 2.4: 40 of 91
+      dispatches never complete; 29 of those had a pool of size 1 and no
+      decision available to be wrong; and in all 11 that did have an
+      alternative, the alternative was equally routable at every followed
+      step.  What kills these dispatches is transit length and fire arriving
+      during transit - not which unit was picked.
+
+5.3  IF THE ANSWER IS "SHIP NOTHING", THAT IS DEFENSIBLE TOO
+-------------------------------------------------------------
+  Arm C is worth one dispatch in 108 and zero outcome deltas.  A reasonable
+  reading is that this round's FINDING is the deliverable - "the reachability
+  constraint is almost never violated at commitment, and the real failure mode
+  is corridors closing mid-transit" - and that the code should be left alone.
+  The measurement stands either way.  The recommendation above is what to
+  build IF something is built; the choice is the user's, which is what the
+  Part 2 stop is for.
+
+5.4  IMPLEMENTATION SHAPE FOR ARM C, IF PART 3 IS AUTHORISED
+--------------------------------------------------------------
+  TWO FILES: wildfire_model.py and src_extension/planning/rescue_planner.py.
+  agents.py is NOT touched - its BFS helpers are CALLED, exactly as
+  _revalidate_route_blocked_firefighters already calls them.
+
+  (1) wildfire_model.get_rescue_operational_snapshot (:2497) gains a keyword,
+      include_route_lengths: bool = True.  In the firefighter loop
+      (:2544-2568), for each unit passing _firefighter_available_for_dispatch,
+      emit route lengths to every victim that needs rescue:
+
+          "route_lengths": {victim_id: int | None}
+
+      computed with the marker's own BFS over one _fire_cells() taken per
+      snapshot.  Keyed per (firefighter, victim) because reachability IS per
+      pair - a scalar on the firefighter cannot express it.  This is also why
+      it does NOT go on "available": that key is a fleet-status concept read
+      by the dashboard, the knowledge model and adaptation_manager, and
+      ffdeath_investigation.txt section 8's objection to overloading it
+      stands.
+
+  (2) THE PER-STEP COST IS OPTED OUT, NOT PAID.  The snapshot is built once
+      per step by _build_mission_goal_runtime_context (:2583, reached from the
+      MAPE-K cycle at :1884) and only ~4 times per run for dispatch.  So
+      :2583 passes include_route_lengths=False and keeps today's cost, while
+      the dispatch sites (:2832, :2915, :3952 and rescue_executor.py:186) get
+      the data by taking the default.  The default is True and the single
+      per-step caller opts out, which puts one edit at one cheap call site
+      instead of four edits across two files.
+
+  (3) rescue_planner.select_rescue_assignment (:624-630): the sort gains the
+      middle key.  ABSENCE OF THE FIELD MUST SORT AS A TIE, so that any
+      snapshot built without route lengths - the per-step one, and any
+      hand-built one in a test - reproduces today's behaviour exactly.
+
+  RISK REGISTER, SUCH AS IT IS:
+    * "available" is unchanged, so the dashboard, knowledge model and
+      adaptation_manager see nothing new;
+    * the no-firefighter branch is unchanged, so delay / mark_unreachable
+      behaviour is untouched and the arm-A downside in 5.1(iii) is not
+      incurred;
+    * no new constant and no threshold, so there is nothing to tune;
+    * 2 exact ties in 91 dispatches is the entire blast radius on this sample.
+
+================================================================================
+STATUS
+================================================================================
+  PART 1 COMPLETE.  PART 2 COMPLETE - five arms over 23 runs and five arms
+  over the 4 extension runs, 135 runs in all, no failures.
+
+  NO SOURCE FILE HAS BEEN MODIFIED.  Every arm is a runtime monkeypatch;
+  wildfire_model.py, rescue_planner.py and agents.py are byte-identical to
+  c4d5a25.
+
+  DECISION AT THE PART 2 GATE: SHIP NOTHING.  Arm C was recommended below and
+  was NOT accepted, for reasons recorded in outputs/dispatchreach_report.txt
+  section 3.2 - one instance in 23 runs, found after the fact, no outcome
+  movement, and an architectural cost (threading a BFS through
+  get_rescue_operational_snapshot) that is real where the benefit is not.
+  There is no Part 3 and no Part 4.  This document is therefore the
+  MEASUREMENT RECORD; the closing verdict is in dispatchreach_report.txt.
+
+  SECTION 5.2 BELOW IS LEFT AS WRITTEN, including its recommendation, because
+  it was the honest reading of the data at the point the gate was reached and
+  rewriting it after the fact would hide the actual decision sequence.  Read
+  it as "what to build if something is built" - and section 5.3, which said
+  shipping nothing was defensible, is what was chosen.
+
+  THE ONE-LINE ANSWER TO THE BRIEF'S QUESTION: the reachability constraint is
+  almost never violated at commitment (1 dispatch in 108), it never separates
+  two candidates (0 of 45 multi-candidate dispatches), and the real failure
+  mode is corridors closing mid-transit.  Both specified arms are therefore
+  inert.  What is NOT inert - barely - is the graded form of the same test:
+  where Manhattan ties, the code currently chooses by the firefighter's name,
+  and route length is strictly better information for that choice.  That is
+  arm C: correct, non-vacuous, correct-but-inert on outcomes, and recorded
+  rather than shipped.
+
+================================================================================
+ARTEFACTS
+================================================================================
+  probe (5 arms)       outputs/_dr_probe.py     wraps select_rescue_assignment
+                                                in all three importing modules
+  prediction, pre-run  outputs/_dr_prediction.txt
+  control data         outputs/_dr_none_*.json      (23 + 4 runs)
+  arm data             outputs/_dr_a_*.json  hard filter        (27 runs)
+                       outputs/_dr_b_*.json  soft tiebreak      (27 runs)
+                       outputs/_dr_c_*.json  route tiebreak     (27 runs)
+                       outputs/_dr_d_*.json  route primary      (27 runs)
+  provenance check     outputs/_dr_prov.py      arm none vs outputs/_lc_post_*
+  Part 1 measurement   outputs/_dr_p1.py
+                       outputs/_dr_p1_none.txt   23-run sample
+                       outputs/_dr_p1_a.txt      same, with route lengths
+                       outputs/_dr_p1_ext.txt    4 extension seeds
+  arm comparison       outputs/_dr_arms.py, outputs/_dr_arms_all.txt
+  cost microbenchmark  outputs/_dr_cost.py, outputs/_dr_cost_east505.txt
+  runners              outputs/_dr_run.sh, _dr_fan.sh, _dr_all.sh,
+                       _dr_ext_cells.txt, _dr_rbgate.sh (staged for Part 4)
+
+  REPRODUCE the control and the recommended arm:
+    sh outputs/_dr_fan.sh none 2 12
+    sh outputs/_dr_fan.sh c    2 12
+    ./.venv/Scripts/python.exe outputs/_dr_prov.py --arm none
+    ./.venv/Scripts/python.exe outputs/_dr_arms.py --arms none,a,b,c,d
+================================================================================
