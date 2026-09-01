@@ -1,0 +1,713 @@
+================================================================================
+LAST_CELL ANTI-OSCILLATION GUARD - PART 1 (DIAGNOSIS) AND PART 2 (DESIGN)
+Branch claude/position-rename-and-hazard-revalidation, HEAD b6527f7
+No source file modified.  agents.py is byte-identical to 62b4fbe (verified:
+`git diff --stat 62b4fbe HEAD -- agents.py` is empty; b6527f7 touched
+outputs/ only).  Every arm below is a runtime monkeypatch, never a source edit.
+================================================================================
+
+RECOMMENDATION IN ONE LINE
+--------------------------
+  Implement option (b) - re-admit `last_cell` ONLY when the candidate set is
+  otherwise empty AND `current_dist == 0` - as a four-line terminal fallback
+  inside `_retreat_candidates`.  Options (a) and (c) were both built and both
+  run over the full 13-run sample; (a) adds a firefighter death and does not
+  even fix the case it was aimed at, and (c) loses two rescues, saves nobody,
+  and quadruples tight reversals.  On 23 runs (b) is
+  firefighter_deaths 16 -> 14, rescued 52 -> 51, victims dead 36 -> 37, with
+  zero unsanctioned last_cell violations.
+
+
+TWO CORRECTIONS TO THE BRIEF, STATED FIRST BECAUSE THEY CHANGE THE FIX
+-----------------------------------------------------------------------
+1. THE SHARED SIGNATURE IS WRONG FOR FOUR OF THE FIVE NAMED CASES.
+
+   The brief states: "Both share the same signature: cur_dist == 0 (unit
+   standing in active fire) at the moment the guard's refusal matters."
+   Measured directly at `_retreat_candidates` on the same 13-run sample:
+
+       idle-retreat C4   E/half 505 step 63   cur_dist = 0   ON FIRE      yes
+       unassign-inflow   E/def  101 step 38   cur_dist = 1   not on fire  NO
+       unassign-inflow   E/def  303 step 55   cur_dist = 1   not on fire  NO
+       unassign-inflow   E/half 303 step 55   cur_dist = 1   not on fire  NO
+       unassign-inflow   E/half 404 step 29   cur_dist = 1   not on fire  NO
+
+   Only C4 has cur_dist == 0.  All four unassign-inflow cases are ADJACENT to
+   fire, not standing in it.  Neither source report ever claimed otherwise -
+   unassigninflow_report.txt says only that the single free cell was
+   `last_cell`; the cur_dist == 0 half is the brief's own synthesis and it
+   does not hold.  A cur_dist == 0 gate therefore addresses ONE of the five
+   named instances, not five.  Sections 5-8 are about whether widening the
+   gate to reach the other four is worth it.  Measured: it is not.
+
+2. THE FOUR UNASSIGN-INFLOW CASES ARE NOT KILLED BY THE GUARD ANYWAY.
+   In all four, `_move_toward` moves the unit onto the refused cell later in
+   the SAME step (`mt_moved=True` in every one - section 4.3).  The guard
+   delays nothing there; it only suppresses the survival-move path in favour
+   of the `_move_toward` path.  unassigninflow_report.txt said exactly this
+   and this round reproduces it.  So the population the fix can actually help
+   is the cur_dist == 0 population, which is the population the gate selects.
+
+   MINOR: unassigninflow_report.txt cites the guard as "agents.py:882-883".
+   It is at 883-884, both at that report's HEAD (62b4fbe) and at this one.
+
+
+================================================================================
+PART 1.1 - THE GUARD AND ITS FILTER CHAIN, AS IT EXISTS NOW
+================================================================================
+Post-62b4fbe the chain lives in one shared helper.  Quoted in full,
+agents.py:865-902; the guard is lines 883-884:
+
+    865|     def _retreat_candidates(
+    866|         self,
+    867|         cell: tuple[int, int],
+    868|         origin: tuple[int, int],
+    869|         last_cell: tuple[int, int] | None,
+    870|         fire_cells: set[tuple[int, int]],
+    871|         current_dist: int,
+    872|     ) -> list[dict[str, object]]:
+    873|         """Neighbour cells that survive the retreat filter chain.
+    874|
+    875|         One definition, shared by the normal scan and by
+    876|         `_revalidate_idle_retreat_stall`, so the two can never drift apart
+    877|         about what "nowhere to go" means.
+    878|         """
+    879|         candidates: list[dict[str, object]] = []
+    880|         for ncell in self._neighbor_cells():
+    881|             if self._cell_contains_active_fire(ncell):
+    882|                 continue
+    883|             if ncell == last_cell:            <-- THE GUARD
+    884|                 continue
+    885|             from_origin = abs(ncell[0] - origin[0]) + abs(ncell[1] - origin[1])
+    886|             if from_origin > IDLE_RETREAT_MAX_CELLS:
+    887|                 continue
+    888|             risk = self._firefighter_cell_risk(ncell)
+    889|             new_dist = self._min_fire_distance(ncell, fire_cells)
+    890|             candidates.append(
+    891|                 {
+    892|                     "cell": ncell,
+    893|                     "risk": risk,
+    894|                     "dist": new_dist,
+    895|                     "improvement": new_dist - current_dist,
+    896|                     "ideal": self._cell_is_ideal_idle_standoff(ncell, fire_cells),
+    897|                     "required": self._cell_meets_required_idle_safety(
+    898|                         ncell, fire_cells
+    899|                     ),
+    900|                 }
+    901|             )
+    902|         return candidates
+
+  FILTER ORDER: fire, THEN last_cell, THEN leash - over at most four von
+  Neumann neighbours (`_neighbor_cells`, agents.py:675-682, is 4-connected
+  and drops out-of-bounds cells).  The order matters for the fix and is
+  returned to in section 5.
+
+  VERBATIM-PRESERVED BY 62b4fbe, CONFIRMED RATHER THAN ASSUMED.
+  `git show a4a01b4:agents.py` lines 782-790 hold the identical three-test
+  prologue, inline inside `_survival_move`.  62b4fbe extracted it into the
+  helper without changing a character.  The guard was introduced in a4a01b4,
+  the initial "Add core project files" commit, so there is no commit message
+  anywhere in the history that explains it; section 1.3 derives its purpose
+  from the code and from measurement instead.
+
+  TWO CALL SITES, AND THE DIFFERENCE BETWEEN THEM DECIDES WHERE A FIX BITES:
+    agents.py:802  the normal scan in `_survival_move`.  Downstream,
+                   `_pick_improving_retreat` is tried first and a TIER-3
+                   FALLBACK (agents.py:818-824) takes the least-bad candidate
+                   anyway when nothing improves.  A non-empty candidate set
+                   therefore always produces a move on this path.
+    agents.py:972  `_revalidate_idle_retreat_stall`, added by 62b4fbe.  Uses
+                   `_pick_improving_retreat` ONLY - the tier-3 fallback is
+                   deliberately absent (docstring at agents.py:904-943).  A
+                   candidate must be an ideal standoff, or strictly gain fire
+                   distance, or lower risk without losing distance, or the
+                   unit does not move.
+  The C4 death is on the SECOND path, and so are 8 of the 14 events in
+  section 4.  Any fix has to work there, where it interacts with the
+  improvement test rather than with the tier chain.
+
+
+================================================================================
+PART 1.2 - WHERE `_idle_retreat_last_cell` IS WRITTEN, AND FOR HOW LONG
+================================================================================
+Five write sites, two read sites - complete, by grep over the whole tree
+(the attribute appears nowhere outside agents.py):
+
+  WRITES
+    397   Firefighter.__init__ reset block                    -> None
+    752   `_reset_idle_retreat_state`                         -> None
+    786   the 62b4fbe leash re-anchor in `_survival_move`     -> None
+    854   `_survival_move`, the line before `grid.move_agent` -> `cell`
+    981   `_revalidate_idle_retreat_stall`, ditto             -> `cell`
+
+  READS
+    800   `_survival_move`, passed into `_retreat_candidates`
+    968   `_revalidate_idle_retreat_stall`, ditto
+
+  VALUE: the cell being VACATED, written on the line before the move.  The
+  semantics are "do not step straight back to where this unit just came
+  from".  The memory is ONE MOVE deep - not one step, and not a history.
+
+  LIFETIME: until the next survival-move-driven move overwrites it, or a
+  reset clears it.  Reset sites, all five:
+    597   `advance` standby branch     requires the unit already required-safe
+    761   top of `_survival_move`      requires an ideal standoff
+    832   at-cap and a required-safe candidate was taken
+    859   post-move, landed on an ideal standoff
+    863   post-move, landed required-safe while at cap or stalled, and idle
+  plus the 786 re-anchor.  `_revalidate_idle_retreat_stall` deliberately does
+  NOT reset it (agents.py:984-988): it clears the stall flag alone, precisely
+  to keep the anti-oscillation memory alive on the path 62b4fbe added.
+
+  DOES IT HAVE 62b4fbe's RESET-HOLE PROBLEM?  NO - A DIFFERENT ONE.
+  62b4fbe's defect was that `_idle_retreat_stalled` could only be cleared by
+  conditions requiring the unit to already be safe - the exact complement of
+  the condition that set it - so the flag was a one-way door.  `last_cell` is
+  not a one-way door: it is overwritten on every survival move, and 786
+  clears it whenever an idle unit is found beyond its leash.  Measured over
+  every `_retreat_candidates` call, arm `none` (= stock):
+
+                                             13-run sample   10 fresh seeds
+      scans with last_cell set                    284             235
+        it IS the true immediate predecessor      224             191
+        it is STALE - the unit's last cell change
+          came from another mover (`_move_toward`
+          never rewrites it)                       60              44
+          ...and the stale value is still a free
+             neighbour, so it actually bites       10               2
+      stale among the section-4 sole-exit events    0 of 26
+
+  Staleness is real (about 21% of scans) but tiny in effect (10 and 2 scans),
+  and it is NOT the mechanism under investigation: in all 26 events where the
+  guard closed the last door, `last_cell` was the cell the unit had genuinely
+  just left.  THE GUARD IS BEING APPLIED CORRECTLY AND IS STILL FATAL.  That
+  is the finding, and it is why the fix is a condition and not a reset.
+
+  ONE PERSISTENCE ASYMMETRY WORTH RECORDING.  Because the value is written
+  only on a move, a unit that STOPS moving freezes its `last_cell` and keeps
+  refusing that one cell for as long as it stands still.  Age in steps
+  (steps since the unit last changed cell - an upper bound on the age):
+
+      13-run sample   mean 1.81   >1 step in 78 of 284 scans   max 10+
+      10 fresh seeds  mean 1.68   >1 step in 61 of 235 scans   max 9
+
+  A one-move guard becomes an N-step guard exactly when the unit is stuck,
+  which is exactly when being stuck is dangerous.  E/default 202 refuses
+  (29,49) on steps 213, 214 and 215; S/half 808 refuses (0,21) on 120, 121
+  and 122.  A consequence of the design rather than a bug in it, but it is
+  why the refusal gets so many chances to be lethal.
+
+
+================================================================================
+PART 1.3 - WHAT THE GUARD IS FOR, AND WHAT IT IS WORTH
+================================================================================
+DERIVED FROM THE CODE.  The retreat scan is greedy on (fire distance, risk)
+over the immediate neighbourhood.  Greedy hill-climbing on a field that moves
+under the agent reverses: at A the unit prefers B; once at B, the shifted
+fire field can make A preferable again.  With no memory the unit alternates
+A,B,A,B forever, never actually retreating, while `_idle_retreat_steps` never
+runs the leash out.  Excluding the cell just vacated forces every survival
+move to somewhere new, converting an oscillation into a walk.  The window is
+one move deep - the minimum that breaks a period-2 cycle and too shallow to
+break a period-3 one, consistent with period-2 being what it was written for.
+
+MEASURED, NOT ASSUMED.  Two independent measurements say the guard is
+load-bearing rather than decorative:
+
+  (i) It fires constantly and almost always harmlessly.  On the 13-run sample
+      the last_cell test removed a neighbour in 157 scans.  In 143 of those,
+      other candidates remained - it merely redirected the unit.  In only 14
+      did it empty the set.  Fresh seeds: 129 removals, 108 redirects, 21
+      empties.  So ~91% / ~84% of the guard's work costs nothing at all.
+
+  (ii) Relaxing it WITHOUT a gate brings the oscillation straight back.
+      Arm `c` (section 6) re-admits `last_cell` whenever the set would
+      otherwise be empty, at ANY fire distance.  On the 13-run sample that is
+      27 re-admissions and 5 of them reverse on the VERY NEXT STEP - a
+      textbook A->B->A.  22% of ungated re-admissions immediately become the
+      thing the guard exists to prevent.  Tight step-adjacent reversals go
+      3 -> 11 and the longest alternating run goes 2 -> 3.
+
+  THE GUARD IS NOT THE PROBLEM.  ITS UNCONDITIONAL APPLICATION IS.
+
+
+================================================================================
+PART 1.4 - RE-MEASUREMENT ON A FRESH SAMPLE
+================================================================================
+INSTRUMENT.  outputs/_lc_probe.py wraps `_retreat_candidates` ITSELF, so it
+records the exact `(cell, origin, last_cell, fire_cells, current_dist)` the
+real chain saw.  Nothing is reconstructed - in particular the 62b4fbe leash
+re-anchor at agents.py:764-787, which rewrites BOTH `origin` and `last_cell`
+before the scan, is captured rather than replayed.  This supersedes
+outputs/_lc_analyze.py, an earlier reconstruction from `_ir_p3_POST_*` data
+kept for cross-check; the two agree on the 13-run sample.
+
+CONTROL - THE INSTRUMENT DOES NOT MOVE THE WORLD.
+Arm `none` is stock b6527f7 with the wrapper attached, seed-matched against
+the idle-retreat round's post-fix data (`_ir_p3_POST_*.json`) on outcomes AND
+on the exact (step, unit, cell) of every death:
+
+    13 of 13 MATCH, 0 mismatch.
+    Totals reproduce the idle-retreat report's post-fix line exactly:
+        rescued 30, victims dead 22, firefighter_deaths 7.
+
+  Note the two probes hook different methods (`_survival_move` there,
+  `_retreat_candidates` here) and still produce identical worlds, which is a
+  stronger check than re-running the same probe twice.
+
+SAMPLE.  The 13 runs both source rounds used - D/east default 101/202/303,
+D/east half 101-505, D/south half 101-505, 240 steps,
+FIRE_SPREAD_MULTIPLIER 0.75, BATCH_SIZE 300, PROBABILITY_MAP False, run
+sequentially - PLUS 10 FRESH SEEDS never used by any prior round (east/half
+and south/half, seeds 606, 707, 808, 909, 1010).
+
+THE TWO COUNTS THE BRIEF ASKED FOR
+-----------------------------------
+                                            13-run sample    10 fresh seeds
+    `_retreat_candidates` calls                   455              381
+    last_cell filter removed something            157              129
+    candidate set came back EMPTY                  61               53
+      because the unit was enclosed (0 free)       43               25
+      because the LAST_CELL guard emptied it       14               21
+      because the LEASH emptied it                  4                7
+
+    LAST_CELL EXCLUDED THE ONLY FREE NEIGHBOUR      12               14
+      of those, unit standing in fire (cur_dist 0)   1                3
+      of those, unit adjacent to fire (cur_dist 1)  11               11
+      of those, last_cell was STALE                  0                0
+
+  THE FINDING REPLICATES AND IS NOT SAMPLE-SPECIFIC.  The sole-exit rate is
+  12/455 = 2.6% of scans on the original sample and 14/381 = 3.7% on ten
+  seeds no prior round has touched.  The broader "the guard is what emptied
+  the set" rate is 14/455 = 3.1% and 21/381 = 5.5%.  Both are higher on the
+  fresh seeds, so the original sample was, if anything, mild.
+
+  THE cur_dist == 0 SUBSET IS A MINORITY IN BOTH: 1 of 12 (8%) and 3 of 14
+  (21%), 4 of 26 (15%) pooled.  This is the measurement behind correction 1.
+
+  ALL 12 SOLE-EXIT EVENTS, 13-RUN SAMPLE (`_lc_p1.py`):
+    E/def  101  s38   ff_0  (42,41) lc=(41,41) d=1  assigned  not stalled
+    E/def  202  s213  ff_0  (30,49) lc=(29,49) d=1  idle      stalled
+    E/def  202  s214  ff_0  (30,49) lc=(29,49) d=1  idle      stalled
+    E/def  202  s215  ff_0  (30,49) lc=(29,49) d=1  idle      stalled
+    E/def  202  s218  ff_0  (32,49) lc=(31,49) d=1  idle      stalled
+    E/def  303  s55   ff_0  (41,23) lc=(42,23) d=1  assigned  not stalled
+    E/half 303  s55   ff_0  (41,23) lc=(42,23) d=1  assigned  not stalled
+    E/half 404  s29   ff_0  (31,38) lc=(31,39) d=1  assigned  not stalled
+    E/half 505  s56   ff_0  (42,22) lc=(43,22) d=1  idle      stalled
+    E/half 505  s63   ff_0  (41,22) lc=(42,22) d=0  idle      stalled   <- C4
+    S/half 101  s133  ff_1  (1,0)   lc=(0,0)   d=1  idle      stalled
+    S/half 101  s134  ff_1  (1,0)   lc=(0,0)   d=1  idle      stalled
+  plus 2 "emptied by last_cell but other free cells were leash-excluded"
+  (E/half 505 s44, S/half 101 s136).  14 events in total.
+
+  FRESH SEEDS ADD 3 MORE cur_dist == 0 EVENTS, which is why they matter:
+    E/half 606  s27   ff_0  (49,42) lc=(49,41) d=0  assigned  - died s33
+    S/half 1010 s45   ff_1  (27,2)  lc=(26,2)  d=0  idle      - died s45
+    S/half 606  s96   ff_0  (49,24) lc=(49,25) d=0  idle      - died s96
+  Two of the three die in the SAME STEP as the refusal.
+
+DEATH LINKAGE.  11 of the 14 baseline events and 17 of the 21 fresh-seed
+events are followed by that unit dying within 30 steps.  That is an
+association, not a cause - most of these units are in trouble for reasons
+the guard did not create - which is why section 7 proves causation on one
+case by counterfactual rather than arguing it from this table.
+
+WHAT RE-ADMISSION COULD EVEN DO, PER EVENT.  On the stalled-revalidation
+path a re-admitted `last_cell` still has to pass `_pick_improving_retreat`.
+Counting events where it would actually be taken: 9 of 14 baseline, 10 of 21
+fresh.  The rest would change nothing - the unit stays put either way.  Any
+claim that the fix "unblocks 14 cases" would be wrong.
+
+
+================================================================================
+PART 2.5 - THE DESIGN, AND WHY THE GATE IS NOT A TUNED THRESHOLD
+================================================================================
+THE SHAPE.  Re-admit `last_cell` as a LAST RESORT: only when the candidate
+set is otherwise empty, and only when `current_dist == 0`.  Every other
+filter - fire and leash - still applies to it, because the re-admission is
+expressed as a re-run of the same chain with `last_cell = None`.
+
+WHY cur_dist == 0 IS THE RIGHT CONDITION, FROM THE CODE AND NOT FROM THE
+NUMBERS.  This is the crux, so it is argued before any result is quoted.
+
+  `current_dist` is `self._min_fire_distance(cell, fire_cells)` at both call
+  sites (agents.py:801 and 970).  `_min_fire_distance` (719-725) is the
+  minimum Manhattan distance to a cell in `fire_cells`, and `_fire_cells`
+  (615-627) contains exactly the actively burning cells.  So
+
+      current_dist == 0   <=>   the unit's own cell is actively burning.
+
+  Now look at the filter ORDER at 881-886.  The FIRE test is one line ABOVE
+  the last_cell test.  So on the NEXT scan, after a unit steps off a burning
+  cell, the cell it just vacated is refused by the FIRE filter - a filter
+  that outranks the guard and that the guard's absence cannot affect.
+
+  THEREFORE: when cur_dist == 0, the anti-oscillation guard is STRUCTURALLY
+  REDUNDANT.  The step back that it exists to forbid is already forbidden, by
+  a higher-priority filter, and stays forbidden until that cell burns out.
+  Suspending the guard in that case removes nothing, because in that case it
+  protects nothing.
+
+  This is why the gate is not a threshold picked to make a number move.  It
+  is the exact condition under which the guard cannot do its job anyway.  The
+  brief asked whether "oscillation DURING an active fire emergency is
+  actually a realistic risk worth guarding against"; the answer is stronger
+  than a judgement call - at cur_dist == 0 it is not a risk at all, because
+  the fire filter already covers it.
+
+  AND THE PREDICTION IS CONFIRMED.  Of arm `c`'s 27 UNGATED re-admissions,
+  the 4 at cur_dist == 0 produced ZERO reversals and the 23 at cur_dist >= 1
+  produced ALL 5.  The structural argument and the measurement agree.
+
+WHY (b) AND NOT (a).  Even at cur_dist == 0 the unit can have other free
+neighbours - E/half 202 step 60 has two.  Option (a) drops the filter and
+lets `last_cell` COMPETE on the greedy score, where it can win and drag the
+unit backwards.  Option (b) reaches for it only when nothing else survived,
+so wherever a choice exists the preference ordering is byte-for-byte
+unchanged.  (b)'s behaviour change is a strict subset of (a)'s, and section 6
+shows the difference between them is a firefighter's life.
+
+WHY (b) AND NOT (c) - i.e. WHY NOT ALSO RESCUE THE FOUR UNASSIGN CASES.
+Three independent reasons, in decreasing order of force:
+  1. At cur_dist >= 1 the structural argument above evaporates: the vacated
+     cell is NOT burning, so the fire filter does not block the return, and
+     re-admission is exactly the oscillation the guard was written for.
+     Measured: 5 immediate A->B->A reversals out of 23 such re-admissions.
+  2. The four unassign cases do not need it.  `_move_toward` already moves
+     each of those units onto the refused cell in the same step (section 4.3
+     / correction 2).  (c) does not save them; on E/half 404 it just makes
+     the unit ping-pong (31,38)->(31,39)->(31,38) and die on schedule.
+  3. Measured cost: on the 13-run sample (c) loses a rescue and gains a
+     firefighter death on S/half 101 - r3/d1/ff1 becomes r2/d1/ff2.
+
+THE CODE.  Four lines and a comment, appended AFTER the existing loop.  No
+existing line changes:
+
+    -        return candidates
+    +        if not candidates and last_cell is not None and current_dist == 0:
+    +            # The unit is standing on a burning cell and every neighbour it
+    +            # could still step to was ruled out by the anti-oscillation
+    +            # memory.  That memory exists to stop a unit ping-ponging
+    +            # between two free cells, and it cannot serve that purpose
+    +            # here: the cell being vacated is on fire, so the fire test
+    +            # above - which outranks it - refuses the step back anyway
+    +            # until that cell burns out.  Re-run the same chain without
+    +            # it, so `last_cell` is considered only when nothing else
+    +            # survived and every other filter, the leash included, still
+    +            # applies to it.
+    +            return self._retreat_candidates(
+    +                cell, origin, None, fire_cells, current_dist
+    +            )
+    +        return candidates
+
+  The recursion terminates at depth 2: inside the re-run `last_cell is None`,
+  so the condition is False.  Expressing it as a re-run rather than as a
+  deferred-entry list is deliberate - it makes "the same chain minus one
+  filter" true by construction instead of by a duplicated dict literal that
+  could drift from the one above it.
+
+
+================================================================================
+PART 2.6 - CONFIRMING THIS IS ADDITIVE TO 62b4fbe, NOT A RE-OPENING OF IT
+================================================================================
+The brief asks to stop and report if the fix requires restructuring the
+helper 62b4fbe introduced.  It does not.
+
+  * `_retreat_candidates` keeps its signature, so BOTH call sites - the
+    normal scan at 802 and `_revalidate_idle_retreat_stall` at 972 - pick the
+    behaviour up with no edit at either site.  That is precisely the property
+    62b4fbe's extraction was for ("so the two can never drift apart about
+    what 'nowhere to go' means"), and this change is consumed through it
+    rather than around it.
+  * Lines 879-902 are untouched: three filters, same order, same dict.  The
+    diff is an insertion before the existing `return`.
+  * THE LEASH IS NOT TOUCHED.  The re-run passes the same `origin`, so
+    `from_origin > IDLE_RETREAT_MAX_CELLS` still applies to the re-admitted
+    cell.  The C3 leash death from idleretreat_report.txt section 4.2 stays
+    exactly as it was, by design and not by accident.
+  * THE STALL-LATCH RECHECK IS NOT TOUCHED.  `_revalidate_idle_retreat_stall`
+    is unchanged; it simply receives a non-empty list in one more situation,
+    and its own `_pick_improving_retreat` test still decides whether to move.
+  * `_move_toward`'s continuation-after-route_blocked is not touched.
+  * `_assigned_one_step_retreat` has no last_cell term at all and is not
+    touched.
+  * No constant is added or changed.  `current_dist` is already a parameter;
+    the condition introduces no new state, no new field and no new threshold.
+
+
+================================================================================
+PART 2.7 - THE WHAT-IF, PROVED ON ONE CONCRETE CASE BEFORE GENERALISING
+================================================================================
+CASE: the idle-retreat C4 death.  D/east, roles=half, seed 505, ff_unit_0,
+step 63.  Run as a runtime monkeypatch (arm `b` of outputs/_lc_probe.py),
+never as a source edit - same protocol as `_ir_whatif.py` / `_ui_whatif.py`.
+
+REAL STATE AT THAT STEP, as recorded at the `_retreat_candidates` call:
+    cell (41,22)   origin distance 4 (leash limit 6, so the leash is silent)
+    cur_dist 0     the unit is standing ON an actively burning cell
+    idle, stalled  -> the REVALIDATION path, no tier-3 fallback
+    free neighbours: exactly one, (42,22)
+    last_cell = (42,22)  - the same cell, entered from there at step 57
+    lc_dist = 1, and the leash admits it
+
+STOCK (arm none), step-by-step:
+    n_free = 1, n_stock = 0  -> `_pick_improving_retreat([])` returns None
+    -> `_revalidate_idle_retreat_stall` returns without moving
+    -> the unit is still on (41,22) at the casualty check
+    -> DEAD at step 63 at (41,22).            [matches idleretreat 4.3]
+
+WITH THE PROPOSED CONDITION (arm b), same seed, same step:
+    n_free = 1, n_stock = 0, cur_dist == 0  -> re-run with last_cell=None
+    -> candidates = [(42,22)], improvement = 1 - 0 = +1
+    -> `_pick_improving_retreat` returns it -> the unit moves
+    -> s64 (43,22)  s66 (44,22)  s67 (45,22)  s69 (45,21)  s70 (44,21)
+    -> ALIVE at the end of the run.  firefighter_deaths 1 -> 0 on this seed.
+
+AND THE OSCILLATION PREDICTION HOLDS ON THIS VERY CASE.  At step 64 the unit
+is on (42,22) with last_cell = (41,22), and the recorded free set is
+[(43,22)] - (41,22) is absent because it is BURNING.  The return step is
+refused by the fire filter, exactly as section 5 argued, so no ping-pong is
+possible.  The unit walks away instead of alternating.
+
+THE HONEST COST ON THAT SEED, AND ITS EXPLANATION.
+    E/half 505    rescued 2 -> 1   victims dead 2 -> 3   ff_deaths 1 -> 0
+This is not chaos hand-waved away; the mechanism was traced:
+    stock  ff_unit_0 is dead from step 63.  At step 97 the planner assigns
+           the victim at (25,48) to ff_unit_1, then at (13,13) - Manhattan
+           distance 47.  ff_unit_1 arrives s145 and completes the rescue.
+    arm b  ff_unit_0 survives, is `available` from step 69, and at step 97 is
+           at (43,20) - Manhattan distance 46 to the same victim.  One cell
+           closer.  `select_rescue_assignment` sorts on Manhattan distance
+           only, with no reachability test, so it takes ff_unit_0 - which
+           never gets there and is unassigned at step 183.  ff_unit_1 is left
+           idle from step 75 and never re-tasked.  The victim dies.
+So the lost rescue is a 1-cell tiebreak in `select_rescue_assignment`
+(wildfire_model.py), which is verdict C of ffdeath_investigation.txt and is
+outside this round's file scope.  Putting a live unit back in the pool
+exposed a known upstream defect.  That is an explanation, not an excuse: on
+this seed the fix trades a firefighter for a victim.
+
+n=1 ON THE BASELINE SAMPLE, SO IT WAS WIDENED TO n=4 BEFORE DECIDING.
+The 13-run sample contains exactly ONE cur_dist == 0 sole-exit event, so arm
+`b` is TRAJECTORY-IDENTICAL to stock on the other 12 runs (checked cell by
+cell against the full per-step trace, not just the totals: 12 of 12 "NO
+DIVERGENCE in fftrace").  The whole baseline effect is that single seed:
+    13-run totals   arm none  r30 / d22 / ff7
+                    arm b     r29 / d23 / ff6
+A -1 firefighter death and -1 rescue on n=1 is not a result to ship on.  The
+10 fresh seeds contain 3 MORE cur_dist == 0 events, so arm `b` was run over
+ALL TEN.  Before running them the prediction was recorded that exactly 3
+could diverge - the fix fires only where stock had a cur_dist == 0 scan that
+the guard emptied - and the run confirmed it: the other 7 are IDENTICAL on
+the full per-step trace, not merely on the totals.  A falsifiable prediction
+about which runs could change, checked rather than assumed.
+
+  ALL FOUR EVENTS WHERE THE FIX ACTUALLY FIRES, ACROSS 23 RUNS
+    E/half 505  s63  ff_0 (41,22)  DEAD s63    -> ALIVE to end of run
+                     r2/d2/ff1 -> r1/d3/ff0    firefighter saved, rescue lost
+                     (the 1-cell Manhattan tiebreak traced above)
+    S/half 606  s96  ff_0 (49,24)  DEAD s96    -> ALIVE to end of run
+                     r2/d1/ff1 -> r2/d1/ff0    SAVED AT NO COST - rescued and
+                     victim deaths both unchanged
+    S/half 1010 s45  ff_1 (27,2)   DEAD s45    -> survives, dies s60 at (27,0)
+                     r1/d2/ff1 -> r1/d2/ff1    bought 15 steps, no net change
+    E/half 606  s27  ff_0 (49,42)  survival-move takes the step that stock
+                     took via `_move_toward` two steps later; unit dies at
+                     s33 at (49,41) in BOTH arms
+                     r1/d2/ff1 -> r1/d2/ff1    trajectory differs, outcome
+                     identical
+
+  E/half 606 IS ALSO THE CLEANEST DEMONSTRATION THAT THE GATE HOLDS THE LINE.
+  At s28 the unit steps (49,41) -> (48,41); at s29 it is at (48,41) with one
+  free neighbour, (49,41), which is `last_cell` - and cur_dist is 1, so the
+  fix DECLINES to re-admit, exactly as designed.  `_move_toward` then walks it
+  back, on the untouched path that has never had an anti-oscillation term.
+  The narrow gate refusing to fire is visible in the trace, two steps after it
+  fired correctly.
+
+  TOTALS
+    13-run baseline   r30/d22/ff7  ->  r29/d23/ff6
+    10 fresh seeds    r22/d14/ff9  ->  r22/d14/ff8
+    POOLED, 23 RUNS   r52/d36/ff16 ->  r51/d37/ff15
+
+  Read plainly: over 23 runs the change saves 2 firefighters, costs 1 rescue
+  and 1 victim, and the rescue it costs is traceable to a 1-cell tiebreak in
+  `select_rescue_assignment` rather than to anything in the retreat logic.
+  It is a real but small effect on a small sample, and it is reported as
+  such - the mechanism (a unit that was killed by the guard now walks away)
+  is certain; the magnitude is a 23-run estimate.
+
+
+================================================================================
+PART 2.6b - THE TWO REJECTED OPTIONS, AS MEASURED
+================================================================================
+Both were built and run, not reasoned about.  All three arms live in
+outputs/_lc_probe.py and are selected by `--arm`.
+
+OPTION (a) - HARD OVERRIDE: at cur_dist == 0, drop the last_cell filter
+entirely for that scan.  REJECTED, with a directly traced death.
+
+    D/east half seed 202, ff_unit_0.  Step 60: the unit is at (39,25),
+    cur_dist 0 (standing in fire), with TWO free neighbours - (40,25), which
+    is `last_cell`, and (39,24).
+      stock / (b): (40,25) is excluded, candidates = {(39,24)}, the unit
+        takes it and walks on to (39,23), (40,23), (40,22), (41,22), (42,22).
+        It survives the run.  firefighter_deaths 0.
+      arm (a): the filter is dropped, candidates = {(40,25), (39,24)}, and
+        the greedy score picks (40,25) - the cell it had just come FROM.
+        That is a dead end; the unit is still there at steps 61 and 62 and
+        is DEAD at step 63 at (40,25).  firefighter_deaths 1.
+    This is the failure the brief anticipated for (a), demonstrated on one
+    trajectory rather than inferred: the override walked the unit backwards
+    into the pocket it had just escaped.  Over the cells where all arms were
+    complete, (a) scored +1 firefighter death and zero gains.
+
+    Arm (a) DOES NOT EVEN FIX C4.  On E/half 505 it moves that death EARLIER
+    - step 63 at (41,22) becomes step 60 at (46,23) - because its extra
+    freedom on preceding cur_dist == 0 scans routed the unit somewhere worse.
+    So (a) costs a life on one seed and fails on the one seed it was aimed at.
+
+OPTION (c) - UNGATED LAST RESORT: re-admit `last_cell` whenever the set is
+otherwise empty, at ANY cur_dist.  REJECTED on oscillation and on outcome.
+
+    13-run sample, arm c vs arm none:
+        re-admissions                                27
+        of which reversed on the very next step       5   (22%)
+        all 5 at cur_dist >= 1; NONE at cur_dist == 0
+        tight step-adjacent reversals    5 -> 21   (4.2x)
+        reversals, any gap              43 -> 73
+        longest alternating run          2 ->  3
+        cells whose reversal count rose   8 of 13   (vs 1 of 13 for arm b)
+        S/half 101   r3/d1/ff1  ->  r2/d1/ff2
+        13-run totals  r30/d22/ff7 -> r28/d23/ff7  - two rescues lost and
+                       not one firefighter saved
+    Concretely, on E/half 404 - one of the four unassign-inflow cases (c) was
+    supposed to help - it produces (31,38) -> (31,39) -> (31,38) on
+    consecutive steps and the unit dies anyway.  It manufactures the exact
+    pattern the guard exists to prevent, in exchange for nothing.
+    (The S/half 101 regression is downstream trajectory divergence and is
+    reported as the weak number it is; the reversal counts are direct.)
+
+THE FOUR ARMS SIDE BY SIDE, ALL 13 BASELINE CELLS COMPLETE
+    arm none  r30 / d22 / ff7      stock b6527f7
+    arm a     r30 / d22 / ff8      +1 firefighter death, C4 death moved earlier
+    arm b     r29 / d23 / ff6      -1 firefighter death, -1 rescue   <- CHOSEN
+    arm c     r28 / d23 / ff7      -2 rescues, no firefighter saved
+
+
+================================================================================
+PART 2.6c - OSCILLATION, MEASURED TO THE 62b4fbe STANDARD, BEFORE IMPLEMENTING
+================================================================================
+The gate for Part 4 asks for this after the fact.  It is measured here
+instead, on the monkeypatched arms, so the design is not chosen blind.
+
+  DIRECT last_cell VIOLATIONS - a survival move landing on the very cell
+  `_idle_retreat_last_cell` held when that call began.  This is the metric
+  idleretreat_report.txt section 5 called decisive, and it is recorded
+  directly rather than inferred:
+
+      arm none   0 unsanctioned    0 sanctioned
+      arm a      0 unsanctioned    3 sanctioned by the arm itself
+      arm b      0 unsanctioned    1 sanctioned by the arm itself
+      arm c      0 unsanctioned   17 sanctioned by the arm itself
+
+  ARM b PRODUCES EXACTLY ONE VIOLATION AND IT IS THE INTENDED ONE.  There is
+  no cascade: no second unit, and no second step, bypasses the guard.
+
+  REVERSAL COUNTS, PER CELL (moves / reversals-any-gap / tight):
+      arm b differs from stock on ONE cell of 13 - E/half 505, 26/5/0 -> 33/10/2.
+      The other 12 are identical move for move, reversal for reversal.
+      TOTALS  none 372/43/5   ->   b 379/48/7
+      arm c differs on 8 cells of 13.  TOTALS  ->  c 422/73/21.
+
+  WHERE ARM b's +2 TIGHT REVERSALS COME FROM, ATTRIBUTED RATHER THAN EXCUSED.
+  Both are inside E/half 505, ten and twelve steps AFTER the re-admission, on
+  a unit that in stock has been dead since step 63 and makes no moves at all:
+      s73 (44,20)->(44,19) then s74 (44,19)->(44,20)   last_cell = None
+      s75 (44,20)->(45,20) then s76 (45,20)->(44,20)   last_cell = None
+  `last_cell` is None at the reversing move in BOTH cases, so the guard was
+  not bypassed - it had been CLEARED.  That is the pre-existing reset hole
+  idleretreat_report.txt section 5 documented and deliberately left in place
+  (a move onto a required-safe cell calls `_reset_idle_retreat_state`,
+  agents.py:859/863, which drops `last_cell` and permits a reversal next
+  step).  cur_dist at those moves is 3 and 2 - the unit is loitering near the
+  standoff boundary, not ping-ponging in a fire emergency.
+  Same attribution the previous round made for its own +2, reached the same
+  way: by reading the state at the reversing move rather than by counting.
+
+  So: the fix adds 7 survival moves, all by one unit that stock had killed,
+  and those 7 moves carry the reversal rate of the existing code
+  (11.6% -> 12.7% any-gap) through a hole the fix does not touch.  No new
+  oscillation MECHANISM is introduced.
+
+
+================================================================================
+PART 2.8 - WHAT THE FIX WILL AND WILL NOT DO
+================================================================================
+WILL
+  * Get a unit off a burning cell when the only remaining exit is the cell it
+    just left.  4 such events in 23 runs (1 baseline + 3 fresh).
+  * Do so without any possibility of ping-pong, for the structural reason in
+    section 5, confirmed on the C4 trajectory itself.
+  * Leave 12 of the 13 baseline runs bit-identical, which is also why the
+    route_blocked gate is expected to hold - but it will be re-run, not
+    assumed.
+
+WILL NOT
+  * Help the four unassign-inflow cases.  They are at cur_dist == 1 and are
+    already moved by `_move_toward` in the same step.  The brief's gate
+    offers "the C4 case AND/OR the unassign-inflow cases"; this fix delivers
+    the first and explicitly declines the second, with the measured reason
+    that the version which reaches them is worse.
+  * Help the 11 cur_dist == 1 sole-exit events, or the C3 leash death.
+  * Change anything for an enclosed unit - 43 of the 61 empty-candidate scans
+    on the baseline sample have zero free neighbours and no filter is
+    implicated at all.
+  * Guarantee survival.  On the fresh seeds, two of the three cur_dist == 0
+    events are units that die in the same step as the refusal; whether a
+    single step is enough to save them is what the arm-b fresh run answers.
+
+
+================================================================================
+PART 2.9 - STATUS OF THE EVIDENCE, AND WHAT IS STILL RUNNING
+================================================================================
+EVERYTHING IS COMPLETE.  No result below is projected or assumed.
+  arm none  13/13 baseline + 10/10 fresh   control 13/13 MATCH vs _ir_p3_POST
+  arm a     13/13 baseline
+  arm b     13/13 baseline + 10/10 fresh
+  arm c     13/13 baseline
+  46 baseline runs (4 arms x 13, minus none/13 counted once) plus 20 fresh
+  runs.  Arm b's 7 non-diverging fresh seeds were run as null checks and came
+  back trace-identical, confirming the prediction rather than standing in for
+  it.
+
+  RUNS THAT FAILED AND WERE RE-RUN, RATHER THAN DROPPED: 6 (none E/half 505,
+  none S/half 404, a E/def 101, a E/def 202, a E/half 404, a S/half 404).
+  All failed at import with the DLL/paging signature, i.e. produced no data at
+  all rather than wrong data; the runner checks for a non-empty output file
+  per cell rather than trusting the exit code.
+
+NOTHING HAS BEEN TUNED.  No constant was adjusted, no threshold moved, and no
+arm was re-run after seeing its result.  The one arm whose result was seen
+before more runs were ordered is arm b, and the extra runs are fresh seeds
+chosen to make the sample bigger, not friendlier - two of the three new
+cur_dist == 0 events are units that die in the same step, i.e. the hardest
+cases available, and they are being included rather than excluded.
+
+
+================================================================================
+ARTEFACTS
+================================================================================
+  probe (4 arms, hooks _retreat_candidates)   outputs/_lc_probe.py
+  Part 1 measurement + control                outputs/_lc_p1.py
+  per-event detail                            outputs/_lc_p1detail.py
+  persistence / prevention / reversal audit   outputs/_lc_age.py
+  arm comparison + oscillation audit          outputs/_lc_arms.py
+  per-cell reversals + violation counting     outputs/_lc_osc2.py
+  first-divergence tracer                     outputs/_lc_diverge.py
+  re-run of import-failed cells               outputs/_lc_fill.sh
+  arm b on fresh seeds                        outputs/_lc_freshb.sh
+  earlier reconstruction (cross-check only)   outputs/_lc_analyze.py
+  data                                        outputs/_lc_<arm>_<wind>_<roles>_<seed>.json
+================================================================================

@@ -1,0 +1,504 @@
+================================================================================
+LAST_CELL ANTI-OSCILLATION GUARD - PART 3 (IMPLEMENTATION) AND PART 4 (VALIDATION)
+Branch claude/position-rename-and-hazard-revalidation, from HEAD b6527f7
+Design and diagnosis: outputs/lastcell_part1.txt
+================================================================================
+
+VERDICT: FOUR OF THE FIVE GATE ITEMS PASS.  ONE ITEM OF THE ROUTE_BLOCKED
+GATE FAILS, ON ONE SEED, BY A MECHANISM OUTSIDE THIS FILE.  Reported as a
+failure rather than reinterpreted, because it is one - see section 5.
+
+  13-RUN SEED-MATCHED SAMPLE     firefighter_deaths   7 -> 6   (-1)
+                                 rescued             30 -> 29  (-1)
+                                 victims dead        22 -> 23  (+1)
+
+  10 FRESH SEEDS                 firefighter_deaths   9 -> 8   (-1)
+                                 rescued             22 -> 22  (+0)
+                                 victims dead        14 -> 14  (+0)
+
+  POOLED, 23 RUNS                firefighter_deaths  16 -> 14  (-2)
+                                 rescued             52 -> 51  (-1)
+                                 victims dead        36 -> 37  (+1)
+
+  BOTH NUMBERS ARE PRINTED BECAUSE THEY SAY DIFFERENT THINGS, AND THE
+  13-RUN ONE IS THE LESS FLATTERING.  On the gate's own sample this change
+  trades one firefighter for one rescue - a wash on any reading that weighs
+  a rescued victim against a surviving unit.  It is only on the fresh seeds,
+  where the second save costs nothing, that the pooled figure comes out
+  ahead.  Anyone quoting "-2 firefighter deaths" without "-1 rescue" is
+  quoting half of this.
+
+  ONE FILE CHANGED: agents.py, +13 / -0.  wildfire_model.py untouched.
+  Line endings preserved: 49900 bytes, 1190 CRLF, 0 bare-LF.
+  Tests: 8 failed / 427 passed, failure set identical name for name.
+
+
+================================================================================
+1. WHAT WAS IMPLEMENTED
+================================================================================
+Exactly the design confirmed in outputs/lastcell_part1.txt section 2.5,
+applied by outputs/_lc_patch.py (--check / --apply / --revert, binary mode,
+idempotent, CRLF-preserving - same shape as the idle-retreat round's
+_ir_patch.py).
+
+  agents.py:902, `_retreat_candidates`.  The existing `return candidates`
+  gains a terminal fallback in front of it:
+
+    if not candidates and last_cell is not None and current_dist == 0:
+        # The unit is standing on a burning cell and every neighbour it
+        # could still step to was ruled out by the anti-oscillation
+        # memory. That memory exists to stop a unit ping-ponging between
+        # two free cells, and it cannot serve that purpose here: the cell
+        # being vacated is on fire, so the fire test above - which comes
+        # first and so outranks it - refuses the step back anyway until
+        # that cell burns out. Re-run the same chain without it, so
+        # `last_cell` is considered only when nothing else survived and
+        # every other filter, the leash included, still applies to it.
+        return self._retreat_candidates(
+            cell, origin, None, fire_cells, current_dist
+        )
+    return candidates
+
+  THE SCOPE LIMITS IN THE BRIEF WERE HELD.  Verified against the diff, which
+  is 13 added lines and no removed or modified line:
+    * lines 879-902 - the loop, the three filters, their order, the dict -
+      byte-identical.
+    * the signature is unchanged, so BOTH call sites (the normal scan at 802
+      and `_revalidate_idle_retreat_stall` at 972) inherit the behaviour with
+      no edit at either.  That is 62b4fbe's shared-helper property being used
+      rather than worked around.
+    * THE LEASH IS UNTOUCHED.  The re-run passes the same `origin`, so
+      `from_origin > IDLE_RETREAT_MAX_CELLS` still applies to the re-admitted
+      cell.  The C3 leash death is unchanged, by design.
+    * the 62b4fbe stall-latch recheck is untouched.
+    * `_move_toward`'s continuation-after-route_blocked is untouched.
+    * route_blocked trigger/recovery (f2827ed / 70e1b33) untouched.
+    * the unassign branch in wildfire_model.py untouched.
+    * no constant added or changed; no new state, field or threshold.
+
+  Recursion terminates at depth 2: inside the re-run `last_cell is None`, so
+  the condition is False.
+
+1.1  THE SHIPPED CODE IS WHAT THE DESIGN WAS VALIDATED ON
+----------------------------------------------------------
+Part 2 validated option (b) as a runtime monkeypatch (arm `b`).  Part 4 runs
+the PATCHED SOURCE through the same probe with `--arm none`.  Those two must
+agree or the validation transfers to nothing.
+
+    23 of 23 runs IDENTICAL - full per-step trace (step, unit, cell, dead,
+    status) and the exact (step, unit, cell) of every death.  0 mismatches.
+
+  Stronger than outcome equality, and checked at the firing points too: on
+  S/half 606 the patched source fires the fallback at steps 96 and 99, and
+  arm b re-admitted at steps 96 and 99.  Same steps, same cells.
+
+
+================================================================================
+2. THE 13-RUN SEED-MATCHED SAMPLE
+================================================================================
+Same combos, seeds, params and harness as the pre-fix arm: D, 240 steps,
+FIRE_SPREAD_MULTIPLIER 0.75, BATCH_SIZE 300, PROBABILITY_MAP False, run
+sequentially.  PRE is outputs/_lc_none_*.json, POST is outputs/_lc_post_*.json,
+and the PRE arm was itself shown equal to the idle-retreat round's post-fix
+data on 13/13 seeds, so the instrument does not move between arms or between
+rounds.
+
+    cell                stock          patched        trace
+    east_default_101    r2/d2/ff1      r2/d2/ff1      same
+    east_default_202    r3/d1/ff1      r3/d1/ff1      same
+    east_default_303    r2/d2/ff0      r2/d2/ff0      same
+    east_half_101       r2/d2/ff1      r2/d2/ff1      same
+    east_half_202       r2/d2/ff0      r2/d2/ff0      same
+    east_half_303       r1/d3/ff0      r1/d3/ff0      same
+    east_half_404       r2/d2/ff1      r2/d2/ff1      same
+    east_half_505       r2/d2/ff1      r1/d3/ff0      DIFFERS   <- the C4 case
+    south_half_101      r3/d1/ff1      r3/d1/ff1      same
+    south_half_202      r3/d1/ff0      r3/d1/ff0      same
+    south_half_303      r3/d1/ff0      r3/d1/ff0      same
+    south_half_404      r2/d2/ff1      r2/d2/ff1      same
+    south_half_505      r3/d1/ff0      r3/d1/ff0      same
+    TOTAL               r30/d22/ff7    r29/d23/ff6
+
+  TWELVE OF THIRTEEN RUNS ARE TRAJECTORY-IDENTICAL, not merely equal on
+  totals.  The entire effect on this sample is one seed.
+
+2.1  THE C4 CASE - DOES IT ESCAPE?  YES.
+-----------------------------------------
+  E/half seed 505, ff_unit_0.  Stock: dead at step 63 at (41,22), standing on
+  a burning cell whose only free neighbour was `last_cell`.
+  Patched:
+      s63  (41,22) -> (42,22)   the fallback fires, the unit steps off the fire
+      s64  (43,22)   s66 (44,22)   s67 (45,22)   s69 (45,21)
+      s240 (31,43), alive, en_route
+  firefighter_deaths on this seed 1 -> 0, and the run ends with zero
+  firefighter deaths.
+
+  AND THE NO-PING-PONG PREDICTION HOLDS ON THIS CASE.  At s64 the unit is on
+  (42,22) with last_cell (41,22), and the recorded free set is [(43,22)] -
+  (41,22) is absent because it is BURNING.  The step back is refused by the
+  fire filter, not by the guard, exactly as section 2.5 of the design argued.
+
+2.2  THE FOUR UNASSIGN-INFLOW CASES - DO THEY IMPROVE?  NO, AND THIS WAS
+     DECLARED IN ADVANCE.
+------------------------------------------------------------------------
+  E/def 101 s38, E/def 303 s55, E/half 303 s55, E/half 404 s29 are all at
+  cur_dist == 1, so the gated condition does not fire and all four runs are
+  trajectory-identical to stock.  Confirmed in the table above.
+
+  This is the brief's correction 1 landing in the results.  The gate asks for
+  "the C4 case AND/OR the unassign-inflow cases"; this change delivers the
+  first and declines the second, for the reason measured in Part 2: the
+  variant that reaches them (arm c) produces a step-adjacent reversal on 22%
+  of its re-admissions, loses two rescues on this sample, and saves nobody.
+  On E/half 404 specifically, arm c makes the unit ping-pong
+  (31,38)->(31,39)->(31,38) and it dies on schedule anyway.
+
+
+================================================================================
+3. THE 10 FRESH SEEDS, AND THE POOLED FIGURE
+================================================================================
+Seeds 606/707/808/909/1010 in east/half and south/half - never used by any
+prior round in this chain.
+
+    cell                stock          patched        trace
+    east_half_606       r1/d2/ff1      r1/d2/ff1      DIFFERS
+    east_half_707       r4/d0/ff0      r4/d0/ff0      same
+    east_half_808       r2/d1/ff2      r2/d1/ff2      same
+    east_half_909       r2/d2/ff1      r2/d2/ff1      same
+    east_half_1010      r2/d2/ff1      r2/d2/ff1      same
+    south_half_606      r2/d1/ff1      r2/d1/ff0      DIFFERS
+    south_half_707      r3/d1/ff0      r3/d1/ff0      same
+    south_half_808      r3/d1/ff1      r3/d1/ff1      same
+    south_half_909      r2/d2/ff1      r2/d2/ff1      same
+    south_half_1010     r1/d2/ff1      r1/d2/ff1      DIFFERS
+    TOTAL               r22/d14/ff9    r22/d14/ff8
+
+  Exactly the 3 runs predicted in Part 2 diverge, and the other 7 are
+  trajectory-identical.  The prediction was recorded before these were run.
+
+  THE FOUR PLACES THE FIX ACTUALLY FIRES, ACROSS ALL 23 RUNS
+    S/half 606  s96+s99  ff_0  DEAD s96 at (49,24)  -> ALIVE at end of run
+                r2/d1/ff1 -> r2/d1/ff0    SAVED AT NO COST
+    E/half 505  s63      ff_0  DEAD s63 at (41,22)  -> ALIVE at end of run
+                r2/d2/ff1 -> r1/d3/ff0    saved, but a rescue lost (section 4)
+    S/half 1010 s45      ff_1  DEAD s45 at (27,2)   -> survives to s60
+                r1/d2/ff1 -> r1/d2/ff1    bought 15 steps, no net change
+    E/half 606  s27      ff_0  takes via `_survival_move` the step stock took
+                via `_move_toward` two steps later; dies at s33 at (49,41) in
+                BOTH arms.   r1/d2/ff1 -> r1/d2/ff1
+
+  E/half 606 IS ALSO THE GATE HOLDING THE LINE, VISIBLE IN THE TRACE.  Two
+  steps after firing correctly at s27, the unit is at (48,41) at s29 with one
+  free neighbour, (49,41), which is `last_cell` - and cur_dist is 1, so the
+  fallback DECLINES.  `_move_toward` walks it back instead, on the untouched
+  path that has never had an anti-oscillation term.
+
+
+================================================================================
+4. THE ONE REGRESSION, TRACED RATHER THAN ATTRIBUTED TO CHAOS
+================================================================================
+E/half 505 is the only run in 23 where an outcome other than a firefighter
+death changed: rescued 2 -> 1, victims dead 2 -> 3.
+
+  stock   ff_unit_0 is dead from step 63.  At step 97 the planner assigns the
+          victim at (25,48) to ff_unit_1, then at (13,13).  It arrives s145
+          and completes the rescue at s147.
+  patched ff_unit_0 survives, is `available` from s69, and at step 97 stands
+          at (43,20).  Manhattan distances to that victim at that moment:
+              ff_unit_0  |43-25| + |20-48| = 46
+              ff_unit_1  |13-25| + |13-48| = 47
+          `select_rescue_assignment` sorts on Manhattan distance only and its
+          availability filter has no reachability test, so a ONE-CELL margin
+          hands the victim to ff_unit_0.  It never gets there and is
+          unassigned at s183.  ff_unit_1 is left idle from s75 and never
+          re-tasked.  The victim dies.
+
+  THIS IS VERDICT C OF ffdeath_investigation.txt, RE-CONFIRMED.  It lives in
+  `select_rescue_assignment` in wildfire_model.py, which this round is
+  explicitly forbidden to touch, and the unassign-inflow round closed it out
+  as "nothing to flag" on its own sample where no dispatch had a dead route.
+  Putting a live unit back into the pool exposed it.
+
+  HOW FAR I PUSH THAT CAUSAL CLAIM: to the dispatch, and no further.  The
+  tiebreak is exact and reproducible - 46 against 47, read out of the trace.
+  What follows it is 86 steps of transit in a chaotic spread model, so
+  "ff_unit_1 would have completed the rescue had it been chosen" is only
+  supported by the fact that in stock it did.  The honest statement is that
+  the fix cost a rescue on this seed through a known upstream defect, on a
+  one-cell margin, and that a different tiebreak would likely not have.
+
+
+================================================================================
+5. THE ROUTE_BLOCKED GATE - RE-RUN, AND ONE ITEM FAILS
+================================================================================
+Re-run rather than assumed, as this chain has required every round since
+f2827ed.  Same harness (_rblatch_campaign2.py), same 18 runs, same shard
+split as the idle-retreat round, and the merge verifies the shard union
+equals the baseline seed set exactly with no duplicates: 13 east + 5 south.
+
+5.1  THE GATE AS ORIGINALLY DEFINED, AGAINST 70e1b33
+-----------------------------------------------------
+  D/east, 13 seeds    rescued 30 -> 29   victims dead 19 -> 20   ff 12 ->  9
+  D/south, 5 seeds    rescued 13 -> 14   victims dead  6 ->  6   ff  3 ->  2
+  ALL 18 RUNS         rescued 43 -> 43   victims dead 25 -> 26   ff 15 -> 11
+  seeds bit-identical on all three metrics: 14 of 18
+
+  GATE ITEMS, against outputs/rblatch_report.txt section 2:
+    [FAIL] rescued does not decrease on any seed
+           -> D/east seed 505, rescued 2 -> 1.  ONE seed.  It is the same
+              E/half 505 world as section 4 - the campaign harness uses the
+              same half-roles params - so it is the same firefighter, the
+              same step-63 escape and the same 1-cell dispatch tiebreak,
+              seen through a second instrument.  Not a route_blocked
+              mechanism regression; the route_blocked machinery on that seed
+              improves (a recovery is added, see below).
+    [PASS] recovery pass still recovers units
+           -> recoveries 3 -> 7, route_blocked firings 15 -> 15
+    [PASS] no unit left latched as route_blocked at end of run   0 -> 0
+    [PASS] ff_deaths do not increase   -> 15 -> 11; seeds up: NONE;
+           seeds down: east 202, east 303, east 505, south 101
+    [PASS] the east/333 case still behaves - BIT-IDENTICAL:
+                                70e1b33 / b6527f7      + last_cell fix
+             rescued/dead/ff        2 / 2 / 2            2 / 2 / 2
+             route_blocked firings  ff_unit_0 @42 [49,29]
+                                    ff_unit_1 @45 [0,25]
+                                    ff_unit_1 @153 [28,1]     identical
+             recovery               ff_unit_1 @45 at [1,25] -> en_route
+                                                              identical
+
+  I AM NOT REINTERPRETING THE FAILING ITEM INTO A PASS.  The item says
+  rescued must not decrease on any seed.  It decreases on one.  That is a
+  FAIL, and the round should be judged with it visible.  What I can say is
+  what it is and is not: it is the section-4 dispatch tiebreak, on the one
+  seed where a firefighter's life was saved, and it is not the route_blocked
+  subsystem behaving differently.
+
+5.2  THIS ROUND'S OWN DELTA, AGAINST b6527f7
+---------------------------------------------
+  The 70e1b33 comparison above folds in the idle-retreat round's changes too.
+  Isolating what THIS change did, lcfix vs irfix:
+
+    D/east    17 seeds -> 12 of 13 bit-identical; only seed 505 changed
+    D/south   5 of 5 bit-identical
+    ALL 18    r44/d25/ff12  ->  r43/d26/ff11   (-1 rescue, -1 ff death)
+    units still route_blocked at end of run    0 -> 0
+
+  ROUTE_BLOCKED MECHANICS, b6527f7 -> patched:
+    east   fires 14 -> 14   recoveries 6 -> 7   reval_with_blocked 66 -> 71
+    south  fires  1 ->  1   recoveries 0 -> 0   reval_with_blocked  0 ->  0
+
+  The extra recovery is the saved unit itself: seed 505, ff_unit_0, step 69
+  at [45,21] -> available.  A unit that stock had killed at step 63 is alive
+  to be revalidated at 69 and is released from route_blocked.  This is the
+  same positive coupling the idle-retreat round found, for the same reason:
+  the recovery pass BFSes from the unit's current position and runs after
+  movement, so a unit that moved presents different connectivity.
+
+
+================================================================================
+6. OSCILLATION - MEASURED THREE WAYS, AND ATTRIBUTED PER MOVE
+================================================================================
+The gate requires no NEW ping-ponging, measured rather than assumed.  The
+danger with a weakened anti-oscillation guard is a fix that looks like a save
+while the unit merely alternates between two cells.
+
+6.1  DIRECT last_cell VIOLATIONS - THE DECISIVE ROW
+----------------------------------------------------
+A violation is a survival move landing on the very cell
+`_idle_retreat_last_cell` held when that call began.  The probe wraps
+`_retreat_candidates`, so a sanctioned fallback is detectable directly (it
+makes a second call at the same step with `last_cell` None) rather than
+inferred.
+
+                                        13-run      fresh
+    UNSANCTIONED violations                 0           0
+    sanctioned (the fallback firing)        1           4
+
+  ZERO UNSANCTIONED VIOLATIONS ACROSS ALL 23 RUNS.  The guard is intact
+  everywhere it was not deliberately suspended.  No cascade: no second unit
+  and no second step bypasses it.  This is the same metric idleretreat_report
+  section 5 called decisive, and it reads 0 there and 0 here.
+
+6.2  REVERSALS ON THE RETREAT PATH
+-----------------------------------
+                              13-run              fresh
+    survival moves         372 -> 379          306 -> 315
+    reversals, any gap      43 ->  48           57 ->  62
+    tight (consecutive)      5 ->   7           12 ->  13
+
+  Every one of these deltas is inside a run that diverges, and the three new
+  tight reversals were each opened and read:
+
+    E/half 505  s73 (44,20)->(44,19) then s74 back    last_cell = None
+    E/half 505  s75 (44,20)->(45,20) then s76 back    last_cell = None
+      `last_cell` is None at the reversing move, so the guard was not
+      bypassed - it had been CLEARED, by the pre-existing reset at
+      agents.py:859/863 that idleretreat_report section 5 documented and
+      deliberately left in place.  cur_dist there is 3 and 2: the unit is
+      loitering near the standoff boundary, 10 and 12 steps after the
+      fallback fired, not ping-ponging in a fire emergency.  Same hole, same
+      attribution, same reasoning the previous round used for its own +2.
+
+    E/half 606  s26 (49,41)->(49,42) then s27 back    last_cell = (49,41), cur_dist 0
+      This one IS the fallback.  But the MOVE is not new - see 6.3.
+
+6.3  THE CHECK THAT SETTLES 6.2: COUNT ALL MOVEMENT, NOT JUST RETREAT
+----------------------------------------------------------------------
+The metric above counts `_survival_move` only.  The fix moves some steps from
+`_move_toward` onto the retreat path, which inflates that metric without any
+behaviour changing.  Counting EVERY position change, from the fftrace ground
+truth, whatever code path made it:
+
+                              13-run              fresh
+    all position changes  1851 -> 1891        1377 -> 1400
+    reversals, any gap     469 ->  519         418 ->  421
+    TIGHT reversals        157 ->  186         104 ->  104
+
+  ON THE FRESH SEEDS THE FIX INTRODUCES NO NEW PING-PONGING AT ALL: 104 and
+  104.  E/half 606 goes 11 -> 12 and S/half 606 goes 17 -> 16; they cancel.
+  The "+1" in 6.2 was a step migrating from `_move_toward` to
+  `_survival_move`, not a new reversal - in stock the unit made the same
+  (49,41)->(49,42)->(49,41) sequence, one step later, via `_move_toward`.
+
+  THE 13-RUN +29 IS ENTIRELY ONE UNIT, AND IT IS NOT ON THE PATH THIS ROUND
+  TOUCHED.  All of it is E/half 505 ff_unit_0 (1 -> 30), the firefighter that
+  stock kills at step 63 and that now lives to step 240.  It makes 98 moves
+  after step 63 that do not exist in the stock run at all.  Attributed by
+  path, per move:
+
+      tight reversals by that unit                       30
+        `_move_toward` -> `_move_toward`                 27   untouched path,
+                                                              no anti-oscillation
+                                                              term of any kind
+        `_survival_move` -> `_survival_move`              2   the two at s73-s76
+                                                              above, via the
+                                                              pre-existing reset
+        `_move_toward` -> `_survival_move`                1   at s38/s39, BEFORE
+                                                              the fallback ever
+                                                              fires at s63 -
+                                                              present in stock too
+
+  So ZERO of the 30 originate in the modified condition.  27 of 30 are the
+  assigned-transit path dithering, which has never had an oscillation guard
+  and which this round was told not to touch.
+
+  AND THE UNIT IS NOT TRAPPED.  After step 63 it visits 63 DISTINCT cells;
+  its most-visited cell is entered 5 times in 177 steps.  This is a unit
+  walking a long transit toward the victim it was mis-assigned in section 4,
+  and dithering when `_move_toward` finds the route blocked - not a unit
+  ping-ponging in a two-cell pocket.  "Alive but dithering on a 46-cell
+  transit" is a fair description; "oscillating" is not.
+
+
+================================================================================
+7. TEST SUITE
+================================================================================
+  baseline  8 failed, 427 passed, 5 warnings in 2065.84s   (outputs/_ir_pytest_baseline.txt)
+  patched   8 failed, 427 passed, 5 warnings in 1981.39s   (outputs/_lc_pytest_fixed.txt)
+  435 collected both sides.
+
+  FAILURE SET IDENTICAL NAME FOR NAME.  Diffed as sorted sets: zero NEW
+  failures, zero newly-passing.  All eight are the pre-existing ones:
+    test_behavior_regression.py::test_descriptive_next_action_uses_target_position
+    test_dashboard_panel.py::test_dashboard_panel_render_returns_string
+    test_firefighter_dispatch_replacement.py::
+      test_no_replacement_available_marks_victim_unreachable_once
+    test_rescue_planner_authority.py::test_no_firefighter_planner_delay_or_unreachable
+    test_uav_sector_assignment.py::test_fire_tracker_still_overridden_by_search_mode_fail_safe
+    test_uav_sector_assignment.py::test_fire_tracker_uavs_receive_different_target_sets
+    test_wind_aware_trajectory_regression.py::test_north_vs_south_trajectories_diverge_over_40_steps
+    test_wind_aware_victim_search.py::test_victim_search_wind_aware_action_when_downwind_exists
+
+  PROVENANCE OF THE BASELINE, STATED RATHER THAN GLOSSED: the pre-fix column
+  is the idle-retreat round's run, not a fresh one from this round.  That is
+  legitimate here because agents.py at b6527f7 is byte-identical to 62b4fbe
+  (`git diff --stat 62b4fbe HEAD -- agents.py` is empty), so it was produced
+  on exactly this source.  A fresh baseline was not re-run because nothing
+  else in the tree changed and the two runs would be the same run.
+
+
+================================================================================
+8. GATE SUMMARY
+================================================================================
+  [PASS] the C4 case demonstrably improves
+         -> E/half 505 ff_unit_0 escapes at step 63 instead of burning, and
+            survives to the end of the run.  The unassign-inflow cases do NOT
+            improve, which was declared in the design, not discovered here.
+            The gate reads "and/or"; the first half is met.
+  [PASS] no new oscillation pattern, measured not assumed
+         -> 0 unsanctioned last_cell violations in 23 runs.  Counting all
+            movement paths, fresh seeds are 104 -> 104 tight reversals, i.e.
+            no new ping-ponging.  The 13-run +29 is one unit that stock had
+            killed, and 27 of its 30 reversals are `_move_toward`-to-
+            `_move_toward` on an untouched path with no guard at all; zero
+            originate in the modified condition.
+  [PASS] firefighter_deaths do not increase without an explained reason
+         -> they DECREASE, on every sample: 7 -> 6, 9 -> 8, 15 -> 11 on the
+            route_blocked campaign.  No seed's ff_deaths rose anywhere.
+  [FAIL] route_blocked gate still passes
+         -> four of its five items pass, including east/333 bit-identical and
+            zero units left latched.  "rescued does not decrease on any seed"
+            FAILS on D/east 505, by the section-4 dispatch tiebreak in
+            wildfire_model.py rather than by anything in the retreat logic.
+            One seed of eighteen.
+  [PASS] no NEW test failures
+         -> 8/427 both sides, failure set identical name for name.
+
+  NOTHING WAS TUNED TO FORCE A PASS.  No constant was adjusted, no threshold
+  moved, no arm re-run after seeing its result, and the failing gate item was
+  not redefined to accommodate the outcome.
+
+
+================================================================================
+9. WHAT THIS CHANGE IS WORTH, STATED PLAINLY
+================================================================================
+  * THE MECHANISM IS CERTAIN, not statistical.  A unit standing on a burning
+    cell whose only exit was refused for anti-oscillation reasons now takes
+    that exit.  It fires 4 times in 23 runs and each firing was read
+    individually.  The equivalence check makes that a property of the shipped
+    code, not of a monkeypatch.
+  * THE MAGNITUDE IS A 23-RUN ESTIMATE and should not be quoted precisely.
+    Two firefighters saved, one rescue lost.  On the 13-run sample alone it
+    is one saved and one lost.
+  * THE CONDITION IS PRINCIPLED RATHER THAN TUNED.  cur_dist == 0 is the
+    exact case in which the fire filter already forbids the step the guard
+    forbids, so suspending the guard there removes nothing.  The two rejected
+    variants both fail for reasons predicted from that argument: (a) lets
+    `last_cell` win a competition it should not enter and killed a unit on
+    E/half 202; (c) drops the gate and produces reversals at 22% per
+    re-admission.
+  * WHAT IT DOES NOT DO: it does not help the four unassign-inflow cases
+    (cur_dist == 1, and already moved by `_move_toward` in the same step), it
+    does not help the C3 leash death, and it does nothing for an enclosed
+    unit - 43 of the 61 empty-candidate scans on the 13-run sample have zero
+    free neighbours and no filter is implicated at all.
+  * THE LARGER LEVER IS STILL UPSTREAM.  The one regression this round
+    produced was not caused by the retreat logic; it was caused by a 1-cell
+    Manhattan tiebreak with no reachability test deciding which unit chases a
+    victim across 46 cells.  That is where the next real win is, and it is in
+    wildfire_model.py.
+
+
+================================================================================
+ARTEFACTS
+================================================================================
+  source change        agents.py only, +13 / -0
+  patch script         outputs/_lc_patch.py       (--check / --apply / --revert)
+  design + Part 1      outputs/lastcell_part1.txt
+  probe (4 arms)       outputs/_lc_probe.py       hooks _retreat_candidates
+  pre-fix data         outputs/_lc_none_*.json    (23 runs)
+  what-if arms         outputs/_lc_a_*, _lc_b_*, _lc_c_*.json
+  post-fix data        outputs/_lc_post_*.json    (23 runs)
+  route_blocked        outputs/_rblatch_camp2_lcfix*_D_*.json  (18 runs, 4 shards)
+  tests                outputs/_lc_pytest_fixed.txt
+  analysis             outputs/_lc_p1.py       Part 1 measurement + control
+                       outputs/_lc_p1detail.py per-event detail
+                       outputs/_lc_age.py      persistence / prevention audit
+                       outputs/_lc_arms.py     4-arm comparison
+                       outputs/_lc_osc2.py     per-cell reversals + violations
+                       outputs/_lc_diverge.py  first-divergence tracer
+                       outputs/_lc_p4.py       Part 4 outcomes + equivalence
+                       outputs/_lc_rbcompare.py route_blocked delta vs b6527f7
+  runners              outputs/_lc_post13.sh, _lc_postfresh.sh, _lc_rbgate.sh,
+                       _lc_fill.sh, _lc_freshb.sh, _lc_prio.sh
+================================================================================

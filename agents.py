@@ -899,6 +899,19 @@ class Firefighter(mesa.Agent):
                     ),
                 }
             )
+        if not candidates and last_cell is not None and current_dist == 0:
+            # The unit is standing on a burning cell and every neighbour it
+            # could still step to was ruled out by the anti-oscillation
+            # memory. That memory exists to stop a unit ping-ponging between
+            # two free cells, and it cannot serve that purpose here: the cell
+            # being vacated is on fire, so the fire test above - which comes
+            # first and so outranks it - refuses the step back anyway until
+            # that cell burns out. Re-run the same chain without it, so
+            # `last_cell` is considered only when nothing else survived and
+            # every other filter, the leash included, still applies to it.
+            return self._retreat_candidates(
+                cell, origin, None, fire_cells, current_dist
+            )
         return candidates
 
     def _pick_improving_retreat(
