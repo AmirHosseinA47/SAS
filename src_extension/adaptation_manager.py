@@ -144,10 +144,22 @@ class AdaptationManager:
         pending_removals = _call_stage(model, "_process_pending_agent_removals")
         rescue_path_cleared = _call_stage(model, "_clear_rescue_path_if_requested")
         _call_stage(model, "_update_uav_stuck_counts_after_move")
+        removal_failures = int(
+            getattr(model, "pending_removal_failures_last_step", 0) or 0
+        )
         result["cleanup"] = {
             "pending_removals": int(pending_removals or 0),
+            "pending_removal_failures": removal_failures,
             "rescue_path_cleared": bool(rescue_path_cleared),
         }
+        if removal_failures:
+            # `dashboard_summary` is the only key of this result the explanation
+            # engine reads, and a swallowed removal is the one thing in the
+            # cleanup stage worth putting in front of a human.
+            result["dashboard_summary"] = (
+                "pending agent removal failed for %d queued agent(s)"
+                % removal_failures
+            )
 
         _call_stage(model, "_update_managed_uav_states_from_agents")
         _call_stage(model, "_refresh_local_path_context_models", current_step_time)
@@ -491,6 +503,9 @@ def _collect_post_move_explanations(model: Any, cycle_result: dict[str, Any]) ->
         removals = int(cleanup.get("pending_removals", 0) or 0)
         if removals > 0:
             explanations.append(f"pending_agent_removals={removals}")
+        removal_failures = int(cleanup.get("pending_removal_failures", 0) or 0)
+        if removal_failures > 0:
+            explanations.append(f"pending_agent_removal_failures={removal_failures}")
     rescue_events = cycle_result.get("rescue_events")
     if isinstance(rescue_events, dict) and rescue_events.get("processed"):
         explanations.append(f"post_move_rescue_incidents={rescue_events.get('count', 0)}")

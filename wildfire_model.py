@@ -274,6 +274,8 @@ class WildFireModel(mesa.Model):
         self._victim_sweep_state: dict[str, dict[str, Any]] = {}
         self._wind_search_target_state: dict[str, dict[str, Any]] = {}
         self._agents_pending_removal: list[Any] = []
+        self.pending_removal_failures_last_step = 0
+        self.pending_removal_failures_total = 0
         self._rescue_path_clear_requested = False
         self._rescue_failed_logged: set[str] = set()
         self._rescue_blocked_logged: set[tuple[str, str]] = set()
@@ -2216,47 +2218,46 @@ class WildFireModel(mesa.Model):
             self._try_dispatch_unresolved_confirmed_victims()
 
     def _process_pending_agent_removals(self) -> int:
-        """Finalize rescued victims and recycle exiting firefighters back to available standby."""
+        """Finalize rescued victims and recycle exiting firefighters back to available standby.
+
+        Failures are contained per queue entry: a bad entry is reported and
+        skipped, instead of aborting the drain and silently discarding every
+        entry queued behind it. Returns the number of entries handled, counting
+        firefighter recycles alongside grid/schedule removals.
+        """
         removed = 0
         recycled = 0
+        self.pending_removal_failures_last_step = 0
+        pending = list(getattr(self, "_agents_pending_removal", []) or [])
+        self._agents_pending_removal = []
+        finalized_victim_ids: set[str] = set()
+        index = 0
         try:
-            pending = list(getattr(self, "_agents_pending_removal", []) or [])
-            self._agents_pending_removal = []
-            finalized_victim_ids: set[str] = set()
-            for agent in pending:
-                if type(agent) is agents.PathMarker or type(agent).__name__ == "PathMarker":
-                    try:
-                        if getattr(agent, "pos", None) is not None:
-                            self.grid.remove_agent(agent)
-                    except Exception:
-                        pass
-                    try:
-                        if agent.unique_id in getattr(self.schedule, "_agents", {}):
-                            self.schedule.remove(agent)
-                    except Exception:
-                        pass
-                    removed += 1
-                elif type(agent) is agents.Victim or type(agent).__name__ == "Victim":
-                    vid = self._victim_id_from_agent(agent)
-                    if vid and vid not in finalized_victim_ids:
-                        self._finalize_rescued_victim(vid, agent)
-                        finalized_victim_ids.add(vid)
-                    try:
-                        agent.status = "rescued"
-                    except Exception:
-                        pass
-                    try:
-                        if getattr(agent, "pos", None) is not None:
-                            self.grid.remove_agent(agent)
-                    except Exception:
-                        pass
-                    try:
-                        self.schedule.remove(agent)
-                    except Exception:
-                        pass
-                    removed += 1
-                elif type(agent) is agents.Firefighter or type(agent).__name__ == "Firefighter":
-                    if getattr(agent, "dead", False):
+            while index < len(pending):
+                agent = pending[index]
+                index += 1
+                try:
+                    if type(agent) is agents.PathMarker or type(agent).__name__ == "PathMarker":
+                        try:
+                            if getattr(agent, "pos", None) is not None:
+                                self.grid.remove_agent(agent)
+                        except Exception:
+                            pass
+                        try:
+                            if agent.unique_id in getattr(self.schedule, "_agents", {}):
+                                self.schedule.remove(agent)
+                        except Exception:
+                            pass
+                        removed += 1
+                    elif type(agent) is agents.Victim or type(agent).__name__ == "Victim":
+                        vid = self._victim_id_from_agent(agent)
+                        if vid and vid not in finalized_victim_ids:
+                            self._finalize_rescued_victim(vid, agent)
+                            finalized_victim_ids.add(vid)
+                        try:
+                            agent.status = "rescued"
+                        except Exception:
+                            pass
                         try:
                             if getattr(agent, "pos", None) is not None:
                                 self.grid.remove_agent(agent)
@@ -2267,23 +2268,94 @@ class WildFireModel(mesa.Model):
                         except Exception:
                             pass
                         removed += 1
-                        continue
-                    rescued_victim = getattr(agent, "rescued_victim", None)
-                    if rescued_victim is not None:
-                        vid = self._victim_id_from_agent(rescued_victim)
-                        ff_id = str(getattr(agent, "unit_id", "") or "")
-                        if vid and vid not in finalized_victim_ids:
-                            self._finalize_rescued_victim(
-                                vid, rescued_victim, firefighter_id=ff_id
-                            )
-                            finalized_victim_ids.add(vid)
-                    self._recycle_firefighter_after_exit(agent)
-                    recycled += 1
-        except Exception:
-            pass
+                    elif type(agent) is agents.Firefighter or type(agent).__name__ == "Firefighter":
+                        if getattr(agent, "dead", False):
+                            try:
+                                if getattr(agent, "pos", None) is not None:
+                                    self.grid.remove_agent(agent)
+                            except Exception:
+                                pass
+                            try:
+                                self.schedule.remove(agent)
+                            except Exception:
+                                pass
+                            removed += 1
+                            continue
+                        rescued_victim = getattr(agent, "rescued_victim", None)
+                        if rescued_victim is not None:
+                            vid = self._victim_id_from_agent(rescued_victim)
+                            ff_id = str(getattr(agent, "unit_id", "") or "")
+                            if vid and vid not in finalized_victim_ids:
+                                self._finalize_rescued_victim(
+                                    vid, rescued_victim, firefighter_id=ff_id
+                                )
+                                finalized_victim_ids.add(vid)
+                        self._recycle_firefighter_after_exit(agent)
+                        recycled += 1
+                    else:
+                        self._report_pending_removal_failure(
+                            agent, "unhandled agent type"
+                        )
+                except Exception as exc:
+                    self._report_pending_removal_failure(
+                        agent, f"{type(exc).__name__}: {exc}"
+                    )
+        except Exception as exc:
+            # A failure outside any single entry would otherwise discard the rest
+            # of the queue. Keep whatever the drain never reached so the next
+            # step retries it instead of losing it. Nothing here may raise: this
+            # is the last handler, and an escape would abort the whole step.
+            try:
+                self._requeue_unprocessed_removals(pending[index:])
+            except Exception:
+                pass
+            try:
+                self._report_pending_removal_failure(
+                    None, f"{type(exc).__name__}: {exc}"
+                )
+            except Exception:
+                pass
         if recycled > 0:
             self._try_dispatch_unresolved_confirmed_victims()
-        return removed
+        return removed + recycled
+
+    def _report_pending_removal_failure(self, agent: Any, detail: str) -> None:
+        """Surface a queued-removal failure; this path used to be entirely silent."""
+        self.pending_removal_failures_last_step = (
+            int(getattr(self, "pending_removal_failures_last_step", 0) or 0) + 1
+        )
+        self.pending_removal_failures_total = (
+            int(getattr(self, "pending_removal_failures_total", 0) or 0) + 1
+        )
+        try:
+            step = int(getattr(self, "evaluation_timesteps_counter", 0) or 0)
+            if agent is None:
+                label = "queue"
+            else:
+                ident = (
+                    getattr(agent, "victim_id", None)
+                    or getattr(agent, "unit_id", None)
+                    or getattr(agent, "unique_id", "")
+                )
+                label = f"{type(agent).__name__}-{ident}"
+            print(f"[RemovalFailure] step={step} agent={label} {detail}")
+        except Exception:
+            pass
+
+    def _requeue_unprocessed_removals(self, agents_left: list[Any]) -> None:
+        """Re-queue entries the drain never reached, rather than dropping them."""
+        if not agents_left:
+            return
+        pending = getattr(self, "_agents_pending_removal", None)
+        if not isinstance(pending, list):
+            pending = []
+            self._agents_pending_removal = pending
+        queued = {id(agent) for agent in pending}
+        for agent in agents_left:
+            if id(agent) in queued:
+                continue
+            pending.append(agent)
+            queued.add(id(agent))
 
     def _clear_rescue_path_if_requested(self) -> bool:
         try:

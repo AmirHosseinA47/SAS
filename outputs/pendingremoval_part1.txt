@@ -1,0 +1,893 @@
+================================================================================
+DEFECT #5 - "pending agent removals silently swallowed"
+Parts 1-3: diagnosis + verdict, read-only.  Part 4: disclosure fix, shipped.
+================================================================================
+Branch : claude/position-rename-and-hazard-revalidation
+HEAD   : c92e136 (diagnosis) -> this commit (fix)
+Env    : Python 3.10.11 (MSC v.1929 64 bit), mesa 1.2.1  (confirmed, .venv)
+Tests  : 8 failed / 427 passed  -> BASELINE UNCHANGED, before and after the fix
+         (same 8: test_behavior_regression::test_descriptive_next_action_uses_target_position,
+          test_dashboard_panel::test_dashboard_panel_render_returns_string,
+          test_firefighter_dispatch_replacement::test_no_replacement_available_marks_victim_unreachable_once,
+          test_rescue_planner_authority::test_no_firefighter_planner_delay_or_unreachable,
+          test_uav_sector_assignment::test_fire_tracker_uavs_receive_different_target_sets,
+          test_uav_sector_assignment::test_fire_tracker_still_overridden_by_search_mode_fail_safe,
+          test_wind_aware_trajectory_regression::test_north_vs_south_trajectories_diverge_over_40_steps,
+          test_wind_aware_victim_search::test_victim_search_wind_aware_action_when_downwind_exists)
+
+ORIGINAL AUDIT CLAIM (unverified, to be tested):
+  "Agents queued for removal are not always actually removed, and the failure
+   is silent - nothing surfaces when a queued removal is dropped."
+
+VERDICT (detail in Part 3): (E) SILENCE ONLY.
+  The DROP half is not demonstrated: 1,717 queue entries over 13 canonical runs,
+  1,717 accounted for, 0 dropped. The SILENCE half is true and is stronger than
+  the audit described.
+
+Artifacts: outputs/_pr_probe.py|.json          full instrumentation, 13 runs
+           outputs/_pr_verify.py|.json         settles 6 false-positive "drops"
+           outputs/_pr_fault.py|.json          single-fault injection (pre and post)
+           outputs/_pr_persist.py|.json        persistent-fault upper bound
+           outputs/_pr_midqueue.py|.json       mid-queue injection, 3 arms (Part 3)
+           outputs/_pr_control.py              byte-identity harness (Part 3)
+           outputs/_pr_control_{pre,post}.json control digests (Part 3)
+           outputs/_pr_rbgate.sh               route_blocked gate runner (Part 3)
+           outputs/_pr_pytest.txt              test baseline, pre-fix
+           outputs/_pr_pytest_post.txt         test baseline, post-fix
+
+
+================================================================================
+PART 1 - THE REMOVAL MECHANISM
+================================================================================
+
+1.1 IS IT SINGULAR?  For the mesa scheduler and grid: YES.
+--------------------------------------------------------------------------------
+A tree-wide search for grid/scheduler mutation verbs (remove_agent, .remove(,
+despawn, kill, deregister, discard, pop) over agents.py, wildfire_model.py,
+serve_dashboard.py, main.py, evaluate_scenarios.py, evaluate_extended_metrics.py,
+common_fixed_variables.py, Canvas_Grid_Visualization.py and all of src_extension/
+(.claude/worktrees excluded) returns exactly SIX agent-removal calls, all inside
+one method:
+
+    wildfire_model.py:2230   self.grid.remove_agent(agent)      # PathMarker
+    wildfire_model.py:2235   self.schedule.remove(agent)        # PathMarker
+    wildfire_model.py:2250   self.grid.remove_agent(agent)      # Victim
+    wildfire_model.py:2254   self.schedule.remove(agent)        # Victim
+    wildfire_model.py:2262   self.grid.remove_agent(agent)      # dead Firefighter
+    wildfire_model.py:2266   self.schedule.remove(agent)        # dead Firefighter
+
+Nothing in agents.py, serve_dashboard.py, main.py or src_extension/ removes an
+agent. This mechanism has no sibling at the scheduler/grid level.
+
+It DOES have siblings one level up, in the knowledge models, and they are worth
+naming because they are removals of a different kind and are easy to confuse
+with this one:
+  - wildfire_model.py:4084-4088  del runtime_victims[vid]  - drops a victim from
+    victim_runtime_model.victims on fire casualty. Knowledge-model only; the
+    Victim marker agent stays on the grid and in the schedule.
+  - victim_marker_agents / firefighter_marker_agents (registries): NEVER have
+    entries deleted for the whole run. Consumers test `marker.pos is None`
+    instead - see 2.4.
+
+1.2 WHAT QUEUES AN AGENT - exactly two sites
+--------------------------------------------------------------------------------
+SITE A: agents.py:536-548, inside Firefighter.advance() (NOT .step(); step() is
+`pass` at agents.py:453-454 - the whole firefighter behaviour lives in advance()):
+
+        elif self.exiting and self.exit_target:
+            if self.pos == self.exit_target:
+                if not hasattr(self.model, "_agents_pending_removal"):
+                    self.model._agents_pending_removal = []
+                self.model._agents_pending_removal.append(self)
+                if self.rescued_victim is not None:
+                    self.model._agents_pending_removal.append(
+                        self.rescued_victim
+                    )
+                self.rescue_completed = True
+                self.model._rescue_path_clear_requested = True
+                print(
+                    f"[Rescue Complete] FF-{self.unit_id} exited with victim"
+                )
+
+  Appends the Firefighter, then its Victim. The hasattr() guard is dead code:
+  _agents_pending_removal is initialised at wildfire_model.py:276, inside
+  _init_runtime_knowledge(), which reset() calls during __init__.
+
+  Note what this block does NOT do: it never clears self.exiting or
+  self.exit_target. That fact is load-bearing - see 2.5.
+
+SITE B: wildfire_model.py:2431-2444, _clear_rescue_path():
+
+    def _clear_rescue_path(self) -> None:
+        """Queue PathMarker agents for post-move removal (safe during schedule.step)."""
+        pending = getattr(self, "_agents_pending_removal", None)
+        if not isinstance(pending, list):
+            pending = []
+            self._agents_pending_removal = pending
+        queued = {id(agent) for agent in pending}
+        for agent in list(self.schedule.agents):
+            if type(agent) is not agents.PathMarker:
+                continue
+            if id(agent) in queued:
+                continue
+            pending.append(agent)
+            queued.add(id(agent))
+
+  Called from two places:
+    wildfire_model.py:2288-2297  _clear_rescue_path_if_requested()  (flag-gated)
+    wildfire_model.py:4086       directly, in the victim fire-casualty handler
+
+1.3 WHAT PROCESSES THE QUEUE - wildfire_model.py:2218-2286
+--------------------------------------------------------------------------------
+    2218  def _process_pending_agent_removals(self) -> int:
+    2219      """Finalize rescued victims and recycle exiting firefighters back to available standby."""
+    2220      removed = 0
+    2221      recycled = 0
+    2222      try:
+    2223          pending = list(getattr(self, "_agents_pending_removal", []) or [])
+    2224          self._agents_pending_removal = []
+    2225          finalized_victim_ids: set[str] = set()
+    2226          for agent in pending:
+    2227              if type(agent) is agents.PathMarker or type(agent).__name__ == "PathMarker":
+    2228                  try:
+    2229                      if getattr(agent, "pos", None) is not None:
+    2230                          self.grid.remove_agent(agent)
+    2231                  except Exception:
+    2232                      pass
+    2233                  try:
+    2234                      if agent.unique_id in getattr(self.schedule, "_agents", {}):
+    2235                          self.schedule.remove(agent)
+    2236                  except Exception:
+    2237                      pass
+    2238                  removed += 1
+    2239              elif type(agent) is agents.Victim or type(agent).__name__ == "Victim":
+    2240                  vid = self._victim_id_from_agent(agent)
+    2241                  if vid and vid not in finalized_victim_ids:
+    2242                      self._finalize_rescued_victim(vid, agent)
+    2243                      finalized_victim_ids.add(vid)
+    2244                  try:
+    2245                      agent.status = "rescued"
+    2246                  except Exception:
+    2247                      pass
+    2248                  try:
+    2249                      if getattr(agent, "pos", None) is not None:
+    2250                          self.grid.remove_agent(agent)
+    2251                  except Exception:
+    2252                      pass
+    2253                  try:
+    2254                      self.schedule.remove(agent)
+    2255                  except Exception:
+    2256                      pass
+    2257                  removed += 1
+    2258              elif type(agent) is agents.Firefighter or type(agent).__name__ == "Firefighter":
+    2259                  if getattr(agent, "dead", False):
+    2260                      try:
+    2261                          if getattr(agent, "pos", None) is not None:
+    2262                              self.grid.remove_agent(agent)
+    2263                      except Exception:
+    2264                          pass
+    2265                      try:
+    2266                          self.schedule.remove(agent)
+    2267                      except Exception:
+    2268                          pass
+    2269                      removed += 1
+    2270                      continue
+    2271                  rescued_victim = getattr(agent, "rescued_victim", None)
+    2272                  if rescued_victim is not None:
+    2273                      vid = self._victim_id_from_agent(rescued_victim)
+    2274                      ff_id = str(getattr(agent, "unit_id", "") or "")
+    2275                      if vid and vid not in finalized_victim_ids:
+    2276                          self._finalize_rescued_victim(
+    2277                              vid, rescued_victim, firefighter_id=ff_id
+    2278                          )
+    2279                          finalized_victim_ids.add(vid)
+    2280                  self._recycle_firefighter_after_exit(agent)
+    2281                  recycled += 1
+    2282      except Exception:
+    2283          pass
+    2284      if recycled > 0:
+    2285          self._try_dispatch_unresolved_confirmed_victims()
+    2286      return removed
+
+Call site - src_extension/adaptation_manager.py:144, the FIRST stage of
+_run_post_move_cycle:
+
+        pending_removals = _call_stage(model, "_process_pending_agent_removals")
+        rescue_path_cleared = _call_stage(model, "_clear_rescue_path_if_requested")
+        ...
+        result["cleanup"] = {
+            "pending_removals": int(pending_removals or 0),
+            "rescue_path_cleared": bool(rescue_path_cleared),
+        }
+
+reached from wildfire_model.py:4565, unconditionally, every step:
+
+    4564        self.schedule.step()
+    4565        self._run_post_move_decision_cycle(current_step_time)
+
+(The PRE-move cycle at 4555-4556 is gated on _is_extension_pipeline_active();
+the post-move cycle is not. _call_stage - adaptation_manager.py:182-186 - does
+not swallow exceptions, and neither does run_cycle.)
+
+ORDERING FACT that looks like a bug and is not: removals (stage 144) run BEFORE
+_clear_rescue_path_if_requested (145) and before _check_fire_casualties (~171).
+So PathMarkers queued during step N's post-move are removed during step N+1's
+post-move. That is a deliberate one-step lag, not a drop, and it is why
+PathMarker entries always sit at the FRONT of the pending list while
+Firefighter/Victim entries (appended later, during step N+1's schedule.step())
+always sit at the BACK. This ordering matters in 2.1.
+
+1.4 WHAT ACTUALLY REMOVES - mesa 1.2.1 semantics
+--------------------------------------------------------------------------------
+  scheduler: mesa.time.SimultaneousActivation (wildfire_model.py:127)
+             BaseScheduler.remove -> `del self._agents[agent.unique_id]`
+             (.venv/.../mesa/time.py:71-77) -> KeyError if absent.
+  grid     : mesa.space.MultiGrid(HEIGHT, WIDTH, False) (wildfire_model.py:126)
+             MultiGrid.remove_agent (.venv/.../mesa/space.py:628-635) does
+             `pos = agent.pos; x, y = pos` -> TypeError if pos is None; sets
+             agent.pos = None on success.
+  Both risky calls are individually wrapped at every one of the six sites, so
+  the mesa layer itself can never trigger the outer handler.
+
+
+================================================================================
+PART 1, Q2 - CAN A QUEUED REMOVAL FAIL OR BE SKIPPED?
+================================================================================
+
+Five distinct paths exist. Only the first is of any real interest.
+
+2.1  OUTER `except Exception: pass` (2222 / 2282-2283)  -- THE REAL MECHANISM
+--------------------------------------------------------------------------------
+The queue is emptied at 2224 BEFORE the loop runs. If anything inside the loop
+raises past the inner handlers, the loop aborts and every entry not yet reached
+is gone from the queue permanently.
+
+Calls inside the loop that are NOT individually wrapped:
+    2240  self._victim_id_from_agent(agent)
+    2242  self._finalize_rescued_victim(vid, agent)
+    2273  self._victim_id_from_agent(rescued_victim)
+    2276  self._finalize_rescued_victim(vid, rescued_victim, firefighter_id=ff_id)
+    2280  self._recycle_firefighter_after_exit(agent)
+
+_finalize_rescued_victim (4206-4247) is the deep one: it reaches
+_firefighter_id_for_victim, _enqueue_rescue_incident and _process_rescue_incidents,
+which descend into the planner, the dispatcher and the physical rescue executor.
+_recycle_firefighter_after_exit (2077-2115) calls _firefighter_id_from_marker and
+_sync_firefighter_operational_knowledge unwrapped (only its grid.move_agent is
+wrapped, 2094-2098).
+
+On failure: nothing is logged, raised, counted or surfaced. 2283 is a bare
+`pass`. `removed` is returned with whatever partial value it had.
+
+BLAST RADIUS is bounded by list position, and the ordering fact from 1.3 bounds
+it tightly: PathMarker entries are always ahead of Firefighter/Victim entries,
+and the PathMarker branch is fully wrapped, so it cannot raise. Therefore the
+only entries that an abort can lose are Firefighter/Victim entries at the tail.
+Measured max queue length was 92, but the losable tail is at most
+2 x (firefighters exiting this step) - measured 2 in every observed instance.
+
+ASYMMETRY worth recording: the same helper called at 2285
+(_try_dispatch_unresolved_confirmed_victims) sits OUTSIDE the try block. If it
+raises there it propagates out of step() and crashes the run - loud. Called from
+inside the loop via _recycle_firefighter_after_exit it is silenced. Identical
+failure, opposite visibility, decided only by line position.
+
+2.2  TYPE FALL-THROUGH (2227 / 2239 / 2258, no else)
+--------------------------------------------------------------------------------
+The if/elif/elif chain has no else. An agent of any other type would be dropped
+from the queue with no removal, no count and no message. Not reachable today -
+the two enqueue sites can only produce Firefighter, Victim and PathMarker.
+MEASURED: 0 fall-throughs in 1,717 entries.
+
+2.3  PATHMARKER SCHEDULE GUARD (2234)
+--------------------------------------------------------------------------------
+`if agent.unique_id in getattr(self.schedule, "_agents", {})` can skip
+schedule.remove. Harmless (it only skips when already absent) and
+MEASURED: 0 skips in 3,120 calls.
+
+2.4  THE DEAD-FIREFIGHTER BRANCH (2259-2270) IS UNREACHABLE
+--------------------------------------------------------------------------------
+The only site that sets dead=True is wildfire_model.py:4139 in
+_check_fire_casualties, and it (a) does not enqueue the firefighter and (b)
+clears exiting/exit_target at 4141-4142:
+
+    4139            ff_marker.dead = True
+    4140            ff_marker.status = "dead"
+    4141            ff_marker.exiting = False
+    4142            ff_marker.exit_target = None
+
+so a dead firefighter can never satisfy the SITE A condition
+(`elif self.exiting and self.exit_target`). Firefighter.advance() also returns
+immediately on dead (agents.py:457-458). And _check_fire_casualties runs LATER
+in the post-move cycle than the removal stage, so a firefighter cannot be queued
+and then killed before processing.
+MEASURED: 0 dead-Firefighter entries in 1,717. Both grid.remove_agent and
+schedule.remove at 2262/2266 are dead code.
+
+2.5  QUEUE PERSISTENCE, GROWTH BOUND, IDEMPOTENCY
+--------------------------------------------------------------------------------
+DRAINED UNCONDITIONALLY: yes. 2223-2224 empties the queue on every call, and the
+call happens every step (4565, unconditional). Entries cannot persist across a
+step. Anything appended DURING the call lands in the fresh list and is handled
+next step.
+
+GROWTH BOUND: per step, at most 2 x (firefighters at exit) + (PathMarkers in the
+schedule). An L-shaped rescue path is at most HEIGHT+WIDTH = 100 markers
+(common_fixed_variables.py:20-21). Unbounded growth is not possible because the
+drain is unconditional.
+MEASURED: max queue length 92; leftover at run end 0 across all 13 runs.
+
+IDEMPOTENCY:
+  - same agent twice in one list: _clear_rescue_path dedups by id().
+    MEASURED: 0 double-queues.
+  - queued after already removed: grid.remove_agent is guarded by
+    `pos is not None` and mesa sets pos=None on removal; schedule.remove raises
+    KeyError which the inner handler swallows. So re-processing a removed agent
+    is a silent no-op. Idempotent by swallow.
+  - RE-QUEUE AFTER A DROP: because SITE A never clears self.exiting /
+    self.exit_target, a firefighter that was not recycled is still sitting on its
+    exit target next step, re-enters the same branch, and appends itself AND its
+    victim again. Any 2.1-shaped drop therefore SELF-REPAIRS on the following
+    step. This is the single most important behavioural fact in this report and
+    it is confirmed empirically in 4.3.
+
+2.6  THE COUNT IS WRONG (2286)
+--------------------------------------------------------------------------------
+`return removed` counts PathMarkers, Victims and (unreachable) dead
+firefighters. It does NOT count `recycled`. A step that recycles a firefighter
+and removes nothing reports 0.
+MEASURED: 1,717 queued, 1,688 returned; the 29 recycled firefighters are
+invisible to the only counter the mechanism has.
+
+
+================================================================================
+PART 1, Q3 - WHICH AGENT TYPES CAN BE REMOVED AT ALL?
+================================================================================
+Campaign claim              Verdict     Evidence
+--------------------------  ----------  --------------------------------------
+Victims removed only when   CONFIRMED   Only enqueue path for a Victim is SITE A
+rescued; dead victim                    (carried to the boundary). The casualty
+markers persist                         handler (4034-4047) sets marker.status =
+                                        "dead" and never enqueues.
+                                        MEASURED: seed 101 has 4 victims, 2
+                                        rescued (removed) and 2 dead; residue at
+                                        step 240 = 2 Victim agents still in the
+                                        schedule and on the grid.
+
+No path removes a UAV or    CONFIRMED   No UAV ever reaches _agents_pending_removal
+rewrites a UAV role                     and there is no remove call outside the
+                                        processor. MEASURED: residue UAV = 4 =
+                                        NUM_AGENTS at step 240.
+
+Firefighters recycled,      CONFIRMED   2280 -> _recycle_firefighter_after_exit
+not removed                 (refined)   (2077-2115) moves the marker back to
+                                        standby and resets its flags. A removal
+                                        branch DOES exist at 2259-2270 but is
+                                        unreachable (2.4). MEASURED: 29 recycles,
+                                        0 firefighter removals; residue
+                                        Firefighter = 2 = NUM_FIREFIGHTERS.
+
+Fire / Smoke removal path?  NONE        Fire is a mesa.Agent (agents.py:18) and
+                                        2,500 of them are added to the schedule
+                                        (set_fire_agents, 50x50 with
+                                        DENSITY_PROB=1). None is ever enqueued;
+                                        burning out only flips `burnt`.
+                                        MEASURED: residue Fire = 2500, unchanged
+                                        at step 240 in every run.
+                                        Smoke (agents.py:129 `class Smoke:`) is a
+                                        PLAIN class, not a mesa.Agent - it is
+                                        owned by Fire and never enters the
+                                        scheduler or grid, so no removal path
+                                        exists or is needed.
+
+PathMarker                  ONLY BULK   1,659 of 1,717 queue entries (96.6%).
+                            REMOVAL     Visual-only; step() and advance() are
+                                        both `pass` (agents.py:1186-1190).
+
+
+================================================================================
+PART 2 - DOES IT ACTUALLY HAPPEN?  (Q4)
+================================================================================
+Sample: the campaign's canonical set, 240 steps, 13 runs -
+  D scenario (4 UAV / 4 victims / 2 FF), FIRE_SPREAD_MULTIPLIER 0.75:
+  - east, half roles (2 trackers / 2 searchers), seeds 101 202 303 404 505
+  - south, half roles,                          seeds 101 202 303 404 505
+  - east, default roles (legacy n-1/1),         seeds 101 202 303
+Instrumentation: outputs/_pr_probe.py. Every patch is a pure observer - it calls
+the original and re-raises unchanged, so control flow is byte-identical.
+
+4.1  QUEUED / EXECUTED / DROPPED
+--------------------------------------------------------------------------------
+  processor calls (= steps)            3,120
+  entries queued                       1,717
+    PathMarker                         1,659
+    Firefighter                           29
+    Victim                                29
+  removed (grid + schedule)            1,688
+  recycled (firefighters)                 29
+  DROPPED / SKIPPED                        0
+  left pending at run end                  0   (all 13 runs)
+  exceptions escaping ANY unprotected
+    helper on the removal path             0   (3,120 calls)
+  type fall-throughs                       0
+  PathMarker schedule-guard skips          0
+  same-object-queued-twice                 0
+  max queue length                        92
+  _finalize_rescued_victim calls          29   (double-finalize: 0)
+  return-value vs actual removals    matched   (1,688 = 1,688)
+
+1,688 removed + 29 recycled = 1,717 queued. Every entry accounted for.
+Firefighter count equals Victim count (29 = 29): every firefighter exit carried
+a victim, so the `rescued_victim is not None` branch is the only one exercised.
+
+4.2  THE 6 "DROPS" MY FIRST CLASSIFIER REPORTED WERE FALSE POSITIVES
+--------------------------------------------------------------------------------
+The first pass flagged 6 firefighter entries as "not recycled" because after the
+call they read status="en_route", assigned=True, rescued_victim=<set>.
+
+They were re-checked with a dedicated observer on
+_recycle_firefighter_after_exit and _dispatch_firefighter_to_victim
+(outputs/_pr_verify.py). Both instances in D/east half seed 101:
+
+  step 46  proc_enter   ff_unit_1  exiting=True  rescue_completed=True  rv=victim_2
+           recycle_ran  after: status=available assigned=False exiting=False
+                               rescued_victim=None rescue_completed=False
+           dispatch     victim_0  reason=initial  in_removal_processing=TRUE
+           proc_exit    ff_unit_1 status=en_route assigned=True rv=victim_0
+
+  step 106 proc_enter   ff_unit_1  exiting=True  rescue_completed=True  rv=victim_1
+           recycle_ran  after: status=available assigned=False exiting=False
+           dispatch     victim_3  reason=initial  in_removal_processing=TRUE
+           proc_exit    ff_unit_1 status=en_route assigned=True rv=victim_3
+
+The recycle ran and succeeded. Line 2284-2285 then called
+_try_dispatch_unresolved_confirmed_victims(), which re-dispatched the same
+firefighter to a new victim WITHIN THE SAME CALL, restoring exactly the fields
+my classifier was testing.
+
+Stating this plainly because it is the same error this campaign has caught
+before: the classifier inferred an event from a post-hoc state snapshot instead
+of observing the event. Corrected count: 0 drops, not 6.
+
+4.3  WHAT A DROP ACTUALLY DOES  (fault injection, outputs/_pr_fault.py)
+--------------------------------------------------------------------------------
+Natural drops are zero, so the drop was forced: _finalize_rescued_victim raised
+RuntimeError on its 1st call, then in a separate run on its 2nd call. Seed 101,
+D/east half roles, 240 steps.
+
+  metric              clean    inject#1   inject#2
+  rescued                 2           2          2
+  dead                    2           2          2
+  unreachable             0           0          0
+  candidate               0           0          0
+  rescue_rate          50.0        50.0       50.0
+  firefighter_deaths      1           1          1
+  burnt_cells          1134        1134       1134
+  terminal_step         210         210        210
+  steps_run             240         240        240
+  residue in schedule  PM 0 / Victim 2 / FF 2 / Fire 2500 / UAV 4   (all three)
+  leftover pending        0           0          0
+
+The abort was real - at the moment of the fault the firefighter and its victim
+were both confirmed still in the schedule with pos set (queue length 2, both
+entries lost). Every metric is nevertheless identical, because the drop
+self-repairs: the firefighter is still on its exit target, so advance() re-queues
+itself and the victim on the next step and the second attempt succeeds (2.5).
+
+
+================================================================================
+PART 2 - CONSEQUENCE  (Q5)
+================================================================================
+5.1  IF A DROP DID PERSIST - the four channels
+--------------------------------------------------------------------------------
+  scheduler step?  Yes, the agent keeps being dispatched. But Victim.step/advance
+     (agents.py:368-372) and PathMarker.step/advance (1186-1190) are all `pass`.
+     Cost is dispatch only; no state changes.
+
+  grid cell?  No blocking. MultiGrid permits multiple occupants. Every
+     get_cell_list_contents consumer in the tree type-tests for Fire or UAV only
+     (agents.py:68, 287, 302, 633, 645; local_uav_monitor.py:85, 140;
+     uav_executor.py:4392). A leaked Victim or PathMarker is invisible to pathing.
+
+  counts in evaluate_scenarios / dashboard?  Not from marker presence.
+     _build_evaluation (serve_dashboard.py:272-314) derives rescued/dead/
+     unreachable/candidate from managed_victims state, firefighter_deaths from
+     firefighter_marker_agents flags, and burnt_cells from Fire agents. A leaked
+     marker on its own moves no number. What DOES move numbers is the
+     un-run _finalize_rescued_victim - see 5.2.
+     PathMarkers are not rendered by serve_dashboard at all; only main.py's mesa
+     portrayal draws them (main.py:49-57).
+
+  dispatched to / observed / interacted with?  YES - this is the live channel.
+     _detect_victims_in_uav_radius (wildfire_model.py:953-1007) iterates
+     victim_marker_agents and uses `marker.pos is None` (line 961) as its only
+     "this victim is gone" test, plus terminal-status guards at 968-979. A victim
+     whose removal was dropped AND whose finalize did not run keeps pos set and a
+     non-terminal status, so it is re-detectable and re-dispatchable.
+
+5.2  UPPER BOUND - persistent fault (outputs/_pr_persist.py)
+--------------------------------------------------------------------------------
+To bound the worst case, _finalize_rescued_victim was made to raise on EVERY
+call, defeating the self-repair. Same seed/config, 240 steps, 19 raises:
+
+  metric              clean    persistent-fault
+  rescued                 2           0
+  dead                    2           3
+  unreachable             0           1
+  rescue_rate          50.0         0.0
+  terminal_step         210          64
+  burnt_cells          1134        1134
+  firefighter_deaths      1           1
+  Victim agents left      2           4
+  leftover pending        0           0
+
+  victims on grid at end, clean:      victim_0 (40,25) dead
+                                      victim_3 (25,3)  dead
+  victims on grid at end, persistent: victim_0 (40,25) dead
+                                      victim_1 (25,48) dead
+                                      victim_2 (0,25)  UNREACHABLE
+                                      victim_3 (25,3)  dead
+
+victim_2 is the tell: it sits at (0,25), the boundary EXIT cell - it was carried
+out successfully, its removal was dropped, it was never finalized, and it was
+subsequently classified "unreachable".
+
+HONEST SCOPE OF THIS EXPERIMENT: forcing _finalize_rescued_victim to raise
+conflates two effects - (i) the rescue bookkeeping not happening, and (ii) the
+queue entries after the raise being dropped. It is an upper bound on "the outer
+handler swallows every exception on the finalize path", not a clean isolation of
+the drop alone. It is reported as such.
+
+5.3  IS THE DROP INERT?
+--------------------------------------------------------------------------------
+At current scale, YES - completely. 0 natural drops in 3,120 steps, and a forced
+single drop moves none of the 13 evaluate_scenarios metrics, leaves no residue,
+and leaves nothing pending. The inertness is not luck: it rests on the structural
+property in 2.5 (SITE A never clears `exiting`, so the enqueue re-fires every
+step) plus the ordering property in 2.1/1.3 (PathMarkers are always ahead of the
+only entries that can raise).
+
+The one shape that would NOT self-repair: a drop, followed by the firefighter
+dying before it can re-queue (4139-4142 clears exiting/exit_target, so a dead
+firefighter never re-enqueues). Its victim marker would then be permanently
+leaked and permanently unfinalized. That compound requires an exception that was
+never once observed.
+
+
+================================================================================
+PART 2 - THE SILENCE CLAIM  (Q6), CHECKED SEPARATELY
+================================================================================
+Would a removal failure be visible to anyone reading normal output? NO. Five
+independent confirmations:
+
+6.1  There is no error channel. 2282-2283 is a bare `except Exception: pass`.
+     Nothing logged, raised, counted or re-queued.
+
+6.2  The one count that exists is DISCARDED. Trace it end to end:
+       _process_pending_agent_removals returns `removed`  (2286)
+       -> adaptation_manager.py:148  cleanup["pending_removals"]
+       -> adaptation_manager.py:493  explanations.append(f"pending_agent_removals={removals}")
+       -> stored on model.latest_post_move_cycle_result (wildfire_model.py:2072)
+     latest_post_move_cycle_result has exactly ONE consumer in the live tree,
+     explanation_engine._legacy_summaries (709-720), and it reads only the key
+     "dashboard_summary" - which _run_post_move_cycle never sets. The count
+     reaches no output, no dashboard, no CSV, no log.
+
+6.3  That count would be wrong even if it were read: it excludes recycled
+     firefighters (2.6). 1,717 queued -> 1,688 reported.
+
+6.4  Neither existing invariant checker fires. _check_rescue_assignment_invariant
+     (adaptation_manager.py:213-305, NOT debug-gated, prints to stderr) is silent
+     in both drop shapes: if the victim was finalized it is terminal and skipped
+     (242-257); if it was not, the marker reads "assigned" with exactly one
+     firefighter pointing at it (296) - the consistent case.
+     _assert_no_direct_rescue_mutation (2977-3007) is debug_log-gated and checks
+     the assign audit trail, not removal.
+
+6.5  MEASURED. With faults forced, over the full 240-step stdout:
+       Traceback 0, INJECTED-FAULT 0, ERROR 0, error 0, WARN 0, warn 0,
+       drop 0, Drop 0, pending 0, Pending 0, leak 0, Leak 0,
+       RescueInvariant 0, RescueAuthority 0
+     Line-level diff against the clean run:
+       inject#2  -> 0 lines absent from the clean run. Nothing new at all.
+       inject#1  -> exactly 1: a duplicate
+                    "[Dispatch] FF-ff_unit_1 assigned to victim_1 reason=initial
+                     manhattan_dist=41"
+                    which is indistinguishable from an ordinary re-dispatch.
+     Under the PERSISTENT fault, 23 new lines appear - but every one of them is a
+     downstream consequence ([Casualty], [RescueEvent] victim_dead,
+     [RescueEvent] rescue_failed, [Monitoring], [KnowledgeManager]), and the
+     three rescue_failed lines attribute the cause to
+     "reason=geographically_isolated". So the output is not merely silent about a
+     removal failure - under sustained failure it actively misattributes it.
+
+6.6  Two further muffles in the canonical harness: evaluate_scenarios._run_seed
+     sets model.debug_log = False (disabling _log_step_summary, 4319-4321) and
+     wraps the whole run in contextlib.redirect_stdout. Even the noise that does
+     exist never reaches a human.
+
+CONCLUSION ON SILENCE: a failure of this mechanism is invisible, and would remain
+invisible with debug_log=True. It joins the campaign's existing list of
+diagnostic gaps (#12 sibling 2c vanishing metric line; the 100%-regardless
+classifier; the sampler blind to same-step transitions) - and it is worse than
+those, because at sustained failure the output points at the wrong cause.
+
+
+================================================================================
+PART 3 - VERDICT
+================================================================================
+                    (E) SILENCE ONLY
+
+Drops do not occur. The mechanism would fail silently if they did, and the
+silence is total.
+
+WHAT THE ORIGINAL AUDIT GOT RIGHT
+  "the failure is silent - nothing surfaces when a queued removal is dropped."
+  Correct, and understated. Nothing surfaces; the only counter is both wrong and
+  unread; both invariant checkers stay quiet; and under sustained failure the
+  visible output blames geographic isolation instead.
+
+WHAT THE ORIGINAL AUDIT GOT WRONG
+  "Agents queued for removal are not always actually removed."
+  Not demonstrated, and contradicted by measurement. 1,717 queue entries across
+  13 canonical runs at 240 steps: 1,688 removed, 29 recycled, 0 dropped, 0 left
+  pending, 0 exceptions on any unprotected path in 3,120 processor calls. The
+  audit asserted an outcome ("are not always actually removed") from what is only
+  a code smell (a broad `except Exception: pass` around a loop that empties its
+  own queue first). The smell is real; the outcome is not.
+  It also implies a fragile mechanism. The opposite is true: the mechanism is
+  accidentally self-repairing, because agents.py SITE A never clears `exiting`,
+  so a firefighter whose removal was dropped re-queues itself and its victim on
+  the very next step. A forced single drop moved none of the 13 metrics.
+
+WHY (E) AND NOT (B)
+  (B) would fit the letter of "can occur but is inert". (E) is the more accurate
+  label because the finding here IS the silence: the drop half did not survive
+  measurement, whereas the silence half survived four independent checks and one
+  fault injection. Recording this as (B) would preserve the audit's framing as
+  though it had been substantiated. It was not.
+
+WHY NOT (C)
+  Not (C): the mechanism genuinely CAN drop - 2.1 is a real path with a real
+  blast radius, demonstrated by injection. The audit's description of HOW removal
+  works is not wrong, only its claim about what happens.
+
+WHY NOT (D)
+  No commit in this campaign touched _process_pending_agent_removals,
+  _clear_rescue_path or agents.py SITE A. Nothing fixed it; it was never broken
+  in the measured sense.
+
+--------------------------------------------------------------------------------
+DISCLOSURE - IS IT WORTH ADDING ON ITS OWN MERITS?
+--------------------------------------------------------------------------------
+RECOMMENDATION: yes, narrowly - but scoped as a diagnostic, not as a behaviour
+change. Scoped here only; NOT implemented, per protocol.
+
+The case for it: this is a mechanism whose failure mode is a silent
+misattribution. The persistent-fault run showed rescue_rate 50.0 -> 0.0 and
+terminal_step 210 -> 64 while the log blamed "geographically_isolated". If this
+ever fires in anger, the diagnosis cost is high and there is no breadcrumb.
+
+Minimal scope, in preference order:
+  1. Narrow the outer handler at 2222/2282: keep the loop going per-entry instead
+     of aborting it (try/except INSIDE the for-loop), and print one line naming
+     the agent type, id and exception. Turns a whole-queue abort into a
+     single-entry loss AND makes it visible. This is the highest value item and
+     the only one that changes behaviour.
+  2. Fix the count at 2286 to include `recycled`, so pending_removals stops
+     under-reporting by the number of firefighter recycles.
+  3. Either consume `cleanup.pending_removals` somewhere real, or drop the
+     explanation string at adaptation_manager.py:493 - today it is written and
+     never read.
+  4. Optional: add an `else:` to the 2227/2239/2258 chain that prints on an
+     unexpected type. Zero occurrences measured; cheap insurance against a future
+     enqueue site.
+
+Explicitly NOT recommended: any change to the self-repair property in 2.5, or to
+the removal ordering in 1.3. Both are load-bearing for the measured inertness.
+
+NOTE ON THE ROUTE_BLOCKED GATE: this round changed no source file, so the gate
+was not re-run - same justification as c92e136. If item 1 above is implemented,
+it must run again.
+
+--------------------------------------------------------------------------------
+Parts 1-3 ended here pending confirmation. The disclosure fix was subsequently
+APPROVED and is recorded in Part 4 below.
+================================================================================
+
+
+================================================================================
+PART 4 - IMPLEMENTATION AND VERIFICATION  (approved, shipped)
+================================================================================
+Approved on the grounds that the failure mode is invisible AND misattributing:
+under a persistent fault the metrics collapse while the log blames
+reason=geographically_isolated - a mechanism this campaign has separately spent
+rounds validating - so a future removal bug would present as an
+already-understood failure elsewhere.
+
+FILES CHANGED
+  wildfire_model.py                   (+ ~90 / - ~52)
+  src_extension/adaptation_manager.py (+ 15)
+No other file touched.
+
+--------------------------------------------------------------------------------
+7.1  WHAT WAS CHANGED
+--------------------------------------------------------------------------------
+(a) PER-ENTRY CONTAINMENT - wildfire_model.py _process_pending_agent_removals
+    The single loop-wide `except Exception: pass` is replaced by a try/except
+    around each queue entry. A failing entry is reported and skipped; every
+    entry behind it is still processed. Branch bodies are unchanged.
+
+(b) UNPROCESSED ENTRIES ARE PRESERVED (requested addition)
+    The queue is still emptied before the loop, so an abort ABOVE the per-entry
+    level would still discard the remainder. An outer handler now catches that
+    case and calls _requeue_unprocessed_removals(pending[index:]) - `index` is
+    advanced before the entry is processed, so the slice is exactly the entries
+    the drain never reached. They stay queued and are drained next step.
+    The outer handler own body is individually wrapped: it is the last handler,
+    and an escape there would abort the whole step.
+
+(c) FAILURES ARE REPORTED - new _report_pending_removal_failure
+    Prints `[RemovalFailure] step=N agent=<Type>-<id> <ExcType>: <msg>` and
+    increments pending_removal_failures_last_step / _total on the model.
+
+(d) UNHANDLED TYPES ARE REPORTED - new `else:` on the type chain
+    An agent that is not PathMarker/Victim/Firefighter is now reported and left
+    untouched instead of silently vanishing from the queue.
+    Verified: queueing a UAV prints
+      [RemovalFailure] step=0 agent=UAV-2500 unhandled agent type
+    and leaves it on the grid and in the schedule.
+
+(e) THE COUNT IS FIXED - `return removed + recycled` (was `return removed`)
+    Firefighter recycles are no longer invisible. Over the Part-2 sample this
+    changes the reported total from 1,688 to 1,717 - i.e. from 98.3% of queue
+    entries to 100%.
+
+(f) THE DEAD EXPLANATION STRING IS NOW CONSUMED - adaptation_manager
+    `cleanup` gains `pending_removal_failures`, `_collect_post_move_explanations`
+    emits `pending_agent_removal_failures=N`, and - the part that actually
+    reaches a human - `result["dashboard_summary"]` is set WHEN AND ONLY WHEN
+    failures occurred. `dashboard_summary` is the one key of
+    latest_post_move_cycle_result that explanation_engine._legacy_summaries
+    (709-720) reads, so the previously-dead path now carries the one thing in
+    the cleanup stage worth surfacing. Setting it only on failure is what keeps
+    clean runs byte-identical.
+
+--------------------------------------------------------------------------------
+7.2  MID-QUEUE FAULT INJECTION  (outputs/_pr_midqueue.py|.json)
+--------------------------------------------------------------------------------
+Queue shape [PM0, PM1, VICTIM(poisoned), PM2, PM3] - poison at index 2 of 5, so
+two entries always sit BEHIND the failure. Three arms, one of which runs a
+verbatim copy of the pre-patch drain so the difference is demonstrated, not
+asserted.
+
+  arm                        drain1   entries behind    preserved   removed    RemovalFailure
+                             returns  poison, after     in queue    after      lines
+                                      drain1                        drain2
+  -------------------------  -------  ---------------   ---------   --------   --------------
+  A patched                     4     REMOVED           n/a         yes        1
+  B patched, reporter also
+    raises (forces the
+    outer handler)              2     not yet           YES         yes        0 (reporter was
+                                                        [2512,2513]              the fault)
+  C pre-patch, verbatim         2     LOST              NO          NO         0
+
+  A: per-entry containment works - PM2/PM3 processed despite the failure at
+     index 2, and the failure is named:
+       [RemovalFailure] step=0 agent=Victim-victim_0 RuntimeError: MIDQUEUE-INJECTED-FAULT
+  B: outer-restore works - PM2/PM3 preserved in _agents_pending_removal and
+     drained on the next call. Nothing escaped the method.
+  C: the defect, reproduced - PM2/PM3 neither removed nor queued after drain1,
+     still not removed after drain2, and not one line printed.
+
+  NOTE - a bug in the first cut of this patch, found by arm B: the outer
+  handler called _report_pending_removal_failure unguarded, so when the reporter
+  itself was the failing call the exception escaped
+  _process_pending_agent_removals entirely and would have aborted step(). That
+  is strictly worse than the original swallow. Fixed before any other
+  verification was run; arm B is the regression test for it.
+
+--------------------------------------------------------------------------------
+7.3  IN-SITU FAULT INJECTION, 240 STEPS  (outputs/_pr_fault.json)
+--------------------------------------------------------------------------------
+Same experiment as 4.3, re-run on the patched source. Seed 101, D/east half.
+
+  metric                        clean   inject#1   inject#2
+  rescued / dead / unreachable  2/2/0    2/2/0      2/2/0
+  rescue_rate                    50.0     50.0       50.0
+  burnt_cells                    1134     1134       1134
+  terminal_step                   210      210        210
+  residue, leftover pending    identical in all three
+
+  lines absent from the clean run:
+    pre-patch  inject#1 -> 1  (a duplicate [Dispatch] line - unrecognisable)
+    pre-patch  inject#2 -> 0  (nothing whatsoever)
+    post-patch inject#1 -> 2  [RemovalFailure] step=46 agent=Firefighter-ff_unit_1 RuntimeError: INJECTED-FAULT
+                              plus the duplicate [Dispatch] line
+    post-patch inject#2 -> 1  [RemovalFailure] step=106 agent=Firefighter-ff_unit_1 RuntimeError: INJECTED-FAULT
+
+  Outcome unchanged (the self-heal in 2.5 still resolves it); the failure is now
+  named at the step it happened.
+
+  SECOND-ORDER EFFECT, worth recording: post-patch the injected runs also emit
+    [RescueInvariant] step=46 firefighter=ff_unit_1 assigned to victim_2 but victim not marked assigned
+  on stderr, which they did NOT pre-patch (verified by counting real
+  "^[RescueInvariant]" lines: 0 in the pre-patch single-fault run, 0 in the
+  pre-patch persistent run, 2 post-patch). This is a direct result of (a): a
+  failing firefighter entry no longer drags its victim entry down with it, so
+  the victim IS removed while the firefighter is not recycled, and the existing
+  invariant checker correctly notices the half-processed pair. The state is
+  transient - the firefighter re-queues next step, the retry succeeds, and every
+  final metric matches clean - but it means the fix has activated a SECOND,
+  pre-existing disclosure channel rather than only adding its own. Recorded
+  rather than glossed: the intermediate state is genuinely less self-consistent
+  than before, and that is the trade for not discarding the rest of the queue.
+
+--------------------------------------------------------------------------------
+7.4  NO SIMULATION BEHAVIOUR CHANGED
+     (outputs/_pr_control.py, _pr_control_{pre,post}.json)
+--------------------------------------------------------------------------------
+Control captured on c92e136 source BEFORE the edit, then re-captured on the
+FINAL patched source (the first post-capture was discarded and re-run because it
+had started before the 7.2 outer-handler fix landed). Three combos, 240 steps,
+no instrumentation of any kind.
+
+  combo                 stdout sha256  positions sha256  firemap sha256  metrics    residue   leftover
+  D/east/half    101      IDENTICAL      IDENTICAL         IDENTICAL     IDENTICAL  IDENTICAL   0=0
+  D/south/half   101      IDENTICAL      IDENTICAL         IDENTICAL     IDENTICAL  IDENTICAL   0=0
+  D/east/default 101      IDENTICAL      IDENTICAL         IDENTICAL     IDENTICAL  IDENTICAL   0=0
+
+  The three raw stdout captures are byte-for-byte identical under `diff` as well,
+  not merely equal by hash. stdout lengths 3276 / 3067 / 3277 unchanged.
+
+--------------------------------------------------------------------------------
+7.5  ROUTE_BLOCKED GATE  (outputs/_pr_rbgate.sh, _rblatch_camp2_prfix*.json)
+--------------------------------------------------------------------------------
+Re-run because source changed. Same 18 runs and the same 4-shard split every
+round in this chain has used (irfix / lcfix / prfix).
+
+  git log c4d5a25..HEAD -- wildfire_model.py agents.py src_extension/ serve_dashboard.py
+  returns NOTHING, so the lcfix gate run was made on exactly the same simulation
+  source as this round pre-patch HEAD. That makes prfix-vs-lcfix the decisive
+  comparison for this patch, and it is exact:
+
+  shard pair                              result
+  lcfixa vs prfixa  D_east (101..505)     IDENTICAL on every field
+  lcfixb vs prfixb  D_east (606..909)     IDENTICAL on every field
+  lcfixc vs prfixc  D_east (111..444)     IDENTICAL on every field
+  lcfixs vs prfixs  D_south (101..505)    IDENTICAL on every field
+  fields compared: evals, stats, exact, exact_fires, exact_recoveries, fires,
+  recoveries, assigns, latched, deaths, params, scenario, seeds, steps, wind
+  (only `tag` and `wall_s` excluded)
+
+  The gate own verdict block against the 70e1b33 baseline is also identical
+  pre and post, character for character:
+      [FAIL] rescued does not decrease on any seed
+             regression: D/east seed 505  rescued 2 -> 1
+      [PASS] recovery pass still recovers units  (recoveries 3 -> 7, firings 15 -> 15)
+      [PASS] no unit left latched as route_blocked at end of run
+      ALL 18 RUNS  rescued 43 -> 43   victims dead 25 -> 26   ff_deaths 15 -> 11
+  That [FAIL] is a pre-existing delta carried by earlier accepted rounds of this
+  campaign, not by this patch: lcfix (pre-patch) produces the identical block.
+
+--------------------------------------------------------------------------------
+7.6  TEST BASELINE
+--------------------------------------------------------------------------------
+  before : 8 failed / 427 passed in 3012.17s
+  after  : 8 failed / 427 passed in 1985.98s
+  Failure SET compared line by line: identical, same 8 tests.
+
+--------------------------------------------------------------------------------
+7.7  WHAT THIS FIX DOES NOT DO
+--------------------------------------------------------------------------------
+  - It does not make drops less likely. Zero were ever observed; the fix is
+    disclosure plus containment, not prevention.
+  - It does not re-queue the FAILING entry, only the entries behind it.
+    Deliberate: a deterministic exception would otherwise retry forever, and the
+    self-heal in 2.5 already re-queues firefighter/victim pairs.
+  - It does not touch the self-repair property (2.5) or the removal ordering
+    (1.3). Both remain load-bearing for the measured inertness.
+  - It does not change `if recycled > 0: _try_dispatch_unresolved_confirmed_victims()`
+    at the end of the method, which remains outside the try - unchanged from
+    pre-patch, so a failure there still propagates loudly as it always did.
+================================================================================
