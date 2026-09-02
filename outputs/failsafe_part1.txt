@@ -1,0 +1,433 @@
+================================================================================
+DEFECT #7 - "STALE FAIL-SAFE OVERRIDE CLEARED"
+Part 1 (mechanism) + Part 2 (measurement) + Part 3 (verdict)
+Read-only investigation. No live-tree file was modified.
+================================================================================
+Branch : claude/position-rename-and-hazard-revalidation
+HEAD   : 63e1a6c  (confirmed before any work; tree clean)
+Python : 3.10.11    mesa 1.2.1   (E:\Projects\SAS\.venv)
+Sample : canonical 13 runs x 240 steps, scenario D
+         D/east  half-roles (2T/2S) seeds 101,202,303,404,505
+         D/south half-roles (2T/2S) seeds 101,202,303,404,505
+         D/east  default-roles      seeds 101,202,303
+         one process per run; all 13 outputs non-empty (checked, not assumed)
+Probes : outputs/_fs_probe.py    lifecycle + transition hooks   (13 runs)
+         outputs/_fs_prov.py     reason provenance              (13 runs)
+         outputs/_fs_act.py      actuation + clear counterfactual (1 run x 60)
+         outputs/_fs_analyze.py  aggregation
+All probes are observers: each wrapper calls the original and returns its
+result unchanged. Per the #5 caution, set/clear transitions are hooked
+DIRECTLY rather than sampled per step.
+
+================================================================================
+VERDICT (Part 3) - stated first
+================================================================================
+
+  (C) NOT A DEFECT - as framed.
+
+There is no stale fail-safe override. The audit's framing is wrong in a
+specific and checkable way: it presumes the override is stored state that can
+age. It is not. Every fail-safe override in the live tree is either a
+function-local recomputed from the current step's inputs, or a dataclass that
+is wholly REPLACED (never mutated) twice per simulation step.
+
+The one clearing site that exists - decision_dispatcher.py:91-103, the literal
+"override is cleared" the audit points at - was measured firing 13 times in
+3,120 opportunities (once per run, always at step 1), and it is CORRECT and
+LOAD-BEARING: with the clear suppressed, all 4 UAV path decisions at step 1
+would have been dropped.
+
+Three real but SEPARATE defects were found on the way, none of them staleness.
+They are reported below as findings F1-F3 and should be tracked on their own
+merits, not as defect #7. F1 is the most substantial; all three are inert at
+current scale.
+
+================================================================================
+PART 1 - WHAT THE FAIL-SAFE OVERRIDE ACTUALLY IS
+================================================================================
+
+1.1 THE SUBSYSTEM
+-----------------
+  src_extension/execution/failsafe_modes.py    FailSafeMode / FailSafeReason /
+                                               FailSafeState (pure data)
+  src_extension/execution/safety_checker.py    reason extraction + mode
+                                               classification + override rule
+  src_extension/execution/mode_manager.py      the state machine
+  src_extension/planning/fail_safe_planner.py  produces FailSafeDecision
+  src_extension/execution/decision_dispatcher.py applies the override
+  src_extension/execution/uav_executor.py      actuates it
+
+FailSafeMode  = normal | degraded | safety_first | emergency | information_recovery
+FailSafeReason= critical_battery, extreme_drift, no_feasible_path, collision_risk,
+                critical_communication, rescue_route_unsafe, victim_uncertainty,
+                global_uncertainty, information_insufficient, search_mode_required,
+                instability, manual_hold
+
+"Override" is NOT one thing. It is three distinct things, and conflating them
+is what makes the audit item sound coherent:
+
+  (a) SafetyChecker.should_override_utility(reasons, mode) - safety_checker.py:99
+      A pure predicate. True when mode is emergency / safety_first /
+      information_recovery, or when reasons intersect {critical_battery,
+      collision_risk, no_feasible_path, search_mode_required}. No state.
+      Used at fail_safe_planner.py:144 to set policy["override_utility"],
+      which at :150 picks _select_fail_safe_option_mode_override (mode
+      preference first) instead of _select_fail_safe_option (utility first).
+      policy is a per-call local dict; FailSafePlanner is a @dataclass with no
+      mutable per-step state.
+
+  (b) fail_safe_override_active - decision_dispatcher.py:87
+      A function-local bool, bound fresh on every dispatch() call from the pure
+      _resolve_fail_safe_override(decision) (:427-471), consumed by three call
+      sites in the same function, and published into the returned dict at :135.
+      Nothing reads it back on a later step.
+
+  (c) model.latest_failsafe_state - wildfire_model.py:262 init, :1876 assigned
+      A FailSafeState. ModeManager.update() (mode_manager.py:92-102) constructs
+      a BRAND-NEW FailSafeState every call. mode, active_reasons, confidence and
+      recovery_score are recomputed from scratch. Only started_at and
+      previous_mode carry forward, and neither feeds mode classification.
+      classify_mode explicitly discards the prior mode (safety_checker.py:72,
+      "_ = current_mode"), so there is no hysteresis and nothing to go stale.
+
+1.2 ORDERING - why "stale" fails on the facts
+---------------------------------------------
+src_extension/adaptation_manager.py:108-124, ungated (_call_stage only checks
+that the method exists):
+
+    _run_analysis            (108)
+    _run_planning            (114)
+    _update_failsafe_mode    (117)   <-- refresh BEFORE execution
+    _run_execution           (120)   <-- dispatcher reads latest_failsafe_state
+    _update_failsafe_mode    (124)   <-- refresh AFTER execution
+
+MEASURED: mm_update_calls = 480 in every one of the 13 runs = exactly 2 per
+step for 240 steps. The dispatcher's read at decision_dispatcher.py:93 is
+therefore FRESH with respect to analysis and planning, not one step behind.
+
+The single genuine staleness in the whole subsystem: the pre-execution call at
+:117 passes execution_result = the PREVIOUS step's result. That is provably
+inert - see 2.3, execution contributed zero reasons on all 9,360 extract calls.
+
+1.3 REACHABILITY (established BEFORE correctness, per the brief)
+----------------------------------------------------------------
+The override is not dead. It is close to permanently on.
+
+  mode occupancy over 6,240 update() calls (13 runs x 480):
+      information_recovery   4,764   76.3%
+      safety_first           1,446   23.2%
+      normal                    26    0.4%
+      degraded                   4    0.1%
+
+  normal occurs on exactly 2 of 480 updates per run - both at step 1. After
+  step 1 the mode never returns to normal in any of the 13 runs.
+
+All 9 fail-safe trigger types in _TRIGGER_TYPE_TO_REASON are genuinely emitted
+by real analyzers (global_analyzer.py:539/566/720/841/864/1159/1323/1417/1440
+and local_uav_analyzer.py:157/266/293/325/653/677), so this is not a case of a
+gate that can never match.
+
+1.4 IS IT ACTUATED, OR ONLY RECORDED?
+-------------------------------------
+Actuated. A prior campaign note ("the fail-safe layer explicitly executes
+nothing") does not hold for the current code.
+
+  decision_dispatcher.py:507  an active override with action return_to_base
+                              and an inconsistent path returns (None, False)
+                              -> the UAV path is DROPPED
+  uav_executor.py:323         an active override with search_mode_active
+                              routes into _execute_role_preserving_search /
+                              _execute_search_mode, replacing normal path
+                              execution entirely
+
+  MEASURED (seed 101 / east / half, 60 steps):
+      UAVExecutor.execute calls                     299
+      ... of which received a fail_safe_decision    177  (59%)
+      _execute_role_preserving_search calls         177
+      _execute_search_mode calls                      0
+      victim-searcher exemptions taken              118
+      paths actually dropped                          0
+
+1.5 LATCH TEST, per state
+-------------------------
+  should_override_utility        clear_kind = recomputed_each_call. Not a latch.
+  fail_safe_override_active      clear_kind = recomputed_each_call. Local var.
+                                 Not a latch.
+  latest_failsafe_state          clear_kind = recomputed_each_call (replaced
+                                 wholesale). Not a latch.
+  mission_goal_model.dynamic_metrics["active_fail_safe_mode"]
+                                 mission_goal_model.py:170-176 REPLACES the
+                                 whole dict each refresh. Not a latch. The
+                                 derived soft preference has an explicit else /
+                                 pop at :288-291. Correctly cleared.
+  stable_recovery_counter        conditional clear at mode_manager.py:140/145;
+                                 both branches reachable. Not a latch. See F1.
+  sop.mission_mode               conditional set, NO clear. IS a latch. See F2.
+
+  Lifecycle resets: none of these are per-agent, so agent removal / recycle /
+  reassignment cannot strand them. The known open reset hole at agents.py:859/863
+  is for a different flag and does not touch fail-safe state. agents.py contains
+  no fail-safe override state at all (one string literal,
+  "no_managed_direction_hold" at agents.py:324).
+
+================================================================================
+PART 2 - MEASUREMENT
+================================================================================
+
+2.1 OVERRIDE SET / CLEARED, per run (all 13 runs identical on these columns)
+----------------------------------------------------------------------------
+run                upd  trans  clrFire  clrSurv  sopMMwrites  srn  ira
+east_half_101      480     11        1      239           11    0    0
+east_half_202      480     13        1      239           13    0    0
+east_half_303      480      3        1      239            3    0    0
+east_half_404      480     17        1      239           17    0    0
+east_half_505      480      9        1      239            9    0    0
+south_half_101     480     15        1      239           15    0    0
+south_half_202     480     24        1      239           24    0    0
+south_half_303     480      9        1      239            9    0    0
+south_half_404     480     11        1      239           11    0    0
+south_half_505     480     17        1      239           17    0    0
+east_def_101       480     21        1      239           21    0    0
+east_def_202       480     15        1      239           15    0    0
+east_def_303       480     17        1      239           17    0    0
+
+TOTALS  _resolve_fail_safe_override True : 3,120
+        clear fired                      :    13  (0.42%)
+        override survived                : 3,107
+        _should_skip_global_execution    :     0  (never once)
+        should_return_to_normal() calls  :     0
+        is_information_recovery_active() :     0
+        steps with >1 mode transition    :     0
+
+The clear is not merely rare, it is deterministic: exactly one per run, always
+step 1, always the same decision shape:
+
+    step=1 mission_mode='' action='return_to_base' search=False
+    reason='fail_safe_action:return_to_base' mode_at_read='normal'
+
+Why: at step 1 the analysis has produced no triggers yet, so ModeManager has
+zero reasons and classifies normal. The fail-safe planner, with step11 inactive,
+still selects an option by utility tie-break and degenerately lands on
+failsafe_uav_return_to_base. _resolve_fail_safe_override sees the literal action
+"return_to_base" in _REAL_OVERRIDE_FAIL_SAFE_ACTIONS and reports an override
+that no hazard motivated. The clear removes it.
+
+2.2 PERSISTENCE (distribution, not just mean)
+---------------------------------------------
+Episodes = maximal runs of consecutive steps in one mode, across all 13 runs:
+
+  mode                  episodes  min   median   max   total steps
+  information_recovery        97    1      7.0   140         2,382
+  safety_first                84    1      6.5    58           723
+  normal                      13    1      1.0     1            13
+  degraded                     1    2      2.0     2             2
+
+  information_recovery: [1 x25, 2 x9, 3 x5, 4 x3, 5 x3, 6 x2, 7 x4, 8, 9, 10,
+   11, 12, 14 x2, 15, 16 x2, 19 x2, 20 x3, 21, 23 x2, 31, 32, 34 x2, 36, 39,
+   45, 48 x3, 49, 50, 59, 63, 68, 69, 70, 72, 77, 84, 93, 104, 108, 111, 113,
+   116, 126, 140]
+  safety_first: [1 x15, 2 x10, 3 x5, 4 x2, 5 x4, 6 x6, 7 x6, 8 x3, 9 x7,
+   10 x5, 11 x2, 12 x4, 13 x2, 14, 16, 19 x2, 20, 21, 22 x3, 25, 27, 49, 58]
+
+PERSISTS TO RUN END: 13 of 13 runs end mid-episode (12 in information_recovery,
+1 in safety_first, run lengths 5 to 140 steps). This is CORRECT, not stale: the
+triggers that justify the mode (collision_risk, extreme_drift,
+critical_communication, search_mode_required) are still being emitted by the
+analyzers on the final step. The mode is a live read of live evidence.
+
+2.3 REASON PROVENANCE - the decisive measurement
+------------------------------------------------
+Hypothesis tested: the mode is self-confirming, because the planner emits
+search_mode_active / "activate_search_mode" (fail_safe_planner.py:629-631) and
+SafetyChecker._reasons_from_planning (safety_checker.py:140) reads that same
+decision back as SEARCH_MODE_REQUIRED evidence, re-deriving the mode that
+produced it. The loop closes within one step (planning at :114, mode update at
+:117 consuming latest_planning_result).
+
+The loop is REAL but NEVER LOAD-BEARING. Over 9,360 extract_fail_safe_reasons
+calls across the 13 runs:
+
+  reasons contributed by ANALYSIS
+      6,489  collision_risk, critical_communication, extreme_drift, search_mode_required
+      2,121  collision_risk, critical_communication, extreme_drift
+        591  critical_communication, extreme_drift, search_mode_required
+        ... (39 calls contributed nothing - the step-1 calls)
+  reasons contributed by PLANNING
+      4,764  search_mode_required
+      4,596  <none>
+  reasons contributed by EXECUTION
+      9,360  <none>          <-- contributes nothing, ever
+
+  reasons contributed ONLY by planning (not also by analysis or execution):
+      NONE IN THE ENTIRE SAMPLE
+
+  steps where removing the planning contribution would change the mode:
+      0 / 9,360
+  steps where the analysis alone would classify normal:
+      39 / 9,360  (= 3 per run, all at step 1)
+
+So: the analysis snapshot alone determines the mode on every call. The feedback
+path exists in the code and should be regarded as a latent hazard, but it is
+strictly redundant at current scale - the independent evidence is always
+present. This also proves the pre-execution execution_result staleness (1.2) is
+inert: execution contributes nothing at all.
+
+2.4 STALENESS TEST - the audit's actual claim
+---------------------------------------------
+Metric: steps where ModeManager mode == normal WHILE sop.mission_mode is still
+non-normal (i.e. the override state outliving its justification).
+
+  RESULT: 0 stale steps in all 13 runs. Total across sample: 0.
+
+sop.mission_mode is written 182 times across the sample (once per mode change,
+wildfire_model.py:1892) and never reset. It is a genuine write-only latch. But
+it cannot go stale here because the mode never returns to normal after step 1,
+so the "should have been cleared" condition never arises.
+
+2.5 OUTCOMES - set vs not
+-------------------------
+Not measurable as a contrast in this sample: the override is active on
+3,107/3,120 dispatches, and the 13 non-override cases are one identical step-1
+event per run. There is no "override off" population to compare against.
+
+What IS measurable is the price of the clear. Counterfactual at the one step
+where it fires (seed 101, east, half), computed with the pristine
+_adjust_local_path_for_fail_safe and never fed back into the run:
+
+    step 1: path decisions = 4, would_drop_if_not_cleared = 4
+
+Without the clear, 100% of the fleet's path decisions would be suppressed at
+step 1 by an override that no hazard justified. The clear is load-bearing and
+protective. The audit's claim that it clears something it should not is the
+exact inverse of what the code does.
+
+Outcomes for reference (identical override activity in every run, so these
+differences are seed noise, not override effects):
+  east_half  101/202/303/404/505  rescued 2,2,1,2,1  dead 2,2,3,2,3  ffd 1,0,0,1,0
+  south_half 101/202/303/404/505  rescued 3,3,3,2,3  dead 1,1,1,2,1  ffd 1,0,0,1,0
+  east_def   101/202/303          rescued 2,3,2      dead 2,1,2      ffd 1,1,0
+  never_detected = 0 in all 13 runs.
+
+================================================================================
+PART 3 - COLLATERAL FINDINGS (real, but NOT defect #7)
+================================================================================
+
+F1  THE FAIL-SAFE RECOVERY GATE IS DEAD - and inert even if revived
+    src_extension/execution/mode_manager.py:111-160
+    Severity: dead code, no current consequence. Do not "fix" by wiring it in.
+
+    ModeManager.should_return_to_normal()      0 production callers (test only)
+    ModeManager.is_information_recovery_active() 0 production callers (test only)
+    ModeManager.should_override_utility()      0 callers ANYWHERE, tests included
+    MEASURED: 0 calls to the first two across 13 runs x 240 steps.
+
+    Everything that exists only to serve should_return_to_normal is therefore
+    dead: stable_recovery_counter, required_stable_recovery_updates,
+    _update_stable_recovery_counter, _recovery_conditions_satisfied,
+    _information_recovery_ready, _information_sufficiency_score,
+    _mean_fire_confidence_map, _information_triggers_present - roughly 90 lines.
+
+    IMPORTANT, and it corrects an intuition worth recording: wiring the gate in
+    would change NOTHING at current scale. MEASURED stable_recovery_counter
+    never leaves 0 (max = 0 over 480 updates), because for information_recovery
+    _information_triggers_present is always true, and for safety_first the
+    blocking reasons {collision_risk, extreme_drift} are always present. So
+    should_return_to_normal() would return False on every step even if called.
+
+    A latent bug inside the dead code: _update_stable_recovery_counter runs
+    twice per step (adaptation_manager.py:117 and :124) on identical inputs, so
+    the counter would advance 2 per step, satisfying
+    required_stable_recovery_updates=2 after ONE step of stability rather than
+    two. Never exercised, since the counter never increments at all.
+
+F2  sop.mission_mode IS A WRITE-ONLY LATCH, AND HAS NO READER
+    wildfire_model.py:1890-1894
+    Severity: inert twice over. Disclosure-grade at most.
+
+        if self.latest_failsafe_state.mode != FailSafeMode.NORMAL:
+            if hasattr(sop, "mission_mode"):
+                sop.mission_mode = self.latest_failsafe_state.mode.value
+            if hasattr(sop, "active_adaptation_state"):
+                sop.active_adaptation_state = self.latest_failsafe_state.explanation
+
+    No else branch, and no other site resets it (verified by hooking
+    SharedOperationalPicture.__setattr__, which catches every write regardless
+    of where it comes from). Write sites observed across the sample:
+        3,107  shared_operational_picture.py:209  active_adaptation_state
+        3,107  wildfire_model.py:1894             active_adaptation_state
+          182  wildfire_model.py:1892             mission_mode
+    active_adaptation_state is in fact refreshed every step (it oscillates
+    between "monitoring" and the fail-safe explanation), so only mission_mode
+    latches. Measured staleness: 0 (see 2.4).
+
+    It is inert a second time because nothing reads it - see F3.
+
+F3  BROKEN DATA CONTRACT: the dashboard reads a nonexistent attribute
+    src_extension/dashboard/dashboard_state_builder.py:136
+    Severity: real, display-only. Same family as the role-assignment
+    dict/string mismatch at global_mission_planner.py:238.
+
+        sop = getattr(getattr(model, "knowledge_manager", None),
+                      "shared_operational_picture", None)
+        if sop is not None:
+            sop_mode = getattr(sop, "mission_mode", None)
+            if sop_mode:
+                mission_mode = str(sop_mode)
+
+    KnowledgeManager (src_extension/knowledge/knowledge_manager.py:10) is a
+    dataclass with exactly two fields, models and _update_counter. It has no
+    shared_operational_picture attribute and never acquires one. The real SOP
+    lives at model.shared_operational_picture (wildfire_model.py:185).
+    MEASURED: the knowledge_manager lookup returned None in all 13 runs
+    (probe recorded sop_same_object=False because the second object does not
+    exist). So this whole branch is dead and the dashboard's mission_mode
+    always falls through to fail_safe_mode.
+
+    Net effect: the F2 latch is written to an object whose only would-be
+    consumer reads a different, nonexistent path. Neither finding can affect
+    simulation behaviour. Confirmed no other reader:
+    global_analyzer.py never references mission_mode (grep count 0), and
+    SharedOperationalPicture.to_dict()/snapshot() have no callers.
+
+================================================================================
+CONFIDENCE AND LIMITS
+================================================================================
+Strong (direct measurement, 13 runs x 240 steps, transition-hooked):
+  - 2 mode updates per step; 0 intra-step transitions
+  - clear fires 13/3,120; always step 1; always return_to_base
+  - 0 stale steps
+  - planning contributes 0 load-bearing reasons in 9,360 calls
+  - execution contributes 0 reasons in 9,360 calls
+  - should_return_to_normal / is_information_recovery_active never called
+  - stable_recovery_counter never leaves 0
+  - override actuates: 177/299 UAV executions in the 60-step actuation probe
+
+Weaker / single-run:
+  - the clear counterfactual (would_drop=4 of 4) was measured on seed 101 east
+    half only. The decision shape is identical in all 13 runs, so the result
+    should generalise, but the drop count itself was not re-measured per run.
+
+Process note: an adversarial-verification workflow was run alongside this
+investigation (132 agents). Its mapping phase completed and its dispatcher
+finding independently matches the measurements above, but 96 of its agents -
+essentially the whole verification phase - died on a session usage limit. The
+verdict here therefore rests on the direct measurements and my own code
+reading, NOT on completed multi-agent adversarial verification. Anything above
+that is not backed by a measured number should be treated accordingly.
+
+================================================================================
+RECOMMENDATION
+================================================================================
+Close defect #7 as NOT A DEFECT. No fix is scoped, and none should be written
+for the staleness claim - the clearing site the audit objects to is the thing
+preventing a fleet-wide path suppression at step 1.
+
+F1/F2/F3 are real but all inert. If any is to be actioned, F3 is the only one
+with a defensible cheap fix (point dashboard_state_builder at
+model.shared_operational_picture, or delete the dead branch). F1 should be
+deleted rather than wired in, and doing so is a behaviour-preserving change
+that would need the standard byte-identical proof. F2 becomes moot once F3 is
+resolved either way.
+
+No implementation performed. Awaiting confirmation before any change.
+================================================================================
