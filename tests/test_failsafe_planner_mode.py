@@ -83,13 +83,11 @@ def test_mode_manager_returns_to_normal_after_recovery() -> None:
 
     recovery_context = {
         "triggers": (),
-        "information_sufficiency_score": 0.7,
     }
     state = manager.update(analysis_snapshot=recovery_context, timestamp=2.0)
 
     assert state.mode == FailSafeMode.NORMAL
     assert not state.active_reasons
-    assert manager.should_return_to_normal(analysis_snapshot=recovery_context) is False
 
 
 @pytest.mark.parametrize(

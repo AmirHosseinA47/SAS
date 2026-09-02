@@ -1,0 +1,579 @@
+================================================================================
+RECOVERY HYSTERESIS (should_return_to_normal) - PARTS 2 AND 3
+IMPLEMENTATION AND VALIDATION
+================================================================================
+BRANCH    claude/position-rename-and-hazard-revalidation
+BASE      3b1ffbf  "Defect #9-A2 scorched ground: give it its own colour..."
+DATE      2026-09-02
+PART 1    outputs/recoveryhysteresis_part1.txt
+
+--------------------------------------------------------------------------------
+GATE STATUS
+--------------------------------------------------------------------------------
+  simulation behaviour provably unchanged ......... PASS  13 runs, 3,996 leaf
+                                                          values, 0 differences
+  no orphaned helpers or state left behind ........ PASS  proven in BOTH
+                                                          directions, sec 3.4
+  no test assertion weakened or silently dropped .. PASS  sec 4, argued not
+                                                          asserted
+  no NEW test failures ............................ PASS  8F/427P, failing name
+                                                          set byte-identical
+  route_blocked gate .............................. RUN AND UNMOVED - sec 6.
+                                                    Behaviourally identical to
+                                                    the previous round's
+                                                    committed shards on all 18
+                                                    seeds. Its one carried
+                                                    [FAIL] line is pre-existing
+                                                    and reproduced exactly.
+
+NOTHING WAS TUNED. No constant adjusted, no threshold moved, no arm re-run
+after seeing its result, no gate item redefined to accommodate an outcome.
+
+
+================================================================================
+1. THE HEADLINE - THIS IS WRITE-ONLY CODE, NOT DEAD CODE
+================================================================================
+The brief for this round described "~90 lines of hysteresis machinery, 0 calls".
+That is true of should_return_to_normal alone and false of everything beneath
+it. Measured at HEAD 3b1ffbf over the canonical 13-run sample:
+
+    should_return_to_normal          ........     0 calls
+    _update_stable_recovery_counter  ......... 6,240 calls
+    _recovery_conditions_satisfied   ......... 6,214 calls   0 ever True
+    _information_recovery_ready      ......... 4,764 calls   0 ever True
+    _information_sufficiency_score   ......... 4,764 calls   always 0.0
+    _mean_fire_confidence_map        ......... 4,764 calls   always None
+    _information_triggers_present    ......... 4,764 calls   always True
+
+130 of the 148 deleted lines EXECUTE, twice per model step, in every run. Only
+should_return_to_normal is unreachable. A commit message saying "remove dead
+code" would be a false statement about 88% of the change.
+
+The accurate description is WRITE-ONLY: the subgraph's entire observable output
+is stable_recovery_counter, an integer with exactly one reader
+(mode_manager.py:127) which sat inside the one function that never ran.
+
+This is not a wording quibble. It sets the evidential burden for Part 3.
+Deleting unreachable code is byte-identical by construction. Deleting code that
+runs 6,240 times per campaign is not, and had to be measured.
+
+1.1  A HYPOTHESIS THIS ROUND REFUTED
+--------------------------------------------------------------------------------
+Going in, the natural explanation for "the counter never leaves 0" was that the
+mode is always NORMAL, so line 140 resets it every step. MEASURED FALSE.
+
+Mode is non-NORMAL at 6,214 of 6,240 counter updates - 99.58%:
+
+    mode at counter update        observations     branch taken
+    normal ....................        26          normal_reset
+    information_recovery ......     4,764          unsatisfied_reset
+    safety_first ..............     1,446          unsatisfied_reset
+    degraded ..................         4          unsatisfied_reset
+    emergency .................         0          -
+                                                   satisfied_increment: 0
+
+The 26 normal observations are exactly 2 per run: the two update() calls of
+step 1. The system enters information_recovery at step 2 of EVERY run and never
+returns to normal in ANY of the 13 - transitions_to_normal is empty everywhere.
+
+So the counter is pinned at 0 by the UNSATISFIED-RESET branch, not the
+normal-reset branch. _recovery_conditions_satisfied ran 6,214 times and
+returned False 6,214 times.
+
+This was independently corroborated during Part 3 by a completely separate
+instrument: the control harness's mode_hist column, which records the mode after
+every step with no patching of any kind, shows norm:1 in all 13 runs (section 3.3).
+
+
+================================================================================
+2. WHAT WAS DELETED
+================================================================================
+    git diff --numstat
+      0   148   src_extension/execution/mode_manager.py
+      0     2   tests/test_failsafe_planner_mode.py
+
+150 deletions, ZERO insertions, two files. Not one line was modified - every
+changed line was removed. That signature is itself the proof that line endings
+survived: had they been rewritten, git would report every line as modified.
+Both files were pure LF before and are pure LF after (verified byte-wise), and
+the patch was applied in binary mode so endings could not be rewritten as a
+side effect.
+
+2.1  src_extension/execution/mode_manager.py     350 -> 202 lines
+--------------------------------------------------------------------------------
+    14- 44   7 module constants  _INFORMATION_REASONS,
+             _INFORMATION_SUFFICIENCY_RECOVERY, _MEAN_FIRE_CONFIDENCE_RECOVERY,
+             _INFORMATION_TRIGGER_TYPES, _DEGRADED_BLOCKING_REASONS,
+             _SAFETY_FIRST_BLOCKING_REASONS, _EMERGENCY_BLOCKING_REASONS
+    52- 53   stable_recovery_counter, required_stable_recovery_updates
+   103-108   the _update_stable_recovery_counter(...) call inside update()
+   119-227   should_return_to_normal, _update_stable_recovery_counter,
+             _recovery_conditions_satisfied, _information_recovery_ready,
+             _information_sufficiency_score, _mean_fire_confidence_map,
+             _information_triggers_present
+
+2.2  tests/test_failsafe_planner_mode.py         126 -> 124 lines
+--------------------------------------------------------------------------------
+    86   "information_sufficiency_score": 0.7,      (provably never read)
+    92   the should_return_to_normal assertion       (subject being deleted)
+
+2.3  HOW IT WAS APPLIED
+--------------------------------------------------------------------------------
+outputs/_rh_apply.py, binary mode, with content guards: the first line of every
+range is compared against an expected literal and the resulting line count
+against an expected total, so the patch aborts rather than misfires if the file
+has moved. Dry-run first (--check), then applied. Both files hit their exact
+predicted counts.
+
+
+================================================================================
+3. VALIDATION - SIMULATION BEHAVIOUR
+================================================================================
+
+3.1  THE HARNESS, AND WHY IT IS STRONGER THAN #5 / #9-A2's
+--------------------------------------------------------------------------------
+outputs/_rh_control.py, derived from _pr_control.py (#5) and _sc_control.py
+(#9-A2). No instrumentation of any kind: every digest is a plain read of public
+model state after the run. Additions, all because this round is riskier than
+its predecessors:
+
+  13 RUNS not 3   The canonical sample, one seed per process. Combos inside one
+                  process must stay sequential (shared module RNG), so each run
+                  gets its own process; cross-process parallelism cannot
+                  perturb results because each seeds its own random.Random.
+  rngstate        sha256 of the seeded generator's state AFTER the run. The
+                  most sensitive digest available: if the deletion shifted ANY
+                  draw, this moves even where positions coincidentally agree.
+                  Neither predecessor carried it.
+  modetraj        the fail-safe mode after every step. This round deletes code
+                  ON THE FAIL-SAFE PATH, so the mode trajectory is the quantity
+                  most directly at risk and is compared step by step rather
+                  than folded into stdout.
+  cellcolor       kept from #9-A2 but with its ROLE INVERTED. There it was the
+                  positive control and was required to DIFFER. Here no renderer
+                  is touched, so it must be IDENTICAL.
+
+3.2  CROSS-ROUND ANCHOR - RUN BEFORE THE CHANGE, TO VALIDATE THE INSTRUMENT
+--------------------------------------------------------------------------------
+Before touching source, both harnesses were checked against defect #5's
+COMMITTED digests (outputs/_pr_control_post.json), three commits back
+(c92e136, a89a2ab, 3b1ffbf intervening):
+
+  via the new 13-run harness    D/east/half|101, D/south/half|101,
+                                D/east/default|101 - stdout_sha256,
+                                agent_positions_sha256, firemap_sha256,
+                                stdout_lines, stdout_len and agent_positions
+                                element-for-element: ALL MATCH
+  via the original _pr_control  same three combos, plus the complete
+                                _build_evaluation metric dict: ALL MATCH
+
+So the environment was proven to reproduce a known-good result BEFORE the
+change was applied. Any post-deletion difference would have been attributable
+to the deletion alone. (outputs/_pr_control_rhanchor.json)
+
+3.3  PRE vs POST - BYTE-IDENTICAL ON ALL 13 RUNS
+--------------------------------------------------------------------------------
+    leaf values compared : 3,996
+    differences          : 0
+    VERDICT              : BYTE-IDENTICAL
+
+Compared, per run, not merely hashed:
+  * RAW STDOUT BYTES, file against file
+  * agent_positions ELEMENT FOR ELEMENT (8/8/9/8/9/7/7/7/8/7/8/7/8 entries)
+  * modetraj STEP BY STEP, all 240 steps x 13 runs
+  * the complete _build_evaluation metric dict, key by key
+  * residue, ground_counts, cellcolor_hist, mode_hist, key by key
+  * stdout_sha256, stdout_lines, stdout_len, agent_positions_sha256,
+    firemap_sha256, scorchmap_sha256, cellcolor_sha256, rngstate_sha256,
+    modetraj_sha256, leftover_pending, terminal_step
+
+  run              stdout       positions    firemap      rngstate     modetraj
+  --------------------------------------------------------------------------------
+  east_half_101    6799aab8285c 4830220c3be6 c39224fb126f 3dd2749db265 e484a5e4b85c
+  east_half_202    70bc46b73fac fc5951d09a79 04cc3e930bf2 693f61c1f21e 385f270bf743
+  east_half_303    fa2b3e01e946 befe0d308afe c2235296b646 fa34152b233b f9dae24da829
+  east_half_404    9562305c62e2 94caeb6a8f55 de078a79d3ff fdb70cab1ef8 9a6d90d7e480
+  east_half_505    33df713cbeec 7eaca1683c05 99e5bad51d2b 04b65c4e9201 b28671eabf55
+  south_half_101   9fc7ba55cb37 04a3aba28435 f6d95f077ea1 ea8fe9c78ca9 bc69886f1629
+  south_half_202   738f3ad84966 fa486f775c9b 60fe0d57e3a5 2b908c8548ee 4b67435a547d
+  south_half_303   28b5cc0ccded 1f362dd7cb4e 29b678b3fb3e 5d12af60c0af 614365aa4b87
+  south_half_404   ff215c0aa5e5 c866e277e634 6a7da81b2ff4 eea6a1c43e20 c2a6cb081458
+  south_half_505   845403de2d9f f7c4db1f75f6 b7192ed15099 785841de97d8 2a0bb8275161
+  east_def_101     6d7d6de54baf 8b792c5bd785 c39224fb126f 3dd2749db265 fd355eaf7704
+  east_def_202     69a1e027f5f0 b94423a08946 04cc3e930bf2 693f61c1f21e 098165cf449d
+  east_def_303     0df0bd4560f7 7212fc8025f5 c2235296b646 fa34152b233b f0921899dfb8
+
+  (one column each because pre and post are equal; full table
+   outputs/_rh_digest_table.txt, raw comparison outputs/_rh_ctl_cmp.py)
+
+RAW BYTE COUNTS, pre / post, compared as files not hashes - all identical:
+  3276/3276  3094/3094  2943/2943  2815/2815  2944/2944  3067/3067  2700/2700
+  2929/2929  3118/3118  2698/2698  3277/3277  3065/3065  3018/3018
+
+THE mode_hist COLUMN, which no patched probe produced, independently reproduces
+the Part-1 finding from a clean instrument: every run shows exactly norm:1, then
+information_recovery and safety_first for the remaining 239 steps.
+
+  east_half_101 info:201/norm:1/safe:38     south_half_101 info:136/norm:1/safe:103
+  east_half_202 info:210/norm:1/safe:29     south_half_202 degr:2/info:140/norm:1/safe:97
+  east_half_303 info:190/norm:1/safe:49     south_half_303 info:205/norm:1/safe:34
+  east_half_404 info:212/norm:1/safe:27     south_half_404 info:205/norm:1/safe:34
+  east_half_505 info:202/norm:1/safe:37     south_half_505 info:191/norm:1/safe:48
+  east_def_101  info:176/norm:1/safe:63     east_def_202   info:159/norm:1/safe:80
+  east_def_303  info:155/norm:1/safe:84
+
+3.4  NO ORPHANS - PROVEN IN BOTH DIRECTIONS
+--------------------------------------------------------------------------------
+The Part-1 gate wording is "no orphaned helpers or state left behind". That is
+two claims and a residual grep only settles the first.
+
+  DIRECTION 1, nothing deleted is still referenced. A grep for all 16 deleted
+  symbols across agents.py, wildfire_model.py, serve_dashboard.py, main.py,
+  evaluate_*.py, common_fixed_variables.py, Canvas_Grid_Visualization.py,
+  src_extension/ and tests/ returns ZERO residuals.
+    One apparent hit is a NAME COLLISION, not a residual:
+    global_analyzer.py:488 and :597 define and call their own
+    _information_sufficiency_score on GlobalAnalyzer. Different class,
+    different method, untouched. mode_manager.py contains zero occurrences.
+
+  DIRECTION 2, nothing kept is now dead. Measured, not assumed
+  (outputs/_rh_survivors.py, 20 steps):
+
+      update                            40      _recovery_score          40
+      _iter_analysis_triggers           40      _build_explanation       40
+      _to_reason_enums                  40      _read_value             240
+      _collect_affected_entities        40      _read_float              80
+      _estimate_confidence              40      _extend_entities        716
+
+  All ten survivors are load-bearing. The only two ModeManager methods with
+  zero calls are should_override_utility and is_information_recovery_active -
+  which are exactly the two identified in Part 1 section 7.2 as ALREADY DEAD
+  INDEPENDENTLY, not orphaned by this change, and deliberately out of scope.
+  See section 7.
+
+  The instance __dict__ went from 4 keys to 2: {'_checker', 'current_state'}.
+
+
+================================================================================
+4. THE TEST EDIT
+================================================================================
+
+4.1  WHAT WAS DROPPED AND THE NARROW JUSTIFICATION
+--------------------------------------------------------------------------------
+Line 92, the sole caller of should_return_to_normal anywhere outside its own
+definition, and line 86, the dict entry that fed it.
+
+I called line 92 a tautology in early analysis. THAT WAS TOO STRONG AND IS
+CORRECTED HERE. An independent 12-mutant table detects 2 - the constant-True
+body, and both-guards-deleted. It is a near-vacuous 1-BIT assertion, not a
+tautology, and the distinction matters because it means the drop does lose
+something rather than nothing.
+
+What it actually pinned: an already-NORMAL, reason-free manager must not report
+should_return_to_normal() == True. A line tracer over the test shows it reaches
+only lines 125-126; lines 127, 128 and 129 are NEVER executed, because line 89
+has already established mode == NORMAL and the first guard short-circuits. It
+does NOT lock the mode==NORMAL guard it appears to: deleting lines 125-126
+outright leaves line 92 passing, because the counter guard independently forces
+False. The two guards mutually mask. The standard mutation on that guard -
+negating == to != - survives.
+
+THE JUSTIFICATION, STATED NARROWLY: the assertion's subject is itself being
+deleted, so its one bit of coverage becomes UNCONSTRUCTIBLE rather than lost.
+You cannot mutate a function that no longer exists. If the campaign ever
+declines this deletion and edits only the test, this justification evaporates
+and the drop must be re-argued from scratch.
+
+Line 86 is dead data, confirmed structurally and empirically: the key
+"information_sufficiency_score" was read at exactly one place in the tree,
+mode_manager.py:197. SafetyChecker never reads it - extract_fail_safe_reasons
+discards runtime_models at safety_checker.py:60. Substituting 0.0 / 0.7 / 999.0
+/ "garbage" / absent produced identical results.
+
+4.2  EVERY SURVIVING ASSERTION IS UNCHANGED
+--------------------------------------------------------------------------------
+The test was replayed against both trees. Identical on both sides:
+    line 89  state.mode == FailSafeMode.NORMAL       True / True
+    line 90  not state.active_reasons                True / True
+             state.affected_entities                   () / ()
+             state.confidence                        1.0 / 1.0
+             state.explanation      'mode=normal; reasons=none' / same
+Only hasattr(should_return_to_normal) and hasattr(stable_recovery_counter)
+flip True -> False.
+
+The test name, test_mode_manager_returns_to_normal_after_recovery, remains
+accurate: lines 89-90 are what actually test the return to normal, and they
+survive untouched.
+
+4.3  A REPLACEMENT WAS BUILT, TESTED, AND REJECTED
+--------------------------------------------------------------------------------
+Recorded because rejecting it was the substantive decision of this section.
+
+A three-assertion replacement was drafted - previous_mode ==
+INFORMATION_RECOVERY, recovery_score == 1.0, started_at == 2.0 - to compensate
+for the dropped bit. It was then tested against the REAL 148-line deletion and
+REJECTED on two independent grounds:
+
+  (a) All three produce IDENTICAL results before and after the deletion. They
+      are provably blind to the change under review, so they fail the #9-A2
+      standard as this round's brief states it: the new assertion must FAIL
+      against the wrong behaviour.
+  (b) recovery_score == 1.0 is masked by the existing line 90 in exactly the
+      way line 92 is masked. mode_manager.py:136 reads
+      `if mode == FailSafeMode.NORMAL or not active_reasons: return 1.0`.
+      Deleting the first disjunct leaves the assertion passing, because line 90
+      already forces the second. It reproduces the very defect used to condemn
+      line 92.
+
+Bundling unrelated new coverage into a deletion commit and calling it
+compensation would be dishonest bookkeeping. NOTHING WAS ADDED.
+
+For the record, the genuinely change-relevant coverage gap this exposed, left
+open deliberately rather than papered over: no test in the suite asserts
+ModeManager-produced state.affected_entities or state.confidence, so the shared
+survivors _read_value / _read_float / _iter_analysis_triggers are guarded only
+by AttributeError. Section 3.4 direction 2 measures their liveness, which is
+the evidence this round can honestly supply; assertion coverage for them is
+separate work, not a deletion's business.
+
+
+================================================================================
+5. TEST SUITE - NAME FOR NAME
+================================================================================
+    BEFORE   8 failed, 427 passed, 5 warnings in 2079.22s   (_rh_pytest_pre.txt)
+    AFTER    8 failed, 427 passed, 5 warnings in 2087.24s   (_rh_pytest_post.txt)
+
+    diff of the sorted failing node-ID lists: EMPTY.
+
+    FAILED tests/test_behavior_regression.py::test_descriptive_next_action_uses_target_position
+    FAILED tests/test_dashboard_panel.py::test_dashboard_panel_render_returns_string
+    FAILED tests/test_firefighter_dispatch_replacement.py::test_no_replacement_available_marks_victim_unreachable_once
+    FAILED tests/test_rescue_planner_authority.py::test_no_firefighter_planner_delay_or_unreachable
+    FAILED tests/test_uav_sector_assignment.py::test_fire_tracker_still_overridden_by_search_mode_fail_safe
+    FAILED tests/test_uav_sector_assignment.py::test_fire_tracker_uavs_receive_different_target_sets
+    FAILED tests/test_wind_aware_trajectory_regression.py::test_north_vs_south_trajectories_diverge_over_40_steps
+    FAILED tests/test_wind_aware_victim_search.py::test_victim_search_wind_aware_action_when_downwind_exists
+
+Identical before and after: no new failure, and equally important, none
+silently fixed. The comparison is name-for-name, not count-for-count.
+
+The 8/427 baseline is not a single observation. Six independent full-suite runs
+in outputs/ spanning Aug 25 - Sep 2 (_lane_clamp_pytest, _ir_pytest_baseline,
+_ir_pytest_fixed, _sc_pytest_PRE, _sc_pytest_POST, _rh_pytest_pre) all land on
+8 failed / 427 passed with an identical sorted failing-name set, at wall times
+from 1974s to 2398s. It is a genuine invariant, so any deviation in either the
+count or the names would have been signal rather than noise.
+
+The one failsafe-sounding baseline failure,
+test_fire_tracker_still_overridden_by_search_mode_fail_safe, contains zero
+ModeManager or SafetyChecker references and is insulated from this change.
+A targeted subset run of the four failsafe/trigger test files passed 46/46.
+
+
+================================================================================
+6. THE route_blocked GATE - REQUIRED, RUN, AND UNMOVED
+================================================================================
+
+6.1  WHY IT WAS REQUIRED THIS ROUND
+--------------------------------------------------------------------------------
+The #9-A2 round declined it and wrote, verbatim: "The next round that touches
+simulation source must run the gate again." This round touches
+src_extension/execution/mode_manager.py, which is on the simulation path -
+ModeManager.update() is called twice per model step from wildfire_model.py:1876
+via adaptation_manager.py:117 and :124.
+
+The #9-A2 escape does not transfer. That round could argue from a display-only
+trace that no simulation code was touched at all. Here, 130 of the 148 deleted
+lines execute 6,240 times per campaign. "Provably never executed" is true only
+of should_return_to_normal itself. So the gate is not excused by the #9-A2
+precedent; it is required BY it.
+
+6.2  RESULT - BEHAVIOURALLY IDENTICAL TO THE PREVIOUS ROUND
+--------------------------------------------------------------------------------
+Run as outputs/_rh_rbgate.sh with tag rhfix: the same 18 runs and the same four
+shards every round in this chain has used, so _ir_rbmerge.py's seed-set
+verification applies unchanged. Both winds report "seed set matches baseline
+exactly, no dupes".
+
+The decisive comparison is not against the stale 70e1b33 baseline but against
+THE PREVIOUS ROUND'S OWN COMMITTED SHARDS (_rblatch_camp2_prfix*, defect #5),
+seed by seed, field by field:
+
+    seeds compared                    18 / 18, seed sets equal
+    differing behavioural fields      NONE
+    the ONLY differing field          wall_s (wall-clock seconds)
+
+    merged counters       PRE(#5)                 POST(this round)
+      route_blocked_fires        9                        9
+      recoveries                 6                        6
+      assigns                   71                       71
+      assign_into_blocked_route  1                        1
+
+Wall-clock is a timing measurement, not a behaviour. On every behavioural
+field - rescued, victims dead, firefighter_deaths - all 18 seeds are identical.
+
+6.3  THE CARRIED [FAIL] LINE, STATED PLAINLY
+--------------------------------------------------------------------------------
+_ir_rbmerge.py compares against the 70e1b33 baseline, which is many commits old,
+and reports:
+
+    [FAIL] rescued does not decrease on any seed
+           regression: D/east seed 505  rescued 2 -> 1
+    [PASS] recovery pass still recovers units
+    [PASS] no unit left latched as route_blocked at end of run
+
+THIS IS PRE-EXISTING AND NOT CAUSED BY THIS ROUND. Two independent proofs:
+
+  (a) Re-running the identical merge against defect #5's committed shards
+      (--prefix prfix) produces BYTE-IDENTICAL output: the same [FAIL] on the
+      same seed, the same totals (rescued 43->43, dead 25->26, ff_deaths
+      15->11), the same recoveries 3->7, the same ff_deaths list.
+  (b) outputs/lastcell_report.txt:438 already records this line verbatim:
+      "four of its five items pass ... 'rescued does not decrease on any seed'
+      FAILS on D/east 505, by the section-4 dispatch tiebreak in
+      wildfire_model.py rather than by anything in the retreat logic. One seed
+      of eighteen."
+
+The gate's state is exactly what it was before this change. It is reported as a
+carried [FAIL] rather than presented as a pass.
+
+
+================================================================================
+7. FINDINGS RECORDED, NOT ACTED ON
+================================================================================
+
+7.1  THE SYSTEM IS PROVABLY MEMORYLESS  (the 7.2(iii) finding)
+--------------------------------------------------------------------------------
+src_extension/execution/safety_checker.py:67-72
+
+    def classify_mode(
+        self,
+        reasons: tuple[str, ...] | list[str],
+        current_mode: str = "normal",
+    ) -> str:
+        _ = current_mode
+
+The live caller threads the previous mode in - mode_manager.py:37-40 passes
+current_mode=self.current_state.mode.value - and the classifier's FIRST
+STATEMENT discards it. The fail-safe mode is recomputed from scratch every
+cycle from the current reason set alone.
+
+THIS INDEPENDENTLY CORROBORATES THE #7 VERDICT (C), NOT A DEFECT. #7 asked
+whether a stale fail-safe override could persist. There is no stored mode state
+that COULD go stale, because the classifier refuses to read the prior mode.
+The staleness question is not merely unobserved in the sample; it is structurally
+unavailable. That is a stronger footing for (C) than #7 itself had.
+
+It also means the vestigial hysteresis seam is now half-removed: the counter
+block is gone, but the discarded current_mode parameter still advertises exit
+hysteresis the system does not have. Left standing deliberately - it is its own
+defect with its own diagnosis burden, and folding it in would have muddied the
+byte-identity attribution for this deletion. Recorded for a future round.
+
+7.2  TWO METHODS ALREADY DEAD INDEPENDENTLY - NOT ORPHANED BY THIS CHANGE
+--------------------------------------------------------------------------------
+Both predate this round and survive it untouched. They are NOT consequences of
+the deletion and were explicitly out of scope.
+
+  ModeManager.should_override_utility  (now mode_manager.py:72-76)
+      ZERO callers repo-wide, including tests. Production calls
+      SafetyChecker.should_override_utility directly - fail_safe_planner.py:144,
+      and mode_manager.py:181 inside build_failsafe_dashboard_summary, which
+      constructs its own fresh checker rather than using the manager's wrapper.
+      Measured 0 calls over 20 steps.
+  ModeManager.is_information_recovery_active  (now mode_manager.py:78-79)
+      Test-only. Measured 0 calls over 20 steps.
+
+7.3  outputs/_fs_probe.py NOW RAISES - RECORDED DELIBERATELY, NOT FIXED
+--------------------------------------------------------------------------------
+It is git-tracked and reads self.stable_recovery_counter by direct attribute
+access at line 158 (also referenced at :25 and :55). Confirmed empirically:
+
+    AttributeError: 'ModeManager' object has no attribute
+                    'stable_recovery_counter'
+
+LEFT UNTOUCHED BY DECISION. It is a frozen diagnostic artifact of the #7 round -
+a record of what was measured then, not maintained code. Editing it to keep it
+runnable against code that no longer exists would falsify that record; deleting
+it would destroy it. It is plainly historical now, and this paragraph is the
+disclosure. Anyone re-running it should read outputs/failsafe_part1.txt for what
+it produced, or use outputs/_rh_probe.py, which measures the same quantities at
+this HEAD.
+
+7.4  CARRIED FORWARD FROM PART 1, UNCHANGED
+--------------------------------------------------------------------------------
+  F-A  The system never returns to NORMAL in any of the 13 runs. Enters
+       information_recovery at step 2, 178 transitions, all among non-normal
+       modes. Re-confirmed by the unpatched control harness (section 3.3).
+  F-B  belief_gap_regions is permanently empty in production.
+       global_adaptation_generator.py:442-445 reads fire_confidence_map from
+       sources whose key sets do not contain it. LIVE code. Deserves its own
+       thread.
+  F-C  Blocking-set asymmetry: safety_checker.py:82-93 routes
+       RESCUE_ROUTE_UNSAFE into SAFETY_FIRST and GLOBAL_UNCERTAINTY into
+       DEGRADED, while the deleted blocking sets omitted both. Moot now, kept
+       for the record.
+  F-D  The #7 "latent bug" at failsafe_part1.txt:337 was real at 3b1ffbf: the
+       counter advanced 2/step against a threshold of 2 because update() runs
+       twice per step. Deleted along with everything else it touched.
+  F-E  contracts.py:20 _json_safe str() fallback emits heap addresses for
+       default-repr objects - a latent allocation-sensitive nondeterminism
+       channel, measured unconnected (0 hits across ~455 KB of real output).
+
+
+================================================================================
+8. AN ARGUMENT THIS ROUND WITHDREW
+================================================================================
+Recorded so it does not get repeated as received wisdom.
+
+The "structurally unsatisfiable lookup" argument - that
+_information_sufficiency_score and _mean_fire_confidence_map read keys neither
+data source carries, so the gate could never work even if wired - is TRUE but
+PROVES TOO MUCH, and was cut from the justification.
+
+The identical idiom on the identical key exists in LIVE, SHIPPED code:
+
+    src_extension/adaptation/global_adaptation_generator.py:442-445
+        fire_confidence_map = read_value(
+            global_analysis_result, "fire_confidence_map",
+            read_value(runtime_models, "fire_confidence_map", {}))
+
+Its input is wildfire_model.py:1707, analysis_snapshot.global_result.to_dict(),
+whose key set is fixed at analysis_results.py:78-89 and contains no
+fire_confidence_map; the fallback is the same 8-key runtime_models. That live
+lookup also permanently returns {}, making belief_gap_regions permanently empty
+in production. Same root cause: the real map is one hop deeper, at
+runtime_models["fire_runtime_model"].belief.fire_confidence_map.
+
+So "the lookup can never resolve" is a house-wide plumbing bug class, not a
+property that makes this gate uniquely incoherent. Applied consistently it would
+condemn shipped code nobody proposes deleting. The accurate phrasing is
+MIS-PLUMBED EXACTLY LIKE ITS LIVE NEIGHBOURS. The deletion rests on the other
+grounds - born dead, no spec, wrong cadence, a working twin already exists -
+not on this one.
+
+
+================================================================================
+ARTIFACTS
+================================================================================
+  outputs/recoveryhysteresis_part1.txt   Part 1 investigation
+  outputs/_rh_probe.py|.json             runtime instrumentation, 13 x 240
+  outputs/_rh_table.py|.txt              per-run probe table
+  outputs/_rh_apply.py                   the guarded binary-mode patch
+  outputs/_rh_control.py                 byte-identity harness, 13 runs
+  outputs/_rh_ctl_drive.sh               one-seed-per-process driver
+  outputs/_rh_ctl_cmp.py                 element-wise pre/post comparison
+  outputs/_rh_ctl_{pre,post}_*.json      per-run control digests
+  outputs/_rh_ctl_{pre,post}_*.stdout.txt raw stdout, for the byte diff
+  outputs/_rh_digest_table.txt           the digest table in section 3.3
+  outputs/_pr_control_rhanchor.json      #5-lineage cross-round anchor
+  outputs/_rh_survivors.py|.json         liveness of every kept helper
+  outputs/_rh_pytest_{pre,post}.txt      full suite, both sides
+  outputs/_rh_fail_{pre,post}.txt        sorted failing node IDs
+  outputs/_rh_rbgate.sh                  route_blocked gate runner
+  outputs/_rblatch_camp2_rhfix*.json     gate shards, this round
+  outputs/_rh_rbgate_verify.txt          merged gate verification
+
+================================================================================
+STATUS: PARTS 2 AND 3 COMPLETE. ALL GATE ITEMS MET.
+================================================================================

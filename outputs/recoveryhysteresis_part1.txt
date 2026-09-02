@@ -1,0 +1,730 @@
+================================================================================
+RECOVERY HYSTERESIS (should_return_to_normal) - PART 1: VERIFY BEFORE DELETING
+================================================================================
+HEAD      3b1ffbf  "Defect #9-A2 scorched ground: give it its own colour..."
+BRANCH    claude/position-rename-and-hazard-revalidation   (tree clean at start)
+DATE      2026-09-02
+SCOPE     Read-only investigation. NOTHING was modified in the source tree.
+
+RECOMMENDATION:  DELETE - but the deletion is 148 lines, not ~90, and three of
+the brief's framings must be corrected before anything is written in a commit
+message. Two decisions are referred back to you before Part 2 (section 7).
+
+--------------------------------------------------------------------------------
+HEADLINE - WHAT CHANGED VERSUS THE #7 REPORT
+--------------------------------------------------------------------------------
+Both #7 claims HOLD at this HEAD, re-measured, not trusted:
+
+    should_return_to_normal() calls, 13 runs .......... 0    (as claimed)
+    stable_recovery_counter, max value ever ........... 0    (as claimed)
+
+But the #7 report's implied PICTURE is wrong, and the brief inherits it. The
+brief says "~90 lines of hysteresis machinery, 0 calls". That is true only of
+should_return_to_normal itself. The machinery underneath it is NOT dead:
+
+    _update_stable_recovery_counter  ....... 6,240 calls
+    _recovery_conditions_satisfied   ....... 6,214 calls   (0 ever True)
+    _information_recovery_ready      ....... 4,764 calls   (0 ever True)
+    _information_sufficiency_score   ....... 4,764 calls   (always 0.0)
+    _mean_fire_confidence_map        ....... 4,764 calls   (always None)
+    _information_triggers_present    ....... 4,764 calls   (always True)
+
+130 of the 148 lines EXECUTE, twice per model step, in every run. They are
+UNOBSERVABLE, not unreachable. A commit message saying "remove dead code" would
+be a false statement about 88% of the change. The accurate word is WRITE-ONLY:
+the entire subgraph's only output is an integer that nothing reads.
+
+This distinction is not pedantry - it changes the Part 3 burden. Deleting
+unreachable code is trivially byte-identical. Deleting code that runs 6,240
+times per campaign is not trivially anything, and must be measured.
+
+
+================================================================================
+1. THE SYMBOL, QUOTED IN FULL, AND EVERY REFERENCE
+================================================================================
+
+1.1  should_return_to_normal - src_extension/execution/mode_manager.py:120-129
+--------------------------------------------------------------------------------
+    def should_return_to_normal(
+        self,
+        runtime_models: object | None = None,
+        analysis_snapshot: object | None = None,
+    ) -> bool:
+        if self.current_state.mode == FailSafeMode.NORMAL:
+            return False
+        if self.stable_recovery_counter < self.required_stable_recovery_updates:
+            return False
+        return self._recovery_conditions_satisfied(runtime_models, analysis_snapshot)
+
+1.2  EVERY REFERENCE IN THE LIVE TREE (.claude/worktrees/** excluded)
+--------------------------------------------------------------------------------
+should_return_to_normal - TWO sites, total:
+    src_extension/execution/mode_manager.py:120     the definition
+    tests/test_failsafe_planner_mode.py:92          the only caller, a test
+
+stable_recovery_counter - SIX sites, all inside mode_manager.py:
+    :52    self.stable_recovery_counter = 0                (birth)
+    :103   self._update_stable_recovery_counter(...)       (the driver call)
+    :127   if self.stable_recovery_counter < self.required_stable_recovery_updates
+                                                           (THE ONLY READER)
+    :140   self.stable_recovery_counter = 0                (normal reset)
+    :143   self.stable_recovery_counter += 1               (increment)
+    :145   self.stable_recovery_counter = 0                (unsatisfied reset)
+
+required_stable_recovery_updates - TWO sites:
+    :53    assignment (= 2)
+    :127   the only read - inside the function being deleted
+
+Plus, outside the source tree: outputs/_fs_probe.py (lines 25, 55, 158) and
+outputs/failsafe_part1.txt. See section 7.1 - _fs_probe.py is GIT-TRACKED and
+this matters.
+
+1.3  NO ESCAPE HATCH - the zero-caller finding is STATIC, not sample-scoped
+--------------------------------------------------------------------------------
+This is the load-bearing proof, and it does not depend on any simulation run:
+
+  * String search across ALL file types including binaries: only the two sites
+    above plus diagnostics and four stale .pyc files.
+  * The repo has NO .html/.js/.json/.yaml/.toml/.cfg/.ini files at all, so
+    config- or asset-driven dispatch is impossible, not merely absent.
+  * Every getattr-by-variable-name site in the tree dispatches on the MODEL or
+    on comm/resource/victim models with literal name tuples - never on a
+    ModeManager method. adaptation_manager.py:194-196 `_call_stage` uses 11
+    literal stage names.
+  * No subclass of ModeManager exists anywhere. `class ModeManager:` appears
+    exactly once.
+  * mode_manager is imported with exactly one absolute spelling at three sites;
+    src_extension/execution/__init__.py declares `__all__: list[str] = []` and
+    re-exports nothing. Exactly one ModeManager class object per process.
+  * Checked across EVERY git ref (all branches, local and remote): every branch
+    shows the identical two hits. No branch anywhere wires it.
+  * Production touches the manager at exactly four sites: wildfire_model.py:74
+    (import), :261 (the sole instance), :1876 (.update()), :2680-2682 (getattr
+    with the literal names "mode_manager"/"current_state"/"mode"/"value").
+
+1.4  IT WAS BORN DEAD
+--------------------------------------------------------------------------------
+    git log --all --follow -- src_extension/execution/mode_manager.py
+      -> a4a01b4  "Add core project files and update README"  (Mon Jul 27 2026)
+    git log --all --numstat on that path     ->  350 insertions, 0 deletions
+    git diff a4a01b4 HEAD -- that path       ->  EMPTY
+
+The file has been modified exactly ONCE in the repository's entire history: the
+initial import. It is byte-identical to that commit. At the birth commit the
+only reference to should_return_to_normal outside its own definition was
+tests/test_failsafe_planner_mode.py:92.
+
+It was never wired and later disconnected. It arrived inert and has stayed
+inert. That is a materially different situation from a regression, and it is
+the single strongest fact in favour of removal.
+
+
+================================================================================
+2. RUNTIME MEASUREMENT AT THIS HEAD
+================================================================================
+Method: outputs/_rh_probe.py, class-level observer patches on ModeManager,
+canonical 13-run sample (east_half 101/202/303/404/505, south_half
+101/202/303/404/505, east_def 101/202/303), 240 steps each. No sampling, no
+step reduction. Raw data: outputs/_rh_probe.json, table outputs/_rh_table.txt.
+
+OBSERVER PURITY PROVEN, NOT ASSERTED: 3 of the 13 patched runs reproduce
+previously committed UNPATCHED digests byte-for-byte, and a dedicated --nopatch
+control is identical. The instrument does not perturb what it measures.
+
+INSTRUMENT VALIDATED: driving a bare ModeManager through all three branches
+produces the labels {normal_reset:1, unsatisfied_reset:1, satisfied_increment:3}
+with counter_traj [0,0,1,2,3]. A zero for satisfied_increment in the campaign is
+therefore a real negative, not instrument blindness.
+
+2.1  TOTALS OVER 3,120 SIMULATION STEPS
+--------------------------------------------------------------------------------
+    update() calls ................................ 6,240
+    should_return_to_normal() calls ...............     0
+    stable_recovery_counter, max ever .............     0
+    stable_recovery_counter, distinct values ......   {0}
+    non-zero counter observations .................     0  of 6,240
+
+Note 6,240 = 13 x 480 = 2 update() calls per step. _update_failsafe_mode is
+invoked TWICE per model step, from src_extension/adaptation_manager.py:117 and
+again at :124. Verified directly. This matters - see 5.3.
+
+2.2  THE KEY NEW MEASUREMENT - MY OWN HYPOTHESIS WAS REFUTED
+--------------------------------------------------------------------------------
+I expected the counter to be pinned at 0 because the mode is always NORMAL, so
+line 140 resets it every time. That is FALSE. Mode is non-NORMAL at 6,214 of
+6,240 counter updates (99.58%):
+
+    mode at counter update       normal_reset  unsatisfied_reset  satisfied_inc
+    normal ................. 26        26                  -              -
+    information_recovery .. 4,764       -              4,764              0
+    safety_first .......... 1,446       -              1,446              0
+    degraded ..............     4       -                  4              0
+    emergency .............     0       -                  -              -
+
+The 26 "normal" observations are exactly 2 per run - the two update() calls of
+step 1. From step 2 onward the system is never in NORMAL again in any run.
+
+So the counter is pinned at 0 by the UNSATISFIED-RESET branch (line 145), not
+the normal-reset branch. _recovery_conditions_satisfied ran 6,214 times and
+returned False 6,214 times.
+
+2.3  MODE DISTRIBUTION - AN INCIDENTAL FINDING WORTH RECORDING
+--------------------------------------------------------------------------------
+    information_recovery 4,764 | safety_first 1,446 | normal 26 | degraded 4
+    emergency 0
+    transitions_to_normal = []  in ALL 13 RUNS
+
+The system enters information_recovery at step 2 of every single run and NEVER
+returns to normal, in any run, ever. There were 178 mode transitions across the
+sample - all of them among the non-normal modes, mostly info<->safety_first.
+
+This is out of scope for this round but is flagged in section 8.
+
+2.4  WHY THE GATES NEVER PASS
+--------------------------------------------------------------------------------
+All four information-recovery helpers are reached on all 4,764
+information_recovery observations, and every gate fails:
+
+    _information_sufficiency_score .... 0.0    on 4,764/4,764   (needs >= 0.6)
+    _mean_fire_confidence_map ......... None   on 4,764/4,764   (needs >= 0.5)
+    _information_triggers_present ..... True   on 4,764/4,764   (needs False)
+    _information_recovery_ready ....... False  on 4,764/4,764
+
+The first two are structural, not incidental. mode_manager.py:196-199 and
+:213/216 read the keys "information_sufficiency_score", "information_sufficiency",
+"mean_fire_confidence_map", "fire_confidence_map" off two sources:
+
+  runtime_models   built at wildfire_model.py:1866-1874 with exactly 8 literal
+                   keys (fire_runtime_model, visibility_model,
+                   victim_runtime_model, uav_resource_model, communication_model,
+                   firefighter_model, mission_goal_model, available_entities).
+                   No match.
+  AnalysisSnapshot analysis_results.py:95-102, a FROZEN dataclass with exactly 5
+                   fields (timestamp, local_results, global_result, all_triggers,
+                   dashboard_summary). No match, and frozen, so nothing can add
+                   one at runtime.
+
+The real confidence map lives one hop deeper, at
+runtime_models["fire_runtime_model"].belief.fire_confidence_map
+(fire_runtime_model.py:31), which the lookup never descends to.
+
+Worse than key-absence, and cleaner as an argument: the surviving key is
+TYPE-INCOMPATIBLE with its only producer. mode_manager.py:197-198 reads
+"information_sufficiency" through _read_float (:304-311), which returns the
+default unless isinstance(raw, (int, float)). The only production producer of
+that concept emits a STRING - global_monitor.py:267-274 returns
+"LOW"/"HIGH"/"ADEQUATE", typed `information_sufficiency: str` at
+monitoring_interfaces.py:52. Even if the field were plumbed in, _read_float
+would reject it and return 0.0 < 0.6.
+
+2.5  A CLAIM I AM DELIBERATELY *NOT* MAKING
+--------------------------------------------------------------------------------
+An adversarial pass falsified the strong reading of "the counter can never
+leave 0". Driven through the LIVE update() signature with a constructed
+execution_result, the counter advances 1,2,3,4 and should_return_to_normal()
+returns True from t=2.0 onward. The reason: mode_manager.py:24-36 lists
+_DEGRADED_BLOCKING_REASONS = {CRITICAL_COMMUNICATION, INSTABILITY} and
+_SAFETY_FIRST_BLOCKING_REASONS = {COLLISION_RISK, EXTREME_DRIFT,
+NO_FEASIBLE_PATH}, but safety_checker.py:82-93 routes GLOBAL_UNCERTAINTY into
+DEGRADED and RESCUE_ROUTE_UNSAFE into SAFETY_FIRST. Neither appears in the
+corresponding blocking set, so either reason alone clears the gate.
+
+So the honest statement is:
+    counter == 0 is a MEASURED property of the 13-run sample's reason mix
+    (critical_communication is present in every non-empty reason set observed),
+    NOT a property of the code for all inputs.
+
+For the information_recovery branch - 99.5% of observations - the structural
+argument in 2.4 does hold. For DEGRADED and SAFETY_FIRST it does not.
+
+I checked the one path the refutation left open: safety_checker.py:155 reads a
+top-level "partial_success" key. Production never emits one - uav_executor.py:768
+and :780 set "partial_success" only as the VALUE of a nested `status` field, and
+the only top-level occurrence in the tree is tests/test_failsafe_integration.py:431,
+set to False. But GLOBAL_UNCERTAINTY and RESCUE_ROUTE_UNSAFE remain reachable as
+analysis-trigger name mappings (safety_checker.py:37-41), so I cannot close this
+and am not claiming to.
+
+NONE OF THIS AFFECTS THE DELETION. Whether the counter advances or not is
+unobservable, because nothing reads it. It affects only how the finding is
+WORDED, and this campaign has been repeatedly slowed by over-strong wording.
+
+
+================================================================================
+3. THE ORPHAN CASCADE - WHAT ELSE BECOMES DEAD
+================================================================================
+Computed by AST call-graph, then verified by applying the deletion and grepping
+for residual references (zero found).
+
+3.1  THE CRUX: IS _update_stable_recovery_counter ORPHANED?
+--------------------------------------------------------------------------------
+YES. This is the "half a deletion" question the brief raises, and it resolves
+cleanly.
+
+After should_return_to_normal is gone, stable_recovery_counter has ZERO readers
+(its only reader was line 127, inside the deleted function).
+_update_stable_recovery_counter's entire observable effect is writing that
+attribute. Write-only state is dead state. Keeping it would retain ~130 lines
+whose complete output is an unread integer, executed 6,240 times per campaign.
+
+The only way it could survive is if something observed the attribute
+reflectively. Nothing does - see 4.3.
+
+3.2  DELETE LIST - exact, against the current 350-line file
+--------------------------------------------------------------------------------
+    lines  14- 44   7 module constants:
+                      _INFORMATION_REASONS
+                      _INFORMATION_SUFFICIENCY_RECOVERY
+                      _MEAN_FIRE_CONFIDENCE_RECOVERY
+                      _INFORMATION_TRIGGER_TYPES
+                      _DEGRADED_BLOCKING_REASONS
+                      _SAFETY_FIRST_BLOCKING_REASONS
+                      _EMERGENCY_BLOCKING_REASONS
+    lines  52- 53   2 instance attributes (stable_recovery_counter,
+                    required_stable_recovery_updates)
+    lines 103-108   the _update_stable_recovery_counter(...) call in update()
+    lines 119-227   6 methods:
+                      should_return_to_normal          120-129
+                      _update_stable_recovery_counter  131-145
+                      _recovery_conditions_satisfied   147-166
+                      _information_recovery_ready      168-186
+                      _information_sufficiency_score   188-203
+                      _mean_fire_confidence_map        205-221
+                      _information_triggers_present    223-227
+
+    TOTAL 148 lines.   350 -> 202 lines.
+
+3.3  KEEP LIST - shared with live code, must NOT be touched
+--------------------------------------------------------------------------------
+    _iter_analysis_triggers  (:229-233)  - _collect_affected_entities (:253)
+                                           walks the identical chain on every
+                                           update(). NOT orphaned.
+    _read_value              (:296-302)  - _collect_affected_entities
+    _read_float              (:304-311)  - _estimate_confidence (:268-271)
+    _recovery_score          (:279-289)  - a DIFFERENT concept, a pure static
+                                           method feeding FailSafeState.
+                                           Unrelated to the counter. KEEP.
+    normalize_triggers / TriggerSignal imports - still needed by
+                                           _iter_analysis_triggers.
+    FailSafeReason import                - still needed by _to_reason_enums,
+                                           _estimate_confidence, _recovery_score.
+
+The deletion touches NO FailSafeState field. failsafe_state_to_dict, the
+dashboard summary and every downstream consumer are unaffected.
+
+3.4  WIDER TREE - nothing else becomes orphaned
+--------------------------------------------------------------------------------
+  * No module imports anything from mode_manager beyond ModeManager and
+    build_failsafe_dashboard_summary.
+  * The `source_module="mode_manager"` strings at alert_manager.py:267,
+    explanation_engine.py:768, timeline_builder.py:132 are provenance labels
+    only. No dependency.
+  * Nothing in serve_dashboard.py / main.py / evaluate_*.py touches any deleted
+    symbol.
+
+
+================================================================================
+4. IS THE DELETION OBSERVATIONALLY NEUTRAL?
+================================================================================
+This is where the round's real risk lives, because 130 of the 148 lines execute
+twice per step. Traced at runtime with sys.settrace, not inferred.
+
+4.1  THE CALLEE SET IS PURE - 18 distinct code objects, all verified
+--------------------------------------------------------------------------------
+  RNG           ZERO draws. Measured with a draw-counting random.Random
+                subclass installed as cfv/wf.SYSTEM_RANDOM and am.random:
+                0 draws inside the subgraph against 25,006 in the whole run.
+                model.random unchanged; the scheduler is SimultaneousActivation
+                (wildfire_model.py:127), which does no shuffle in mesa 1.2.1.
+                (An earlier pass measured the WRONG generator - the global
+                `random` module rather than the seeded SYSTEM_RANDOM the
+                simulation actually draws from. Corrected and re-measured.)
+  MUTATION      0 mutations, 0 identity changes over 40 invocations
+                (sha256 of repr(snapshot) before/after). The one suspicious
+                link - normalize_triggers reaching AnalysisSnapshot.trigger_batch
+                via getattr - is a plain, NON-memoised @property on a frozen
+                dataclass, with no __getattr__, no __post_init__, no
+                cached_property. No lazy-init-on-first-read exists.
+  EXCEPTIONS    Cannot raise. 880-case fuzz over mode x reason x snapshot shape:
+                0 exceptions. And the propagation chain is BARE - _call_stage
+                (adaptation_manager.py:194-198) has no try/except, nor does
+                _run_pre_move_decision_cycle - so a raise would crash the run
+                outright. 6,240 clean invocations = 0 raises.
+  LOG/CACHE     Nothing logged, nothing cached, nothing appended.
+  ORDERING      Only one set-iteration in the tree (global_analyzer.py:680,
+                sorted, over strings). The three id()-set sites build int sets
+                for membership only, over simultaneously-live objects.
+
+4.2  ONE CHANNEL FOUND AND CLOSED
+--------------------------------------------------------------------------------
+src_extension/dashboard/contracts.py:9-20 `_json_safe` falls back to
+`str(value)`, which for a default-__repr__ object yields a HEAP ADDRESS.
+Deleting ~6 allocating calls per update() shifts every later object's address,
+so this is a genuine allocation-sensitive nondeterminism channel. Confirmed the
+ModeManager itself hits that fallback.
+
+Tested: ~455 KB of serialized artifacts scanned (get_dashboard_state,
+dashboard_state_builder, latest_dashboard_state, _build_evaluation,
+latest_failsafe_dashboard_summary, dashboard_exporter, stdout).
+ADDRESS-SHAPED HITS: 0. The channel exists but is not connected to any output.
+
+4.3  NO REFLECTIVE OBSERVER
+--------------------------------------------------------------------------------
+grep for vars(|__dict__|pickle|deepcopy|dir(|inspect.|__subclasses__|marshal
+across the whole project source returns exactly ONE line:
+tests/test_uav_executor.py:147 `inspect.getsource(agents.UAV.move)`.
+ModeManager is NOT a dataclass, so the ~40 asdict() sites in the tree cannot
+reach it. `_json_safe` falls back to str(), not __dict__.
+
+4.4  VERDICT AND ITS LIMIT
+--------------------------------------------------------------------------------
+PROVABLY NEUTRAL in mechanism. But note honestly what has and has not been run:
+
+    RUN:      13 runs x 240 steps of UNMODIFIED code with observers attached.
+    RUN:      3 combos x 40 steps with the counter CALL neutered to a no-op
+              (0 differences across 94 leaf digest values, including the seeded
+              RNG state hash, positions, stdout, scorchmap, cellcolor).
+    NOT RUN:  the canonical 13 x 240 sample with the ACTUAL 148-line deletion
+              applied.
+
+The structural proof is run-length independent, but "byte-identical at full
+length with the code actually removed" has never been measured. That is
+precisely the Part 3 job, and section 6 of outputs/failsafe_part1.txt
+conditioned deletion on exactly that proof. Deleting __init__ lines 52-53 also
+changes the instance __dict__ from 4 keys to 2, which the neutering A/B never
+exercised.
+
+
+================================================================================
+5. THE TEST SUITE
+================================================================================
+
+5.1  TOTAL COUPLING: ONE LINE
+--------------------------------------------------------------------------------
+A grep over tests/ for all 16 deleted symbols returns exactly one hit:
+tests/test_failsafe_planner_mode.py:92. 78 test files, no conftest.py, no
+pytest.ini/setup.cfg/pyproject.toml/tox.ini, and no dir()/vars()/hasattr()
+reflection over ModeManager anywhere in tests/.
+
+5.2  THE ASSERTION AT LINE 92
+--------------------------------------------------------------------------------
+    def test_mode_manager_returns_to_normal_after_recovery() -> None:
+        manager = ModeManager(SafetyChecker())
+        manager.update(analysis_snapshot=_search_trigger_analysis(), timestamp=1.0)
+        assert manager.current_state.mode == FailSafeMode.INFORMATION_RECOVERY
+        recovery_context = {
+            "triggers": (),
+            "information_sufficiency_score": 0.7,          # <- line 86
+        }
+        state = manager.update(analysis_snapshot=recovery_context, timestamp=2.0)
+        assert state.mode == FailSafeMode.NORMAL                        # l.90
+        assert not state.active_reasons                                 # l.91
+        assert manager.should_return_to_normal(
+            analysis_snapshot=recovery_context) is False                # l.92
+
+WHAT IT ACTUALLY LOCKS. Measured with a line tracer: under this test,
+should_return_to_normal executes lines 125 and 126 only. Lines 127, 128, 129
+are NEVER reached - by line 90 the mode is already NORMAL, so the first guard
+short-circuits. required_stable_recovery_updates is therefore never read by
+ANYTHING, in production or in the test suite.
+
+I initially called this a tautology. That is too strong and an adversarial pass
+corrected it with a 12-mutant table: line 92 detects 2 of 12 mutants (the
+constant-True body, and both-guards-deleted). It pins exactly ONE bit: an
+already-NORMAL, reason-free manager must not report True.
+
+It does NOT lock the mode==NORMAL guard. Deleting lines 125-126 outright leaves
+line 92 passing, because the counter guard at 127-128 independently forces False
+(the counter was just reset to 0 at line 140). The two guards mutually mask, so
+only a simultaneous break of both is detectable. Notably the STANDARD mutation
+on that guard - negating `==` to `!=` at line 125 - survives.
+
+Line 86 is dead data. "information_sufficiency_score": 0.7 is read only at
+mode_manager.py:197. SafetyChecker never reads it - extract_fail_safe_reasons
+discards runtime_models at safety_checker.py:60, and _reasons_from_analysis goes
+only through normalize_triggers. Substituting 0.0 / 0.7 / 999.0 / "garbage" /
+absent gives identical results.
+
+RECOMMENDED EDIT, and why it is not a weakening:
+    Drop line 92 and line 86.
+    The defensible argument is narrow and I state it narrowly: line 92's one bit
+    of coverage becomes UNCONSTRUCTIBLE rather than lost - you cannot mutate a
+    function that no longer exists. This is not "the assertion was worthless";
+    it is "the assertion's subject is being removed". If the campaign later
+    declines the deletion and edits only the test, this justification evaporates
+    and the drop must be re-argued from scratch.
+
+    Every surviving assertion is unchanged. I applied the exact deletion and
+    replayed the test against both trees: l.90 mode==NORMAL True/True,
+    l.91 not active_reasons True/True, affected_entities ()/(), confidence
+    1.0/1.0, explanation 'mode=normal; reasons=none' in both. Only
+    hasattr(should_return_to_normal) and hasattr(stable_recovery_counter) flip.
+
+    The test name "returns_to_normal_after_recovery" stays accurate: lines 90-91
+    are what actually test that, and they survive untouched.
+
+WHAT I AM NOT DOING, AND WHY. A candidate "replacement" set (previous_mode ==
+INFORMATION_RECOVERY, recovery_score == 1.0, started_at == 2.0) was proposed and
+then rejected under adversarial test. All three produce IDENTICAL results before
+and after the real 148-line deletion - they are provably blind to the change
+under review, so they fail the #9-A2 standard as the brief states it. Worse,
+`recovery_score == 1.0` is masked by existing line 91 exactly as line 92 is
+masked (mode_manager.py:283-284 is an OR; line 91 already forces the second
+disjunct), so it repeats the very defect used to condemn line 92.
+
+Bundling unrelated new coverage into a deletion commit and calling it a
+"replacement" would be dishonest bookkeeping. If the round wants genuinely
+change-relevant coverage, the real gap is elsewhere: nothing in tests/ asserts
+ModeManager-produced state.affected_entities or state.confidence, so the shared
+survivors _read_value / _read_float / _iter_analysis_triggers are guarded only
+by AttributeError. That is a separate piece of work, not this one.
+
+5.3  BASELINE - VERIFIED, AND STRONGER THAN CLAIMED
+--------------------------------------------------------------------------------
+    8 failed, 427 passed, 5 warnings in 2079.22s
+    (outputs/_rh_pytest_pre.txt, full run, this HEAD)
+
+Corroborated by FIVE further independent full-suite runs in outputs/ spanning
+Aug 25 - Sep 2 (_lane_clamp_pytest.txt, _ir_pytest_baseline.txt,
+_ir_pytest_fixed.txt, _sc_pytest_PRE.txt, _sc_pytest_POST.txt), every one at
+8 failed / 427 passed, wall times 1974-2398s, with a BYTE-IDENTICAL sorted
+failing-name set. Names are recorded as full unparametrized node IDs, so the
+Part 3 comparison can be name-for-name, not count-for-count.
+
+None of the 8 baseline failures is in the ModeManager/recovery subgraph. The one
+failsafe-sounding failure,
+tests/test_uav_sector_assignment.py::test_fire_tracker_still_overridden_by_search_mode_fail_safe,
+has zero ModeManager/SafetyChecker references and is insulated from this change.
+
+
+================================================================================
+6. IS DELETION ACTUALLY RIGHT? BOTH SIDES.
+================================================================================
+
+6.1  THE CASE AGAINST DELETING - BUILT AS STRONGLY AS THE EVIDENCE ALLOWS
+--------------------------------------------------------------------------------
+(a) THE CAPABILITY GAP IS REAL. The fail-safe mode machine is provably
+    memoryless. safety_checker.py:67-72 declares
+    `def classify_mode(self, reasons, current_mode: str = "normal") -> str:`
+    and its FIRST STATEMENT is `_ = current_mode`. The live caller threads the
+    previous mode in (mode_manager.py:71-74) and it is thrown away. The system
+    has ZERO exit hysteresis: one clean analysis cycle would drop it straight
+    out of a protective mode. That IS a genuine design weakness, and this dead
+    block is the only artifact in the repo that names it.
+
+(b) DELETING REMOVES SCAFFOLDING. The three blocking-reason frozensets encode
+    real domain judgement about which hazards should prevent recovery from
+    which mode. Someone implementing hysteresis properly would have to
+    re-derive that.
+
+(c) "LEAVE IT BUT DOCUMENT IT" IS EXPLICITLY ACCEPTABLE per the brief and
+    costs nothing in risk.
+
+6.2  WHY THE CASE AGAINST DOES NOT HOLD
+--------------------------------------------------------------------------------
+(a) IT IS AIMED AT THE WRONG GAP. should_return_to_normal gates ONLY the exit to
+    NORMAL. The instability actually measured is info<->safety_first: 178
+    transitions across 13 runs, with transitions_to_normal EMPTY in every single
+    run. A fully wired, fully plumbed gate would damp NONE of the observed
+    chattering, because reasons are never empty. It is evidence of a gap the
+    system is not currently suffering from.
+
+(b) NO SPEC TO DIVERGE FROM. The repo's entire doc set is 8 markdown files
+    (README.md, docs/01-04, src_extension/{ARCHITECTURE_BOUNDARIES,
+    MANAGING_SYSTEM_OVERVIEW,README_extension_structure}.md). A sweep for
+    hysteresis|dwell|debounce|stable.recovery|return.to.normal|recovery across
+    all 8 returns ONE hit: docs/04_clean_separation_table.md:214, about
+    `role_stability_timer` - a different, fully-live mechanism. No thesis, no
+    .rst/.tex, no spec, no design note describes ModeManager, mode transitions,
+    or a return-to-normal condition. There is no "step11 design note"; step11 is
+    only an in-code identifier. Deletion creates NO code-spec divergence.
+
+(c) THE SCAFFOLDING IS A TRAP, NOT A HEAD START. An implementer inheriting it
+    gets: a counter with WRONG CADENCE (update() runs 2x/step against
+    required_stable_recovery_updates = 2, so "two stable updates" silently means
+    one step); gates pointed at keys that do not exist on either data source;
+    one gate TYPE-INCOMPATIBLE with its only producer (str vs float); and an
+    asymmetry where RESCUE_ROUTE_UNSAFE enters SAFETY_FIRST but does not block
+    recovery from it, and GLOBAL_UNCERTAINTY enters DEGRADED but does not block
+    recovery from it - so wiring it in as-is would clear the gate after ONE step
+    for either reason. Four independent defects in code that has never run.
+
+(d) THE PATTERN IS NOT STRANDED. A working, correctly-cadenced structural twin
+    already exists: local_adaptation_generator.py:59 `WIND_SATURATE_DWELL_STEPS
+    = 2` with `_touch_wind_search_dwell` at :1432-1456 - identical
+    increment/reset shape, identical threshold value, live, consumed, tested,
+    and reached once per step rather than twice. A future implementer has a
+    correct model to copy and does not need this one.
+
+(e) "LEAVE IT" IS NOT FREE. ~130 lines execute twice per model step doing real
+    trigger-normalization allocation purely to write an integer nothing reads,
+    and this block has now consumed three investigation rounds. Documenting it
+    would mean documenting a false-shaped seam; a comment saying "this never
+    runs and could not work if it did" is strictly worse than not shipping it.
+
+6.3  ONE PRO-DELETION ARGUMENT I AM WITHDRAWING
+--------------------------------------------------------------------------------
+The "structurally unsatisfiable lookup" argument PROVES TOO MUCH and must not go
+into a commit message as written. The identical idiom on the identical key
+exists in LIVE, SHIPPED, non-dead code:
+
+    src_extension/adaptation/global_adaptation_generator.py:442-445
+        fire_confidence_map = read_value(
+            global_analysis_result, "fire_confidence_map",
+            read_value(runtime_models, "fire_confidence_map", {}))
+
+Its input is wildfire_model.py:1707 `analysis_snapshot.global_result.to_dict()`,
+whose key set is fixed at analysis_results.py:78-89 and contains no
+fire_confidence_map; the fallback is the same 8-key runtime_models. So that LIVE
+lookup also permanently returns {}, and belief_gap_regions
+(global_adaptation_generator.py:468-476) is permanently empty in production -
+same root cause, the map is one hop deeper.
+
+"The lookup can never resolve" is therefore a house-wide plumbing bug class, not
+a property that makes THIS gate uniquely incoherent. Applied consistently it
+would condemn shipped code nobody proposes deleting. Correct phrasing:
+MIS-PLUMBED EXACTLY LIKE ITS LIVE NEIGHBOURS. It still cannot work today; it
+just is not special.
+
+6.4  RECOMMENDATION
+--------------------------------------------------------------------------------
+DELETE.
+
+The case against does not survive contact with the evidence: born dead in this
+repo's entire history, no spec to diverge from, a correctly-built twin already
+exists for a future implementer, four independent defects inside code that has
+never run, and the capability it gestures at is not the one the system actually
+fails at. "Leave it but document it" would preserve a seam that is
+false-shaped - it advertises hysteresis whose gates cannot read their inputs.
+
+Conditional on:
+  1. The canonical 13 x 240 byte-identity run with the deletion ACTUALLY
+     applied (section 4.4). This is the campaign's own stated bar and has not
+     been met by any measurement so far.
+  2. The commit message saying WRITE-ONLY / observationally inert, not "dead
+     code" (section headline), and not repeating the withdrawn argument in 6.3.
+
+
+================================================================================
+7. TWO DECISIONS FOR YOU BEFORE PART 2
+================================================================================
+
+7.1  outputs/_fs_probe.py IS GIT-TRACKED AND WOULD BREAK
+--------------------------------------------------------------------------------
+`git ls-files --error-unmatch outputs/_fs_probe.py` succeeds. It reads
+`self.stable_recovery_counter` by direct attribute access at line 158 (also
+referenced at :25 and :55). Deleting __init__ lines 52-53 makes that tracked
+script raise AttributeError if anyone re-runs it.
+
+It is a frozen diagnostic artifact of the #7 round, not maintained code, and
+re-running it is not something the campaign does. But it is tracked, and this
+round's gate says "no orphaned helpers left behind".
+
+    OPTION A (recommended) - leave the file untouched, record the breakage
+              explicitly in the report. It is a historical record of a
+              measurement, and rewriting it would falsify that record.
+    OPTION B - patch line 158 to getattr(self, "stable_recovery_counter", None).
+    OPTION C - delete the script.
+
+I recommend A and will do A unless you say otherwise, because the artifact's
+value is as evidence of what was measured in round #7, and editing it to keep
+it runnable against code that no longer exists is worse than letting it be
+plainly historical.
+
+7.2  ADJACENT DEAD CODE - IN SCOPE OR NOT?
+--------------------------------------------------------------------------------
+Three things are dead or vestigial in the same file and are NOT orphaned by this
+deletion - they were already dead independently. Strictly out of scope; I will
+NOT touch them without your say-so:
+
+  (i)   ModeManager.should_override_utility (mode_manager.py:111-115) has ZERO
+        callers repo-wide, including tests. Production calls
+        SafetyChecker.should_override_utility directly
+        (fail_safe_planner.py:144, and mode_manager.py:329 inside
+        build_failsafe_dashboard_summary builds its own fresh checker). This is
+        a second dead ModeManager method.
+  (ii)  ModeManager.is_information_recovery_active (:117-118) is test-only.
+  (iii) The `current_mode` parameter threaded from mode_manager.py:71-74 into
+        classify_mode and discarded at safety_checker.py:72 (`_ = current_mode`).
+        If the rationale for this round is "stop advertising hysteresis the
+        system does not have", removing the counter block while leaving this
+        parameter standing is arguably half a cleanup.
+
+My view: keep this round tightly scoped to the counter subgraph. (i) and (iii)
+are each their own defect with their own diagnosis burden, and bundling them
+would make the byte-identity proof harder to attribute. But (iii) in particular
+is a genuine loose end and I would rather you decide than have me decide
+silently.
+
+
+================================================================================
+8. INCIDENTAL FINDINGS - LOGGED, NOT ACTED ON
+================================================================================
+F-A  THE SYSTEM NEVER RETURNS TO NORMAL. In all 13 runs, information_recovery
+     is entered at step 2 and NORMAL is never reached again
+     (transitions_to_normal = [] everywhere). 178 transitions, all among
+     non-normal modes. Whether that is correct behaviour for this scenario set
+     or a defect is unexamined.
+
+F-B  belief_gap_regions IS PERMANENTLY EMPTY IN PRODUCTION.
+     global_adaptation_generator.py:442-445 reads fire_confidence_map from a
+     source whose key set (analysis_results.py:78-89) does not contain it, with
+     a fallback (runtime_models) that does not either. LIVE code, real effect.
+     Deserves its own thread - the same argument that condemns the dead gate
+     implicates it, and it would be inconsistent to delete the dead twin while
+     leaving this uncatalogued.
+
+F-C  BLOCKING-SET ASYMMETRY. safety_checker.py:82-93 routes RESCUE_ROUTE_UNSAFE
+     into SAFETY_FIRST and GLOBAL_UNCERTAINTY into DEGRADED, but
+     mode_manager.py:24-36 omits both from the corresponding blocking sets. If
+     anyone ever wires the gate in, either reason would clear it after one step.
+     Moot if the deletion proceeds; recorded because it is the second latent
+     defect adjacent to the one at failsafe_part1.txt:337.
+
+F-D  THE #7 "LATENT BUG" AT failsafe_part1.txt:337 IS REAL AT THIS HEAD.
+     adaptation_manager.py:117 and :124 both drive the sole ModeManager.update
+     call site, so the counter would advance 2/step against a threshold of 2.
+     The report's phrase "on identical inputs" is wrong (execution_result
+     differs between the two calls); the claim survives only because
+     _update_stable_recovery_counter never reads that parameter.
+
+F-E  _json_safe (contracts.py:20) str()-fallback emits heap addresses for
+     default-repr objects - a latent allocation-sensitive nondeterminism
+     channel, currently unconnected (0 hits across ~455 KB of real output).
+
+
+================================================================================
+9. THE route_blocked GATE - REQUIRED THIS ROUND
+================================================================================
+Stated now rather than left to Part 3, because the answer is not the same as
+last round's.
+
+REQUIRED. YES.
+
+The #9-A2 round declined it and wrote, verbatim: "The next round that touches
+simulation source must run the gate again." This round touches
+src_extension/execution/mode_manager.py, which is unambiguously on the
+simulation code path - ModeManager.update() is called twice per model step from
+wildfire_model.py:1876 via adaptation_manager.py:117/:124.
+
+The contrast with #9-A2 is exact and worth stating: that round changed only
+renderers, a panel label and a test, and could argue from a display-only trace
+that zero simulation code was touched. This round deletes code that EXECUTES
+6,240 times per campaign. The "provably never executed" escape does not apply -
+only should_return_to_normal itself is never executed; the other 130 lines run.
+
+So the gate is not excused by the #9-A2 precedent; it is required BY it.
+
+
+================================================================================
+ARTIFACTS
+================================================================================
+  outputs/_rh_probe.py         runtime instrumentation, 13 runs x 240 steps
+  outputs/_rh_probe.json       raw measurements
+  outputs/_rh_table.py|.txt    per-run table
+  outputs/_rh_pytest_pre.txt   test baseline at this HEAD (8 failed/427 passed)
+
+================================================================================
+STATUS: PART 1 COMPLETE. NOTHING MODIFIED. AWAITING CONFIRMATION FOR PART 2.
+Open questions: 7.1 (_fs_probe.py) and 7.2 (adjacent dead code scope).
+================================================================================

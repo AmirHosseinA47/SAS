@@ -11,37 +11,6 @@ from ..analysis.trigger_objects import TriggerSignal, normalize_triggers
 from .failsafe_modes import FailSafeMode, FailSafeReason, FailSafeState, normalize_mode, normalize_reason
 from .safety_checker import SafetyChecker
 
-_INFORMATION_REASONS = frozenset(
-    {
-        FailSafeReason.INFORMATION_INSUFFICIENT,
-        FailSafeReason.SEARCH_MODE_REQUIRED,
-    }
-)
-
-_INFORMATION_SUFFICIENCY_RECOVERY = 0.6
-_MEAN_FIRE_CONFIDENCE_RECOVERY = 0.5
-_INFORMATION_TRIGGER_TYPES = frozenset({"SEARCH_MODE_REQUIRED", "INFORMATION_INSUFFICIENT"})
-_DEGRADED_BLOCKING_REASONS = frozenset(
-    {
-        FailSafeReason.CRITICAL_COMMUNICATION,
-        FailSafeReason.INSTABILITY,
-    }
-)
-_SAFETY_FIRST_BLOCKING_REASONS = frozenset(
-    {
-        FailSafeReason.COLLISION_RISK,
-        FailSafeReason.EXTREME_DRIFT,
-        FailSafeReason.NO_FEASIBLE_PATH,
-    }
-)
-_EMERGENCY_BLOCKING_REASONS = frozenset(
-    {
-        FailSafeReason.CRITICAL_BATTERY,
-        FailSafeReason.COLLISION_RISK,
-        FailSafeReason.NO_FEASIBLE_PATH,
-    }
-)
-
 
 class ModeManager:
     """Fail-safe mode state machine backed by ``SafetyChecker``."""
@@ -49,8 +18,6 @@ class ModeManager:
     def __init__(self, safety_checker: SafetyChecker) -> None:
         self._checker = safety_checker
         self.current_state = FailSafeState(mode=FailSafeMode.NORMAL)
-        self.stable_recovery_counter = 0
-        self.required_stable_recovery_updates = 2
 
     def update(
         self,
@@ -100,12 +67,6 @@ class ModeManager:
             explanation=self._build_explanation(new_mode, active_reasons),
             previous_mode=previous_mode,
         )
-        self._update_stable_recovery_counter(
-            analysis_snapshot=analysis_snapshot,
-            planning_result=planning_result,
-            execution_result=execution_result,
-            runtime_models=runtime_models,
-        )
         return self.current_state
 
     def should_override_utility(self) -> bool:
@@ -116,115 +77,6 @@ class ModeManager:
 
     def is_information_recovery_active(self) -> bool:
         return self.current_state.mode == FailSafeMode.INFORMATION_RECOVERY
-
-    def should_return_to_normal(
-        self,
-        runtime_models: object | None = None,
-        analysis_snapshot: object | None = None,
-    ) -> bool:
-        if self.current_state.mode == FailSafeMode.NORMAL:
-            return False
-        if self.stable_recovery_counter < self.required_stable_recovery_updates:
-            return False
-        return self._recovery_conditions_satisfied(runtime_models, analysis_snapshot)
-
-    def _update_stable_recovery_counter(
-        self,
-        *,
-        analysis_snapshot: object | None,
-        planning_result: object | None,
-        execution_result: object | None,
-        runtime_models: object | None,
-    ) -> None:
-        if self.current_state.mode == FailSafeMode.NORMAL:
-            self.stable_recovery_counter = 0
-            return
-        if self._recovery_conditions_satisfied(runtime_models, analysis_snapshot):
-            self.stable_recovery_counter += 1
-        else:
-            self.stable_recovery_counter = 0
-
-    def _recovery_conditions_satisfied(
-        self,
-        runtime_models: object | None,
-        analysis_snapshot: object | None,
-    ) -> bool:
-        reasons = set(self.current_state.active_reasons)
-        mode = self.current_state.mode
-
-        if not reasons:
-            return True
-
-        if mode == FailSafeMode.INFORMATION_RECOVERY:
-            return self._information_recovery_ready(runtime_models, analysis_snapshot, reasons)
-        if mode == FailSafeMode.DEGRADED:
-            return not (reasons & _DEGRADED_BLOCKING_REASONS)
-        if mode == FailSafeMode.SAFETY_FIRST:
-            return not (reasons & _SAFETY_FIRST_BLOCKING_REASONS)
-        if mode == FailSafeMode.EMERGENCY:
-            return not (reasons & _EMERGENCY_BLOCKING_REASONS)
-        return False
-
-    def _information_recovery_ready(
-        self,
-        runtime_models: object | None,
-        analysis_snapshot: object | None,
-        reasons: set[FailSafeReason],
-    ) -> bool:
-        if not (reasons & _INFORMATION_REASONS):
-            return True
-        if self._information_sufficiency_score(runtime_models, analysis_snapshot) >= _INFORMATION_SUFFICIENCY_RECOVERY:
-            return True
-        mean_fire_confidence = self._mean_fire_confidence_map(runtime_models, analysis_snapshot)
-        if (
-            mean_fire_confidence is not None
-            and mean_fire_confidence >= _MEAN_FIRE_CONFIDENCE_RECOVERY
-        ):
-            return True
-        if not self._information_triggers_present(analysis_snapshot):
-            return True
-        return False
-
-    def _information_sufficiency_score(
-        self,
-        runtime_models: object | None,
-        analysis_snapshot: object | None,
-    ) -> float:
-        for source in (runtime_models, analysis_snapshot):
-            if source is None:
-                continue
-            for key in (
-                "information_sufficiency_score",
-                "information_sufficiency",
-            ):
-                value = self._read_float(source, key, None)
-                if value is not None:
-                    return value
-        return 0.0
-
-    def _mean_fire_confidence_map(
-        self,
-        runtime_models: object | None,
-        analysis_snapshot: object | None,
-    ) -> float | None:
-        for source in (runtime_models, analysis_snapshot):
-            if source is None:
-                continue
-            direct = self._read_float(source, "mean_fire_confidence_map", None)
-            if direct is not None:
-                return direct
-            fire_map = self._read_value(source, "fire_confidence_map", None)
-            if isinstance(fire_map, dict) and fire_map:
-                values = [float(value) for value in fire_map.values() if isinstance(value, (int, float))]
-                if values:
-                    return sum(values) / len(values)
-        return None
-
-    def _information_triggers_present(self, analysis_snapshot: object | None) -> bool:
-        for signal in self._iter_analysis_triggers(analysis_snapshot):
-            if signal.name.strip().upper() in _INFORMATION_TRIGGER_TYPES:
-                return True
-        return False
 
     @staticmethod
     def _iter_analysis_triggers(analysis_snapshot: object | None) -> tuple[TriggerSignal, ...]:
