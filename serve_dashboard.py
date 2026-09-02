@@ -60,8 +60,10 @@ def _cell_color(c):
         return cfv.SMOKE_COLORS[0]
     if c.is_burning():
         return _fire_color(c.get_fuel())
-    if c.is_burnt() or getattr(c, "has_burned", False):
-        return "#2b2b2b"
+    if c.is_burnt():
+        return "#2b2b2b"  # burnt: fuel spent, absorbing, cannot re-ignite
+    if getattr(c, "has_burned", False):
+        return "#895e00"  # scorched: burned but still fuelled, re-ignites
     return _veg_color(c.get_fuel())
 
 
@@ -129,17 +131,24 @@ def _capture_frame(model, step):
     # are not a bug, but rendered as bright green they look out of place inside the burn
     # scar, so we tint them a muted scar-green here so the burnt region reads contiguous.
     # They stay visibly green (not charred) — we are not claiming they burned.
-    def _is_dark(cc):
+    # Deliberately the SAME predicate as _cell_color's burned-family test, not a
+    # colour test - scorched no longer renders dark. It does two jobs here: the
+    # self-guard below MUST match _cell_color exactly, or the muting overwrite
+    # would repaint scorched cells with the "spared veg" green; and the neighbour
+    # count asks "is this pocket inside the burn scar", which is a question about
+    # where the fire has been (has_burned), not about residual fuel.
+    # See outputs/scorchedcolour_part1.txt section 3.
+    def _has_burned_family(cc):
         return cc.is_burnt() or getattr(cc, "has_burned", False)
     for (x, y), c in fire_cells.items():
         if "%d,%d" % (x, y) in cells:
             continue  # already fire/smoke/charred
-        if c.smoke.is_smoke_active() or c.is_burning() or _is_dark(c):
+        if c.smoke.is_smoke_active() or c.is_burning() or _has_burned_family(c):
             continue
         dark_n = 0
         for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
             n = fire_cells.get((x + dx, y + dy))
-            if n is not None and _is_dark(n):
+            if n is not None and _has_burned_family(n):
                 dark_n += 1
         if dark_n >= 2:
             cells["%d,%d" % (x, y)] = "#2f4a1a"  # muted "spared vegetation" green
@@ -615,7 +624,7 @@ document.getElementById('stepbtn').onclick=function(){if(playing)stopPlaying();d
 
 function setLegend(){document.getElementById('maplegend').innerHTML=probMode
   ?'<span><i class="sw" style="background:#ffffff"></i>low prob</span><span><i class="sw" style="background:#636363"></i>med</span><span><i class="sw" style="background:#000000;border:1px solid #444"></i>high</span><span><i class="sw" style="background:#00FFFF"></i>victim-searcher</span><span><i class="sw" style="background:#FF00FF"></i>fire-tracker</span>'
-  :'<span><i class="sw" style="background:#fe5501"></i>fire</span><span><i class="sw" style="background:#ababab"></i>smoke</span><span><i class="sw" style="background:#2b2b2b"></i>charred</span><span><i class="sw" style="background:#2f4a1a"></i>spared veg</span><span><i class="sw" style="background:#FF00FF"></i>fire-tracker</span><span><i class="sw" style="background:#00FFFF"></i>victim-searcher</span><span><i class="sw" style="background:#FFFF00"></i>victim</span><span><i class="sw" style="background:#00FFCC"></i>firefighter</span><span><i class="sw" style="background:#ffd75a"></i>assigned-to</span>';}
+  :'<span><i class="sw" style="background:#fe5501"></i>fire</span><span><i class="sw" style="background:#ababab"></i>smoke</span><span><i class="sw" style="background:#2b2b2b"></i>burnt (spent)</span><span><i class="sw" style="background:#895e00"></i>scorched (re-ignites)</span><span><i class="sw" style="background:#2f4a1a"></i>spared veg</span><span><i class="sw" style="background:#FF00FF"></i>fire-tracker</span><span><i class="sw" style="background:#00FFFF"></i>victim-searcher</span><span><i class="sw" style="background:#FFFF00"></i>victim</span><span><i class="sw" style="background:#00FFCC"></i>firefighter</span><span><i class="sw" style="background:#ffd75a"></i>assigned-to</span>';}
 
 function showEval(e){const box=document.getElementById('eval');box.style.display='block';
   const ok=e.all_terminal?'var(--green)':'var(--amber)';box.style.borderLeftColor=ok;
@@ -669,7 +678,7 @@ function render(fr){
   document.getElementById('terminal').innerHTML=bb(m.all_victims_terminal);
   document.getElementById('missionbar').innerHTML=`<div style="width:${100*rc/tot}%;background:var(--green)"></div><div style="width:${100*dc/tot}%;background:var(--red)"></div><div style="width:${100*uc/tot}%;background:var(--amber)"></div>`;
   const wv=fire.wind_vector||[];
-  document.getElementById('fire').innerHTML=kv('active fire',`<b style="color:var(--red)">${fire.active_fire_cells||0}</b>`)+kv('smoke',`<span class="k">${fire.active_smoke_cells||0}</span>`)+kv('burnt',`<b style="color:var(--amber)">${fire.burnt_cells||0}</b>`)+kv('charred',fire.has_burned_cells||0)+kv('wind',`${badge(fire.wind_direction||'?','var(--teal)')} (${wv[0]||0}, ${wv[1]||0})`);
+  document.getElementById('fire').innerHTML=kv('active fire',`<b style="color:var(--red)">${fire.active_fire_cells||0}</b>`)+kv('smoke',`<span class="k">${fire.active_smoke_cells||0}</span>`)+kv('burnt',`<b style="color:var(--amber)">${fire.burnt_cells||0}</b>`)+kv('ever burned',fire.has_burned_cells||0)+kv('wind',`${badge(fire.wind_direction||'?','var(--teal)')} (${wv[0]||0}, ${wv[1]||0})`);
   const conf=comm.delivery_confidence,cc=conf>=0.75?'var(--green)':(conf>=0.5?'var(--amber)':'var(--red)');
   document.getElementById('comms').innerHTML=kv('mode',badge(comm.communication_mode||'?','var(--accent)'))+kv('delivery',`<b style="color:${cc}">${conf!=null?conf.toFixed(2):'&mdash;'}</b>`)+kv('msg load',comm.message_load||0)+kv('relay',bb(comm.relay_needed,'var(--amber)','var(--green)'));
   const fmode=fs.current_mode||'?',fmc=String(fmode).includes('recovery')?'var(--amber)':'var(--green)';

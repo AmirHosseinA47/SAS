@@ -211,7 +211,11 @@ def test_burned_cell_renders_dark_not_green_when_fire_stops() -> None:
 
     assert not fire.is_burning()
     assert not fire.is_burnt()
-    assert portrayal["Color"] == "#2b2b2b"
+    # Scorched ground (has_burned, fuel remaining, not burning) re-ignites 96.6%
+    # of the time; burnt ground is absorbing and never does. They must not share
+    # a colour - an operator reading the map has to be able to tell them apart.
+    assert portrayal["Color"] == "#895e00"
+    assert portrayal["Color"] != "#2b2b2b"
     assert portrayal["Color"] not in VEGETATION_COLORS
 
 

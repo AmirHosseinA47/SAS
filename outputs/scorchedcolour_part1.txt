@@ -1,0 +1,686 @@
+================================================================================
+DEFECT #9-A2 - PART 1: DESIGN
+Give scorched ground its own colour, distinct from burnt. Display-only.
+================================================================================
+
+BRANCH   claude/position-rename-and-hazard-revalidation
+HEAD     a89a2ab   (confirmed at session start; nothing committed since)
+STATUS   DESIGN ONLY - no tracked file modified. Awaiting confirmation.
+
+Everything below was re-verified at this HEAD. Nothing is carried over from
+outputs/burntcells_part1.txt on trust; where that document is cited it is
+because I re-read the code and it still holds.
+
+
+================================================================================
+0.  HEADLINE
+================================================================================
+
+  scorched colour        #895e00   "ember bronze"
+  burnt colour           #2b2b2b   unchanged
+  separation             31.27 dE2000 plain / 27.52 under the gridline
+                         (today: 0.00 - they are the same string)
+
+  _is_dark               scorched STAYS dark, for BOTH of its uses.
+                         Renamed, because the name becomes a false colour claim.
+                         Separately: THE PASS IT GUARDS IS DEAD CODE. Proven
+                         empirically below. Not repaired this round.
+
+  stat tiles             yes, but only the honest half. Relabel the misleading
+                         "charred" tile and add the legend swatch. The exact
+                         scorched COUNT is not obtainable without a new field in
+                         dashboard_state_builder.py, which is outside the scope
+                         you set - deferred, with proof that the cheap
+                         alternative (subtract in JS) is arithmetically wrong.
+
+  test change            ONE assertion, at :214, from "#2b2b2b" to "#895e00",
+                         plus a new assertion that it is NOT the burnt colour.
+                         Strengthened, not weakened. Details in section 4.
+
+
+================================================================================
+1.  THE CURRENT COLOUR SELECTION, QUOTED, WITH LINE NUMBERS CONFIRMED
+================================================================================
+
+Both renderers key on "is_burnt() OR has_burned", as reported. CONFIRMED.
+
+main.py:73-81  (the branch is at :77, the literal at :78)
+
+    73                else:
+    74                    if agent.is_burning():  # showing fire
+    75                        idx = normalize_fuel_values(agent.get_fuel(), FUEL_UPPER_LIMIT)
+    76                        portrayal.update({"Color": FIRE_COLORS[idx], "Layer": 0})
+    77                    elif agent.is_burnt() or getattr(agent, "has_burned", False):  # burnt/scorched
+    78                        portrayal.update({"Color": "#2b2b2b", "Layer": 0})
+    79                    else:  # showing vegetation
+    80                        idx = normalize_fuel_values(agent.get_fuel(), FUEL_UPPER_LIMIT)
+    81                        portrayal.update({"Color": VEGETATION_COLORS[idx], "Layer": 0})
+
+serve_dashboard.py:58-65  (the branch is at :63, the literal at :64)
+
+    58    def _cell_color(c):
+    59        if c.smoke.is_smoke_active():
+    60            return cfv.SMOKE_COLORS[0]
+    61        if c.is_burning():
+    62            return _fire_color(c.get_fuel())
+    63        if c.is_burnt() or getattr(c, "has_burned", False):
+    64            return "#2b2b2b"
+    65        return _veg_color(c.get_fuel())
+
+Line numbers as given in the brief: CONFIRMED, both files, exactly.
+Note main.py:77 carries a trailing "# burnt/scorched" comment - the code has
+always known these are two states; only the colour merges them.
+
+Precedence is identical in both: smoke wins, then fire, then the burned family,
+then vegetation. So the scorched colour is only ever painted on a cell that is
+NOT smoking and NOT burning. That is what makes this a safe two-way split of
+one branch rather than a change to the branch order.
+
+A THIRD site carries the same merged predicate - serve_dashboard.py:133,
+inside _capture_frame. Section 3. There is no fourth: a repo-wide sweep
+(worktrees and .venv excluded) returns exactly three occurrences of
+"is_burnt() or ... has_burned" - main.py:77, serve_dashboard.py:63,
+serve_dashboard.py:133.
+
+EMPIRICAL CONFIRMATION OF THE MERGE AT THIS HEAD. Rendering a real run
+(D/east/half, seed 101, step 60) through the live _cell_color:
+
+    virgin    n=2044   #175808 etc
+    burning   n=204    #fe2301 etc
+    scorched  n=155    #2b2b2b     <-- 1.60x the burnt population
+    burnt     n=97     #2b2b2b     <-- identical string
+
+    outputs/_sc_map_before.svg, outputs/_sc_candidates.png
+
+The 1.60x here is this seed's figure; the 1.73x in burntcells_part1.txt is the
+five-seed pooled figure. Same conclusion: the charcoal region an operator sees
+at step 60 is MAJORITY not-safe.
+
+
+================================================================================
+2.  THE COLOUR - #895e00, "EMBER BRONZE"
+================================================================================
+
+2.1  WHAT IT HAS TO SIT ALONGSIDE
+
+Not picked in isolation. The full set of colours that can appear on one 50x50
+map at the same time, quoted from source:
+
+  common_fixed_variables.py:123-124
+    VEGETATION_COLORS = ["#414141", "#9eff89", "#85e370", "#72d05c", "#62c14c",
+                         "#459f30", "#389023", "#2f831b", "#236f11", "#1c630b",
+                         "#175808", "#124b05"]
+  common_fixed_variables.py:125-126
+    FIRE_COLORS       = ["#414141", "#d8d675", "#eae740", "#fefa01", "#fed401",
+                         "#feaa01", "#fe7001", "#fe5501", "#fe3e01", "#fe2f01",
+                         "#fe2301", "#fe0101"]
+  common_fixed_variables.py:127
+    SMOKE_COLORS      = ["#ababab"]
+
+  inline in the renderers
+    "#2b2b2b"  burnt          main.py:78, serve_dashboard.py:64
+    "#2f4a1a"  spared veg     serve_dashboard.py:145
+    "#1c630b"  canvas ground  serve_dashboard.py drawMap
+    rgba(0,0,0,0.18) gridline drawn OVER every cell, serve_dashboard.py drawMap
+
+  overlay markers drawn ON TOP of the ground fill
+    UAV      #00FFFF #FF00FF #0066CC #FF8C00 #888888 Black   (serve_dashboard.py:69-71)
+    victim   #FFFF00 #FFA500 #00AAFF #000000                 (serve_dashboard.py:74-76)
+    firefighter #00FFCC, dead #000000
+    assignment lines rgba(255,215,90,0.8)
+
+  BLACK_AND_WHITE_COLORS (common_fixed_variables.py:128) is the probability-map
+  mode only; in that mode no ground colour is drawn at all, so it does not
+  constrain this choice.
+
+THE TRAP IN THIS PALETTE, and the reason "just use a darker/lighter charcoal"
+fails: VEGETATION_COLORS[0] and FIRE_COLORS[0] are both "#414141", a mid-dark
+GREY. There is already a grey sitting 7.11 dE2000 from #2b2b2b. Any charcoal
+variant for scorched has to thread between #2b2b2b and #414141, and there is
+no room: the incumbent burnt colour own nearest neighbour in the whole
+palette is that grey, at 7.11. A lightness-only answer would create a
+three-way grey confusion where there is currently a two-way one.
+
+2.2  THE CHOICE AND THE MEASUREMENTS
+
+  #895e00     sRGB(137,94,0)     CIELAB L*=43.25 a*=10.67 b*=51.04
+                                 C*=52.14  h=78.2 deg
+
+I re-computed this myself rather than accepting it. outputs/_sc_deltae.py
+implements sRGB->linear->XYZ(D65)->CIELAB and full CIEDE2000 with no
+third-party dependency, and is validated against 9 Sharma et al. reference
+pairs before use (worst error 4.17e-05).
+
+  min dE2000 from #895e00 over the 37 co-occurring colours: 27.34
+    27.34  #414141  VEG[0]/FIRE[0] grey   <-- worst case
+    27.38  #fe7001  FIRE[6]
+    27.49  #2f4a1a  spared veg
+    27.54  #ff8c00  UAV victim_confirmer
+    27.56  #888888  UAV return_to_base
+    28.61  #fe5501  FIRE[7]
+
+  The five-way near-tie at 27.34-27.56 is the signature of a colour sitting at
+  the CENTRE of the largest empty region of this palette colour space, not
+  perched on the edge of one. That is what you want: no single neighbour it is
+  fragile against.
+
+  THE PAIR THIS CHANGE EXISTS TO CREATE
+    #895e00 vs #2b2b2b, plain                        31.27
+    #895e00 vs #2b2b2b, both under the gridline      27.52
+    today                                             0.00
+
+  FOR CONTEXT, the incumbent own worst case:
+    min dE2000 from #2b2b2b over the same 37 colours: 7.11  (vs #414141)
+  The new colour is better separated from the palette (27.34) than the colour
+  already shipping (7.11). This does not crowd the palette; it uses the space
+  the palette was leaving empty.
+
+  SANITY, mechanically checked: #895e00 is not in VEGETATION_COLORS, not in
+  FIRE_COLORS, is not #ababab, not #2f4a1a, not #2b2b2b. This matters because
+  test_fire_self_limits_does_not_burn_whole_map (:280-339) calls
+  main.agent_portrayal on live scorched cells at :324 and asserts
+  green_has_burned == 0 at :337 - see section 4.3.
+
+2.3  WHY THIS HUE AND NOT A DARK RED OR A BROWN
+
+Four colours were proposed under four independent lenses (collision analysis,
+wildfire-cartography semantics, colour-vision accessibility, minimal-change
+conservatism) and scored by three independent judges (an adversarial one that
+re-derived every number from scratch, an operator one, an implementer one).
+#895e00 won all three, unanimously. The conventional answers were tried and
+lost on measurement, not on taste:
+
+  #66301c  "ember char", dark burnt-sienna. BEST SEMANTIC READ of the four -
+           the colour you would reach for picking by intuition. Rejected: its
+           separation from burnt collapses when chroma does. Two independent
+           re-implementations measured 13.88 dE protanopia and 6.45 dE
+           achromatic against #2b2b2b. The proposal claim of 23.78 protan did
+           not survive re-checking, and was backwards on its face - a warm
+           brown against neutral charcoal must LOSE separation as chroma
+           collapses, not gain it. On a greyscale print or a washed-out
+           projector, ember char re-merges with burnt. That is this defect
+           returning.
+
+  #4d3020  "smouldering brown". Same failure, worse: 3.84 dE achromatic vs
+           burnt. This lens did the best source analysis of the four, and its
+           own neutral-grey sweep is what proves a lightness-only answer is
+           impossible.
+
+  #9a6960  "scorched terracotta". Wins the narrow contest on burnt separation
+           under colour-vision deficiency (24.65 worst case). Rejected because
+           it bought that margin by moving the ground to L*49, which parks it
+           19.34 dE from #888888, the return_to_base UAV drawn ON TOP of it,
+           at a WCAG contrast of 1.30:1 - the marker disappears into the
+           ground. Its submitted table omitted all 11 overlay colours, so this
+           was concealed rather than weighed. Visible in the rendered
+           comparison: the terracotta panel also blurs into the smoke grey.
+
+  #895e00  holds its separation from burnt in EVERY condition tested -
+           31.3 normal, 32.0 deuteranopia, 29.4 protanopia, 34.6 tritanopia,
+           19.9 achromatic - and stays clear of every overlay marker (nearest
+           is #FF8C00 at 27.54). It is warm (h=78.2 deg), so it reads as
+           fire-adjacent ground rather than as safe ground, but it sits 14-41
+           L* BELOW the entire fire ramp, so it cannot be mistaken for an
+           active burn - and it is never drawn on a burning or smoking cell
+           anyway, by branch order.
+
+I also looked at the rendered result rather than trusting the arithmetic. All
+six candidates were painted onto the same real run at step 60
+(outputs/_sc_candidates.png). The verdict from the image matches the numbers:
+#9a6960 blurs into the smoke grey; #66301c and #4d3020 are legible but
+noticeably quieter than the fire they sit behind; #895e00 separates cleanly
+from both the charcoal and the greens at 7px cells.
+
+HONEST WEAKNESS, recorded so it is not discovered later. At h=78.2 deg this is
+a yellow-bronze, not an ember red. Out of context it could read as dry
+stubble. In context it will always be surrounded by burnt, fire and smoke, and
+the legend will name it - but if the priority is that the colour be
+self-evidently "ember" to someone who never reads a legend, #7a3b12 is the
+nearest defensible fallback (still 25.4 dE from burnt normal-vision, 20.1
+protan), at the cost of ~4 dE of separation and of the achromatic margin.
+I recommend #895e00 because a colour that fails on a greyscale projector fails
+in exactly the conditions where an operator is most likely to be misreading
+the map already.
+
+A SECOND HONEST NOTE, on the whole approach. Under protanopia #895e00 lands
+1.02 dE from #fe2301. That is not a regression this change introduces: the
+shipped palette already puts the canvas background #1c630b and the hottest
+fire #fe0101 at 0.40 dE under protanopia, so a protanope already cannot
+separate the fire front from unburned ground; only 1 of the 666 existing pairs
+is tighter than the one I add. The critical scorched/burnt split survives at
+29.4 dE. The real conclusion is that colour alone should not be the only
+hazard channel on this display - a hatch or stipple on scorched cells would be
+robust to every deficiency at once. That is a follow-up, not a blocker, and I
+am not doing it in a round scoped to a colour literal.
+
+2.4  CONSTANT OR INLINE LITERAL
+
+Inline literal, matching the file existing convention: #2b2b2b is inline twice
+and #2f4a1a is inline once; common_fixed_variables.py holds ramps
+(VEGETATION_COLORS, FIRE_COLORS, SMOKE_COLORS), not single-state colours.
+Adding a name to common_fixed_variables.py would also put a new binding into a
+module that agents.py and wildfire_model.py import and that
+apply_scenario_config mutates - a needless simulation-side edit in a
+display-only round, and outside the scope you set.
+
+The cost is that the value appears in three places (two renderers, one test).
+That is the same exposure #2b2b2b already has, and the test is what pins it.
+Recorded as a known trade, not hidden.
+
+
+================================================================================
+3.  _is_dark  (serve_dashboard.py:132-145) - DECISION AND ARGUMENT
+================================================================================
+
+3.1  A FACT THAT HAS TO COME FIRST: THIS PASS IS DEAD CODE
+
+Two agents arguing OPPOSITE sides of this question independently discovered
+the same thing, so I verified it empirically rather than by reading.
+
+_capture_frame writes cells["x,y"] = col UNCONDITIONALLY for every Fire agent
+at serve_dashboard.py:119 - that is the "send every cell colour, including
+plain vegetation, so the jungle renders" change, comment at :116-118. The
+muting loop then begins, at :135:
+
+    if "%d,%d" % (x, y) in cells:
+        continue  # already fire/smoke/charred
+
+Every key is already in cells. The guard is universally true. Nothing below
+:135 has executed since :119 was introduced.
+
+MEASURED, not inferred (outputs/_sc_muteprobe.py, real run, 120 frames):
+
+    TOTAL cells emitted over 120 frames : 300000
+    TOTAL "#2f4a1a" muted cells emitted : 0
+    cells surviving guard 1             : 0 of 2500
+
+The legend at serve_dashboard.py:618 has been advertising a "spared veg"
+swatch for a colour the canvas has never painted. The comment at :118 is the
+fossil of the precondition that :119 removed.
+
+3.2  DECISION
+
+  (a) THE SELF-GUARD (:137)   - scorched MUST stay "dark".  NOT NEGOTIABLE.
+  (b) THE NEIGHBOUR COUNT (:139-141) - scorched STAYS "dark" too.
+  (c) The predicate is RENAMED, because after the split "dark" is a false
+      claim about scorched, and the merge this defect is about began as
+      exactly this: one symbol standing for two states because they happened
+      to share a pixel value.
+  (d) The dead guard is NOT repaired this round.
+
+3.3  WHY (a) IS NOT A JUDGEMENT CALL
+
+Both sides of the argument agreed on this one, from opposite directions. The
+muting line at :145 is an UNCONDITIONAL overwrite that runs AFTER _cell_color
+has already assigned the scorched colour. The self-guard is the only thing
+standing between the new scorched colour and being painted over.
+
+Scorched cells have fuel > 0 and are by definition not burning and not
+smoking, so the self-guard is the ONLY test they would fail. Drop them from it
+and they are all eligible for muting. A cell that re-ignites 96.6% of the time
+and carries a ~15x per-step firefighter death rate would then be painted
+#2f4a1a and labelled in the legend as "spared veg".
+
+That is strictly worse than the defect being fixed. Today bug says "this
+dangerous ground is safe burnt ground". That bug would say "this dangerous
+ground is vegetation the fire never reached" - we would have built a colour to
+mark the hazard and then overwritten it, on its own footprint, with the map
+affirmative safety colour.
+
+The structural rule that prevents it: the self-guard must remain LITERALLY the
+same expression as _cell_color burned-family test at :63. Both new colours
+still live under that same has_burned umbrella. Keep the two expressions
+identical and the guard is correct by construction; derive "darkness" a second
+way and they can desynchronise.
+
+3.4  WHY (b) - THE ARGUABLE HALF - ALSO STAYS
+
+The case for removing scorched from the neighbour count is real and I want it
+on the record, because it is the intuitive answer: a green cell with two
+scorched neighbours is arguably the most dangerous unburnt cell on the map -
+intact fuel against ground that relights 96.6% of the time - and the pass
+specifically selects it for dimming. Under a burnt-only count, a mute would
+mean at least two neighbours in a genuinely absorbing state (0 re-ignitions in
+23,126 opportunities), which is a claim the model can actually back.
+
+Three things defeat it.
+
+  1. THE PASS CANNOT MAKE A SAFETY CLAIM AT ALL. It only ever recolours cells
+     that are unburnt, and it recolours them green -> green. Its whole output
+     vocabulary is one flat "muted or not" on honestly-green cells. It cannot
+     make any cell look safer or more dangerous than it is; the entire hazard
+     encoding is carried by the fire / scorched / burnt colours and the
+     legend. This is a SHAPE heuristic - "is this pocket embedded in the burn
+     scar" - and "scar" means ground the fire has been through, which is
+     exactly has_burned. Fuel remaining is a claim about the FUTURE; the
+     neighbour count asks a question about the PAST.
+
+  2. REMOVING IT WOULD CREATE A PHANTOM EVENT AND A STROBE. has_burned is
+     monotone; burning is not. At step 60 scorched outnumbers burnt, so a
+     pocket showing 4 dark neighbours today would show ~1.5 and fall under the
+     >= 2 threshold - the muting would switch off through the middle of a run
+     and back on late as scorched drains into burnt. An operator would watch
+     pockets that never change state sit bright green and then silently darken
+     around step 130. Worse, burning cells are dark under any variant, so a
+     scorched-but-quiet neighbour that is not dark while scorched-and-aflame
+     IS dark would flip on every re-ignition cycle - and 96.6% of them
+     re-ignite, repeatedly. A pocket resting on two such neighbours would
+     flicker between #2f4a1a and bright green every few frames, tracking
+     nothing in the world.
+
+  3. dark_n >= 2 IS A TUNED CONSTANT, TUNED AGAINST A DARK SET THAT HAS ALWAYS
+     INCLUDED SCORCHED. Shrinking the set silently tightens the threshold.
+     Recovering the coverage would mean >= 1, which over-mutes.
+
+And the decisive one, given 3.1: THE PASS IS DEAD. Counting scorched is not
+"keeping the current behaviour" - there is no current behaviour. But by the
+same token, NOT counting it is not a fix either; it is shipping a new,
+unobservable, unvalidatable effect into a dead branch, in a round whose gate
+is "simulation provably unchanged, colour visibly split". The conservative
+choice is to leave the semantics exactly as the pass author tuned them and
+change only what is demonstrably wrong - the name.
+
+3.5  WHAT ACTUALLY CHANGES AT :132-133
+
+Nothing semantic. The nested function is renamed so it stops asserting a
+colour, and the decision is recorded where the next reader will find it:
+
+    -    def _is_dark(cc):
+    -        return cc.is_burnt() or getattr(cc, "has_burned", False)
+    +    # Deliberately the SAME predicate as _cell_color burned-family test
+    +    # (:63), not a colour test - scorched no longer renders dark. Two jobs:
+    +    # the self-guard below MUST match :63 exactly or the muting overwrite
+    +    # would repaint scorched cells with the "spared veg" green; and the
+    +    # neighbour count asks "is this pocket inside the burn scar", which is
+    +    # a question about where the fire has been (has_burned), not about
+    +    # residual fuel. See outputs/scorchedcolour_part1.txt section 3.
+    +    def _has_burned_family(cc):
+    +        return cc.is_burnt() or getattr(cc, "has_burned", False)
+
+Renaming a function-local closure with three call sites in the same block. No
+caller outside _capture_frame; verified.
+
+3.6  THE DEAD GUARD - REPORTED, NOT FIXED
+
+Repairing :135 would ship a brand-new visible effect (#2f4a1a appearing on the
+map for the first time) in a round whose gate is that the change is a colour
+split with no other consequence. It also cannot be validated by this round
+control, which compares simulation state, not muted pixels. It belongs to its
+own round, and whoever takes it should know that the predicate it will revive
+is the one decided in 3.4 above. Flagged; not touched.
+
+
+================================================================================
+4.  THE TEST - EXACTLY WHICH ASSERTIONS CHANGE, AND TO WHAT
+================================================================================
+
+4.1  WHICH TEST IS THE SCORCHED ONE (the naming is counter-intuitive)
+
+tests/test_executor_routing_and_burnt.py:189  test_burnt_cell_portrayal_is_not_green
+    fire.burnt = True ; fire.fuel = 0 ; has_burned never set
+    -> this is the TRUE BURNT case.  NO CHANGE. Keeps asserting "#2b2b2b".
+
+    Worth knowing: because it never sets has_burned, and agents.py:26 gives
+    has_burned = bool(burning) = False here, the fixture is burnt=True /
+    has_burned=False - a state the simulation cannot actually produce
+    (agents.py:109 only sets burnt when has_burned is already True). It
+    therefore exercises the is_burnt() disjunct IN ISOLATION, which is
+    precisely what you want after a split: it pins the burnt half and cannot
+    be accidentally satisfied by the scorched branch.
+
+tests/test_executor_routing_and_burnt.py:202
+                          test_burned_cell_renders_dark_not_green_when_fire_stops
+    fire.has_burned = True ; fire.fuel = BURNING_RATE * 3 ; fire.burnt = False
+    -> this is the SCORCHED case.  THIS is the test that changes.
+
+4.2  THE CHANGE - ONE ASSERTION REPLACED, ONE ADDED
+
+Current, :212-215 verbatim:
+
+    assert not fire.is_burning()
+    assert not fire.is_burnt()
+    assert portrayal["Color"] == "#2b2b2b"
+    assert portrayal["Color"] not in VEGETATION_COLORS
+
+Proposed:
+
+    assert not fire.is_burning()
+    assert not fire.is_burnt()
+    assert portrayal["Color"] == "#895e00"            # CHANGED: scorched
+    assert portrayal["Color"] != "#2b2b2b"            # ADDED: must not merge
+    assert portrayal["Color"] not in VEGETATION_COLORS
+
+  - :214 "#2b2b2b" -> "#895e00". This is the one line that must change; it is
+    a scorched fixture asserting the burnt colour.
+  - the new "!= #2b2b2b" is the point of the defect stated as an assertion. An
+    equality check alone would pass if someone later set both branches to the
+    same new value; this one cannot.
+  - "not in VEGETATION_COLORS" is KEPT verbatim - it is what stops the fix
+    from drifting into the green ramp.
+  - the two state assertions are KEPT verbatim.
+
+Nothing is deleted and nothing is loosened. The test locks the corrected
+specification exactly as tightly as it locked the old one, plus one clause.
+
+4.3  A THIRD TEST TOUCHES THIS PATH - NO CHANGE NEEDED, BUT NOT BY LUCK
+
+tests/test_executor_routing_and_burnt.py:280
+                              test_fire_self_limits_does_not_burn_whole_map
+calls main.agent_portrayal on LIVE scorched cells at :324 and asserts
+green_has_burned == 0 at :337. It passes with any non-green scorched colour.
+One sharp edge: its green_vegetation set at :308-310 deliberately EXCLUDES
+"#414141", so a scorched colour of #414141 would slip past this assertion.
+#895e00 is not #414141 and not in VEGETATION_COLORS, mechanically checked in
+2.2. Recording it because it is the kind of thing that only bites the next
+person to change this colour.
+
+4.4  ONE OPTIONAL ITEM FOR YOUR CALL
+
+The test NAME, test_burned_cell_renders_dark_not_green_when_fire_stops,
+becomes inaccurate: the cell no longer renders dark. I recommend renaming it
+to test_scorched_cell_renders_distinct_from_burnt_when_fire_stops. This does
+not affect the pass/fail baseline - it is a passing test either way, and the
+counts are unchanged. Say the word and I will leave the name alone; I am
+flagging it rather than doing it silently because you referred to the test by
+name in the brief.
+
+
+================================================================================
+5.  THE "CONSIDER" ITEMS - DECISIONS, BOTH WAYS
+================================================================================
+
+5.1  serve_dashboard.py:618 - THE LEGEND.  RECOMMEND INCLUDING IN SCOPE.
+
+The non-probability branch of setLegend() currently emits, in order:
+    swatch #fe5501 "fire"
+    swatch #ababab "smoke"
+    swatch #2b2b2b "charred"        <-- ONE swatch for what will be TWO states
+    swatch #2f4a1a "spared veg"     <-- a colour the canvas has never painted (3.1)
+    then the agent colours
+
+Ship the map split without touching this and the operator gets a new colour on
+the canvas with nothing to explain it - which undercuts the entire point of
+the change. Proposed: "charred" becomes two entries,
+    swatch #2b2b2b "burnt (spent)"
+    swatch #895e00 "scorched (re-ignites)"
+
+This line is not in the scope list you gave (it is in an in-scope FILE but not
+at an in-scope line), so I am asking rather than assuming. If you want it out,
+the map change should probably wait for it.
+
+5.2  serve_dashboard.py:672 and live_dashboard_panel.py:206-207 - THE TILES.
+     PARTIAL YES. Relabel only. The count itself is deferred, with a reason.
+
+What they show today - byte-for-byte the same five rows in both renderers:
+
+    active fire | smoke | burnt (amber) | charred (unstyled) | wind
+
+    burnt   <- dashboard_state_builder.py:296-299, the absorbing burnt set. OK.
+    charred <- dashboard_state_builder.py:300-301, bool(agent.has_burned).
+
+THE CRITICAL FINDING, and it changes the answer: has_burned_cells IS NOT THE
+SCORCHED COUNT. From agents.py:26, :105-106, :109-110 - has_burned is set the
+first spread-tick a cell is burning and is NEVER cleared, and burnt implies
+has_burned. So
+
+    has_burned = burnt  UNION  scorched  UNION  (burning cells past one tick)
+
+It is a cumulative "ever ignited" figure that double-counts cells the map
+paints orange and grey, sitting in the ground-state column directly beneath
+"burnt", where the pair reads as two disjoint buckets. They are nested: burnt
+is a SUBSET of charred.
+
+AND SCORCHED IS NOT RECOVERABLE BY SUBTRACTION IN THE BROWSER.
+FIRE_SPREAD_SPEED is 3 (common_fixed_variables.py:23). Ignition happens in
+advance() (agents.py:125) but has_burned = True is set in step() only when
+steps_counter % 3 == 0, so a freshly-ignited cell carries burning=True,
+has_burned=False for three steps - the entire leading ring of the fire front.
+Therefore
+
+    has_burned_cells - burnt_cells - active_fire_cells
+        = scorched - |burning AND NOT has_burned|
+
+which CAN GO NEGATIVE. A "scorched" tile computed by arithmetic in the JS
+would be wrong by the size of the fire newest ring and could render a negative
+count. That is not a tile I am willing to add.
+
+  DOING THIS ROUND (presentation strings only, both renderers, zero risk):
+    relabel "charred" -> "ever burned". It is an honest name for what the
+    number actually is, and it stops the tile from claiming a word that will
+    now name a specific map colour.
+
+  DEFERRED, RECOMMENDED AS THE FOLLOW-UP:
+    a real "scorched" tile needs one accumulator in the existing loop in
+    dashboard_state_builder.py _build_fire_view, publishing "scorched_cells",
+    using the renderer split predicate VERBATIM so tile and map can never
+    disagree. That file is not in the scope you set, and it is a data-model
+    addition rather than a rendering change, so I am not taking it
+    unilaterally. For the record, I checked and it WOULD be stdout-safe:
+    get_dashboard_state output is never printed in a headless run
+    (evaluate_scenarios.py:128 and evaluate_extended_metrics.py:61 read only
+    mission_status.all_victims_terminal, both inside redirect_stdout;
+    wildfire_model.py:4641 only assigns it), fire_view is typed dict[str, Any]
+    in contracts.py:84 so no contract change, and _slim_panel passes fire_view
+    through unfiltered so the JS would get it with no plumbing.
+
+  ALSO NOTED, NOT CHANGING: "burnt" is rendered in AMBER (caution) while it is
+  the safest ground in the model, and the danger-bearing number is unstyled.
+  That is the same class of operator-facing inversion as the colour merge. It
+  is a real finding but it is not this round scope, and I would rather raise
+  it than fold it in quietly.
+
+5.3  serve_dashboard.py:630 - THE END-OF-RUN EVALUATION BOX.  NO CHANGE.
+
+The e.burnt_cells value comes from _build_evaluation at
+serve_dashboard.py:301-302, which counts the raw .burnt flag - so "burnt
+cells" is an accurate label for it. More importantly this is the single
+provenance root for three consumers: the eval tile, the burnt_cells CSV
+column, and the burnt=%d field of the per-seed stdout line
+(evaluate_scenarios.py imports _build_evaluation). Touching it would put
+stdout at risk for no display gain. Leave it alone.
+
+
+================================================================================
+6.  FINAL SCOPE - EXACTLY WHAT PART 2 WOULD TOUCH
+================================================================================
+
+  main.py:77-78                                 split the branch, add #895e00
+  serve_dashboard.py:63-64                      split the branch, add #895e00
+  serve_dashboard.py:132-133                    rename + comment (no semantics)
+  serve_dashboard.py:618                        legend: one swatch -> two  [5.1 CONFIRM]
+  serve_dashboard.py:672                        "charred" -> "ever burned" [5.2]
+  src_extension/dashboard/live_dashboard_panel.py:207   same relabel        [5.2]
+  tests/test_executor_routing_and_burnt.py:214  "#2b2b2b" -> "#895e00"
+                                                + one added assertion
+
+  NOT TOUCHED: agents.py, wildfire_model.py, _firefighter_cell_risk,
+  dashboard_state_builder.py, _build_evaluation, common_fixed_variables.py,
+  everything else under src_extension/, and every movement, dispatch, retreat
+  and scoring path.
+
+DISPLAY-ONLY TRACE, verified rather than assumed. Every callee on these paths
+is a pure attribute read: is_burning() agents.py:38-39, is_burnt() :41-42,
+get_fuel() :45-46, get_prob() :49-50 (returns the CACHED cell_prob, does not
+recompute), Smoke.is_smoke_active() :148-149. The entire Fire RNG surface is
+agents.py:23 (random.randint in __init__) and agents.py:103 (random.random in
+step()); neither renderer calls step(), advance(), probability_of_fire() or
+smoke_step(). Zero RNG consumption on any render path. main.agent_portrayal is
+invoked only from Canvas_Grid_Visualization.py:103 inside render(), outside
+the step cycle; _cell_color is reached only from _capture_frame, called at
+serve_dashboard.py:353 (before any step), :364 (no step) and :370 (strictly
+after model.step()). Never inside a step.
+
+
+================================================================================
+7.  PART 3 - VALIDATION ALREADY STAGED
+================================================================================
+
+Built and RUN BEFORE the patch, so the after-side is a straight re-run.
+
+  outputs/_sc_control.py       derived verbatim from defect #5 _pr_control.py -
+                               same three combos, same 240 steps, same standard.
+                               Adds two observational digests: a 4-state
+                               scorchmap (the #5 firemap could not tell burnt
+                               from scorched, and this round is about exactly
+                               that), and a cellcolor digest which is the
+                               POSITIVE control - the one hash that MUST differ
+                               after the patch, proving the change took effect
+                               rather than the run not exercising it.
+
+  outputs/_sc_control_pre.json PRE-PATCH baseline, captured:
+    D/east/half|101    stdout 6799aab8285c62c8  pos 4830220c3be6f50c
+                       fire   c39224fb126f0d2b  scorch 352e17539b1b4663
+                       color  accd9f5ee933853c  (burnt 1134 / scorched 359)
+    D/south/half|101   stdout 9fc7ba55cb37aca9  pos 04a3aba28435f5e4
+                       fire   f6d95f077ea1c760  scorch f5a09972c3849fde
+                       color  547fb3b8a7f100f2  (burnt 1782 / scorched 508)
+    D/east/default|101 stdout 6d7d6de54bafa574  pos 8b792c5bd785b78f
+                       fire   c39224fb126f0d2b  scorch 352e17539b1b4663
+                       color  accd9f5ee933853c  (burnt 1134 / scorched 359)
+
+  outputs/_sc_pytest_PRE.txt   8 failed, 427 passed in 2267s. Matches the
+                               stated baseline exactly. The 8, name-for-name:
+    test_behavior_regression.py::test_descriptive_next_action_uses_target_position
+    test_dashboard_panel.py::test_dashboard_panel_render_returns_string
+    test_firefighter_dispatch_replacement.py::
+                    test_no_replacement_available_marks_victim_unreachable_once
+    test_rescue_planner_authority.py::
+                    test_no_firefighter_planner_delay_or_unreachable
+    test_uav_sector_assignment.py::
+                    test_fire_tracker_uavs_receive_different_target_sets
+    test_uav_sector_assignment.py::
+                    test_fire_tracker_still_overridden_by_search_mode_fail_safe
+    test_wind_aware_trajectory_regression.py::
+                    test_north_vs_south_trajectories_diverge_over_40_steps
+    test_wind_aware_victim_search.py::
+                    test_victim_search_wind_aware_action_when_downwind_exists
+
+  outputs/_sc_map_before.svg     before-image, step 60
+  outputs/_sc_candidates.png     all six candidates on the same real run
+  outputs/_sc_muteprobe.py/.log  the dead-guard proof (section 3.1)
+  outputs/_sc_deltae.py          the Sharma-validated CIEDE2000 re-check
+
+THE route_blocked GATE IS NOT REQUIRED THIS ROUND, and I am stating it rather
+than leaving it to inference, as the #5 round did. Every file in section 6 is
+a renderer, a legend string, a panel label or a test. No simulation source is
+touched, so the gate campaign inputs are byte-identical to HEAD a89a2ab and it
+cannot move. The empirical byte-identity in Part 3 will demonstrate this
+rather than assert it. Note the prior round (#9-A1) was the first since f2827ed
+not to re-run the gate; this round makes it two, on the same justification -
+absence of a source change, not a judgement that the gate stopped mattering.
+
+
+================================================================================
+8.  WHAT I AM ASKING YOU TO CONFIRM
+================================================================================
+
+  1. #895e00 as the scorched colour. (Fallback if you want a more literal
+     ember read at the cost of greyscale robustness: #7a3b12.)
+  2. _is_dark: semantics UNCHANGED, renamed only. Dead guard reported, not
+     repaired. (Section 3.)
+  3. The legend at :618 IN SCOPE - two swatches instead of one. (Section 5.1.)
+  4. The "charred" -> "ever burned" relabel in both panels; the real
+     scorched_cells tile DEFERRED to its own round. (Section 5.2.)
+  5. The optional test rename in 4.4 - yes or no.
+
+STOPPING HERE. No tracked file has been modified.

@@ -74,8 +74,10 @@ def agent_portrayal(agent):
                 if agent.is_burning():  # showing fire
                     idx = normalize_fuel_values(agent.get_fuel(), FUEL_UPPER_LIMIT)
                     portrayal.update({"Color": FIRE_COLORS[idx], "Layer": 0})
-                elif agent.is_burnt() or getattr(agent, "has_burned", False):  # burnt/scorched
+                elif agent.is_burnt():  # burnt: fuel spent, cannot re-ignite
                     portrayal.update({"Color": "#2b2b2b", "Layer": 0})
+                elif getattr(agent, "has_burned", False):  # scorched: fuel left, re-ignites
+                    portrayal.update({"Color": "#895e00", "Layer": 0})
                 else:  # showing vegetation
                     idx = normalize_fuel_values(agent.get_fuel(), FUEL_UPPER_LIMIT)
                     portrayal.update({"Color": VEGETATION_COLORS[idx], "Layer": 0})

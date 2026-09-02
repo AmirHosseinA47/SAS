@@ -204,7 +204,7 @@ class DashboardPanel(TextElement):
             self._kv("active fire", f"<b style='color:{_C['red']}'>{_fmt_num(fire.get('active_fire_cells', 0))}</b>")
             + self._kv("smoke", f"<span style='color:{_C['muted']}'>{_fmt_num(fire.get('active_smoke_cells', 0))}</span>")
             + self._kv("burnt", f"<b style='color:{_C['amber']}'>{_fmt_num(fire.get('burnt_cells', 0))}</b>")
-            + self._kv("charred", _fmt_num(fire.get("has_burned_cells", 0)))
+            + self._kv("ever burned", _fmt_num(fire.get("has_burned_cells", 0)))
             + self._kv("wind", f"{_badge(fire.get('wind_direction', '?'), _C['teal'])} {_esc(wv_txt)}")
         )
         return self._stat_card("Fire", rows, _C["red"])
