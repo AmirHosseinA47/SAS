@@ -1,0 +1,755 @@
+================================================================================
+THE _reset_idle_retreat_state LAST_CELL HOLE - PART 1: VERIFY AND CHARACTERISE
+Branch claude/position-rename-and-hazard-revalidation, HEAD 2acfb54
+Deferred at 62b4fbe (idle-retreat round), observed again at c4d5a25 (last_cell
+round).  Everything below was RE-MEASURED at HEAD; nothing is quoted from those
+two reports without an independent check, and where they disagree with the
+measurement the measurement wins.
+
+DIAGNOSIS ONLY.  agents.py is UNCHANGED.  Both fix variants exist only as
+monkeypatches in outputs/.
+================================================================================
+
+ENVIRONMENT AND PROVENANCE, CONFIRMED FIRST
+    git branch --show-current   claude/position-rename-and-hazard-revalidation
+    git log --oneline -1        2acfb54 Remove recovery hysteresis: ...
+    sys.version                 3.10.11 (tags/v3.10.11:7d4cc5a) [MSC v.1929 64-bit]
+    mesa.__version__            1.2.1     (E:\Projects\SAS\.venv)
+
+    `git diff c4d5a25 HEAD -- agents.py` is EMPTY; the blob hash is
+    399fa7f3c4e78bea5887b6637b30dc81a5c9c2bd at both commits, and the working
+    tree is clean for agents.py.  agents.py has not changed since the last_cell
+    round, so THE LINE NUMBERS 859/863 IN THAT REPORT ARE STILL CURRENT -
+    verified by grep, both are `self._reset_idle_retreat_state()`.  The brief's
+    caution about c4d5a25 shifting them by 13 lines applies to the EARLIER
+    report (62b4fbe's, which cites 883-886), not to the 859/863 figures.
+    This also settles verdict (D): no later commit resolved anything here.
+
+
+--------------------------------------------------------------------------------
+HEADLINE
+--------------------------------------------------------------------------------
+  VERDICT (B) REAL BUT INERT.  Recommend leaving it in place, documented.
+  It sits close to the (A) boundary and the one case that pushes it there is
+  disclosed in full rather than buried - see section 8.
+
+  1. THE HOLE IS REAL AND IT FIRES REGULARLY.  15 tight reversals across 23
+     runs (7 in the 13-run canonical sample, 8 in 10 fresh seeds) are opened by
+     the anti-oscillation guard being erased between the move and the next
+     scan.  On the canonical sample that is 7 of 186 tight reversals - 3.8%.
+     144 of the 186 are `_move_toward` -> `_move_toward`, a path with no
+     anti-oscillation term at all: the separate, out-of-scope item.
+
+  2. THE OBVIOUS FIX IS A PROVABLE NO-OP.  Making `_reset_idle_retreat_state`
+     preserve `_idle_retreat_last_cell` changes NOTHING - not one step, on any
+     seed.  Proved structurally AND measured: 13 of 13 runs byte-identical.
+     The reset also nulls `_idle_retreat_origin`, which forces the inline leash
+     re-anchor at agents.py:786 on the very next `_survival_move`, and THAT line
+     clears the field a second time before any read.  Both earlier rounds
+     attributed the reversals to "the reset at 859/863"; that is half the
+     mechanism.  All 15 reversals have TWO clears.  This is the single most
+     consequential correction in this report: it changes what a fix must touch.
+
+  3. PER-STEP THE REVERSAL IS THE CORRECT MOVE.  Replayed against the exact
+     recorded candidate sets, 6 of the 7 canonical steps back were the code's
+     own strictly-improving pick, and in 0 of 7 was the returned-to cell nearer
+     the fire than the best cell an intact guard would have left.  In 6 of 7 an
+     intact guard would have forced an equal-or-worse cell AND latched the unit.
+
+  4. AGGREGATE COST: NONE THAT SURVIVES AN INDEPENDENT SAMPLE.  The arm that
+     genuinely blocks the reversal gains +1 rescue / -1 victim dead / -1
+     firefighter death on 23 runs - all of it from 2 seeds of the 13 the hole
+     was characterised on.  On 10 seeds never used here it fires 8 times,
+     perturbs 3 trajectories, and changes NOTHING: r21/d16/ff8 both arms.
+
+  5. COLLATERAL, RECORDED NOT FIXED: three sites in this code are unreachable
+     at HEAD (agents.py:572-587, 761, 848-852) and a fourth (832) is an
+     effective no-op.  Confirmed structurally and by zero occurrences in 13
+     runs.  Out of scope; listed in 1.5 so they are not rediscovered.
+
+
+================================================================================
+1. THE RESET IN FULL, EVERY CALL SITE, EVERY FIELD
+================================================================================
+
+1.1  THE FUNCTION - agents.py:748-752, verbatim
+------------------------------------------------
+    748    def _reset_idle_retreat_state(self) -> None:
+    749        self._idle_retreat_origin = None
+    750        self._idle_retreat_steps = 0
+    751        self._idle_retreat_stalled = False
+    752        self._idle_retreat_last_cell = None
+
+  Four fields, cleared unconditionally, no branch, no docstring, no comment.
+
+1.2  THE FIVE CALL SITES, AND A SIXTH CLEAR THAT IS NOT A CALL
+---------------------------------------------------------------
+  All six clear `_idle_retreat_last_cell`.
+
+    597  advance, "standby" arm.  Condition (589-596): not target_pos AND not
+         exiting AND pos is not None AND _cell_meets_required_idle_safety(pos).
+    761  _survival_move, entry.  Condition: _cell_is_ideal_idle_standoff(cell).
+    832  _survival_move, at-cap branch, BEFORE the move.  Condition: at_cap AND
+         a required-safe candidate is reachable AND not target_pos.
+    859  _survival_move, AFTER the move.  Condition:
+         _cell_is_ideal_idle_standoff(target).
+    863  _survival_move, AFTER the move.  Condition:
+         _cell_meets_required_idle_safety(target) AND (at_cap OR stalled) AND
+         not target_pos.
+    786  NOT a call - an inline clear inside the leash re-anchor block (783-786)
+         repeating the same four assignments.  Guard at 764-765:
+         `origin is None` OR (idle AND Manhattan(cell, origin) > 6).
+
+  The two gating predicates:
+    727  _cell_meets_required_idle_safety = not on fire AND not adjacent to fire
+         AND no active smoke.                -> PERMITS min_fire_distance 2 or 3
+    738  _cell_is_ideal_idle_standoff        = required-safe AND
+         min_fire_distance >= IDLE_RETREAT_SAFETY_BUFFER + 1  (i.e. >= 4)
+
+  THE DISTINCTION IS THE WHOLE FINDING FOR SITE 863.  A required-safe cell can
+  sit at min_fire_distance 2 or 3.  Both hazard predicates -
+  `_needs_immediate_survival_retreat` (684) and `_idle_needs_survival_move`
+  (703) - fire at min_fire_distance <= 3.  So a unit that lands on a
+  required-safe-but-not-ideal cell is a unit the code's OWN predicate still says
+  must retreat, and it re-enters `_survival_move` on the very next step without
+  exception.  Site 863 declares the manoeuvre over on a cell where it provably
+  is not over.  Site 859 (>= 4) does not have this property, which is why 863
+  accounts for 6 of the 7 canonical reversals and 859 for 1.
+
+1.3  EVERY OTHER READER AND WRITER
+------------------------------------
+  Reads (2):   800 (_survival_move), 981 (_revalidate_idle_retreat_stall).  Both
+               feed the `last_cell` parameter of `_retreat_candidates`, whose
+               only uses are the equality filter at 883
+               (`if ncell == last_cell: continue`) and the None-test at 902 -
+               the c4d5a25 burning-cell fallback.
+  Writes (5):  397 (__init__), 752 (the reset), 786 (the re-anchor), 854 (normal
+               scan, the cell being vacated), 994 (revalidation).
+  Outside agents.py: NOTHING.  `grep "_idle_retreat\|last_cell" wildfire_model.py`
+  is empty; a repo-wide search hits only agents.py, outputs/ diagnostics, and
+  detached .claude/worktrees/ copies.  No test pins any of it (section 6.3).
+
+1.4  MEASURED CENSUS - 13 canonical runs, arm `none` (stock)
+--------------------------------------------------------------
+  Recorded by wrapping the reset and reading the CALLER line via
+  sys._getframe(1).f_lineno, so every clear is attributed to its site.
+
+    site   calls   cleared a real (non-None) last_cell   meaning
+    597     3284                  4                      standby, already safe
+    761        0                  0                      UNREACHABLE (1.5b)
+    832        5                  5                      at-cap, pre-move
+    859      131                131                      landed on IDEAL standoff
+    863       25                 25                      landed REQUIRED-safe only
+
+    every write to _idle_retreat_last_cell, by source line:
+      397    26     __init__
+      752  3445     the assignment inside the reset
+      786   169     the inline leash re-anchor
+      854   336     normal scan, the cell being vacated
+      994    27     revalidation, the cell being vacated
+
+  Site 597 fires 3284 times but finds a non-None value only 4 times: a unit
+  standing by at an ideal standoff has almost always been cleared already.  It
+  is not a contributor.
+
+1.5  COLLATERAL: THREE UNREACHABLE SITES AND ONE NO-OP  (recorded, out of scope)
+--------------------------------------------------------------------------------
+  (a) agents.py:572-587, the `elif self._idle_needs_survival_move():` arm of
+      `advance`, is DEAD.  For an idle unit, `_idle_needs_survival_move` (703)
+      and `_needs_immediate_survival_retreat` (684) are the same disjunction
+      (fire OR adjacent OR smoke OR dist <= IDLE_RETREAT_SAFETY_BUFFER), and 684
+      is tested first at line 460.  Assigned units are intercepted at 498,
+      exiting-with-target units at 536, and 703 returns False for both anyway.
+      MEASURED: the movement_reason category this arm records, `idle_retreat`,
+      occurs 0 times in 5316 live agent-steps across 13 runs.
+      (`notable_firefighter_movement_category` passes `idle_retreat` through
+      unchanged - it rewrites only the three `exiting_*` categories - so the
+      count is not masked by the mapper.)
+  (b) agents.py:761 is DEAD.  `_survival_move` is called only from 467 and 577;
+      577 is inside the dead arm (a), and 467 requires
+      `_needs_immediate_survival_retreat`, every disjunct of which contradicts
+      `_cell_is_ideal_idle_standoff`.  MEASURED: 0 of 3445 resets came from 761.
+  (c) agents.py:848-852 (`if target == cell:`) is DEAD.  Every candidate comes
+      from `_neighbor_cells` (675), which returns only the four orthogonal
+      in-bounds neighbours, never the unit's own cell.  MEASURED: 0 of 472
+      `_retreat_candidates` calls returned the unit's own cell.
+  (d) agents.py:832 is an EFFECTIVE NO-OP.  Control does not return: 854
+      immediately re-writes `_idle_retreat_last_cell = cell`, 856 re-writes
+      `_idle_retreat_steps = steps + 1` from a value captured at 796 BEFORE the
+      reset, and 859-or-863 always fires afterwards (the chosen cell came from
+      `required_reachable`, so it is required-safe, and at_cap is true).  It
+      fired 5 times in 13 runs and changed nothing.
+
+
+================================================================================
+2. WHAT IS THE RESET FOR?  (asked before proposing to change it)
+================================================================================
+Same question that saved the `last_cell` guard itself and the `unassign()`
+route_blocked preservation from a naive fix.  It has a clear answer, and the
+answer separates three of the four fields from the fourth.
+
+2.1  THE MANOEUVRE, AND WHY THREE CLEARS ARE LOAD-BEARING
+-----------------------------------------------------------
+  `_survival_move` performs a BOUNDED, ANCHORED relocation: an idle firefighter
+  that finds fire within IDLE_RETREAT_SAFETY_BUFFER walks away from it, one cell
+  per step, leashed to within IDLE_RETREAT_MAX_CELLS of where the walk began, on
+  a step budget, until it reaches an ideal standoff.  Three fields are that
+  manoeuvre's bookkeeping:
+
+    _idle_retreat_origin   the leash anchor; every candidate is rejected if its
+                           Manhattan distance from it exceeds 6 (885-886).
+    _idle_retreat_steps    the step budget; at `steps >= 6` the scan switches
+                           from "only genuinely improving steps" to "take any
+                           required-safe cell, else the least-bad one".
+    _idle_retreat_stalled  the verdict "nothing nearby was worth stepping to",
+                           latched in one scan and read at the top of the next.
+
+  Clearing each is essential.  A stale origin leashes a fresh retreat to a cell
+  the unit left long ago - exactly the defect 62b4fbe's part 4b fixed.  A stale
+  step count starts a fresh manoeuvre at or past cap and skips the
+  improving-only tier entirely.  A stale stall verdict was reached under the old
+  leash and must not bind the new one.  So the reset has a real and correct
+  purpose, and `origin = None` is its operative sentinel: it is what makes the
+  next `_survival_move` anchor afresh.
+
+2.2  THE FOURTH FIELD IS NOT MANOEUVRE BOOKKEEPING
+----------------------------------------------------
+  `_idle_retreat_last_cell` is of a different kind: a ONE-MOVE-DEEP PHYSICAL
+  MEMORY - the cell being vacated, written on the line immediately before the
+  grid move (854, 994) - whose sole consumer is the equality filter at 883.
+  Nothing about "this manoeuvre is over" makes the cell the unit occupied one
+  tick ago stop being the cell it occupied one tick ago.
+
+  FOUR INDEPENDENT PIECES OF EVIDENCE THAT CLEARING IT IS INCIDENTAL:
+
+  (i)   NOTHING RELIES ON IT BEING None.  There is no liveness sentinel on this
+        field.  The only None-test is at 902, the c4d5a25 fallback, whose
+        purpose is to RE-ADMIT the cell - so a preserved value widens that
+        escape hatch rather than endangering it.
+
+  (ii)  THE COMMENTS JUSTIFY THE OTHER FIELDS AND NOT THIS ONE.  The 20-line
+        comment at 770-782 explaining the re-anchor argues explicitly for
+        re-anchoring the origin ("The recorded origin then belongs to a
+        manoeuvre that is over ... Anchor a fresh manoeuvre here instead") and
+        explicitly for the stall flag ("The stall flag goes with it: that
+        verdict was reached through the old leash").  It never mentions
+        `_idle_retreat_last_cell`, which line 786 clears three lines later.
+
+  (iii) THE MOST RECENT AUTHOR HERE TREATED IT AS AN UNWANTED SIDE EFFECT AND
+        REFUSED THE HELPER FOR THAT REASON.  agents.py:997-1000, added by
+        62b4fbe:
+
+            # Only the stall flag is cleared. `_reset_idle_retreat_state` would
+            # also drop `_idle_retreat_last_cell`, the anti-oscillation memory, on
+            # the one path being added here. The existing reset sites still fire
+            # normally once the unit is genuinely safe.
+
+        Direct evidence of intent: dropping the memory was recognised as
+        undesirable and avoided wherever the author had the choice.
+
+        AND THAT COMMENT'S SECOND SENTENCE IS FALSE FOR SITE 863.  "Once the
+        unit is genuinely safe" holds for 859 (>= 4).  It does not hold for 863,
+        which fires at min_fire_distance 2 or 3 - a cell the code's own
+        predicate says still needs retreating from.  The author's stated model
+        of when the reset fires does not match what 863 does.
+
+  (iv)  THERE IS NO DESIGN COMMIT.  `git log -S` shows the helper, all four
+        fields, the inline re-anchor and four of the five call sites arriving
+        together in a4a01b4 ("Add core project files and update README"), a bulk
+        import with no rationale.  The "zero everything" shape has never been
+        argued anywhere.
+
+2.3  HONEST SUMMARY OF THE PURPOSE QUESTION
+---------------------------------------------
+  The reset has a legitimate purpose and three of its four clears are essential
+  to it.  The fourth clears a co-located spatial memory the manoeuvre does not
+  own.  So this is NOT the unassign()/route_blocked situation, where a naive fix
+  would have broken a real reason: there is no reason on record, in comment or
+  in code, for clearing this particular field.
+
+  What IS like those rounds is section 6: preserving it has its own hazards,
+  and they are structural, not hypothetical.
+
+
+================================================================================
+3. MEASUREMENT ON THE CANONICAL SAMPLE
+================================================================================
+Sample exactly as the brief specifies: D/east half-roles 101-505, D/south
+half-roles 101-505, D/east default-roles 101/202/303 = 13 runs, 240 steps,
+FIRE_SPREAD_MULTIPLIER 0.75, BATCH_SIZE 300, PROBABILITY_MAP False, UAV counts
+from BUILTIN_SCENARIOS["D"], one seed per process.
+
+3.1  THE INSTRUMENT, AND WHY IT IS NOT A POST-HOC SNAPSHOT
+------------------------------------------------------------
+  The brief's caution is the one that produced the 14/16 false idle-death figure
+  and the six phantom "drops".  Nothing here is reconstructed from a per-step
+  snapshot:
+
+    * `_idle_retreat_last_cell` is replaced by a property, so EVERY write is
+      captured with its caller line, the step, the old value and the new one.
+      Any "shadow" definition is derived offline from that log; the probe
+      commits to none.
+    * `_reset_idle_retreat_state` is wrapped and the CALLER LINE recorded, so
+      every clear is attributed to a site.  Reset-call-to-in-reset-write pairing
+      was verified 1:1 on all 26 canonical runs.
+    * `_retreat_candidates` is wrapped and the FULL set it returned is recorded,
+      so "was there a better cell / would the guard have refused this one" is
+      read out, not guessed.
+    * Every position change is recorded AT THE CALL THAT MADE IT, tagged with
+      its code path.
+    * A tight reversal is read off position ground truth
+      (pos[t-1] == pos[t+1] != pos[t], live units only) and only THEN joined to
+      the write log for attribution.
+
+  NON-PERTURBATION, CHECKED NOT ASSUMED.  Probe vs a no-monkeypatch control on
+  D/east/half seed 101: 120 of 120 trace rows identical, evaluation identical.
+  Every helper the probe calls for logging (`_fire_cells`, `_min_fire_distance`,
+  `_firefighter_cell_risk`, the cell predicates) is a pure read of grid state -
+  no RNG draw, no mutation.  The `hardlc` probe variant was generated
+  mechanically from the base probe, and its `none` arm reproduces the base
+  probe's output on all eight recorded streams, field for field.
+
+  BASELINE CROSS-CHECK.  Arm `none` 13-run totals are rescued 29 / victims dead
+  23 / firefighter_deaths 6 - EXACTLY the post-fix figures the last_cell round
+  recorded for the same 13 seeds.  The instrument reproduces the shipped world.
+
+3.2  TOTAL TIGHT REVERSALS, BY ORIGINATING CODE PATH  (13 runs, arm none)
+--------------------------------------------------------------------------
+    186   TOTAL tight reversals on live units, all code paths
+
+    144   `_move_toward` -> `_move_toward`     no anti-oscillation term at all
+     19   `_move_toward` -> `_survival_move`   guard never armed
+      8   `_survival_move` -> `_move_toward`   no anti-oscillation term
+      8   `_survival_move`, guard None but NOT armed with A at step t
+      7   THE HOLE: guard armed with A at t, erased before the t+1 scan
+
+  THE HOLE IS 7 OF 186 - 3.8%.  The dominant term, 144 of 186 (77%), is
+  `_move_toward` dithering, which has never had an anti-oscillation term and is
+  out of scope by the brief.
+
+  All 8 "not armed" cases were opened individually: every one is `_move_toward`
+  at step t followed by `_survival_move` at t+1.  `_move_toward` never writes
+  `_idle_retreat_last_cell`, so the guard was never armed with A at all - a
+  different gap, in the same family as the 144.
+
+  Per run (tight / of which hole):  ed_101 19/0, ed_202 2/2, ed_303 2/0,
+  eh_101 33/0, eh_202 4/1, eh_303 6/1, eh_404 4/0, eh_505 30/2, sh_101 71/1,
+  sh_202 0/0, sh_303 9/0, sh_404 6/0, sh_505 0/0.
+
+3.3  THE SEVEN, AND WHICH CLEAR OPENED EACH
+---------------------------------------------
+  All seven are IDLE units on the UNLATCHED path (`_idle_retreat_stalled` False
+  at the deciding scan) - which is what the last_cell round said.
+
+    run       ff          t    A          B          clears (step)
+    ed_202    ff_unit_0  206  (29,49)   (30,49)     859@206, 786@207
+    ed_202    ff_unit_0  208  (29,49)   (28,49)     863@208, 786@209
+    eh_202    ff_unit_0   67  (41,22)   (42,22)     863@67,  786@68
+    eh_303    ff_unit_1   76  (12,26)   (12,27)     863@76,  786@77
+    eh_505    ff_unit_0   73  (44,20)   (44,19)     863@73,  786@74
+    eh_505    ff_unit_0   75  (44,20)   (45,20)     863@75,  786@76
+    sh_101    ff_unit_1  127   (0,3)     (1,3)      863@127, 786@128
+
+    by site:  863 x6,  859 x1,  786 x7
+
+  EVERY ONE HAS TWO CLEARS.  That is the correction to the earlier framing, and
+  it decides what a fix must touch - section 4.
+
+  TWO PRIOR CLAIMS RE-VERIFIED EXACTLY rather than taken on trust:
+    * "2 tight reversals per changed seed, on the unlatched path" - eh_505 has
+      exactly 2 (steps 73 and 75), both unlatched, at cur_dist 3 and 2, matching
+      the last_cell report's own numbers.  CONFIRMED.
+    * "27 of the 30 tight reversals on the changed seed were _move_toward <->
+      _move_toward" - eh_505 has 30: 27 move_toward pairs, 2 survival pairs (the
+      hole), 1 move_toward->survival.  CONFIRMED exactly.
+  Unlike three claims in the round that just landed, these two hold up.
+
+3.4  THE SIGNATURE IS IDENTICAL IN ALL SEVEN
+----------------------------------------------
+  The unit sits at A at min_fire_distance 3, retreats to B, and B is at distance
+  2 (or 3) when the next scan runs - the front closed in between the two
+  observations - whereupon A, at 3, is the best cell available and the unit
+  returns.  3 is IDLE_RETREAT_SAFETY_BUFFER exactly: these units are oscillating
+  on the edge of the trigger that turns the retreat regime on.
+
+
+================================================================================
+4. THE OBVIOUS FIX IS A NO-OP.  PROVED, THEN MEASURED.
+================================================================================
+Both earlier rounds wrote that "the reset clears last_cell and permits a
+reversal".  Taken at face value that says: stop the reset clearing it.  That
+change cannot alter a single simulation step.
+
+4.1  THE STRUCTURAL PROOF
+--------------------------
+  1. `_reset_idle_retreat_state` sets `_idle_retreat_origin = None` (749).
+  2. `_idle_retreat_origin` has exactly three writers: 394 (__init__), 749 (the
+     reset), 783 (the re-anchor).  Verified by grep.
+  3. So after any reset the origin stays None until 783 next runs.
+  4. Line 783 is inside the block guarded at 764-765 by
+     `if origin is None or (...)`.  With origin None that guard is TRUE, so the
+     NEXT `_survival_move` for that unit enters the block and runs 783-786 - and
+     786 is `self._idle_retreat_last_cell = None`.
+  5. The field's only two reads, 800 and 981, are both downstream of 786 in that
+     same call (981 via the call to `_revalidate_idle_retreat_stall` at 793,
+     which is after 786).
+  =>  A value preserved past line 752 is erased at 786 before anything can read
+      it.  It is unobservable.
+
+4.2  THE MEASUREMENT
+---------------------
+  Arm `keeplc`: the reset clears origin, steps and stalled but PRESERVES
+  `_idle_retreat_last_cell`.  Monkeypatch; nothing written to source.
+
+    13 of 13 runs TRAJECTORY-IDENTICAL to stock - full per-step position and
+    death trace, not merely equal totals.  r29/d23/ff6 both sides.  Tight
+    reversals 186 -> 186.  Hole reversals 7 -> 7, at the same steps.
+
+  The write log shows it directly.  ed_202, arm keeplc, step 207:
+      step 207  site 786  in_reset=False   [29, 49] -> None
+  The reset kept the memory; the re-anchor threw it away one step later, because
+  the same reset had nulled the origin.
+
+4.3  CONSEQUENCE FOR ANY FIX
+------------------------------
+  A change confined to `_reset_idle_retreat_state`, or to call sites 859/863,
+  CANNOT change behaviour.  To close the hole a change must also stop line 786
+  clearing the field - and 786 fires on the first `_survival_move` of every
+  fresh manoeuvre (169 times in 13 runs), not only after a reset.  That is a
+  materially wider change than the earlier rounds' framing implies.
+
+
+================================================================================
+5. IS THE REVERSAL HARMFUL, OR SOMETIMES CORRECT?
+================================================================================
+Two measurements that point in OPPOSITE directions.  Both are reported.
+
+5.1  PER-STEP, THE REVERSAL IS THE CORRECT MOVE
+-------------------------------------------------
+  `_pick_improving_retreat` was re-implemented offline and replayed on the EXACT
+  candidate sets the real calls returned (each candidate's cell, dist, risk,
+  ideal and required flags, plus current_dist and current_risk, all recorded at
+  the call).  The replay is a pure function of recorded inputs, and it is
+  VALIDATED: it reproduces the cell the simulation actually moved to in 7 of 7.
+
+  Each reversal was replayed a second time with A removed - what an INTACT guard
+  would have forced instead:
+
+   run     ff         t+1  B -> A            cur_d dist(A) chosen by        guard-intact alternative
+   ed_202  ff_unit_0  207  (30,49)->(29,49)    2     3   improving/ideal  (31,49) d=2 r=0    tier3+LATCH
+   ed_202  ff_unit_0  209  (28,49)->(29,49)    2     3   improving/ideal  (27,49) d=1 r=100  tier3+LATCH
+   eh_202  ff_unit_0   68  (42,22)->(41,22)    2     3   improving/ideal  (43,22) d=2 r=0    tier3+LATCH
+   eh_303  ff_unit_1   77  (12,27)->(12,26)    2     3   improving/ideal  (13,27) d=1 r=100  tier3+LATCH
+   eh_505  ff_unit_0   74  (44,19)->(44,20)    3     3   tier3 least-bad  (45,19) d=3 r=10   tier3+LATCH
+   eh_505  ff_unit_0   76  (45,20)->(44,20)    2     3   improving/ideal  (45,19) d=3 r=10   tier1-2
+   sh_101  ff_unit_1  128   (1,3) -> (0,3)     2     3   improving/ideal   (2,3)  d=1 r=100  tier3+LATCH
+
+    6 of 7   the step back was the code's own strictly-improving or ideal pick
+    5 of 7   A is STRICTLY FURTHER from fire than the best guard-intact option
+    2 of 7   A is the SAME distance as the best guard-intact option
+    0 of 7   A is NEARER the fire than the best guard-intact option
+    6 of 7   an intact guard would have dropped the unit into the tier-3
+             "least-bad neighbour anyway" fallback, which ALSO sets
+             `_idle_retreat_stalled = True` (823) and latches it
+
+  This is NOT pathological ping-ponging.  The fire moved; the cell just vacated
+  became the best cell available; the unit took it.  An intact guard would have
+  refused the best cell for an equal-or-worse one in every single case, and
+  latched the unit in six of seven.  On a per-step reading the hole looks
+  BENEFICIAL, and this is the strongest argument against calling it a defect.
+
+5.2  END TO END ON THE CANONICAL SAMPLE, BLOCKING IT COMES OUT SLIGHTLY AHEAD
+------------------------------------------------------------------------------
+  Arm `hardlc`: the memory survives BOTH clears - the reset (752) and the inline
+  re-anchor (786).  The only arm that actually blocks the step back.
+  Monkeypatch; nothing written to source.
+
+    run      none        keeplc      hardlc      keeplc-trace   hardlc-trace
+    ed_101   r2/d2/ff1   r2/d2/ff1   r2/d2/ff1   same           same
+    ed_202   r3/d1/ff1   r3/d1/ff1   r3/d1/ff1   same           DIFFERS s87
+    ed_303   r2/d2/ff0   r2/d2/ff0   r2/d2/ff0   same           DIFFERS s186
+    eh_101   r2/d2/ff1   r2/d2/ff1   r2/d2/ff1   same           DIFFERS s21
+    eh_202   r2/d2/ff0   r2/d2/ff0   r2/d2/ff0   same           DIFFERS s68
+    eh_303   r1/d3/ff0   r1/d3/ff0   r1/d3/ff0   same           DIFFERS s69
+    eh_404   r2/d2/ff1   r2/d2/ff1   r2/d2/ff1   same           same
+    eh_505   r1/d3/ff0   r1/d3/ff0   r2/d2/ff0   same           DIFFERS s74
+    sh_101   r3/d1/ff1   r3/d1/ff1   r3/d1/ff0   same           DIFFERS s128
+    sh_202   r3/d1/ff0   r3/d1/ff0   r3/d1/ff0   same           DIFFERS s129
+    sh_303   r3/d1/ff0   r3/d1/ff0   r3/d1/ff0   same           same
+    sh_404   r2/d2/ff1   r2/d2/ff1   r2/d2/ff1   same           same
+    sh_505   r3/d1/ff0   r3/d1/ff0   r3/d1/ff0   same           DIFFERS s75
+    TOTAL    r29/d23/ff6 r29/d23/ff6 r30/d22/ff5
+
+    rescued 29 -> 30, victims dead 23 -> 22, firefighter_deaths 6 -> 5.
+    No seed regressed.  Hole reversals 7 -> 0.  Tight reversals 186 -> 153.
+    9 of 13 trajectories diverge.
+    Both changed seeds diverge at EXACTLY a hole-reversal step (sh_101 s128,
+    eh_505 s74) - the change acting where it was designed to act.
+
+5.3  ONE GAIN HAS A MECHANISM.  THE OTHER DOES NOT, AND I DO NOT CLAIM IT.
+---------------------------------------------------------------------------
+  sh_101 ff_unit_1 - TRACEABLE, -1 FIREFIGHTER DEATH.
+
+    stock    s127 (1,3) -> s128 back to (0,3), the guard having been erased.
+             (0,3) at d=3 IS the better cell; the alternative was (2,3) at d=1,
+             adjacent to fire.  The unit then walks (0,2) (0,1) (0,0) (1,0) into
+             the bottom-left CORNER.  At s135 it stands on fire at (1,0) and
+             BOTH candidate scans - the normal one with last_cell=(0,0) and the
+             c4d5a25 re-run with None - return ZERO candidates.  Every in-bounds
+             neighbour burns.  It dies.  (Re-derived here from the recorded
+             scans; it is the case the idle-retreat report bucketed C1
+             "genuinely enclosed".)
+
+    hardlc   (0,3) is refused.  The unit takes (2,3) at d=1 - the locally WORSE
+             cell - and walks EAST: (3,3) (4,3) (4,2) (5,2), sits at d=1, and
+             SURVIVES to step 240.
+
+    This is the anti-oscillation guard doing exactly what such a guard is for:
+    refusing to let a unit re-enter the pocket it just came out of.  The greedy
+    "best cell right now" choice was locally right and walked the unit into a
+    dead end.  It is the single strongest piece of evidence for (A).
+
+  eh_505 ff_unit_0 - NO MECHANISM.  +1 RESCUE, NOT CLAIMED AS ONE.
+    Both arms keep the unit alive.  hardlc leaves it at (46,19) instead of
+    (43,20); 100+ steps later the run has one more rescue.  That is a downstream
+    dispatch-position effect through `select_rescue_assignment` - the same
+    chaotic channel the last_cell round traced to a one-cell Manhattan tiebreak.
+    I push the causal claim to the position and no further.
+
+5.4  DID THE REVERSALS COST ANYTHING IN THE STOCK RUNS?
+--------------------------------------------------------
+  Five units had a hole reversal.  THREE RECOVERED CLEANLY and survived:
+  eh_202 ff_unit_0 (reaches d>=4 by s79, ends at d=11), eh_303 ff_unit_1 (d>=4
+  by s79, ends d=4), eh_505 ff_unit_0 (d>=5 by s78, ends d=9).
+
+  TWO DIED, and both deaths were re-derived here rather than taken from the
+  earlier reports:
+    ed_202 ff_unit_0, step 225 at (34,49).  THE LEASH, NOT THE GUARD.  Origin
+      (28,49), unit at Manhattan 6 = IDLE_RETREAT_MAX_CELLS exactly, standing on
+      fire; both scans empty because its one non-burning neighbour is at 7 from
+      origin.  17 steps after its last reversal, and hardlc does not save it.
+    sh_101 ff_unit_1, step 135 at (1,0).  ENCLOSURE - both scans empty, every
+      neighbour burning.  Unlike ed_202, this death is NOT independent of the
+      hole: under hardlc the unit lives (5.3).
+
+
+================================================================================
+6. RISKS OF THE ONLY FIX THAT CAN WORK
+================================================================================
+Section 4 shows a fix must stop line 786 clearing the field.  That has a wider
+blast radius than "change the reset", and real hazards.  The last_cell round
+built three arms because a change to anti-oscillation state can push units into
+worse behaviour, and its arm A measured actively harmful.
+
+6.1  THE STRUCTURAL HAZARDS  (from code reading, not measured to occur)
+------------------------------------------------------------------------
+  (a) EMPTY CANDIDATE SET AT THE FIRST SCAN OF A FRESH MANOEUVRE.  At a
+      re-anchor the origin is set to the current cell, so every neighbour is at
+      Manhattan 1 and the leash excludes nothing.  The only exclusions there are
+      out-of-bounds, active fire, and last_cell.  A preserved last_cell can
+      therefore empty the candidate set where it currently cannot - and for an
+      idle unit an empty set means lines 806-810 latch `stalled` and return
+      WITHOUT MOVING.
+  (b) THAT LATCH IS CLOSE TO ABSORBING.  A latched idle unit is routed into
+      `_revalidate_idle_retreat_stall`, which re-reads the SAME preserved
+      last_cell and re-applies the same exclusion, and which deliberately has no
+      tier-3 fallback.
+  (c) THE c4d5a25 FALLBACK DOES NOT COVER (a).  It is gated on
+      `current_dist == 0`; a unit merely adjacent to fire is at 1 and gets no
+      second chance.  A no-move step next to fire is not benign - the model
+      kills a firefighter outright as soon as its cell is in fire_cells.
+  (d) STALENESS.  `_move_toward` and `_assigned_one_step_retreat` never write
+      the field (verified: neither contains any `_idle_retreat_*` reference).  A
+      unit that retreated at X, was then walked 50 cells by `_move_toward`, and
+      later went idle again would still carry last_cell == X - exactly the class
+      of staleness the re-anchor comment complains about for the origin.
+
+6.2  WHAT THE MEASUREMENT SAYS ABOUT THOSE HAZARDS
+----------------------------------------------------
+  On the canonical sample they did not materialise.  hardlc vs none, 13 runs:
+
+    empty candidate sets                72  ->  67      (fewer, not more)
+    stalled share of live agent-steps   4.61% -> 4.43%  (fewer, not more)
+    survival moves / survival calls     78.5% -> 77.1%
+    live agent-steps                    5316 -> 5419    (+103, one fewer death)
+    scans where the guard was armed      293 -> 429     (+46%)
+    scans where it excluded a neighbour  251 -> 377     (+50%)
+
+  The guard is armed at ~46% more scans and excludes a neighbour ~50% more
+  often, and nothing was stranded.  Reassuring - but 13 runs, and the hazards
+  above are structural, so a larger sample could still find them.
+
+6.3  NOTHING IN THE TEST SUITE WOULD CATCH EITHER VARIANT
+-----------------------------------------------------------
+  No test in tests/ exercises `_survival_move`, `_reset_idle_retreat_state`, the
+  stall latch, the leash, or the last_cell guard.  Every Firefighter test
+  constructs a fresh agent whose `_idle_retreat_last_cell` is None from
+  __init__.  tests/_run_standoff_validation.py concerns UAV fire-tracker
+  standoff, not firefighters, and is not collected by pytest (no `test_`
+  prefix).  Baseline remains 8 failed / 427 passed.  A fix here would have to be
+  validated by simulation, not by the suite.
+
+
+================================================================================
+7. THE FRESH-SEED CHECK - AND IT IS THE ONE THAT DECIDES THE VERDICT
+================================================================================
+The canonical 13 are the sample the hole was characterised on, so they are also
+the sample a fix would be over-fitted to.  Ten seeds never used anywhere in this
+chain - east/half and south/half, seeds 1111/2222/3333/4444/5555 - same params,
+same instrument, both arms.
+
+    run       none        hardlc      trace        tight rev   hole
+    fh_1111   r1/d2/ff1   r1/d2/ff1   same           1 -> 1    0 -> 0
+    fh_2222   r1/d3/ff1   r1/d3/ff1   DIFFERS s92   21 -> 15   6 -> 0
+    fh_3333   r1/d3/ff1   r1/d3/ff1   same          22 -> 22   0 -> 0
+    fh_4444   r2/d1/ff1   r2/d1/ff1   same           6 -> 6    0 -> 0
+    fh_5555   r3/d1/ff0   r3/d1/ff0   same           0 -> 0    0 -> 0
+    fs_1111   r3/d1/ff0   r3/d1/ff0   same           0 -> 0    0 -> 0
+    fs_2222   r3/d1/ff1   r3/d1/ff1   DIFFERS s150   1 -> 0    1 -> 0
+    fs_3333   r2/d2/ff1   r2/d2/ff1   same           6 -> 6    0 -> 0
+    fs_4444   r2/d1/ff2   r2/d1/ff2   DIFFERS s90   16 -> 15   1 -> 0
+    fs_5555   r3/d1/ff0   r3/d1/ff0   same           0 -> 0    0 -> 0
+    TOTAL     r21/d16/ff8 r21/d16/ff8  3/10 differ  73 -> 65   8 -> 0
+
+  THE FIX FIRES - 8 hole reversals eliminated, 3 trajectories perturbed - AND
+  CHANGES NOTHING.  Not one rescue, not one victim, not one firefighter death,
+  on any of the ten seeds.  0 helped, 0 hurt.
+
+  POOLED, 23 RUNS
+      none    rescued 50   victims dead 39   firefighter_deaths 14
+      hardlc  rescued 51   victims dead 38   firefighter_deaths 13
+      hole-attributed tight reversals  15 -> 0
+      all tight reversals             259 -> 218
+
+  So the ENTIRE measured benefit of closing the hole is +1 / -1 / -1 across 23
+  runs, and all of it comes from 2 seeds inside the 13 the hole was
+  characterised on.  On the independent sample the effect is exactly nil.
+
+
+================================================================================
+8. VERDICT
+================================================================================
+
+  (D) ALREADY RESOLVED - RULED OUT.  agents.py is byte-identical between
+      c4d5a25 and HEAD (blob 399fa7f3...); no later commit touched it.
+
+  (C) NOT A DEFECT - REJECTED, though it has a real case.  Clearing the memory
+      at a genuine standoff (site 859, min_fire_distance >= 4) is defensible,
+      and section 5.1 shows the resulting reversals are the code's own best
+      move in 6 of 7 cases.  But site 863 - which opened 6 of the 7 - fires on a
+      cell at min_fire_distance 2 or 3, which the code's own hazard predicate
+      still classifies as needing retreat, and the unit re-enters the retreat
+      scan on the very next step 100% of the time.  Declaring the manoeuvre over
+      there is inconsistent with the code's own definition of safe, and with the
+      author's stated model of these sites at agents.py:999-1000.  So there IS
+      something wrong here, and (C) would overstate the case.
+
+  (A) REAL DEFECT, ACTIONABLE - NOT SUPPORTED AT THIS SAMPLE SIZE.  One
+      firefighter death (sh_101 ff_unit_1) is traceably attributable to a hole
+      reversal, and blocking it saves that unit.  That single case is real and I
+      am not discounting it.  But on 10 independent seeds where the fix fires 8
+      times, the outcome delta is exactly zero, and the aggregate across 23 runs
+      is +1/-1/-1 concentrated in the characterisation sample.  Recommending a
+      change to anti-oscillation state on that evidence would be tuning to this
+      round's own numbers - the exact thing the idle-retreat round refused to do
+      with its section 4.4 proposal.
+
+  >>> (B) REAL BUT INERT.  The reversals are real, they fire regularly (15 in 23
+      runs), they are correctly attributed to this code, and they have NO
+      consequence that survives an independent sample.  RECOMMEND LEAVING IT IN
+      PLACE, DOCUMENTED.
+
+  THE ONE THING THAT QUALIFIES (B), STATED PLAINLY RATHER THAN BURIED: this is
+  not literally "no observable consequence".  There is one observable
+  consequence in 23 runs - sh_101 ff_unit_1, a firefighter that lives under the
+  counterfactual and dies under stock, by a legible mechanism (greedy re-entry
+  into a corner pocket).  What the evidence does not support is that this
+  generalises: 8 further firings on fresh seeds produced nothing.  A reader who
+  weighs that one traceable death more heavily than the fresh-seed null could
+  reasonably call this (A); I do not, for the reasons above, and the numbers to
+  make that judgement are all in sections 5 and 7.
+
+  WHAT THE EARLIER ROUNDS GOT RIGHT AND WRONG
+    RIGHT  the reversals exist, are on the idle/unlatched survival path, number
+           2 on the changed seed of the last_cell round, and 27 of that seed's
+           30 tight reversals are `_move_toward` pairs.  All four re-verified
+           exactly.
+    WRONG  "the pre-existing reset at agents.py:859/863 ... clears last_cell and
+           permits a reversal" names half the mechanism.  The reset's own clear
+           is REDUNDANT: the inline re-anchor at 786 clears the field again one
+           step later, because the same reset nulled the origin.  A fix aimed at
+           the reset alone is provably and measurably a no-op.  Neither round
+           was in a position to notice this, since neither built the arm.
+
+
+================================================================================
+9. IF IT WERE EVER TO BE FIXED - SCOPE, FOR THE RECORD, NOT RECOMMENDED NOW
+================================================================================
+Recorded so a later round does not have to re-derive it.  NOT proposed.
+
+  WHAT WILL NOT WORK
+    * Preserving last_cell inside `_reset_idle_retreat_state`.  Provable no-op
+      (section 4).
+    * Removing the reset calls at 859/863, or gating them.  Same reason: 786
+      still clears the field on the next scan.
+
+  THE MINIMUM CHANGE THAT CHANGES ANYTHING
+    Stop line 786 clearing `_idle_retreat_last_cell`, i.e. re-anchor the leash
+    (origin, steps, stall verdict) without discarding the one-move-deep spatial
+    memory - which is precisely the distinction agents.py:997-1000 already draws
+    on the revalidation path.  Removing the clear at 752 as well is optional and
+    free (it is dominated by 786), and is worth doing for consistency so the two
+    code paths agree about what "end the manoeuvre" means.
+
+  A NARROWER VARIANT WORTH MEASURING FIRST, IF ANYONE PICKS THIS UP
+    `hardlc` keeps the memory alive everywhere, which is why it perturbs 9 of 13
+    canonical and 3 of 10 fresh trajectories - far more than the 15 reversals it
+    removes.  A tighter arm would suppress the 786 clear ONLY when the re-anchor
+    was triggered by `origin is None` set by a reset in the IMMEDIATELY PRECEDING
+    step, leaving the genuine 62b4fbe staleness re-anchor (Manhattan > 6)
+    untouched.  That targets exactly the 15 reversals and should be close to
+    trajectory-neutral elsewhere.  Alternatively, address site 863 directly:
+    require `_cell_is_ideal_idle_standoff` there as 859 already does, so the
+    manoeuvre is only declared over when the unit is actually safe.  That is a
+    smaller, better-motivated change and it addresses the inconsistency
+    identified in section 2.2(iii) rather than the symptom.
+
+  HOW TO VALIDATE IF IT IS EVER BUILT
+    Both variants are monkeypatchable - `hardlc` already is, via a property
+    interceptor on the field keyed on caller line, with no source edit - so A/B
+    them as arms first, exactly as the last_cell round did with its three.
+    Gates: the canonical 13 AND at least 10 fresh seeds (the fresh set is what
+    would have stopped this round over-claiming); the route_blocked gate, which
+    is required because this changes simulation source; no unit left stranded
+    (watch empty-candidate scans and stalled share, section 6.2); and
+    8 failed / 427 passed with an identical failure set.
+
+
+================================================================================
+10. ARTEFACTS
+================================================================================
+  source change        NONE.  agents.py untouched, working tree clean.
+  probe                outputs/_irh2_probe.py        arms none, keeplc
+  probe (3rd arm)      outputs/_irh2_probe_h.py      adds hardlc; generated
+                                                     mechanically from the above
+  non-perturbation ctl outputs/_irh_control.py       (from the earlier session)
+  runners              outputs/_irh2_run.sh, _irh2_runh.sh, _irh2_runfresh.sh
+  canonical data       outputs/_irh2_{ed,eh,sh}_<seed>_{none,keeplc}.json   26 runs
+                       outputs/_irh2h_{ed,eh,sh}_<seed>_hardlc.json         13 runs
+  fresh-seed data      outputs/_irh2_{fh,fs}_<seed>_none.json               10 runs
+                       outputs/_irh2h_{fh,fs}_<seed>_hardlc.json            10 runs
+  analysis             outputs/_irh2_analyse.py  census, reversals, attribution
+                       outputs/_irh2_harm.py     replay of _pick_improving_retreat
+                       outputs/_irh2_ab.py       three-arm A/B
+                       outputs/_irh2_fresh.py    fresh-seed A/B
+  saved output         outputs/_irh2_analysis.txt, _irh2_harm.txt,
+                       outputs/_irh2_ab.txt, _irh2_fresh.txt
+
+  Note on the earlier session's `_irh_*` artefacts: that batch OOMed at import
+  (the known paging-file failure) and 7 of its 26 runs are missing.  Nothing in
+  this report is derived from them.  The `_irh2_*` set is complete: 59 runs
+  (26 canonical none+keeplc, 13 canonical hardlc, 10 fresh none, 10 fresh
+  hardlc), ZERO failures, every output checked for a non-empty JSON rather than
+  trusted to an exit code - because that OOM fails silently into zero-byte files
+  with a clean exit.
+================================================================================

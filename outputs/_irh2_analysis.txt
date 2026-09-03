@@ -1,0 +1,113 @@
+runs present: 26   MISSING: 0 
+
+==============================================================================
+1. RESET / CLEAR SITE CENSUS  (arm none, all runs pooled)
+==============================================================================
+reset<->write pairing verified on all runs: True 
+
+  site   calls  cleared-a-real-last_cell  idle   meaning
+  597     3284            4               3284  597 advance/standby (idle, ideal standoff)
+  832        5            5                  5  832 at_cap, required cell reachable (pre-move)
+  859      131          131                131  859 post-move: landed on IDEAL standoff
+  863       25           25                 25  863 post-move: landed REQUIRED-safe, at_cap-or-stalled
+
+  all writes to _idle_retreat_last_cell, by source line:
+    397       26   397 __init__
+    752     3445   752 the assignment inside _reset_idle_retreat_state
+    786      169   786 leash re-anchor (inline clear, not a reset call)
+    854      336   854 normal scan: last_cell = cell just before moving
+    994       27   994 revalidation: last_cell = cell just before moving
+
+==============================================================================
+2. TIGHT REVERSALS  (pos[t-1] == pos[t+1] != pos[t], live units)
+==============================================================================
+
+  arm=none    total tight reversals: 186
+       144  move_toward -> move_toward (no anti-oscillation term)
+        19  move_toward -> survival (no anti-oscillation term)
+         8  survival -> move_toward (no anti-oscillation term)
+         8  survival with last_cell None, NOT cleared at t
+         7  HOLE: guard armed with A at t, erased before the t+1 scan
+
+  arm=keeplc  total tight reversals: 186
+       144  move_toward -> move_toward (no anti-oscillation term)
+        19  move_toward -> survival (no anti-oscillation term)
+         8  survival -> move_toward (no anti-oscillation term)
+         8  survival with last_cell None, NOT cleared at t
+         7  HOLE: guard armed with A at t, erased before the t+1 scan
+
+  per-run, arm none:
+    run              tight  HOLE  other
+    ed_101_none         19     0     19
+    ed_202_none          2     2      0
+    ed_303_none          2     0      2
+    eh_101_none         33     0     33
+    eh_202_none          4     1      3
+    eh_303_none          6     1      5
+    eh_404_none          4     0      4
+    eh_505_none         30     2     28
+    sh_101_none         71     1     70
+    sh_202_none          0     0      0
+    sh_303_none          9     0      9
+    sh_404_none          6     0      6
+    sh_505_none          0     0      0
+
+==============================================================================
+3. HOLE-ATTRIBUTED REVERSALS IN DETAIL  (arm none)
+==============================================================================
+total: 7
+clearing site of the reset that opened it:
+      7  site 786  786 leash re-anchor (inline clear, not a reset call)
+      6  site 863  863 post-move: landed REQUIRED-safe, at_cap-or-stalled
+      1  site 859  859 post-move: landed on IDEAL standoff
+
+  run              ff          t    A         B        mfd A(t-1)/B(t)/A(t+1)  cur_dist(t+1)  paths
+  ed_202_none      ff_unit_0   206 (29, 49)  (30, 49)     3 /  4 /  3               2          survival->survival
+  ed_202_none      ff_unit_0   208 (29, 49)  (28, 49)     3 /  2 /  3               2          survival->survival
+  eh_202_none      ff_unit_0    67 (41, 22)  (42, 22)     3 /  2 /  3               2          survival->survival
+  eh_303_none      ff_unit_1    76 (12, 26)  (12, 27)     3 /  2 /  3               2          survival->survival
+  eh_505_none      ff_unit_0    73 (44, 20)  (44, 19)     3 /  3 /  3               3          survival->survival
+  eh_505_none      ff_unit_0    75 (44, 20)  (45, 20)     3 /  2 /  3               2          survival->survival
+  sh_101_none      ff_unit_1   127 (0, 3)    (1, 3)       3 /  2 /  3               2          survival->survival
+
+  did the units involved in a hole reversal come to harm?
+    ed_202_none      ff_unit_0   deaths=[(225, [34, 49])]  last-live step=224 mfd=1 status=available
+    eh_202_none      ff_unit_0   deaths=none  last-live step=240 mfd=11 status=available
+    eh_303_none      ff_unit_1   deaths=none  last-live step=240 mfd=4 status=en_route
+    eh_505_none      ff_unit_0   deaths=none  last-live step=240 mfd=9 status=en_route
+    sh_101_none      ff_unit_1   deaths=[(135, [1, 0])]  last-live step=134 mfd=1 status=available
+
+==============================================================================
+4. A/B  arm none vs arm keeplc   (rescued / victims dead / ff deaths)
+==============================================================================
+  run           none          keeplc        trace
+  ed_101        r2/d2/ff1    r2/d2/ff1    same
+  ed_202        r3/d1/ff1    r3/d1/ff1    same
+  ed_303        r2/d2/ff0    r2/d2/ff0    same
+  eh_101        r2/d2/ff1    r2/d2/ff1    same
+  eh_202        r2/d2/ff0    r2/d2/ff0    same
+  eh_303        r1/d3/ff0    r1/d3/ff0    same
+  eh_404        r2/d2/ff1    r2/d2/ff1    same
+  eh_505        r1/d3/ff0    r1/d3/ff0    same
+  sh_101        r3/d1/ff1    r3/d1/ff1    same
+  sh_202        r3/d1/ff0    r3/d1/ff0    same
+  sh_303        r3/d1/ff0    r3/d1/ff0    same
+  sh_404        r2/d2/ff1    r2/d2/ff1    same
+  sh_505        r3/d1/ff0    r3/d1/ff0    same
+  TOTAL         r29/d23/ff6    r29/d23/ff6    (13 runs)
+
+  tight reversals, none vs keeplc, per run:
+    ed_101        tight 19 -> 19    hole  0 ->  0
+    ed_202        tight  2 ->  2    hole  2 ->  2
+    ed_303        tight  2 ->  2    hole  0 ->  0
+    eh_101        tight 33 -> 33    hole  0 ->  0
+    eh_202        tight  4 ->  4    hole  1 ->  1
+    eh_303        tight  6 ->  6    hole  1 ->  1
+    eh_404        tight  4 ->  4    hole  0 ->  0
+    eh_505        tight 30 -> 30    hole  2 ->  2
+    sh_101        tight 71 -> 71    hole  1 ->  1
+    sh_202        tight  0 ->  0    hole  0 ->  0
+    sh_303        tight  9 ->  9    hole  0 ->  0
+    sh_404        tight  6 ->  6    hole  0 ->  0
+    sh_505        tight  0 ->  0    hole  0 ->  0
+    TOTAL         tight 186 -> 186    hole  7 ->  7
