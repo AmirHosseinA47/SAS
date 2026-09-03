@@ -1,0 +1,663 @@
+================================================================================
+belief_gap_regions PERMANENTLY EMPTY - DIAGNOSIS (Parts 1-3, read-only)
+================================================================================
+HEAD          93f23b7  (branch claude/position-rename-and-hazard-revalidation)
+Python        3.10.11   mesa 1.2.1   (E:\Projects\SAS\.venv)
+Tracked source modified: NONE. This round changed no shipped code.
+Test baseline  8 failed / 427 passed (1921s) - matches the stated baseline
+              exactly. test_belief_gap_reduction_option_generated is NOT among
+              the 8 failures: it passes green while the live code it nominally
+              covers is permanently empty (see 1.5).
+Artifacts     outputs/_bg_probe.py   + _bg_probe.json    (39 runs, 240 steps)
+              outputs/_bg_probe2.py  + _bg_probe2.json   (26 runs, 240 steps)
+              outputs/_bg_probe3.py  + _bg_probe3.json   (key-presence census)
+              outputs/_bg_probe4.py  + _bg_probe4.json   (parallel mechanism)
+
+VERDICT (detail in PART 3):
+  (B) REAL BUT INERT, with a (E) DESIGN-GAP tail.
+  The lookup bug is real and the "correct" population is computable and even
+  specified by a test. But TWO further independent gates sit downstream, and
+  either alone makes a lookup fix worthless. Recommend: leave documented, do
+  not repair in a bug round.
+
+================================================================================
+PART 1 - THE MECHANISM
+================================================================================
+
+1.1  THE SOURCE (note: the round brief cited l.442-445; actual site is l.467-476)
+
+src_extension/adaptation/global_adaptation_generator.py, inside
+GlobalAdaptationSpaceGenerator._generate_coverage_strategy_options (opens l.419):
+
+  l.425-428   the helper both lookups go through
+        def read_value(source: Any, name: str, default: Any = None) -> Any:
+            if isinstance(source, dict):
+                return source.get(name, default)
+            return getattr(source, name, default)
+
+  l.437-446   the two lookups that feed the predicate
+        fire_probability_map = read_value(
+            global_analysis_result,
+            "fire_probability_map",
+            read_value(runtime_models, "fire_probability_map", {}),
+        )
+        fire_confidence_map = read_value(
+            global_analysis_result,
+            "fire_confidence_map",
+            read_value(runtime_models, "fire_confidence_map", {}),
+        )
+
+  l.467-476   the subject
+        belief_gap_regions = []
+        if isinstance(fire_probability_map, dict) and isinstance(fire_confidence_map, dict):
+            belief_gap_regions = [
+                region
+                for region, probability in fire_probability_map.items()
+                if isinstance(probability, (int, float))
+                and probability >= 0.5
+                and isinstance(fire_confidence_map.get(region), (int, float))
+                and fire_confidence_map[region] <= 0.5
+            ]
+
+  l.513-519   where it is consumed - one entry in the strategy_options table
+            (
+                "belief_gap_reduction_strategy",
+                "belief_gap_reduction_strategy",
+                {"target_regions": belief_gap_regions},
+                "Reduce belief gaps in high-probability low-confidence regions",
+                "Belief-gap reduction targets high-probability, low-confidence regions.",
+            ),
+
+  l.541       the merge that produces the emitted option's parameters
+                parameters={**base_parameters, **parameters, "strategy": strategy},
+
+Note the isinstance guard at l.468 SUCCEEDS: both values are dicts. They are
+empty dicts. So the comprehension runs, over nothing, and yields []. This is not
+an exception being swallowed; it is a well-formed iteration over an empty map.
+
+1.2  EMPIRICAL CONFIRMATION - "permanently returns {}" is measured, not read
+
+outputs/_bg_probe.py wraps _generate_coverage_strategy_options and reads the
+LIVE values back off the returned option's `parameters` dict (base_parameters
+embeds all four maps; target_regions IS belief_gap_regions). No predicate is
+reimplemented. Sample: the canonical 13 runs (D/east half 101-505, D/south half
+101-505, D/east default 101/202/303), 240 steps, x3 modes = 39 runs.
+
+  _generate_coverage_strategy_options calls .................. 3120  (240/run)
+  belief-gap option emitted .................................. 3120 / 3120
+  fire_probability_map non-empty as the source reads it ......    0 / 3120
+  fire_confidence_map  non-empty as the source reads it ......    0 / 3120
+  uncertainty_map      non-empty as the source reads it ......    0 / 3120
+  victim_confidence    non-empty as the source reads it ......    0 / 3120
+  belief_gap_regions   non-empty .............................    0 / 3120
+  len(belief_gap_regions) histogram .......................... {0: 3120}
+  "fire_probability_map" present on global_analysis_result ...    0 / 3120
+  "fire_confidence_map"  present on global_analysis_result ...    0 / 3120
+  "fire_probability_map" present on runtime_models ...........    0 / 3120
+  "fire_confidence_map"  present on runtime_models ...........    0 / 3120
+
+CONFIRMED. belief_gap_regions is [] on every call of every run. Not "usually";
+3120 of 3120.
+
+Observer purity: the same 13 runs re-run with NO wrappers (mode=nopatch) match
+the instrumented runs on agent-position sha256, stdout sha256 AND every
+evaluation metric, 13/13. The instrumentation does not perturb the simulation.
+
+1.3  WHY THE LOOKUP CANNOT SUCCEED
+
+Both containers are plain dicts with fixed key sets, recorded live per call:
+
+  global_analysis_result (14 keys, dict on 60/60 calls) -
+    all_triggers, explanation_context, fail_safe_flags, information_summary,
+    priority_updates, risk_flags, system_health_summary, target_entity,
+    timestamp, trend_summary, trigger_batch, trigger_list, triggers,
+    uncertainty_summary
+
+  runtime_models (12 keys, dict on 60/60 calls) -
+    available_entities, communication_model, fire_runtime_model,
+    firefighter_model, global_observation_snapshot, local_path_context_models,
+    mission_goal_model, mission_goals, simulation_model, uav_resource_model,
+    victim_runtime_model, visibility_model
+
+Neither carries the two names. read_value takes the dict branch, .get() misses,
+and the default {} is returned. There is no other outcome available.
+
+Construction of global_analysis_result: wildfire_model.py:1707-1712 builds it as
+`analysis_snapshot.global_result.to_dict()` plus exactly four assignments
+(trigger_batch, triggers, all_triggers, target_entity). GlobalAnalysisResult is
+a frozen 10-field dataclass whose to_dict() emits 10 keys
+(analysis/analysis_results.py:79-91) - none of them a fire map. So even the
+getattr branch of read_value could not find one. Single live call site:
+wildfire_model.py:1713, reached from _run_adaptation_space_generation (:1662).
+
+WHERE THE DATA ACTUALLY LIVES - three live homes, none of them where the
+generator looks:
+  (a) fire_runtime_model.belief.fire_probability_map / .fire_confidence_map
+      - the canonical model state, keyed by tuple[int,int] cell coords, 2500
+        entries (the 50x50 grid). Reachable from runtime_models on 3120/3120
+        calls, but one attribute level deeper than the lookup reaches.
+  (b) SharedOperationalPicture.fire_belief_summary
+      (knowledge/shared_operational_picture.py:104-107) - a dict literally
+      keyed "fire_probability_map" / "fire_confidence_map". The flat names DO
+      exist live; they are nested one level under fire_belief_summary.
+  (c) global_analyzer.py:268 and :559 consume (b) via
+      _unwrap_summary_layer(global_snapshot.get("fire_belief_summary")).
+
+So the generator is asking for real, live, correctly-populated data using the
+right names at the wrong nesting level.
+
+KEY-TYPE HAZARD for any future fix: the two live homes disagree on key type.
+  - belief.fire_probability_map is keyed by tuple[int,int] cell coords
+    (knowledge/runtime_model_common.py:16 'CellCoord: TypeAlias = tuple[int,int]')
+  - FireRuntimeModel.snapshot() re-keys them as strings via cell_key()
+    (fire_runtime_model.py:76 'return f"{cell[0]},{cell[1]}"'; :299
+     '"fire_probability_map": {self.cell_key(c): v for c, v in ...}')
+  - SharedOperationalPicture.fire_belief_summary is fed from that snapshot
+    (shared_operational_picture.py:92 'fire_data = fire_snapshot or
+     self._snapshot_or_dict(fire_model)'), so it holds "x,y" STRING keys.
+A fix routing .belief yields tuple regions; a fix routing fire_belief_summary
+yields "x,y" string regions. Whatever consumes target_regions would have to
+agree with the choice. The predicate at l.469-476 is key-type agnostic, so this
+would fail silently downstream rather than at the lookup.
+
+1.4  THE CLASS IS FILE-WIDE, NOT SPECIFIC TO belief_gap_regions
+
+outputs/_bg_probe3.py censuses, per call to .generate(), whether each name any
+read_value() site in the file asks for is present on either container. 60 calls.
+A control group is included to prove the probe can detect a present key.
+
+  LOOKUP NAME                      asked for by                    gar     rm
+  -------------------------------------------------------------------------
+  current_role                     role_assignment                0/60   0/60
+  role_stability_timer             role_assignment                0/60   0/60
+  role_switch_count                role_assignment                0/60   0/60
+  battery_state                    role_assignment/resource       0/60   0/60
+  battery                          role_assignment/resource       0/60   0/60
+  battery_level                    role_assignment                0/60   0/60
+  resources                        role_assignment                0/60   0/60
+  negative_observation_maps        task_allocation                0/60   0/60
+  stale_information                task_allocation                0/60   0/60
+  last_known_fire_regions          task_allocation                0/60   0/60
+  communication_support_zones      task_allocation                0/60   0/60
+  fire_probability_map             coverage_strategy/task_alloc   0/60   0/60
+  fire_confidence_map              coverage_strategy  <- SUBJECT  0/60   0/60
+  uncertainty_map                  coverage_strategy/task_alloc   0/60   0/60
+  victim_confidence                coverage_strategy/task_alloc   0/60   0/60
+  predicted_remaining_useful_time  resource_realloc               0/60   0/60
+  communication_reliability        resource_realloc               0/60   0/60
+  uncertainty_regions              resource_realloc               0/60   0/60
+  critical_regions                 resource_realloc               0/60   0/60
+  region_value_map                 resource_realloc               0/60   0/60
+  -------------------------------------------------------------------------
+  target_entity                    CONTROL                       60/60   0/60
+  mission_goals                    CONTROL                        0/60  60/60
+  mission_goal_model               CONTROL                        0/60  60/60
+
+Every data-bearing lookup in the file resolves to its default, on every call.
+The only three that resolve are the ones carrying no per-cell data. The controls
+resolving 60/60 prove this is not a probe artifact.
+
+The idiom recurs outside this file too: rescue_adaptation_generator.py carries
+five character-identical read_value definitions (l.42, 135, 210, 313, 382) with
+the same flat reads against the same runtime_models, and
+adaptation/constraint_filter.py:234-237 defines the same _read helper against
+the same dict. belief_gap_regions is one instance of a house-wide class, exactly
+as the round brief anticipated.
+
+1.5  THE TEST SPECIFIES THE INTENDED SHAPE - and passes green
+
+tests/test_global_adaptation.py:54-62
+
+  def test_belief_gap_reduction_option_generated() -> None:
+      space = _generate_global_space()
+      option = next(... option_id == "global_coverage_strategy_belief_gap_reduction_strategy")
+      assert option.parameters["target_regions"] == ["r1"]
+
+It passes because its fixture (_generate_global_space, l.14-34) hands
+global_analysis_result the maps AT THE TOP LEVEL:
+
+      global_analysis_result={
+          ...
+          "fire_probability_map": {"r1": 0.9, "r2": 0.1},
+          "fire_confidence_map": {"r1": 0.2, "r2": 0.9},
+          ...
+
+So r1 (p=0.9 >= 0.5, c=0.2 <= 0.5) qualifies and r2 does not. The predicate is
+correct; the test is a fixture-only test that never exercises the live wiring.
+This is the classic shape: the test documents the contract the producer was
+supposed to honour, the producer never honoured it, and the test cannot tell.
+
+IMPORTANT CONSEQUENCE: the "correct population" IS specified and IS computable.
+This is a plumbing bug, not an unspecified design blank - see PART 2 item 5.
+
+1.6  TRACE OF belief_gap_regions END TO END
+
+WRITER   exactly one: global_adaptation_generator.py:516, into the emitted
+         option's parameters under key "target_regions".
+
+READERS OF parameters["target_regions"]:  ZERO.
+
+This was established with the full access surface, not a naive grep. The
+dominant idiom in this codebase is `getattr(option, "parameters", None)`, which
+a `\.parameters` grep misses. The complete surface is 8 files:
+
+  utility_evaluation.py .............. 14 sites
+  constraint_filter.py ............... 9
+  communication_adaptation_planner.py  4
+  planner_selection.py ............... 2
+  fallback_strategy.py ............... 2
+  decision_dispatcher.py ............. 1
+  communication_executor.py .......... 1
+  adaptation_results.py .............. 1
+
+Every one was read. Findings:
+
+  a) NAMED readers of "target_regions": none anywhere in live code. The only
+     occurrences of the string are five WRITERS (global_adaptation_generator.py
+     :516, :626, :648; local_adaptation_generator.py :2291, :2300, :4478) and
+     the test assertion at tests/test_global_adaptation.py:62.
+
+  b) The scorer never sees it. utility_evaluation._evaluate_global_mission_option
+     (l.779-1006) reads only hardcoded names via pfloat/ptruth:
+     fire_contribution, victim_contribution, communication_contribution,
+     uncertainty_reduction, information_recovery, collision_risk, battery_cost,
+     drift_risk, switching_cost, plus mission_mode and the horizon keys.
+     "target_regions" is not among them, and no scoring key is derived from it.
+
+  c) The feasibility check never sees it. _check_utility_feasibility (l.255-292)
+     reads exactly nine names: battery_level, projected_battery_after_option,
+     hard_collision_violation, collision_risk, route_feasible,
+     route_feasibility_confidence, requires_critical_communication,
+     fail_safe_mode, delivery_confidence.
+
+  d) HARD STRUCTURAL BOUNDARY. Even if the option were selected, MissionDecision
+     (planning/decision_objects.py:19-33) is a frozen dataclass with twelve
+     fields and NO `parameters` field. The planner can only copy through its six
+     extractors (global_mission_planner.py:233-292), which read:
+        uav_assignments | role_assignments | assigned_role
+        task_assignments | task_assignment | target_region   <-- SINGULAR
+        mission_mode
+        relay_assignments | relay_assignment
+        return_to_base | recall_order
+        uncertainty_level, knowledge_confidence, information_collapse,
+        communication_reliability, fire_spread_speed
+     Note the near-miss: the planner reads `target_region` (singular); the
+     option writes `target_regions` (plural). Different key. Nothing crosses.
+
+  e) ONE generic whole-dict reader exists and is provably value-insensitive:
+     adaptation_results.py:130-136
+        search_mode_count = sum(1 for option in options
+            if "search" in option.option_id
+            or "search" in str(option.parameters).lower()
+            or "search" in option.expected_effect.lower())
+     This stringifies the entire parameters dict, so it does "see"
+     target_regions. But it only tests for the substring "search", and
+     base_parameters (l.482-490) always contains the key
+     "search_mode_required" - so the test is saturated True regardless of what
+     target_regions holds. It feeds a count in a human-readable summary string.
+     Value-insensitive; not a behavioural reader.
+
+  f) The SIBLING key "strategy" IS read: constraint_filter._option_action
+     (l.211-229) scans a sixteen-name priority tuple that includes "strategy",
+     and compares the result against forbidden_actions / unavailable_actions.
+     That is a real reader of the option's parameters - but of `strategy`, not
+     `target_regions`, and empirically it never rejects this option (see 2.2:
+     the option survives filtering 3120/3120).
+
+  g) communication_adaptation_planner.py:210 does copy an option's ENTIRE
+     parameters dict verbatim into an operator-visible decision. It is
+     unreachable for this option: it sources only from
+     communication_adaptation_space, never global_space.
+
+ARE ANY READERS THEMSELVES DEAD?  The question does not arise - there are no
+readers to be dead. The nearest things to readers ((e) saturated-True summary
+counter, (f) a sibling key) are live but do not consume the value.
+
+DOES THE EMPTY CASE DEGRADE GRACEFULLY?  There is no consumer to degrade. The
+empty list is placed into a dict, carried through scoring that ignores it, and
+discarded when the option loses. No branch anywhere says "if target_regions:".
+
+1.7  WHAT IS IT FOR, AND IS THE CONCEPT COVERED ELSEWHERE?
+
+INTENT: "regions where the belief map says fire is likely but confidence is low
+- coverage should go look at them." The explanation_hint (l.518) states it:
+"Belief-gap reduction targets high-probability, low-confidence regions."
+
+The concept appears in live code in FOUR places. The other three:
+
+  (i) GlobalMonitor._belief_gap_indicators (monitoring/global_monitor.py:252-265)
+      IDENTICAL CONCEPT, SAME SOURCE, COMPUTED CORRECTLY:
+          prob_t, conf_t = 0.6, 0.4
+          b = self.fire_runtime_model.belief
+          for cell, prob in b.fire_probability_map.items():
+              conf = b.fire_confidence_map.get(cell, 0.0)
+              if prob >= prob_t and conf < conf_t: gaps.append(...)
+          return {"threshold_probability":..., "threshold_confidence":...,
+                  "cells": gaps[:50], "count": len(gaps)}
+      It drills the belief directly instead of going through the broken flat
+      lookup, so it WORKS. Thresholds differ (0.6/0.4 vs the generator's
+      0.5/0.5). Flows onto the snapshot as belief_gap_indicators
+      (global_monitor.py:403, :511; monitoring_interfaces.py:53).
+
+  (ii) Its consumer, GlobalAnalyzer._belief_gap_critical (global_analyzer.py
+       :618-631), called at :505-506. IT IS DEGENERATE:
+          if isinstance(belief_gap, list) and len(belief_gap) >= 3: return True
+          if isinstance(belief_gap, dict) and len(belief_gap) >= 3: return True
+       _belief_gap_indicators returns a DICT WITH FOUR KEYS. len() of that dict
+       is 4 whatever the gap count is. The test counts KEYS, not GAPS.
+       MEASURED (outputs/_bg_probe4.py, 60 steps):
+            _belief_gap_indicators calls .................. 120
+            len(returned dict) ........................... {4: 120}   always
+            real gap count == 0 .......................... 18
+            real gap count  > 0 .......................... 102 (max 228)
+            _belief_gap_critical calls ................... 60
+            arg type / len ............................... {dict: 60} / {4: 60}
+            returned True / False ........................ 60 / 0
+            branch that fired ............................ DICT_LEN_GE_3, 60/60
+            True WHILE zero real gaps .................... 9
+       Always True, always via the key-count branch, including nine calls where
+       the monitor had found zero actual gaps. critical_collapse is therefore a
+       constant, and it drives `planner_info = "fail_safe_planner"` and
+       Severity.CRITICAL at :508-517. This is a SEPARATE defect, adjacent to
+       this round, in a different file - flagged, not investigated further.
+
+  (iii) The two mechanisms named in the round brief as possible cover are
+        DIFFERENT CONCEPTS and do not overlap:
+        - local_adaptation_generator._uncovered_region_bonus (l.203-235) scores
+          GEOMETRIC sweep coverage: how far the visited x/y span falls short of
+          the safe grid bounds. Nothing to do with fire belief confidence. It is
+          live and genuinely drives per-UAV movement (`score += ...` at l.1281,
+          3516, 3677).
+        - VisibilityModel.get_uncertain_regions (knowledge/visibility_model.py
+          :219-242) returns cells that are NEVER_SEEN, SMOKE_OBSCURED, stale, or
+          below observation-confidence threshold - OBSERVATION uncertainty, not
+          fire-belief gap. Live; feeds global_uncertainty_score
+          (global_monitor.py:96-105).
+        (GlobalMonitor.get_uncertain_regions as named in the brief does not
+        exist; the method lives on VisibilityModel.)
+
+SO: the concept is duplicated, and the monitor's copy computes it correctly from
+real data. But no copy - correct or broken - reaches a decision. The generator's
+copy has no reader; the monitor's copy has a constant-True reader.
+
+================================================================================
+PART 2 - DOES IT MATTER?
+================================================================================
+
+2.1  HOW OFTEN IS THE CONTAINING FUNCTION CALLED?
+
+  _generate_coverage_strategy_options ... 240 per run, 3120 over the 13-run
+  sample. Once per simulation step, unconditionally, via .generate() at
+  global_adaptation_generator.py:64.
+
+2.2  THE COUNTERFACTUAL, BUILT AS A MONKEYPATCH (mode=arm)
+
+The correct population IS computable, so the counterfactual arm was built the
+way the last_cell and #9-A1 rounds built theirs. _bg_probe.py --mode arm hands
+_generate_coverage_strategy_options a copy of global_analysis_result carrying
+the real belief maps, so belief_gap_regions is populated exactly as a fix would
+populate it. Everything downstream runs unmodified.
+
+Counterfactual population, computed with the source predicate verbatim against
+fire_runtime_model.belief (observe mode, no behaviour change):
+    belief reachable ............................. 3120 / 3120
+    len(belief.fire_probability_map) ............. 2500 (the 50x50 grid)
+    counterfactual gap set NON-EMPTY ............. 2981 / 3120  (95.5%)
+    largest gap set .............................. 993 regions
+
+So the fix would not be cosmetic: on 95.5% of steps it would hand the option a
+real, often large, target list. Per-run, target_regions was non-empty on 223-237
+of 240 steps, peaking between 240 and 993 regions depending on seed.
+
+RESULT - arm vs nopatch, seed-matched, 13/13 runs:
+
+    agent-position sha256 identical .............. 13 / 13
+    stdout sha256 identical ...................... 13 / 13
+    evaluation metrics identical ................. 13 / 13
+      (rescued, dead, unreachable, never_detected, geographically_isolated,
+       firefighter_deaths, burnt_cells, rescue_rate, terminal_step)
+
+Populating belief_gap_regions changes NOTHING. Not one cell of one trajectory.
+
+2.3  WHY NOTHING CHANGES - the two downstream gates, measured
+
+outputs/_bg_probe2.py hooks the scoring layer directly (26 runs = 13 combos x
+{observe, arm}, 6240 plan calls).
+
+GATE 1 - the option reaches the planner and is never selected.
+    belief-gap option survives constraint filtering into the space  3120/3120
+    planner selected global_stability_maintain_current_config ...... 3120/3120  (observe)
+    planner selected global_stability_maintain_current_config ...... 3120/3120  (arm)
+    belief-gap option selected .................................... 0 / 6240
+
+  WHY. GlobalMissionPlanner._select_feasible_option (l.155-161) returns the
+  first feasible entry of a score-sorted tuple, else find_maintain_option.
+  Two hypotheses were tested:
+    H1 maintain is genuinely top-scored-and-feasible every step
+    H2 nothing is ever feasible and the maintain fallback always fires
+  MEASURED: the branch taken was the feasible loop on 6240/6240 calls, and all
+  23 options were feasible on 6240/6240. H1 CONFIRMED, H2 FALSIFIED.
+
+  The full scored table (identical in shape every step; 26 raw options, 23
+  surviving _is_global_mission_option, the 3 fail-safe options filtered out):
+
+     0  global_stability_maintain_current_config                 0.1530  feasible
+     1  global_role_assignment_fire_tracking                     0.0000  feasible
+     2  global_role_assignment_victim_search                     0.0000  feasible
+     3  global_role_assignment_victim_confirmation               0.0000  feasible
+     4  global_role_assignment_victim_tracking                   0.0000  feasible
+     5  global_role_assignment_communication_relay               0.0000  feasible
+     6  global_role_assignment_maintain_current                  0.0000  feasible
+     7  global_task_allocation_assign_high_probability_fire_region  0.0000  feasible
+     8  global_task_allocation_assign_high_uncertainty_region     0.0000  feasible
+     9  global_task_allocation_assign_victim_region               0.0000  feasible
+    10  global_task_allocation_assign_communication_support_zone  0.0000  feasible
+    11  global_task_allocation_reassign_task                      0.0000  feasible
+    12  global_task_allocation_split_region_coverage              0.0000  feasible
+    13  global_coverage_strategy_fire_front_tracking_mode         0.0000  feasible
+    14  global_coverage_strategy_uncertainty_reduction_mode       0.0000  feasible
+    15  global_coverage_strategy_victim_search_mode               0.0000  feasible
+    16  global_coverage_strategy_belief_gap_reduction_strategy    0.0000  feasible   <-- SUBJECT
+    17  global_coverage_strategy_uncertainty_driven_exploration   0.0000  feasible
+    18  global_coverage_strategy_search_mode_activation           0.0000  feasible
+    19  global_resource_reallocation_move_uavs_toward_critical_regions      0.0000  feasible
+    20  global_resource_reallocation_move_uavs_away_from_low_value_regions  0.0000  feasible
+    21  global_resource_reallocation_reduce_weak_uav_load         0.0000  feasible
+    22  global_resource_reallocation_prioritize_strong_uavs_for_uncertainty_regions  0.0000  feasible
+
+  EVERY global option scores exactly 0.0000. The do-nothing baseline is the only
+  one with a non-zero score, and it gets it purely from the hold-steady bonus in
+  _compute_stability_bonus (utility_evaluation.py:322-367; base 0.12, up to
+  0.22, times the mode's stability weight - observed range 0.153-0.255). Since
+  the sort is descending and the first feasible entry wins, maintain wins by
+  construction, every step, forever.
+
+  Across the whole sample:
+     belief-gap score values over 6240 scorings ...... {0.0: 6240}
+     belief-gap rank over 6240 scorings ............. {16: 6240}
+     maintain rank .................................. {0: 6240}
+     belief-gap constraint violations ............... none, ever
+
+  The reason every non-noop option scores 0.0 is the same class as 1.4: the
+  scorer reads utility signals by name (fire_contribution, uncertainty_reduction,
+  ...) and the generators emit none of those names. This is a bigger finding
+  than belief_gap_regions and is NOT scoped to this round; recorded here because
+  it is the proximate reason a lookup fix cannot matter.
+
+GATE 2 - target_regions does not enter scoring at all.
+  observe and arm walk identical trajectories (2.2), so their per-step score
+  series are directly comparable element-for-element:
+
+    belief-gap SCORE series identical observe vs arm .... 13 / 13 runs
+    belief-gap RANK  series identical observe vs arm .... 13 / 13 runs
+    arm target_regions non-empty ........................ 223-237 of 240 per run
+    arm target_regions max size ......................... 240 to 993 per run
+
+  240 steps x 13 seeds, target_regions ranging from empty to 993 entries, and
+  the utility score does not move off 0.0 by so much as a float ulp. This is
+  direct proof, not inference: target_regions is not an input to any decision.
+
+2.4  WOULD ANY OBSERVABLE OUTCOME CHANGE?
+
+No. rescued, dead, firefighter_deaths, never_detected, unreachable,
+geographically_isolated, burnt_cells, rescue_rate and terminal_step are
+identical on 13/13 seed-matched arm-vs-nopatch pairs, as are full agent-position
+and stdout hashes. There is no measurable consequence to repair.
+
+METHOD NOTE. Per the standing caution, nothing here is inferred from a per-step
+snapshot. Every count comes from a wrapper on the actual call
+(_generate_coverage_strategy_options, GlobalMissionPlanner.plan,
+_select_feasible_option, GlobalMonitor._belief_gap_indicators,
+GlobalAnalyzer._belief_gap_critical, GlobalAdaptationSpaceGenerator.generate),
+and observer purity was proven by sha-matching against unwrapped runs.
+
+2.5  IS THE CORRECT POPULATION COMPUTABLE?  YES.
+
+Three independent reasons this is a plumbing bug and not an unspecified blank:
+  - tests/test_global_adaptation.py:14-34 states the intended container shape
+    (the maps on global_analysis_result at top level) and l.62 states the
+    intended output ("r1").
+  - The data exists, live, correct, on every step: 2500 cells in
+    fire_runtime_model.belief, and the same names one level down in
+    SharedOperationalPicture.fire_belief_summary.
+  - GlobalMonitor._belief_gap_indicators already computes the same predicate
+    over the same source successfully.
+The arm run computed the population 3120 times without difficulty.
+
+So PART 2 item 5 does NOT apply to the lookup. It DOES apply to everything
+downstream: nobody ever decided what a populated target_regions should DO. That
+half is a design gap.
+
+================================================================================
+PART 3 - VERDICT
+================================================================================
+
+(B) REAL BUT INERT - with the tail of the problem being (E) DESIGN GAP.
+
+REAL:      belief_gap_regions is [] on 3120/3120 calls. The lookup is
+           structurally unsatisfiable - the names are absent from both
+           containers on 3120/3120 calls, and 20 of the file's 23 lookup names
+           fail the same way with a validated control group. The correct
+           population is computable and is specified by an existing test.
+           This is not a false alarm.
+
+INERT:     Populating it correctly changes nothing measurable: 13/13
+           seed-matched runs byte-identical on positions, stdout and all nine
+           evaluation metrics, with target_regions carrying up to 993 real
+           regions on 95.5% of steps. Three independent gates each suffice to
+           make it inert:
+             1. no code anywhere reads parameters["target_regions"];
+             2. the option's utility is exactly 0.0 whatever the value, and the
+                do-nothing baseline outscores it every step by construction, so
+                it is never selected (0/6240);
+             3. MissionDecision has no `parameters` field, so even on selection
+                the value could not cross into execution.
+           Fixing the lookup alone would move 993 regions into a dict that is
+           read by nothing, scored by nothing, and discarded every step.
+
+NOT (D) REDUNDANT: the concept IS duplicated - GlobalMonitor._belief_gap_indicators
+           computes it correctly from the same belief - so deletion is
+           defensible on duplication grounds. But "redundant" implies the
+           behaviour is covered elsewhere, and it is not: the monitor's copy
+           feeds only _belief_gap_critical, which is a constant-True function of
+           a dict's key count (60/60 True, 9 of them with zero real gaps). No
+           copy of this concept drives any decision. The two mechanisms named in
+           the brief (_uncovered_region_bonus, get_uncertain_regions) target
+           different concepts - geometric sweep coverage and observation
+           staleness - and do not cover belief gaps.
+
+NOT (C) NOT A DEFECT: the lookup is genuinely wrong and the test proves the
+           intended contract was never honoured.
+
+NOT (A) ACTIONABLE: there is no measurable consequence, and no fix confined to
+           this round's scope could produce one.
+
+RECOMMENDATION - LEAVE DOCUMENTED. Do not repair in a bug round.
+
+A repair that mattered would require three decisions, only the first of which is
+a bug fix:
+  1. PLUMBING - route the maps to where the generator looks (or point the
+     generator at fire_belief_summary / belief). Mechanical, testable, ~1 line
+     each for 4 maps; but on its own it is measurably a no-op.
+  2. SCORING - decide how a belief-gap target list should affect utility. Today
+     the scorer reads names no generator emits, which is why all 23 global
+     options tie at 0.0. This is a whole-subsystem design question, not a bug.
+  3. EXECUTION - decide what a UAV should DO with a target region list, and give
+     MissionDecision a field to carry it. Today there is no such field and no
+     such consumer.
+Steps 2 and 3 are "decide what belief_gap_regions should contain and mean",
+which the round brief correctly scopes OUT of a bug round.
+
+ADJACENT FINDINGS RAISED, NOT ACTED ON (each deserves its own round):
+  - GlobalAnalyzer._belief_gap_critical (global_analyzer.py:623-625) branches on
+    len() of a 4-key dict, so it is constant-True (60/60 measured, 9 with zero
+    real gaps). It sets Severity.CRITICAL and routes to fail_safe_planner. This
+    one has a LIVE consumer and so may not be inert - highest-value follow-up.
+  - The entire global adaptation option space ties at utility 0.0 (22 of 23
+    options), so GlobalMissionPlanner can only ever select the do-nothing
+    baseline. 3120/3120 steps in this sample. Much larger than this round.
+  - The read_value / _read flat-name idiom also appears in
+    rescue_adaptation_generator.py (5 definitions, 7 flat reads) and
+    constraint_filter.py:234-237, against the same containers.
+
+================================================================================
+HOW THE SOURCE TRACE WAS VERIFIED (honest accounting)
+================================================================================
+The four source-trace dimensions (mechanism, readers, redundancy, planner gate)
+were each traced independently and then attacked by three adversarial verifiers
+under distinct lenses (correctness / completeness / alternative-explanation),
+16 agents total. Result: 7 votes upheld, 5 refuted; two of the four dimensions
+were majority-refuted (2 of 3 votes each).
+
+Those refutations are recorded here rather than buried, because the reader
+should know what they did and did not overturn. In both cases the refuters
+explicitly upheld the bottom line and attacked the METHOD:
+  - "The HEADLINE conclusion survives my independent re-verification" - but the
+    completeness grep used `\.parameters`, which cannot match the dominant
+    idiom `getattr(option, "parameters", None)`, so the claim "I have seen every
+    generic reader" was unjustified even though it was true.
+  - A side-claim that uncertainty_context would be {} was factually wrong (the
+    planner populates it from the analysis snapshot at
+    global_mission_planner.py:285-291). Irrelevant to target_regions.
+Three genuine ADDITIONS came out of the refutation pass and were each
+re-verified by hand before being used above: MissionDecision has no
+`parameters` field (decision_objects.py:19-33); adaptation_results.py:134 is a
+generic whole-dict stringify reader that is saturated True; and
+SharedOperationalPicture.fire_belief_summary is a live home for the flat names.
+
+NOTHING IN THE VERDICT RESTS ON AGENT REPORTS. Every load-bearing fact above is
+either read directly from source in this session or measured by the four probes,
+whose observer purity was proven by sha-matching against unwrapped runs. The
+trace work is corroboration and lead-generation only.
+
+================================================================================
+REPRODUCTION
+================================================================================
+  PY=./.venv/Scripts/python.exe
+
+  # probe 1 - permanence + counterfactual impact (one process per run)
+  $PY outputs/_bg_probe.py --mode {observe|nopatch|arm} --wind {east|south} \
+      --roles {half|default} --seed N --steps 240 --out outputs/_bg_run_TAG.json
+  $PY outputs/_bg_probe.py --aggregate --glob "outputs/_bg_run_*.json" \
+      --out outputs/_bg_probe.json
+  # batch runners: outputs/_bg_runall.sh, outputs/_bg_fill.sh
+
+  # probe 2 - planner gate + score-series comparison
+  bash outputs/_bg2_runall.sh
+  $PY outputs/_bg_probe2.py --compare --glob "outputs/_bg2_run_*.json" \
+      --out outputs/_bg_probe2.json
+
+  # probe 3 - file-wide key-presence census (with control group)
+  $PY outputs/_bg_probe3.py --wind east --roles half --seed 101 --steps 60 \
+      --out outputs/_bg_probe3.json
+
+  # probe 4 - the parallel mechanism's degenerate consumer
+  $PY outputs/_bg_probe4.py --wind east --roles half --seed 101 --steps 60 \
+      --out outputs/_bg_probe4.json
+
+  Scenario params are verbatim from outputs/_sc_control.py:35-39 (scenario D),
+  the same canonical 13-run sample used by the preceding rounds.
+  Note: outputs/*.txt from PowerShell redirection are UTF-16; these probe
+  outputs are JSON/UTF-8.
+
+STOP. Diagnosis only. No implementation, awaiting confirmation.
