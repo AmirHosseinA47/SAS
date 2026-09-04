@@ -1,0 +1,593 @@
+================================================================================
+  `_move_toward` OSCILLATION - PART 1: CHARACTERISE THE REVERSALS
+  branch claude/position-rename-and-hazard-revalidation   HEAD 466ee13
+  read-only investigation; no source file was modified
+================================================================================
+
+VERDICT: (B) REAL BUT NOT A DEFECT.  The reversals are real, reproduce exactly,
+and have a single clean mechanism.  That mechanism is greedy descent stalling at
+a hazard barrier, and the reversal is its SYMPTOM, not its cause.  Every one of
+the 62 episodes was repaired by something outside `_move_toward`; none survived
+to the horizon.  The step back is the code's own correct pick in 144 of 144
+cases, and an anti-oscillation guard would have handed the unit an equal-or-worse
+cell in 75 of 144 and a strictly worse one in none of the remainder - never a
+better one.  RECOMMENDATION: leave documented, change nothing.
+
+The brief's own framing is confirmed on the narrow point and refuted on the wide
+one.  "No anti-oscillation term in `_move_toward`" is TRUE and provable.  "The
+only one where there is no mechanism to repair" is FALSE: there is no repair
+mechanism INSIDE `_move_toward`, but there are several outside it, and they
+demonstrably fired on 62 of 62 episodes.
+
+NOTE ON SCOPE.  The brief text received was truncated mid-way through Part 1
+item 3 ("was the unit ASSIGNED and moving toward a target, or"). Item 3 is
+answered here across every classification axis that seemed material; sections
+4-8 are the natural completion.  If the truncated text asked for an axis not
+covered, it is not here because it was not received.
+
+
+================================================================================
+1. `_move_toward` AS IT EXISTS NOW
+================================================================================
+agents.py:1081-1176, quoted in full and unaltered.  (Line span corrected: the
+method ends at 1176; 1177-1178 are blank and 1179 begins `class PathMarker`.)
+
+  1081  def _move_toward(self, target):
+  1082      tx, ty = target
+  1083      cx, cy = self.pos
+  1084      dx, dy = tx - cx, ty - cy
+  1085      if abs(dx) >= abs(dy):
+  1086          nx = cx + (1 if dx > 0 else -1 if dx < 0 else 0)
+  1087          ny = cy
+  1088      else:
+  1089          nx = cx
+  1090          ny = cy + (1 if dy > 0 else -1 if dy < 0 else 0)
+  1091      preferred = (nx, ny)
+  1092      dist_before = abs(cx - tx) + abs(cy - ty)
+  1093
+  1094      # Route is blocked when no fire-free path to the target exists at all,
+  1095      # not merely when every neighbour happens to burn. Scoped to the
+  1096      # approach phase: for a unit already carrying a victim the replacement
+  1097      # pathway is the wrong response, so the exiting path keeps only the
+  1098      # original "nowhere to step" condition below.
+  1099      route_blocked_now = False
+  1100      if not self.exiting:
+  1101          route_blocked_now = not self._path_exists_avoiding_fire(
+  1102              (int(cx), int(cy)), (int(tx), int(ty)), self._fire_cells(),
+  1103          )
+  1104
+  1105      scored: list[dict[str, object]] = []
+  1106      for cell in self._neighbor_cells():
+  1107          if self._cell_contains_active_fire(cell):
+  1108              continue
+  1109          dist_after = abs(cell[0] - tx) + abs(cell[1] - ty)
+  1110          scored.append(
+  1111              {
+  1112                  "cell": cell,
+  1113                  "dist_after": dist_after,
+  1114                  "improving": dist_after < dist_before,
+  1115                  "maintaining": dist_after == dist_before,
+  1116                  "adjacent_fire": self._cell_adjacent_to_fire(cell),
+  1117                  "smoke": self._cell_has_active_smoke(cell),
+  1118                  "preferred": cell == preferred,
+  1119                  "risk": self._firefighter_cell_risk(cell),
+  1120              }
+  1121          )
+  1122
+  1123      if not scored:
+  1124          self._mark_route_blocked()
+  1125          return
+  1126
+  1127      if route_blocked_now:
+  1128          # Raise the signal but keep moving: choosing the best available step
+  1129          # is the retreat logic's job and is out of scope here.
+  1130          self._mark_route_blocked()
+  1131
+  1132      chosen: tuple[int, int] | None = None
+  1133      chosen_tier = 4
+  1134      tier_pools = [
+  1135          [
+  1136              item for item in scored
+  1137              if item["improving"] and not item["adjacent_fire"] and not item["smoke"]
+  1138          ],
+  1139          [
+  1140              item for item in scored
+  1141              if item["maintaining"] and not item["adjacent_fire"] and not item["smoke"]
+  1142          ],
+  1143          [
+  1144              item for item in scored
+  1145              if not item["adjacent_fire"] and not item["smoke"]
+  1146          ],
+  1147      ]
+  1148      for tier_idx, pool in enumerate(tier_pools, start=1):
+  1149          if pool:
+  1150              chosen_item = min(
+  1151                  pool,
+  1152                  key=lambda item: (item["dist_after"], 0 if item["preferred"] else 1),
+  1153              )
+  1154              chosen = chosen_item["cell"]
+  1155              chosen_tier = tier_idx
+  1156              break
+  1157      if chosen is None:
+  1158          chosen_item = min(
+  1159              scored,
+  1160              key=lambda item: (
+  1161                  item["risk"],
+  1162                  item["dist_after"],
+  1163                  0 if item["preferred"] else 1,
+  1164              ),
+  1165          )
+  1166          chosen = chosen_item["cell"]
+  1167          chosen_tier = 4
+  1168
+  1169      self._last_move_tier = chosen_tier
+  1170      self._last_move_risk = int(chosen_item["risk"])
+  1171
+  1172      if not route_blocked_now and (
+  1173          str(getattr(self, "status", "") or "").strip().lower() == "route_blocked"
+  1174      ):
+  1175          self.status = "assigned" if self.assigned else "available"
+  1176      self.model.grid.move_agent(self, chosen)
+
+1.1  THE TIER STRUCTURE
+------------------------
+  Cells holding ACTIVE FIRE are dropped at 1107-1108, before any tiering.
+  Of what survives:
+    tier 1  improving (dist_after < dist_before), not adjacent_fire, not smoke
+    tier 2  maintaining (dist_after == dist_before), not adjacent_fire, not smoke
+    tier 3  anything not adjacent_fire and not smoke  (so: worsening but clean)
+    tier 4  fallback over ALL non-fire neighbours, min by (risk, dist, !preferred)
+  Within tiers 1-3 the pick is min by (dist_after, 0 if preferred else 1).
+  `preferred` is the greedy single-axis step, x first when |dx| >= |dy|.
+
+1.2  THE CLAIM "NO ANTI-OSCILLATION TERM" - CONFIRMED, EXHAUSTIVELY
+--------------------------------------------------------------------
+  CONFIRMED.  The chosen cell is a deterministic, memoryless function of
+      (self.pos, target, the burning-fire cell set, the active-smoke cell set,
+       grid bounds)
+  and nothing else.  Established by enumerating every `self.` reference in
+  1081-1176 and taking the transitive closure of its callees - which is exactly
+  `_path_exists_avoiding_fire` (1030), `_fire_cells` (617), `_neighbor_cells`
+  (675), `_cell_contains_active_fire` (629), `_cell_adjacent_to_fire` (658),
+  `_cell_has_active_smoke` (641), `_firefighter_cell_risk` (665),
+  `_mark_route_blocked` (1067), plus three `model.grid` calls.  None of them
+  consults where the unit has previously been.  There is no `random` call, so
+  the choice is also RNG-free, and `min` is order-stable over `scored`, built in
+  the fixed `_neighbor_cells` order (+1,0),(-1,0),(0,+1),(0,-1).
+
+  Fields READ but which provably cannot damp the choice:
+    `exiting`     (1100) gates only the reachability BFS.  Its product,
+                  `route_blocked_now`, appears at 1127 and 1172 only - never in
+                  a tier pool or a min-key.
+    `status`      read at 1068 and 1173.  Both reads happen after `scored` is
+                  frozen (1105-1121) and `chosen` derives solely from `scored`.
+    `assigned`    read at 1175, after `chosen` is bound.  Selects a status
+                  string, nothing else.
+  Fields WRITTEN and never read back for movement:
+    `_last_move_risk` is WRITE-ONLY in production; its only reader anywhere is
+    a diagnostic script.  `_last_move_tier` is read only into telemetry strings
+    consumed by the XAI explanation engine.
+
+  ONE CORRECTION TO THE PRECISE PHRASING.  "`_move_toward` is memoryless" is
+  true of the CHOSEN CELL but not of the METHOD: `_mark_route_blocked` (1068)
+  reads `self.status` across steps to de-duplicate the handler call, and that
+  handler can reach an unassign.  It cannot change which neighbour is picked on
+  this call, but it is a cross-step read, and calling the whole method
+  memoryless overstates it.  Measurement below shows the point is moot for the
+  reversals: `route_blocked_now` was False at 144 of 144 of them.
+
+1.3  IS `_idle_retreat_last_cell` READ HERE, OR MERELY OUT OF SCOPE?
+----------------------------------------------------------------------
+  BOTH, and the second is the more interesting answer.
+
+  NOT READ: the field's only two production read sites are agents.py:800
+  (`_survival_move`) and agents.py:981 (`_revalidate_idle_retreat_stall`).
+  Neither is reachable from `_move_toward`; grep confirms `_move_toward`
+  neither reads nor writes it.  This re-verifies idleresethole_part1.txt's
+  claim "`_move_toward` never writes `_idle_retreat_last_cell`" at this HEAD.
+
+  NOT IN SCOPE EITHER: the field is not even MAINTAINED on the assigned-transit
+  path.  Its writes are 397 (__init__), 752 (reset), 786 (re-anchor, to None),
+  854 (`_survival_move` on a successful step) and 994 (`_revalidate...`).  On a
+  normal transit step none of these runs, so whatever the field holds is a stale
+  leftover from an earlier retreat, or None.  The guard is not merely bypassed
+  here - the state it reads is not being kept.
+
+  So the anti-oscillation memory that DOES exist in this file
+  (`if ncell == last_cell: continue`, agents.py:883, inside `_retreat_candidates`)
+  covers two of the four movers in the class - the `_survival_move` scan (855)
+  and `_revalidate_idle_retreat_stall` (995).  It covers neither `_move_toward`
+  (1176) nor `_assigned_one_step_retreat` (1026).
+
+1.4  HISTORY
+-------------
+  agents.py has exactly FOUR commits across all refs: a4a01b4 (file added),
+  f2827ed, 62b4fbe, c4d5a25.  `_move_toward`'s full 4-tier structure arrived
+  complete in the bulk import a4a01b4 ("Add core project files and update
+  README"), with no rationale and no comment.  It has been edited exactly once
+  since, by f2827ed, which added the route_blocked BFS signal and did not touch
+  neighbour selection.  No anti-oscillation term, last-cell memory or visited-set
+  has EVER been in `_move_toward`, on any ref - including three dangling commits
+  (4da13bc, 4804c4b, 91a5ac3) that `git rev-list --all` does not reach.
+
+  So the absence is not a removal and not a considered decision.  It is an
+  absence that was never argued either way - the same provenance the
+  `_reset_idle_retreat_state` round found for its own subject.
+
+  agents.py is BYTE-IDENTICAL between c4d5a25 (the lastcell report) and HEAD
+  466ee13.  There is no diff of this method to show across that range, so both
+  source reports' CODE claims stand verbatim.
+
+
+================================================================================
+2. THE INSTRUMENT
+================================================================================
+The brief's caution - the error that produced the 14/16 false idle-death figure
+and six phantom "drops" - is about inferring a transition from a per-step
+snapshot.  Nothing here is inferred that way.
+
+  * EVERY position change is recorded AT THE CALL THAT MADE IT, tagged with its
+    code path (`move_toward` / `survival` / `assigned_one_step` / `revalidate`).
+    Reversals are read off end-of-step position ground truth and only THEN
+    joined to that log for attribution.
+  * The FULL decision context of every `_move_toward` call is recorded: the
+    scored pool with dist_after / improving / maintaining / adjacent_fire /
+    smoke / preferred / risk for every neighbour, plus `preferred`,
+    `dist_before`, `route_blocked_now`, the unit's OWN cell hazard, target,
+    exiting, assigned, status before and after.
+  * THE POOL IS SELF-VALIDATING.  It is recomputed in the wrapper from the same
+    pure read-only helpers, and the wrapper PREDICTS the cell and tier the real
+    method will pick before the real method runs.  Result:
+
+        _move_toward calls observed          1516
+        pool predicted the CELL              1516   (100%)
+        pool predicted the TIER              1516   (100%)
+        recorded mismatches                     0
+
+    So the recorded pool IS the pool the real code saw, and every counterfactual
+    below is computed by the real selection chain over it, not guessed.
+  * ALIGNMENT ASSERTED, NOT ASSUMED.  62 steps in the sample contain TWO moves
+    by one unit (survival then move_toward).  Checking the LAST move of each
+    (step, unit) against the position trace: 1980 aligned, 0 misaligned.
+  * NON-PERTURBATION, CHECKED NOT ASSUMED.  Probe vs a no-monkeypatch control on
+    three seeds (D/east/default 101, D/east/half 101, D/south/half 101):
+    480 of 480 trace rows identical each time, evaluations identical.
+  * BASELINE CROSS-CHECK.  13-run totals rescued 29 / firefighter_deaths 6 -
+    exactly the arm-`none` figures the `_reset_idle_retreat_state` round
+    recorded for the same 13 seeds.  The instrument reproduces the shipped world.
+
+  ONE ERROR FOUND AND FIXED IN MY OWN FIRST PASS, recorded because it is the
+  same class of mistake the brief warns about.  I initially tested "did the
+  board change between the two decisions" by intersecting the scored pools of
+  cell A and cell B.  On a 4-connected grid two ADJACENT cells share no
+  neighbours at all, so that intersection is always empty and the test was
+  VACUOUS - it reported "board identical" 144/144 by construction.  The
+  corrected test compares the pool scored AT A at step t against the pool scored
+  AT A again at step t+2: same cell, same scoring, like with like.  Sections 2.4
+  and 4 below use the corrected test.
+
+
+================================================================================
+3. RE-MEASUREMENT ON THE CANONICAL SAMPLE
+================================================================================
+Sample exactly as specified: D/east half-roles 101-505, D/south half-roles
+101-505, D/east default-roles 101/202/303 = 13 runs, 240 steps,
+FIRE_SPREAD_MULTIPLIER 0.75, BATCH_SIZE 300, PROBABILITY_MAP False, one seed
+per process.
+
+    186   TOTAL tight reversals on live units, all code paths
+    144   move_toward  ->  move_toward
+     27   move_toward  ->  survival
+      8   survival     ->  move_toward
+      7   survival     ->  survival
+
+  per run:  ed_101 19, ed_202 2, ed_303 2, eh_101 33, eh_202 4, eh_303 6,
+            eh_404 4, eh_505 30, sh_101 71, sh_202 0, sh_303 9, sh_404 6,
+            sh_505 0
+
+  THE 144-OF-186 FIGURE HOLDS EXACTLY AT THIS HEAD, and the per-run breakdown
+  is identical seed for seed to idleresethole_part1.txt section 3.2.  All 144
+  have full recorded decision context on both legs; none was excluded.
+
+  (The 7 `survival -> survival` are that round's "hole"; ed_202's 2-of-2 also
+  reproduces exactly.  This round did not re-open them.)
+
+
+================================================================================
+4. CLASSIFICATION OF ALL 144
+================================================================================
+  4.1  ROLE
+       144  (100.0%)  assigned transit, moving toward a victim
+         0             exiting / carrying a victim
+       The reversals are ENTIRELY an approach-phase phenomenon.  Not one occurs
+       on the exiting path.
+
+  4.2  DID THE TARGET CHANGE BETWEEN THE TWO DECISIONS?
+       144  (100.0%)  target identical
+       So none of these is a correct response to a re-assignment.  They are
+       genuine reversals against a fixed goal.
+
+  4.3  TIER PAIR  (tier stepping A->B, tier stepping B->A)
+        75  ( 52.1%)  tier 3 -> tier 1
+        66  ( 45.8%)  tier 1 -> tier 3
+         2  (  1.4%)  tier 1 -> tier 4
+         1  (  0.7%)  tier 4 -> tier 4
+       141 of 144 are the SAME cycle observed at its two phases.  Tier 2 never
+       appears - see section 8.
+
+  4.4  WAS THE STEP BACK THE CODE'S OWN BEST PICK?
+        75  ( 52.1%)  tier 1 - its own best improving pick
+        66  ( 45.8%)  tier 3 - the best clean cell available
+         3  (  2.1%)  tier 4 - the lowest-RISK cell available
+       In all 144 the step back is what the shipped tier chain ranks first.
+       There is no case where the code returned to A while a better cell by its
+       own ordering was available.
+
+  4.5  WAS THE UNIT IN DANGER? (its OWN cell, measured)
+       at the A->B decision:  144 (100.0%) clean, risk 0
+       at the B->A decision:  141 ( 97.9%) clean, risk 0
+                                2 (  1.4%) adjacent to fire
+                                1 (  0.7%) STANDING IN FIRE
+       BOTH cells clean at both decisions: 141 of 144 (97.9%).
+
+  4.6  WHICH advance() CALL SITE?
+       This matters because advance() calls `_move_toward(self.target_pos)` from
+       TWO places - 522 (normal transit) and 473 (the survival branch, reached
+       only when `_survival_move` ran and FAILED to move the unit).  A move
+       attributed to `_move_toward` therefore does NOT by itself prove the unit
+       was safe.  Separated by whether a `_survival_move` call was logged in the
+       same step for the same unit:
+       141  ( 97.9%)  522 -> 522   normal transit at both ends
+         3  (  2.1%)  522 -> 473   the step back was the survival fallback
+       The 3 are exactly the 3 hazardous cases in 4.5 and the 3 tier-4 cases in
+       4.3.  The taxonomy closes.
+
+  4.7  ROUTE_BLOCKED
+       144  (100.0%)  route reported OPEN at both decisions
+       Not one reversal happened while the unit was flagged route_blocked.
+       Section 6.3 explains why this is structural, not luck.
+
+  4.8  WOULD THE CYCLE HAVE REPEATED?  (pool at A at step t vs at step t+2)
+        71  ( 49.3%)  inputs identical - deterministic, the cycle continues
+        42  ( 29.2%)  the fire/smoke picture around A had changed
+        31  ( 21.5%)  the unit had left the `_move_toward` path entirely
+
+
+================================================================================
+5. THE MECHANISM
+================================================================================
+5.1  WHY A 2-CYCLE IS POSSIBLE AT ALL
+---------------------------------------
+  On a 4-connected grid with Manhattan distance, a neighbour's distance to the
+  target is ALWAYS dist_before +/- 1.  So:
+
+    tier1 -> tier1 is IMPOSSIBLE.  A->B improving means d(B) = d(A)-1; B->A
+    improving would need d(A) < d(A)-1.
+
+  The reachable cycle is tier1 <-> tier3, and it has one shape:
+
+    * The unit stands on a clean cell F.  The step toward the target, N, is
+      clean and improving, so TIER 1 takes it: F -> N.
+    * From N, every improving neighbour is adjacent to fire or smoky.  Tier 1
+      and tier 2 are empty.  TIER 3 takes the best CLEAN cell, which necessarily
+      WORSENS distance - and F is it: N -> F.
+    * From F, N is clean and improving again.  Tier 1 takes it.  Forever.
+
+  Both cells are clean.  The unit is safe and stationary, pressed against a
+  hazard barrier it will not cross, on a board where nothing has changed.
+
+5.2  DEMONSTRATED, NOT ARGUED  (outputs/_mto_cycle_demo.py)
+-------------------------------------------------------------
+  The REAL `agents.Firefighter._move_toward` and the real tier chain, risk
+  function and BFS were bound to a stub whose ONLY overrides are the three
+  grid-content predicates, reading from explicit frozen sets.
+
+    case 1  fire wall at x=4, target (2,5), start (7,5)
+            -> path (7,5),(6,5),(7,5),(6,5),... tiers 1,3,1,3,...
+               STABLE LIMIT CYCLE, period 2, 2 distinct cells in 24 steps.
+    case 2  the same shape made of SMOKE, no fire anywhere
+            -> identical period-2 cycle.  The mechanism is not fire-specific.
+    case 3  control, no barrier -> walks straight in on tier 1.
+    case 4  wall sealed to the grid edges -> route_blocked raised on all 24
+            steps AND the unit still cycles.  Raising the signal does not stop
+            the dithering; the code comment at 1128-1129 says so explicitly.
+
+  So on a frozen board the cycle is genuinely infinite.  The board is not frozen
+  - section 6.
+
+5.3  THE DEEPER READING
+------------------------
+  This is a greedy-descent local minimum, and the reversal is its symptom.
+  `_move_toward` picks a step by one-step lookahead with a hazard filter; it has
+  no global path awareness at all.  At a barrier, one-step lookahead has nothing
+  to descend to, so it alternates.
+
+  An anti-oscillation memory does not address that.  It converts a stationary
+  ping-pong into a wander - the unit would still not path AROUND the barrier,
+  because nothing in the method knows the barrier has an end.  This is the
+  central reason the "adding a term" framing does not lead anywhere good: the
+  term would suppress the SIGNATURE while leaving the situation unchanged, and
+  would cost the unit its safe holding cell to do it (section 7).
+
+
+================================================================================
+6. "NO MECHANISM TO REPAIR" IS FALSE
+================================================================================
+6.1  MEASURED: WHAT ACTUALLY ENDED EACH EPISODE
+-------------------------------------------------
+  The 144 reversal-steps form 62 maximal consecutive-reversal EPISODES.
+  Determinism means an episode continues until an input changes, so "what ended
+  it" is the right unit of analysis, and it is read from the trace:
+
+        31  ( 50.0%)  BOARD     the fire/smoke picture around the pair changed
+        31  ( 50.0%)  SURVIVAL  `_survival_move` took over as hazard closed in
+         0             HORIZON   still cycling at step 240
+
+  62 OF 62 EPISODES WERE REPAIRED.  Not one survived to the end of the run.
+  Episode lengths: 35 of length 1, 13 of 2, and a tail to a single longest of
+  14 steps.  Every episode is a 2-cell pair, confirming period 2.
+
+6.2  WHY THE WORLD ALWAYS REPAIRS IT
+--------------------------------------
+  Per-cell hazard is one-shot and absorbing-to-clean: a cell burns at most once,
+  smokes at most once, and is permanently fire-free and smoke-free afterwards.
+  The hazard configuration that produces a given 2-cycle therefore cannot
+  persist.  Fire spread re-evaluates on ticks where the counter % 3 == 0; the
+  smoke mask can change on any tick.  All Fire.advance() calls run BEFORE
+  Firefighter.advance() within a tick, so a unit sees the current board.
+
+  The honest statement is: there is no repair mechanism INSIDE `_move_toward`,
+  but the hazard field's own evolution is an unconditional one outside it, and
+  `_survival_move` is a second.  Those two account for 62 of 62.
+
+6.3  WHY route_blocked NEVER FIRES FOR THIS DITHER - AND IT IS STRUCTURAL
+---------------------------------------------------------------------------
+  `_path_exists_avoiding_fire` treats ONLY ACTIVE FIRE as impassable.
+  Fire-adjacency and smoke are invisible to it.  But the tier filter refuses
+  cells for exactly those two reasons.  So the BFS reports the route OPEN while
+  every forward step is being refused.
+
+  Measured over all 141 tier-3 legs, the improving neighbours that were rejected,
+  by the flag that rejected them:
+
+        144  ( 67.3%)  adjacent to fire      <- invisible to the BFS
+         43  ( 20.1%)  smoky                 <- invisible to the BFS
+         27  ( 12.6%)  adjacent to fire AND smoky
+
+        214 of 214 (100.0%) rejected by a flag the BFS cannot see.
+        ZERO rejected by active fire itself.
+
+  This is why 4.7 found route_blocked open at 144 of 144.  The structural
+  prediction and the measurement agree exactly, from opposite directions.
+
+6.4  THE ONE TIMEOUT THAT DOES NOT CATCH IT
+---------------------------------------------
+  The model's only no-progress timeout, `_update_unreachable_victims`
+  (UNREACHABLE_STREAK_STEPS = 30), tests whether distance decreased since the
+  previous step.  In a 2-cycle distance decreases on every other step, so the
+  streak resets continuously and the timeout never trips.  Worth recording; it
+  did not matter here, because 62 of 62 episodes ended long before 30 steps.
+
+
+================================================================================
+7. THE GUARD COUNTERFACTUAL
+================================================================================
+For each reversal the real tier chain was re-run over the recorded pool with the
+return cell A removed - i.e. exactly what a `last_cell`-style guard would do.
+
+        75  ( 52.1%)  guard forces an equal-or-WORSE cell
+        69  ( 47.9%)  guard alternative equal on tier / dist / risk
+         0             guard alternative strictly BETTER
+         0             guard leaves no legal cell (unit pinned)
+
+  In what way the forced alternative is worse (non-exclusive):
+        73   falls to a lower tier
+        61   is FURTHER from the target
+        14   carries higher risk
+        11   is adjacent to fire where A was not
+         3   is smoky where A was not
+
+  THE THREE HAZARDOUS CASES ARE THE SHARPEST.  All 3 are tier 4 - the unit is in
+  real danger and the tier chain is minimising risk:
+
+    eh_505 ff_unit_0 s173-174  unit STANDING IN FIRE at (28,43), risk 1000000.
+      Steps back to (29,43), risk 100 - its escape.  Guard forces (28,42),
+      also risk 100: equal, and the escape is no longer the unit's own choice.
+    sh_101 ff_unit_0 s92-93    unit adjacent to fire at (44,28), risk 100.
+      Steps back to (45,28), risk 100.  Guard forces (44,27), risk 110 - WORSE.
+    sh_101 ff_unit_0 s95-96    unit at (45,26), risk 110.
+      Steps back to (45,27), risk 100.  Guard forces (45,25), risk 110 - WORSE.
+
+  This is the last_cell round's finding reproduced on this path: a guard that
+  forbids the return cell takes away the only clean ground the unit has.  None
+  of the three units died.
+
+  So the prior going in survives contact with the data.  On this path a guard is
+  never better, sometimes worse, and at its worst is worse in exactly the way
+  that killed units last time.
+
+
+================================================================================
+8. TWO INCIDENTAL FINDINGS
+================================================================================
+8.1  TIER 2 IS UNREACHABLE DEAD CODE - THE STRUCTURE IS 3-TIER, NOT 4-TIER
+----------------------------------------------------------------------------
+  `maintaining` (1115, `dist_after == dist_before`) can NEVER be True.  On a
+  4-connected grid one step changes Manhattan distance by exactly +/-1.  So
+  `tier_pools[1]` (1139-1142) is always empty and `chosen_tier` can never be 2.
+
+  Proved three ways: by argument; by exhaustive enumeration over a 12x12 grid
+  (76032 neighbour/target pairs, 0 with dist_after == dist_before); and
+  empirically - across 1516 recorded calls, tier 2 was chosen 0 times and the
+  `maintaining` flag was True for 0 scored neighbours.
+
+  INERT.  Removing it would change nothing; leaving it changes nothing.  Flagged
+  because the method is described as 4-tier in the code and in both prior
+  reports, and it is 3-tier in fact.
+
+8.2  THE BFS ASYMMETRY (section 6.3) IS ITSELF WORTH A NOTE
+-------------------------------------------------------------
+  `route_blocked` asks a question about FIRE while the movement filter answers a
+  question about FIRE-ADJACENCY-AND-SMOKE.  The two disagree by construction,
+  and 214 of 214 measured rejections fall in the gap.  This is not a defect in
+  `_move_toward` - the signal is doing what its comment says - but it does mean
+  the route_blocked replacement pathway can never be triggered by the dominant
+  stall mode.  Out of scope for this round; recorded for whoever looks at
+  route_blocked next.
+
+
+================================================================================
+9. VERDICT
+================================================================================
+  (B) REAL BUT NOT A DEFECT.  Leave documented; change nothing.
+
+  What is true, and confirmed:
+    * `_move_toward` has no anti-oscillation term.  Provable, exhaustive, and
+      it never had one on any ref.
+    * 144 of 186 tight reversals originate there.  Reproduces exactly, seed for
+      seed, at this HEAD.
+    * On a frozen board the cycle is genuinely infinite.  Demonstrated with the
+      real code.
+
+  What is false:
+    * "There is no mechanism to repair."  62 of 62 episodes were repaired, by
+      board evolution (31) and `_survival_move` (31).  None reached the horizon.
+
+  Why it is not a defect:
+    * The step back is the code's own top-ranked pick in 144 of 144.
+    * The unit is on clean ground at both ends in 141 of 144, and in the 3
+      exceptions it is fleeing danger correctly.
+    * A guard is never better (0 of 144), equal at best (69), worse at worst
+      (75) - and its worst case is taking away a unit's only clean cell, which
+      is the failure that killed units in the last_cell round.
+    * The cost is 144 reversal-steps out of 5316 firefighter-steps alive: 2.71%.
+      Median episode 1 step; longest 14.
+    * The reversal is the SYMPTOM of greedy descent at a barrier, not the cause.
+      An anti-oscillation term would hide the signature without changing the
+      situation, at the price of the unit's safe holding cell.
+
+  This is now the fourth consecutive round to find that constraining firefighter
+  movement more tightly makes outcomes worse or no better.  On the evidence here
+  that is not a coincidence: tiers 1-3 are already a hazard-avoidance filter,
+  and every additional constraint composes with it by removing the last clean
+  option rather than by improving the choice.
+
+  IF ANYONE DOES REVISIT THIS, the lead is not an anti-oscillation term.  It is
+  that `_move_toward` already computes a full fire-avoiding BFS every transit
+  step (1101) and throws away everything except one boolean.  Taking the first
+  step of that BFS instead of a greedy axis step would dissolve the local
+  minimum outright rather than mask it.  That is a materially larger behavioural
+  change than this round is scoped for, it would need its own harm measurement,
+  and the BFS's fire-only notion of passability (8.2) would have to be
+  reconciled with the tier filter's first.  Noted as a direction, not proposed.
+
+================================================================================
+ARTEFACTS
+  _mto_probe.py        self-validating probe (pool prediction 1516/1516)
+  _mto_run.sh          13-run canonical runner
+  _mto_analyse.py      classification            -> _mto_analysis.txt
+  _mto_episodes.py     episode termination       -> _mto_episodes.txt
+  _mto_cycle_demo.py   frozen-board demonstration with the real _move_toward
+  _mto_<tag>.json      per-run raw traces (13)
+  _irh_ctlmto_*.json   no-monkeypatch controls (3)
+================================================================================
