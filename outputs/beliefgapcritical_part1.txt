@@ -1,0 +1,734 @@
+================================================================================
+_belief_gap_critical CONSTANT-TRUE  --  PART 1-2 INVESTIGATION, PART 3 VERDICT
+================================================================================
+branch : claude/position-rename-and-hazard-revalidation
+HEAD   : 319d404  (confirmed before any work; matches expectation)
+python : 3.10.11   mesa 1.2.1   (E:\Projects\SAS\.venv\Scripts\python.exe)
+scope  : read-only investigation.  NO SOURCE FILE WAS MODIFIED.
+         New files are scratch probes under outputs/ only:
+           _bgc_neg.py, _bgc_neg_run.sh, _bgc_fill.sh, _bgc_analyze.py
+
+VERDICT (Part 3, item 7):  (B) REAL BUT INERT
+         -- with (D) additionally true as a strictly narrower statement.
+         Both are quantified below; (B) is the stronger and is the one proven
+         by a negative control rather than merely observed.
+
+CONNECTION ANSWER (Part 3, item 8):  NO.
+         Constant-True _belief_gap_critical is NOT the cause of the permanent
+         information_recovery mode, not even partially.  The real driver is
+         identified, and the correspondence is exact (0 mismatches in 3120
+         step-observations).
+
+
+================================================================================
+0. WHAT CHANGED RELATIVE TO THE ROUND BRIEF
+================================================================================
+Three claims in the framing did not survive measurement.  Stating them up
+front because two of them are load-bearing for how the round was scoped.
+
+(0a) "routes to fail_safe_planner" -- NOT ROUTING.
+     `recommended_planner` is a recorded field with ZERO behavioural readers.
+     FailSafePlanner.plan() is invoked UNCONDITIONALLY every step
+     (planning_coordinator.py:63), alongside global_mission_planner,
+     rescue_planner and the per-UAV path planners.  Nothing anywhere selects a
+     planner based on this field.  So "critical severity routes to the
+     fail-safe planner" is a field write, not a route.
+
+(0b) "enters information_recovery at step 2 of EVERY run and NEVER returns to
+     normal" -- HALF RIGHT, and the half that is wrong matters.
+       * "enters at step 2 in every run"   CONFIRMED, 13/13.
+       * "never returns to normal"          CONFIRMED, 13/13.
+       * "never leaves information_recovery" FALSE.  The mode oscillates
+         continuously: information_recovery <-> safety_first, and degraded
+         once.  Mode census over 13 runs x 480 ModeManager.update calls:
+             information_recovery 4764, safety_first 1446, degraded 4,
+             normal 26 (= step 1 only), emergency 0.
+         D/east/default|101 alone makes 21 mode transitions.
+     The fail-safe mode machine is NOT frozen.  It is running, and it has
+     behavioural teeth (see section 5).  It is simply not driven by this
+     predicate.
+
+(0c) "60/60, including 9 calls with zero real gaps".
+     The 60/60 True reproduces trivially -- ANY sample reproduces it, because
+     the predicate is constant.  The "9 zero-gap" figure does not reproduce at
+     any sample shape I tried (a 60-call sample gives 19, 53, 53 or 55 zero-gap
+     depending on shape).  My measurement supersedes it: 205 zero-gap calls out
+     of 3120, all returning True.  The qualitative claim (True even with zero
+     real gaps) is confirmed and is stronger than stated.
+
+
+================================================================================
+1. THE MECHANISM  (Part 1, item 1)
+================================================================================
+
+1.1 THE PRODUCER -- src_extension/monitoring/global_monitor.py:252-265, verbatim
+
+    252  def _belief_gap_indicators(self) -> dict[str, Any]:
+    253      prob_t, conf_t = 0.6, 0.4
+    254      gaps: list[dict[str, Any]] = []
+    255      b = self.fire_runtime_model.belief
+    256      for cell, prob in b.fire_probability_map.items():
+    257          conf = b.fire_confidence_map.get(cell, 0.0)
+    258          if prob >= prob_t and conf < conf_t:
+    259              gaps.append({"cell": list(cell), "fire_probability": float(prob), "confidence": float(conf)})
+    260      return {
+    261          "threshold_probability": prob_t,
+    262          "threshold_confidence": conf_t,
+    263          "cells": gaps[:50],
+    264          "count": len(gaps),
+    265      }
+
+    This is CORRECT.  It computes genuine belief gaps (high fire probability,
+    low confidence) and reports the true uncapped count in "count"; "cells" is
+    that list capped at 50 for transport.  The returned object is a DESCRIPTOR
+    ABOUT gaps with a FIXED 4-key schema -- not a collection OF gaps.
+
+1.2 THE CONSUMER -- src_extension/analysis/global_analyzer.py:617-631, verbatim
+
+    617  @staticmethod
+    618  def _belief_gap_critical(
+    619      belief_gap: Any,
+    620      suff_score: float | None,
+    621      total_gain: float | None,
+    622  ) -> bool:
+    623      if isinstance(belief_gap, list) and len(belief_gap) >= 3:
+    624          return True
+    625      if isinstance(belief_gap, dict) and len(belief_gap) >= 3:   <-- KEYS
+    626          return True
+    627      if suff_score is not None and suff_score < 0.15:
+    628          return True
+    629      if total_gain is not None and total_gain < 0.01:
+    630          return True
+    631      return False
+
+    Called once per global analysis at global_analyzer.py:506, with
+    `bg = global_snapshot.get("belief_gap_indicators")` (line 505).
+
+    Line 625 takes len() of the DESCRIPTOR.  That is 4, always, by schema --
+    structurally independent of the belief map.  4 >= 3, so the function
+    returns True on line 626 and never reaches lines 627-631.
+
+    The type contract makes this unambiguous: monitoring_interfaces.py:53
+    declares `belief_gap_indicators: Dict[str, Any]`, so the list branch at
+    line 623 is dead by contract and line 625 is the only reachable branch.
+
+1.3 EMPIRICAL CONFIRMATION -- direct hook on both functions, per call
+    (probe: outputs/_bgc_probe.py; hooks wrap the two functions themselves,
+    never a per-step snapshot -- see section 7 on method)
+
+    Sample: the canonical 13 runs, 240 steps each = 3120 calls
+      D/east  half-roles   seeds 101,202,303,404,505
+      D/south half-roles   seeds 101,202,303,404,505
+      D/east  default-roles seeds 101,202,303
+
+      calls                                  3120   (exactly 1 per step)
+      argument shape                         dict:4  on 3120/3120 calls
+      live predicate returned True           3120/3120   = 100%
+      clause that decided                    dict_len on 3120/3120
+      calls with ZERO real gaps (count==0)    205, ALL returned True
+      count-correct predicate would be True  2871/3120   = 92.0%
+      disagreements (live True, correct False) 249       =  8.0%
+
+    The len()-counts-keys claim is CONFIRMED, and the constant-True result is
+    confirmed at 3120/3120 rather than 60/60.
+
+    Gap-count distribution is wide and real -- 0 to 949 gaps per call -- so the
+    producer is genuinely varying while the predicate is genuinely constant.
+    Zero-gap calls are concentrated early: 200/260 in steps 1-20, 5/260 in
+    steps 21-40, 0 thereafter.
+
+
+================================================================================
+2. THE CONSUMER CHAIN, END TO END  (Part 1, item 2)
+================================================================================
+
+2.1 EVERY USE OF THE RETURN VALUE.  `critical_collapse` is used in exactly one
+    function, _analyze_information_sufficiency (global_analyzer.py:468-583),
+    in exactly five places:
+
+      (a) LOW_INFORMATION_GAIN   severity  CRITICAL if crit else MEDIUM
+          emitted only inside `if low_gain:`            (line 513)
+      (b) INFORMATION_INSUFFICIENT severity CRITICAL if crit else HIGH
+          emitted only inside `if low_gain and high_unc:` (line 536)
+      (c) SEARCH_MODE_REQUIRED   severity  HIGH if crit else MEDIUM
+          emitted only inside `if visible_empty and high_belief:` (line 563)
+      (d) recommended_planner = "fail_safe_planner" if crit else
+          "global_mission_planner"  -- attached to (a) and (b) only.
+          NOTE (c) hardcodes "global_mission_planner" regardless.
+      (e) explanation_context text: `_info_explain` embeds the literal
+          "critical_collapse={value}".
+
+2.2 WHAT WAS ACTUALLY EMITTED.  Hooked _analyze_information_sufficiency and
+    recorded every trigger it returned, all 3120 calls:
+
+      LOW_INFORMATION_GAIN | severity=critical | planner=fail_safe_planner : 13
+      INFORMATION_INSUFFICIENT                                             :  0
+      SEARCH_MODE_REQUIRED (from the GLOBAL analyzer)                      :  0
+
+    THIRTEEN emissions out of 3120 calls.  All 13 at STEP 1 -- exactly one per
+    run, the first step, before any information has been gathered.
+    Consumers (b) and (c) never fired at all in this sample.
+
+    Two figures that must not be confused.  The all-triggers histogram (both
+    analyzers, taken at the _reasons_from_analysis hook) shows
+    `LOW_INFORMATION_GAIN||critical` = 39.  That is 3 x 13, not 39 distinct
+    emissions: extract_fail_safe_reasons runs 3x per step, re-scanning the same
+    snapshot, so each run contributes 1 emission counted 3 times (verified per
+    run: hist=3, extract calls/step=3.0, global-analyzer emissions=1).
+
+    There is a SECOND LOW_INFORMATION_GAIN emitter at local_uav_analyzer.py:630
+    with severity=Severity.MEDIUM, scope=LOCAL.  It never fired in this sample:
+    the histogram contains only the `||critical` key and no `||medium` key at
+    all.  Had it fired it would still be inert -- LOW_INFORMATION_GAIN maps to
+    no fail-safe reason from either source (2.3) -- but it is worth recording
+    that the count above is exclusively the global analyzer's.
+
+    Of the 249 calls where the correct predicate disagrees with the live one,
+    the number that emitted ANY trigger is ZERO.  The predicate's value is
+    discarded on 3107 of 3120 calls.
+
+2.3 WHERE THE 13 EMISSIONS GO -- and this is where the chain ends.
+
+    safety_checker._reasons_from_analysis (safety_checker.py:120-132) converts
+    triggers to fail-safe reasons through _TRIGGER_TYPE_TO_REASON
+    (safety_checker.py:18-28), which has exactly NINE keys:
+
+      CRITICAL_BATTERY, DRIFT_TOO_HIGH, COLLISION_RISK,
+      CRITICAL_LINK_UNRELIABLE, RESCUE_UNSAFE, INFORMATION_INSUFFICIENT,
+      SEARCH_MODE_REQUIRED, OSCILLATION_RISK, INSTABILITY_DETECTED
+
+    "LOW_INFORMATION_GAIN" IS NOT ONE OF THEM.  At safety_checker.py:126 the
+    lookup misses and line 127-128 does `continue`.  normalize_triggers
+    preserves trigger_type verbatim as signal.name with no aliasing anywhere
+    (trigger_objects.py:196-198), so there is no rename that would rescue it.
+
+    ==> The only trigger `critical_collapse` ever actually influenced in this
+        sample produces NO fail-safe reason at all.  It is dropped on the floor.
+
+    DIRECT EMPIRICAL CONFIRMATION: at step 1 -- the exact step where the
+    CRITICAL LOW_INFORMATION_GAIN trigger fires with planner=fail_safe_planner
+    -- the fail-safe mode is `normal` in all 13 runs.  A critical-severity
+    trigger routed to the fail-safe planner does not move the mode off normal.
+
+2.4 THE OTHER FOUR CHANNELS, each checked to its endpoint:
+
+    recommended_planner (d):  INERT.  Repo-wide, the only reads are
+      trigger_objects.py:148 (serialization into an export dict), :204 and
+      :225 (copy into TriggerSignal.metadata).  Of the metadata keys ever read
+      back anywhere in src_extension, only "explanation_context" and
+      "affected_entities" are consumed; "recommended_planner" is never read
+      back.  FailSafePlanner.plan() runs unconditionally (planning_coordinator
+      .py:63).  Flipping this field changes no control flow.
+
+    severity (a,b,c):  INERT for these triggers.  Repo-wide reads of
+      StructuredTrigger.severity are: analysis_results.py:152 (Counter for a
+      dashboard text block), :157 (critical_lines, dashboard text),
+      trigger_objects.py:143 (serialization), and adaptation/trigger_input.py
+      :66-67.  The last is the only potentially functional one -- it appends
+      the severity WORD into trigger_context_text, which IS string-matched
+      downstream.  But it is an `elif` behind `if explanation_context`, and
+      every trigger built by either analyzer supplies a non-empty
+      explanation_context, so the severity branch is unreachable.
+      Critically, the fail-safe confidence gate
+      (trigger_objects.py:409-414, threshold 0.6) reads .confidence, NOT
+      .severity -- so severity cannot even change whether an information
+      trigger passes the gate.
+
+    explanation_context (e):  REACHES A REAL GATE, BUT IS VALUE-INSENSITIVE.
+      The text flows via trigger_input.py:63 into trigger_context_text, which
+      is behaviourally matched at global_adaptation_generator.py:746-755:
+
+          if not any(term in trigger_text for term in (
+              "INFORMATION_COLLAPSE","INFORMATION_INSUFFICIENT",
+              "CRITICAL","FAIL_SAFE")):
+              return []                      # 0 vs 3 MissionAdaptationOptions
+
+      and at failsafe_adaptation_generator.py:117/173/226/279
+      (`"CRITICAL" in trigger_context`).  This is a genuine behavioural gate.
+      However the matched token "CRITICAL" is a substring of the VARIABLE NAME
+      "critical_collapse", which _info_explain emits unconditionally.
+      "CRITICAL_COLLAPSE=TRUE" and "CRITICAL_COLLAPSE=FALSE" both contain
+      "CRITICAL".  So the gate fires identically for either value: the flag's
+      value cannot change it.  (That the token is present at all, regardless of
+      any actual criticality, is a separate latent issue -- see section 8.)
+
+    2.4 was not settled by reading alone.  It is settled by measurement in
+    section 4.
+
+
+================================================================================
+3. WHAT THE CORRECT PREDICATE WOULD BE  (Part 1, item 3)
+================================================================================
+
+3.1 The count-correct predicate keeps every threshold and counts GAPS:
+
+      n = belief_gap["count"]          (falling back to len(cells), then list len)
+      if n is not None and n >= 3:            return True
+      if suff_score is not None and suff_score < 0.15:  return True
+      if total_gain is not None and total_gain < 0.01:  return True
+      return False
+
+    Minimal source change: line 625 only, from
+        if isinstance(belief_gap, dict) and len(belief_gap) >= 3:
+    to a count read.  Line 623 (the list branch) is dead by the
+    monitoring_interfaces.py:53 contract and can stay or go.
+
+3.2 HOW OFTEN THE CORRECT PREDICATE IS TRUE, measured over the same 3120 calls:
+
+      correct predicate True   2871/3120  = 92.0%
+      correct predicate False   249/3120  =  8.0%
+      deciding clause: gap_count 2858, total_gain 13, none (False) 249
+
+    So the answer to "almost always True anyway, or rarely True?" is
+    ALMOST ALWAYS TRUE -- 92%.
+
+3.3 AND, DECISIVELY, IT IS TRUE 100% OF THE TIME WHERE IT IS CONSUMED.
+
+    `critical_collapse` only reaches a trigger when `low_gain` is true, and
+    low_gain is `total_gain <= low_information_gain_threshold` with the
+    threshold = 0.05 (global_analyzer.py:40).  Measured distribution of
+    total_gain across all 3120 calls:
+
+      at the 13 emitting calls : exactly 0.0
+      at the other 3107 calls  : min 447.1, max 2890.0
+
+    total_gain is BIMODAL -- 0.0 or >= 447.1, with nothing between.  Therefore
+    ANY threshold in (0.01, 0.05] partitions the calls identically, and the
+    correct predicate's own fallback clause `total_gain < 0.01` fires on
+    exactly the same 13 calls that low_gain fires on.  Measured coincidence:
+
+      LOW_INFORMATION_GAIN emissions                 13
+      calls where correct predicate used total_gain  13
+      BOTH (exact same calls)                        13
+      emissions without the total_gain clause         0
+      total_gain clause without an emission           0
+
+    The correct predicate returns True on every call where the value is
+    consumed -- not by luck of a near-miss, but structurally, because the only
+    consuming condition (total_gain == 0) also independently satisfies the
+    correct predicate's fallback.  That is the (D) result, and it is why the
+    corrected-predicate arm in section 4 is a complete no-op.
+
+
+================================================================================
+4. MEASURING THE CONSEQUENCE  (Part 2, items 4-5)
+================================================================================
+
+Four seed-matched arms, all 13 canonical runs, 240 steps, one seed per process
+(byte-reproducible; each process seeds its own random.Random into cfv/wf/agents):
+
+  nopatch   no hooks at all              -- determinism / observer control
+  live      hooks record only            -- the real system
+  arm       count-correct predicate      -- the counterfactual asked for
+  falsearm  predicate forced ALWAYS-FALSE-- NEGATIVE CONTROL (added by me)
+
+The negative control is not decoration.  `arm` came out identical to `live`,
+and an identical result is only evidence of inertness IF the arming mechanism
+can be shown to change anything at all.  `falsearm` is that proof.
+
+4.1 CONTROL -- observer cleanliness and determinism
+    nopatch vs live: 13/13 pairs identical on eval + stdout_sha256 +
+    agent_positions_sha256.  The hooks do not perturb the simulation and runs
+    are deterministic per seed.
+
+4.2 ARM (count-correct predicate)
+    returned value differed from live on 249 of 3120 calls (12-23 per run).
+
+      runs identical to live on EVERY recorded channel   13/13
+      mode trajectory identical, step for step           13/13
+      outcomes identical (all 9 eval keys)               13/13
+      still enters information_recovery at step 2        13/13
+      ever returns to normal                             never
+
+    The only difference between an `arm` output file and its `live` twin is the
+    3-vs-4 character arm label -- every file is exactly 1 byte smaller.
+    Channels compared: crit, triggers, reason_src, classify, mm_update,
+    mode_transitions, sop_mission_mode, ind_shape, analysis_trigger_hist,
+    info_reason_origin, eval, stdout_sha256, agent_positions_sha256.
+
+    Severity changed from CRITICAL to something else: ZERO times.  Not because
+    the patch failed, but because all 249 flips land on steps that emit no
+    trigger (section 2.2).
+
+4.3 FALSEARM -- THE NEGATIVE CONTROL.  Predicate forced False on 3120/3120 calls.
+
+      runs identical to live on every channel             0/13   <-- HAS TEETH
+      channels that DID change:  crit, triggers, analysis_trigger_hist
+      mode trajectory identical, step for step           13/13
+      outcomes identical (all 9 eval keys)               13/13
+      still enters information_recovery at step 2        13/13
+      ever returns to normal                             never
+
+    This is the result that settles the round.  The maximal counterfactual --
+    flipping the flag on every single call, including the 13 that are actually
+    consumed -- DOES visibly change the emitted trigger stream (severity
+    critical->medium, planner fail_safe_planner->global_mission_planner, and
+    the explanation text).  So the harness is demonstrably live, not a dead
+    patch.  And that change then dies completely at the trigger->reason
+    boundary: no fail-safe reason changes, no classify_mode call changes, no
+    ModeManager transition changes, no per-step mission_mode changes, and no
+    outcome changes.
+
+    Severity changed from CRITICAL to MEDIUM on all 13 consuming calls, and
+    nothing downstream noticed.
+
+4.4 MODE TRAJECTORY, ARMED vs LIVE (Part 2, item 4, last bullet)
+    Identical step for step in 13/13 runs for BOTH arm and falsearm, taken from
+    the ModeManager.update hook (480 update records per run), not from
+    snapshots.  Representative live trajectories (run-length encoded):
+
+      D/east/half|303    normal x2, information_recovery x100, safety_first x98,
+                         information_recovery x280            (3 transitions)
+      D/east/default|101 normal x2, information_recovery x208, then 20 further
+                         alternations of safety_first/information_recovery
+                                                              (21 transitions)
+      D/south/half|202   normal x2, information_recovery x28, degraded x4,
+                         information_recovery x42, ...        (24 transitions)
+
+    First non-normal step = 2 in every run, every arm.  Return to normal:
+    never, in any run, in any arm.
+
+4.5 SEED-MATCHED OUTCOMES  (identical in all four arms; nopatch == live == arm
+    == falsearm on every row)
+
+      run                  rescued  dead  ff  never_det  terminal  burnt
+      D/east/default|101       2      2    1      0        165     1134
+      D/east/default|202       3      1    1      0        171      749
+      D/east/default|303       2      2    0      0        115     1462
+      D/east/half|101          2      2    1      0        210     1134
+      D/east/half|202          2      2    0      0        210      749
+      D/east/half|303          1      3    0      0        141     1462
+      D/east/half|404          2      2    1      0         96     1489
+      D/east/half|505          1      3    0      0        183     1109
+      D/south/half|101         3      1    1      0        197     1782
+      D/south/half|202         3      1    0      0        190     1204
+      D/south/half|303         3      1    0      0        113     1026
+      D/south/half|404         2      2    1      0        106     1819
+      D/south/half|505         3      1    0      0        108      934
+      TOTAL                   29     23    6      0
+
+    burnt_cells and terminal_step are highly path-sensitive; their exact
+    agreement across arms is strong evidence of behavioural identity.
+
+
+================================================================================
+5. IS THE FAIL-SAFE MODE MACHINERY ITSELF INERT?  (Part 2, item 6)
+================================================================================
+
+NO -- and this is worth stating clearly, because item 6 anticipated that
+possibility and the answer is the opposite.
+
+Correcting the predicate changes neither mode NOR outcomes, so item 6's
+conditional ("changes mode behaviour but NOT outcomes") does not arise.  The
+predicate never reaches the mode at all.
+
+Separately, the mode subsystem IS live.  The behavioural lever is
+`fail_safe_decision.search_mode_active`, consumed at uav_executor.py:323:
+
+      if fail_safe_decision is not None and fail_safe_decision.search_mode_active:
+          role_kind = self._role_kind(self._read_uav_role())
+          if role_kind in {"victim", "fire"}:
+              return self._execute_role_preserving_search(...)
+          return self._execute_search_mode(...)
+
+That is the real path the #7 round saw (177 of 299 UAV executions through
+_execute_role_preserving_search).  Mode feeds it: fail_safe_planner applies
+_MODE_PREFERENCE_BONUS = 2.0 to actions preferred by the current mode
+(information_recovery prefers activate_search_mode / search_mode /
+move_to_last_known_fire_region / explore_high_uncertainty_regions), which
+changes which option is selected, which sets search_mode_active, which routes
+execution.
+
+So the subsystem has teeth.  `_belief_gap_critical` simply is not wired to it.
+
+
+================================================================================
+6. THE CONNECTION QUESTION  (Part 3, item 8)  --  ANSWER: NO
+================================================================================
+
+6.1 classify_mode is memoryless -- CONFIRMED.  safety_checker.py:72 is
+    `_ = current_mode`.  Mode is recomputed from the current step's reason_set
+    alone.  Precedence (safety_checker.py:75-97):
+      emergency -> information_recovery -> safety_first -> degraded ->
+      normal (ONLY if reason_set is empty) -> degraded (catch-all)
+
+6.2 BUT the premise "severity is constant-CRITICAL, therefore the mode follows"
+    is FALSE.  classify_mode never sees severity.  It sees REASONS.  And the
+    one trigger whose severity `critical_collapse` controls
+    (LOW_INFORMATION_GAIN) maps to NO reason at all (section 2.3).
+
+6.3 THE REAL DRIVER, measured.  information_recovery is returned iff
+    `search_mode_required` or `information_insufficient` is in the reason set.
+    Reason provenance over the live arm (13 runs, 9360 extract calls):
+
+      analysis::extreme_drift            44640
+      analysis::collision_risk           34476
+      analysis::search_mode_required     10311
+      analysis::critical_communication    9321
+      planning::search_mode_required      4764
+
+    All 10311 analysis-sourced SEARCH_MODE_REQUIRED signals originate at
+    local_uav_analyzer.py:672-691 -- the LOCAL, per-UAV analyzer:
+
+      no_visible_fire = len(visible_fire) == 0
+      has_smoke_or_unknown = bool(visible_smoke) or has_uncertainty or bool(negative_obs)
+      if no_visible_fire and has_smoke_or_unknown:  -> SEARCH_MODE_REQUIRED
+
+    with severity=Severity.MEDIUM and scope=Scope.LOCAL hardcoded, and
+    recommended_planner="local_uav_path_planner".  It does not read belief_gap,
+    critical_collapse, or anything derived from them (grep for
+    'belief_gap|critical_collapse' over local_uav_analyzer.py: 0 hits), and it
+    runs BEFORE global_analyzer.analyze in the same _run_analysis.  The GLOBAL
+    analyzer emitted SEARCH_MODE_REQUIRED zero times in 3120 calls.
+
+6.4 THE MEASUREMENT THAT SETTLES IT.  For every run, compare the set of steps
+    in information_recovery against the set of steps where search_mode_required
+    is in the final reason set:
+
+      run                 IR steps  SMR steps  equal  mismatches
+      D/east/default|101      176      176      True       0
+      D/east/default|202      159      159      True       0
+      D/east/default|303      155      155      True       0
+      D/east/half|101         201      201      True       0
+      D/east/half|202         210      210      True       0
+      D/east/half|303         190      190      True       0
+      D/east/half|404         212      212      True       0
+      D/east/half|505         202      202      True       0
+      D/south/half|101        136      136      True       0
+      D/south/half|202        140      140      True       0
+      D/south/half|303        205      205      True       0
+      D/south/half|404        205      205      True       0
+      D/south/half|505        191      191      True       0
+
+    information_recovery is EXACTLY the set of steps carrying
+    search_mode_required.  13/13 runs, step for step, zero mismatches.
+
+6.5 WHY IT NEVER RETURNS TO NORMAL.  classify_mode returns NORMAL only when
+    the reason set is EMPTY (safety_checker.py:95-96).  Measured reason-set
+    sizes over 9360 extract calls:
+
+      0 reasons:   39   (ALL of them at step 1 -- 3 calls x 13 runs)
+      1 reason :    6
+      2 reasons:  105
+      3 reasons: 2721
+      4 reasons: 6489
+
+    From step 2 onward every call carries at least one reason.  The persistent
+    ones are critical_communication (239/240 steps), extreme_drift (239/240),
+    collision_risk (221/240) and search_mode_required (136-212/240).  So the
+    mode cannot be normal after step 1, and it is information_recovery exactly
+    when search_mode_required is present and safety_first/degraded otherwise.
+    That fully explains both the step-2 entry and the never-normal behaviour --
+    with no contribution from _belief_gap_critical.
+
+6.6 CAUSAL PROOF, not just correlation.  In the falsearm arm the predicate is
+    False on all 3120 calls -- `critical_collapse` is never set anywhere in the
+    run -- and the system STILL enters information_recovery at step 2 in 13/13
+    runs, still never returns to normal, and follows a step-for-step identical
+    mode trajectory.  Constant-True _belief_gap_critical is not the cause,
+    not even partially.
+
+
+================================================================================
+7. METHOD  (Part 2, item 5)
+================================================================================
+Every number above comes from a DIRECT HOOK on the function of interest, never
+from a per-step snapshot -- the failure mode that produced the 14/16 false
+idle-death figure and the 6 false-positive drops in the #5 round.
+
+  _belief_gap_indicators        wrapped -> container type, len, key set
+  _belief_gap_critical          wrapped -> arg shape, true gap count, deciding
+                                clause, live value, corrected value, and (in
+                                the armed arms) the value actually RETURNED
+  _analyze_information_sufficiency wrapped -> the trigger objects emitted, with
+                                severity / confidence / recommended_planner
+  _reasons_from_analysis / _from_planning / _from_execution / extract_fail_safe_reasons
+                                wrapped -> per-source reason provenance
+  classify_mode                 wrapped -> reasons in, current_mode in, mode out
+  ModeManager.update            wrapped -> prev mode -> new mode, per call
+
+Controls:
+  * nopatch vs live proves the hooks are non-perturbing (13/13 identical).
+  * falsearm proves the arming mechanism can change the run (13/13 changed the
+    trigger stream), so the arm null result is a real equivalence rather than a
+    patch that silently failed to install.
+
+Caveat, stated plainly: behavioural identity is established from per-step mode
+records (480/run), per-step mission_mode records (240/run), the full stdout
+hash, final agent-position hash, and all 9 evaluation metrics including the
+path-sensitive burnt_cells and terminal_step.  It is not a literal per-step
+position trace of every agent.  I consider the evidence conclusive but the
+distinction is real.
+
+A cross-check audit (6 independent source traces, each adversarially refuted by
+3 skeptics on different axes -- 24 agents, 0 errors, 18 verdicts) agreed with
+every headline conclusion above.  Final tally: 11 not-refuted, 7 refuted --
+and every one of those 7 opens by saying the headline SURVIVES and that only
+the trace's supporting detail or method was overstated.  No conclusion in this
+report was flipped by the audit.  One skeptic correctly caught that
+explanation_context IS behaviourally matched downstream, which is why section
+2.4(e) and the falsearm control are in this report rather than a flat "it is
+only dashboard text".
+
+The audit also independently added, and I confirmed by reading the cited lines:
+  * the `critical_degradation` boolean that the "CRITICAL" gates at
+    failsafe_adaptation_generator.py:117/173/226/279 compute is itself
+    WRITE-ONLY -- stored into option parameters at :136/179/245/298 and read by
+    nothing (fail_safe_planner._is_critical_fail_safe_option checks the
+    `critical_trigger`/`emergency` params, not this one).  So that branch is
+    inert twice over: severity-insensitive AND unread.
+  * the dashboard_summary text carrying the severity counts
+    (analysis_results.py:152,157) reaches explanation_engine.py:711, which
+    reads "dashboard_summary" at the TOP level of a cycle-result dict whose key
+    set never contains it -- a permanent no-op.
+
+
+================================================================================
+8. ORIGIN: ORIGINAL ERROR, NOT A REGRESSION
+================================================================================
+`git log` shows both functions introduced in a single bulk-import commit
+a4a01b4, so git alone cannot distinguish "written wrong" from "broken by a
+later refactor of the producer from list to dict".
+
+The distinction is recoverable, because a4a01b4 also committed __pycache__
+(later removed in b838895).  I extracted and disassembled those .pyc files:
+
+  global_monitor.cpython-310.pyc   source mtime 2026-05-28T10:35:45Z, size 22996
+    _belief_gap_indicators at firstlineno 252, co_consts already contains
+    ('threshold_probability','threshold_confidence','cells','count') and slice 50
+    -> ALREADY the 4-key dict, two months before the git history begins.
+
+  global_analyzer.cpython-310.pyc  source mtime 2026-06-17T07:49:49Z, size 66395
+    _belief_gap_critical at firstlineno 617,
+    co_consts (None, 3, True, 0.15, 0.01, False),
+    co_names  ('isinstance','list','len','dict')   -- note: NO 'get'
+    disassembly shows len(belief_gap) >= 3 on BOTH the list and the dict branch.
+
+At every observable point in time the producer already returned a dict and the
+predicate already called len() on it, never consulting "count".  The
+"a refactor broke it" hypothesis is affirmatively DISPROVEN.  This is an
+original category error: treating a fixed-schema descriptor as a collection.
+
+TEST COVERAGE: none.  `_belief_gap_critical` and `critical_collapse` appear
+nowhere under tests/.  `belief_gap_indicators` appears only as the fixture
+literal `belief_gap_indicators={}` in three tests
+(test_unresolved_victim_coverage.py:104, test_wind_aware_corridor_search.py:82,
+test_wind_aware_planning.py:66).  `len({}) == 0`, so those exercise the False
+path and a count-correct predicate returns False for `{}` too.
+Correcting the predicate would break 0 tests.
+
+
+================================================================================
+9. VERDICT  (Part 3, item 7)
+================================================================================
+
+(B) REAL BUT INERT.
+
+  The predicate is genuinely wrong: line 625 counts dict KEYS of a fixed 4-key
+  schema, so it returns True on 3120/3120 calls including 205 calls with zero
+  real belief gaps, and the belief map has no influence on it whatsoever.
+  The severity it produces is genuinely wrong: 13 LOW_INFORMATION_GAIN triggers
+  were labelled CRITICAL and tagged recommended_planner=fail_safe_planner on
+  evidence that was never computed.
+
+  But NO outcome changes, and the inertness is proven rather than inferred:
+  with the flag forced False on all 3120 calls -- a change that demonstrably
+  alters the emitted trigger stream in 13/13 runs -- the fail-safe reasons,
+  every classify_mode result, every ModeManager transition, the per-step
+  mission_mode, and all 9 outcome metrics are identical, seed for seed.
+
+  QUANTIFIED:
+    calls where the value is wrong ......... 249 / 3120  (8.0% by the correct
+                                             predicate; 0% of consumed calls)
+    calls where the value is consumed ...... 13 / 3120   (step 1 only)
+    triggers mislabelled CRITICAL .......... 13
+    fail-safe reasons changed .............. 0
+    mode transitions changed ............... 0
+    UAV executions changed ................. 0
+    rescued / dead / ff_deaths / never_detected / terminal_step / burnt_cells
+      changed .............................. 0, in 13/13 seed-matched runs,
+                                             for BOTH the corrected predicate
+                                             and the forced-False control
+
+(D) CORRECT BY ACCIDENT is ALSO true, as a strictly narrower statement, and it
+  is why the corrected-predicate arm specifically was a total no-op: the
+  correct predicate is True on 92.0% of calls overall and on 100% of the 13
+  calls where the value is consumed.  That is structural, not lucky --
+  total_gain is bimodal (0.0 or >= 447.1), so the only condition that lets the
+  value reach a trigger (total_gain <= 0.05) also independently satisfies the
+  correct predicate's own `total_gain < 0.01` fallback.
+
+  (B) is reported as THE verdict because it is the stronger claim and the one
+  established by a negative control: even a predicate that disagrees with the
+  correct answer EVERYWHERE changes nothing.  (D) explains the arm result; (B)
+  explains the subsystem.
+
+(A) is rejected: no measurable harm, in any metric, in any of 13 seed-matched
+    runs, under either counterfactual.
+(C) is rejected: counting keys is not correct for any reason.  The interface
+    contract (monitoring_interfaces.py:53) declares a Dict, the schema is fixed
+    at 4 keys, and the producer publishes the true count in "count", which the
+    predicate never reads.
+
+
+================================================================================
+10. IF A FIX IS AUTHORISED LATER  (scope only -- NOT IMPLEMENTED)
+================================================================================
+Recommendation: this is a correctness-of-intent fix with no behavioural payoff.
+It makes the code mean what it says; it will not change any metric.  It is
+worth doing for the same reason the scorched-ground colour fix was, and it is
+cheap -- but it should be labelled honestly as cosmetic/semantic, not as a
+behavioural improvement.
+
+  Change:   src_extension/analysis/global_analyzer.py:625, one line -- count
+            gaps (belief_gap["count"], falling back to len(cells)) instead of
+            len(belief_gap).  Optionally delete the dead list branch at :623.
+  Risk:     none measured.  0 tests touch it; 3 tests pass `{}` and keep
+            returning False under the corrected predicate.
+  Gate:     the route_blocked gate applies (source would change).
+  Validate: seed-matched against 319d404 over the same 13 runs.  Expect
+            byte-identical outcomes -- the `arm` runs in outputs/
+            _bgc_run_arm_*.json ALREADY ARE that validation, so re-running is
+            optional confirmation rather than new evidence.
+
+Two adjacent issues found in passing.  NOT part of this round, NOT fixed,
+flagged so they are not lost:
+
+ (i) _info_explain unconditionally embeds the token "critical_collapse" into
+     every information trigger's explanation_context.  That text is matched
+     with `"CRITICAL" in trigger_text` at global_adaptation_generator.py:746-755
+     (a gate returning 0 vs 3 MissionAdaptationOptions) and at
+     failsafe_adaptation_generator.py:117/173/226/279.  The gate therefore
+     passes on the presence of a debug variable NAME, irrespective of whether
+     anything is critical.  Substring-matching free text for "CRITICAL" is
+     fragile independently of this round's subject.
+
+(ii) LOW_INFORMATION_GAIN is emitted with full severity/planner machinery but
+     is absent from _TRIGGER_TYPE_TO_REASON (safety_checker.py:18-28), so it
+     is silently discarded at safety_checker.py:127.  Either it should map to a
+     reason, or the severity/planner computation feeding it is pointless work.
+     Deciding which requires knowing the intent; it is not obvious from source.
+
+================================================================================
+ARTEFACTS
+================================================================================
+  outputs/_bgc_probe.py            hook probe (nopatch / live / arm)
+  outputs/_bgc_neg.py              negative control driver (falsearm)
+  outputs/_bgc_analyze.py          the analysis that produced sections 3-6
+  outputs/_bgc_fill.sh             re-ran the 5 arm runs the earlier
+                                   fork-storming batch lost
+  outputs/_bgc_neg_run.sh          13-run negative control
+  outputs/_bgc_run_{nopatch,live,arm,falsearm}_*.json    52 run records
+
+  NOTE on the pre-existing batch: outputs/_bgc_batch.log records an earlier
+  attempt in which every run "FAILED".  Its runner backgrounded jobs inside a
+  `echo "$RUNS" | while read` pipeline, so the `&` children belonged to a
+  subshell and the outer `wait` returned in 0 seconds; all 39 processes were
+  then launched at once and most died in a fork storm.  Some survived and wrote
+  output, which is why 21 JSON files existed with a log claiming 0.  I did not
+  trust those files on provenance; I re-derived every number from them only
+  after confirming nopatch==live 13/13 (determinism) and re-ran the 5 missing
+  arm runs with a pipeline-free runner.  Reproduced verbatim here so the trap
+  is on record: on this box, background a batch with a `for` loop, never
+  through a pipe.
+================================================================================
