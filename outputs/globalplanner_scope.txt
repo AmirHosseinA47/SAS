@@ -1,0 +1,711 @@
+================================================================================
+GLOBAL PLANNER SCOPING ROUND - why can the planner never select a non-baseline
+option, and how much work would making it selectable actually be?
+================================================================================
+
+BRANCH   claude/position-rename-and-hazard-revalidation
+HEAD     a78f393  "_move_toward oscillation: diagnosis only - verdict (B) REAL
+                   BUT NOT A DEFECT, leave documented"   (sits on top of 466ee13)
+ENV      Python 3.10.11 (E:\Projects\SAS\.venv), mesa 1.2.1
+TESTS    8 failed / 427 passed - VERIFIED LIVE this session, THREE TIMES.
+         Three independent complete runs of `pytest tests/ -q`:
+           run 1: "8 failed, 427 passed, 5 warnings in 2870.95s (0:47:50)"
+           run 2: "8 failed, 427 passed, 5 warnings in 3006.78s (0:50:06)"
+           run 3: "8 failed, 427 passed, 5 warnings in 2731.22s (0:45:31)"
+         All three match the stated baseline exactly. Runs 1 and 3 captured the
+         complete failure list and the two lists are IDENTICAL, test for test.
+         Run 2's captured output was truncated by the harness to its last 595
+         bytes, retaining 5 of the 8 FAILED lines; all 5 are a subset of the
+         other two lists. The eight:
+           tests/test_behavior_regression.py::test_descriptive_next_action_uses_target_position
+           tests/test_dashboard_panel.py::test_dashboard_panel_render_returns_string
+           tests/test_firefighter_dispatch_replacement.py::test_no_replacement_available_marks_victim_unreachable_once
+           tests/test_rescue_planner_authority.py::test_no_firefighter_planner_delay_or_unreachable
+           tests/test_uav_sector_assignment.py::test_fire_tracker_still_overridden_by_search_mode_fail_safe
+           tests/test_uav_sector_assignment.py::test_fire_tracker_uavs_receive_different_target_sets
+           tests/test_wind_aware_trajectory_regression.py::test_north_vs_south_trajectories_diverge_over_40_steps
+           tests/test_wind_aware_victim_search.py::test_victim_search_wind_aware_action_when_downwind_exists
+         Independently corroborated from .pytest_cache: v/cache/nodeids = 436
+         collected, v/cache/lastfailed = 9, of which
+         "::test_mode_manager_returns_to_normal_after_recovery" is stale (no file
+         prefix, no matching node id - left by 2acfb54, which deleted that test).
+         436 - 1 stale = 435 = 8 + 427. Cache-derived and live failure lists are
+         identical.
+         Of the eight, only the two test_uav_sector_assignment cases fall inside
+         this round's blocker blast radius (both are role-dependent, so B4 - the
+         role vocabulary - touches them).
+FILES    Read-only round. NO source file was edited. All instrumentation lives in
+         outputs/ and is applied by monkey-patching at runtime.
+
+METHOD - hooks, not snapshots
+  Four hooks on the real call sites (outputs/_gp_probe.py):
+    1. UtilityEvaluation._evaluate_global_mission_option  - the scorer itself
+    2. global_mission_planner._select_feasible_option     - the selection
+    3. GlobalMissionPlanner.plan                          - the MissionDecision
+    4. GlobalExecutor.execute                             - the actuation
+  Seven modes x the canonical 13-run sample (D/east half-roles 101-505, D/south
+  half-roles 101-505, D/east default-roles 101/202/303, 240 steps) = 91 runs.
+  "nopatch" runs with no hooks at all as an observer-purity control.
+
+  PROVENANCE. The 91 run files were produced by an earlier session on this branch.
+  They were NOT trusted. Three of them (observe / arm_hi / arm_role_dict, D/east
+  half 101) were re-run from scratch this session and compared field by field:
+  eval, stdout_sha256, agent_positions_sha256, firemap_sha256,
+  final_role_signature, selected_hist, md_nonempty, exec_assign_n, eval_calls,
+  arm_applied, AND the complete per-option census - all IDENTICAL. The dataset
+  reproduces exactly and is used below.
+
+  OBSERVER PURITY. observe (hooks on, nothing armed) vs nopatch (no hooks):
+  13/13 byte-identical on eval, positions, stdout and firemap. The instrumentation
+  does not perturb the simulation.
+
+
+================================================================================
+PART 1 - WHY IS THE SCORE 0.0?
+================================================================================
+
+1.1  THE SCORER, IN FULL
+--------------------------------------------------------------------------------
+src_extension/planning/utility_evaluation.py:779-996,
+`UtilityEvaluation._evaluate_global_mission_option`. It is reached for every
+global option: `_pick_evaluator` (:210-227) routes `scope == "global"` here, and
+the final `return self._evaluate_global_mission_option` (:227) makes it the
+default for anything unmatched.
+
+All nine weighted terms are read from `option.parameters` and nowhere else.
+Note :788-790 binds params from the option ONLY - unlike
+`_merge_params_for_feasibility` (:241-253) there is no context merge, so no
+downstream stage can inject these values later:
+
+    788      params = getattr(option, "parameters", None)
+    789      if not isinstance(params, dict):
+    790          params = {}
+
+    793      def pfloat(*keys: str, default: float = 0.0) -> float:
+    794          for key in keys:
+    795              if key in params:
+    796                  return safe_float(params.get(key), default)
+    797          return default
+
+    812      c_fire   = pfloat("fire_contribution")
+    813      c_victim = pfloat("victim_contribution")
+    814      c_comm   = pfloat("communication_contribution")
+    815      g_unc    = pfloat("uncertainty_reduction")
+    816      g_ir     = pfloat("information_recovery")
+    817      r_col    = pfloat("collision_risk")
+    818      cost_b   = pfloat("battery_cost")
+    819      r_drift  = pfloat("drift_risk")
+    820      cost_sw  = pfloat("switching_cost")
+
+    877      raw_terms = [
+    878          ("C_fire",                   w1, c_fire,   ...),
+    879          ("C_victim",                 w2, c_victim, ...),
+    880          ("C_comm",                   w3, c_comm,   ...),
+    881          ("G_uncertainty_reduction",  w4, g_unc,    ...),
+    882          ("G_information_recovery",   w5, g_ir,     ...),
+    883          ("R_collision",             -w6, r_col,    ...),
+    884          ("Cost_battery",            -w7, cost_b,   ...),
+    885          ("R_drift",                 -w8, r_drift,  ...),
+    886          ("Cost_switch",             -w9, cost_sw,  ...),
+    887      ]
+
+Four conditional terms may be appended:
+  S_hysteresis_bonus       (:889-898)  from `_compute_stability_bonus` (:322-366)
+  U_negative_information   (:900-902)  from `_compute_negative_information_adjustment`
+  S_stability_idle_floor   (:904-906)  `0.05 * profile.stability_weight`, idle only
+  U_horizon_context_fit    (:908-920)  gated on ALL SIX of horizon_type,
+                                       candidate_horizon_length, uncertainty_level,
+                                       communication_reliability, fire_spread_speed,
+                                       information_collapse being present
+
+Then `_apply_confidence_and_uncertainty_adjustment` (:506-601) multiplies the raw
+total by `clamp01(option.confidence)` and optional damping, and infeasibility
+(:987-990) would replace the total with -1e6.
+
+1.2  INSTRUMENTED, PER TERM, PER CALL
+--------------------------------------------------------------------------------
+Mode "observe", 13 runs x 240 steps. 23 global options are scored every step:
+23 x 3120 = 71,760 scorings.
+
+INPUT SIDE - presence of the nine keys across ALL 71,760 scorings:
+
+    fire_contribution           present in      0 / 71,760
+    victim_contribution         present in      0 / 71,760
+    communication_contribution  present in      0 / 71,760
+    uncertainty_reduction       present in      0 / 71,760
+    information_recovery        present in      0 / 71,760
+    collision_risk              present in      0 / 71,760
+    battery_cost                present in      0 / 71,760
+    drift_risk                  present in      0 / 71,760
+    switching_cost              present in      0 / 71,760
+
+Not one of the nine is ever present. The union of parameter keys the global
+options actually carry is 37 distinct keys; its intersection with the nine is
+EMPTY. The full 37:
+
+    action, assigned_role, battery, battery_state, candidate_regions,
+    candidate_zones, communication_reliability, critical_regions, current_role,
+    do_nothing, excluded_recent_negative_regions, explicit_search_mode,
+    fire_confidence_map, fire_probability_map, mission_goal_phase,
+    mission_goal_priorities, negative_observation_maps,
+    predicted_remaining_useful_time, priority_regions, region_source,
+    resource_action, resource_state, role_stability_timer, role_switch_count,
+    search_mode_required, stability_action, stale_information, strategy,
+    strength_sources, target_regions, target_source, task_action,
+    trigger_context, uncertainty_map, uncertainty_regions, victim_confidence,
+    weakness_sources
+
+Only four watched keys are ever present at all, and none of them can raise a
+term:
+    role_switch_count       18,720 scorings - value is None in ALL of them
+    role_stability_timer    18,720 scorings - value is None in ALL of them
+    assigned_role           15,600 scorings - a bare STRING, never a dict
+    communication_reliability 12,480 scorings - value is an EMPTY dict
+    do_nothing               3,120 scorings - True (the baseline only)
+
+OUTPUT SIDE - the real UtilityTerm list the shipped scorer built. Verbatim from
+the first-sight dump, `global_coverage_strategy_fire_front_tracking_mode`:
+
+    C_fire                    value=0.0  weight=1.0  contribution= 0.0
+    C_victim                  value=0.0  weight=1.0  contribution= 0.0
+    C_comm                    value=0.0  weight=1.0  contribution= 0.0
+    G_uncertainty_reduction   value=0.0  weight=0.9  contribution= 0.0
+    G_information_recovery    value=0.0  weight=0.7  contribution= 0.0
+    R_collision               value=0.0  weight=1.2  contribution=-0.0
+    Cost_battery              value=0.0  weight=0.9  contribution=-0.0
+    R_drift                   value=0.0  weight=0.9  contribution=-0.0
+    Cost_switch               value=0.0  weight=0.7  contribution=-0.0
+    <TOTAL>                                          contribution= 0.0
+    explanation: "Global mission utility near zero; no dominant positive or
+                  negative driver."
+
+And the baseline, `global_stability_maintain_current_config` - the ONLY option
+that scores anything:
+
+    C_fire ... Cost_switch    all value=0.0, all contribution=+/-0.0
+    S_hysteresis_bonus        value=0.12   weight=0.9  contribution=0.108
+    S_stability_idle_floor    value=0.045  weight=1.0  contribution=0.045
+    <TOTAL>                                            contribution=0.153
+    explanation: "Strongest positive driver: S_hysteresis_bonus (0.1080);
+                  negligible penalties. Hold-steady / stability profile
+                  (damped signals, small floor)."
+
+THE ANSWER TO "WHICH TERM, AND WHY":
+  ALL NINE weighted terms are 0.0, on EVERY option including the baseline,
+  because `pfloat` returns its `default=0.0` for all nine keys on all 71,760
+  calls. The baseline's 0.153-0.255 is produced ENTIRELY by two terms that read
+  no world state at all: a constant 0.12 hysteresis bonus and a constant
+  0.05 * stability_weight idle floor. The mission-value comparison contributes
+  exactly nothing to the outcome.
+
+Per-option totals (13 runs, 3,120 scorings each):
+    global_stability_maintain_current_config   0.187 x2370, 0.255 x722,
+                                               0.153 x26, 0.1785 x2
+    all 22 others                              0.0 x3120  each
+
+Supporting predicted_effects, merged over all 71,760 scorings:
+    policy_switching_cost         0.0     in 71,760 / 71,760
+    role_reassignment             False   in 71,760 / 71,760
+    mission_search_or_recovery    False   in 71,760 / 71,760
+    mission_stability_idle        True    in  3,120 (the baseline) / 71,760
+
+1.3  CLASSIFICATION -> (a), the dead-input class, seventh instance
+--------------------------------------------------------------------------------
+(a) applies. The scorer reads inputs that are permanently absent. This is the
+same class as _DELAY_CANCEL_BONUS, sop.mission_mode, the role-assignment
+string/dict mismatch, should_return_to_normal, belief_gap_regions and
+_belief_gap_critical - but broader than any of them: it is not one dead key, it
+is the ENTIRE utility vector, 9 of 9.
+
+Explicitly NOT (b): the nine terms are not gated. They are unconditionally
+computed and unconditionally appended to raw_terms. They are zero because their
+inputs are absent, not because a condition failed to fire.
+
+Explicitly NOT (c): the planner is NOT correctly declining worthless options.
+For 0.0 to be a correct verdict the scorer would have to have looked at the
+options' value and found none. It never looks: the data on which value would be
+judged is never presented to it. And the winner does not win a comparison - it
+wins because it is the only option that trips two hardcoded constants. A scorer
+that read real inputs and returned 0.0 would be correct; this one is not
+reading.
+
+Was a producer ever written and then removed? No.
+    git log -S'"fire_contribution"' --all
+returns exactly ONE commit - a4a01b4 "Add core project files and update README",
+the 2nd of 43, the bulk import - which introduced utility_evaluation.py and its
+tests in the same commit. The nine keys appear in the repo in exactly two
+places: the scorer reading them, and six test files hand-constructing synthetic
+options that carry them. There is no enrichment or adapter layer anywhere
+between generation and scoring, and no half-built one to finish. The layer was
+never wired, not un-wired.
+
+1.4  IS THE 0.0 UNIFORM ACROSS ALL 22?
+--------------------------------------------------------------------------------
+For the nine weighted terms, YES - uniform, one cause. Measured: all 22
+non-baseline options produce EXACTLY the same nine terms, every value 0.0, and
+produce NO additional terms. None of the four conditional terms ever fires for
+any of them. Verified across all 68,640 non-baseline scorings.
+
+Two precision points, because "uniform" would otherwise overstate it:
+
+  (i) The generator and scorer vocabularies are not strictly disjoint. Cost_switch
+      is partially LIVE-wired: `_compute_switching_cost` (:295-320) reads
+      role_switch_count and role_stability_timer, which the role family DOES emit
+      (global_adaptation_generator.py:129-130). They arrive as literal None, so
+      safe_float() maps them to 0.0. So 8 of the 9 terms are dead-KEY; Cost_switch
+      is dead-VALUE. Measured: policy_switching_cost = 0.0 on all 71,760.
+
+  (ii) There are three near-miss key mismatches where the generator computes the
+       right idea under the wrong name, all measured inert:
+         search_mode_required (generator) vs search_mode (scorer :801-803)
+           -> is_search False on all 71,760, so the g_ir recovery boost never fires
+         option_type "role_assignment" vs the scorer's test `"role" in ot and
+           "change" in ot` (:849-858)
+           -> role_reassignment False on all 71,760, so the role-switching cost
+              never applies to role-assignment options
+         target_regions PLURAL (generator :516/:626/:648) vs target_region
+           SINGULAR (global_mission_planner.py:251)
+           -> the region branch never fires. This generalizes the
+              belief_gap_regions finding: SIX region-shaped keys are generated
+              (target_regions, critical_regions, priority_regions,
+              candidate_regions, uncertainty_regions, candidate_zones) and NOT ONE
+              is read.
+
+So: one cause for the tie, but the scope estimate must account for a second,
+serially-blocking mismatch downstream (Part 2), not just this one.
+
+1.5  IS THIS GLOBAL-ONLY? NO - AND THAT MATTERS FOR SCOPE
+--------------------------------------------------------------------------------
+Per-scope coverage of "does the generator write the keys its evaluator reads":
+
+    global          0 of 9   keys produced   - totally disconnected
+    rescue          0 of 6   keys produced   - totally disconnected
+    fail-safe       0 of 4   keys produced   - totally disconnected
+    local           6 of 10  keys produced   - asymmetric: every positive term
+                                               has a producer, every penalty
+                                               (collision_risk, smoke_penalty,
+                                               battery_cost, drift_penalty) has
+                                               none, so local scoring is
+                                               monotone-positive
+    communication   4 of 5   keys produced   - ESSENTIALLY WIRED
+
+The communication scope is the counter-example and it is load-bearing for the
+verdict. communication_adaptation_generator.py:226-237 writes the evaluator's own
+key names directly (delivery_quality, sync_quality, critical_support,
+delivery_confidence, relay_cost). Only delay_cost is missing. So one generator in
+this codebase does exactly the thing the other four do not. That means the gap is
+per-generator omission, not a missing architectural layer.
+
+
+================================================================================
+PART 2 - THE DECIDING EXPERIMENT
+================================================================================
+
+2.1  DESIGN
+--------------------------------------------------------------------------------
+Arming is applied by wrapping `GlobalAdaptationSpaceGenerator.generate` and
+mutating the target option's parameters dict after generation - the same
+technique that settled belief_gap_regions and _belief_gap_critical. Five modes,
+each the full 13-run canonical sample, each compared seed-matched against the
+unpatched control:
+
+  arm_lo          NEGATIVE CONTROL. fire_contribution=0.01 on the fire-front
+                  coverage option. The score must move off 0.0 (proving the arm
+                  reaches the scorer) yet stay below the ~0.153-0.255 baseline,
+                  so selection must NOT change.
+  arm_hi          fire_contribution=0.9 on the same option. Score must beat the
+                  baseline.
+  arm_role_str    fire_contribution=0.9 on the role option, leaving assigned_role
+                  as the STRING the generator writes.
+  arm_role_dict   the same PLUS uav_assignments as a proper dict in the LIVE role
+                  vocabulary ("fire_tracker").
+  arm_role_dict_gen  the same but in the GENERATOR vocabulary ("fire_tracking").
+
+2.2  THE NEGATIVE CONTROL HAS TEETH
+--------------------------------------------------------------------------------
+This is what the _belief_gap_critical round showed was indispensable, and it
+discriminates cleanly here:
+
+  arm_lo   armed option score   0.0 -> 0.00495 .. 0.0075   (moved off zero)
+           armed option rank    13  -> 1                    (rose to 2nd place)
+           selection            global_stability_maintain_current_config 3120/3120
+                                                            (UNCHANGED)
+           outcomes             13/13 byte-identical
+
+The arm demonstrably reaches the scorer and moves both score and rank, yet
+correctly fails to cross the selection threshold. So a null result in the other
+arms cannot be attributed to a dead arming mechanism.
+
+2.3  RESULTS
+--------------------------------------------------------------------------------
+                   armed score   armed  SELECTED     MissionDecision  exec       outcomes
+mode               (typical)     rank   non-baseline populated?       assigns    vs control
+-----------------------------------------------------------------------------------------
+observe            n/a           n/a    0 / 3120     {}               0          13/13 same
+arm_lo             0.005-0.0075  1      0 / 3120     {}               0          13/13 same
+arm_hi             0.44-0.675    0      3107 / 3120  {} EMPTY         0          13/13 SAME
+arm_role_str       0.44-0.675    0      3107 / 3120  {} EMPTY         0          13/13 SAME
+arm_role_dict      0.34-1.035    0      3107 / 3120  uav_assignments  4          13/13 DIFFER
+                                                     x3107
+arm_role_dict_gen  0.32-1.035    0      3107 / 3120  uav_assignments  4          13/13 DIFFER
+                                                     x3107
+
+Answering the four questions asked:
+
+  Does the planner now SELECT the armed option?
+    YES. Scoring alone is sufficient for SELECTION. arm_hi drives the fire-front
+    option to rank 0 and it is selected on 3107 of 3120 steps (the 13 misses are
+    step 1 of each run, before trigger confidence is established). Nothing else
+    blocks selection - `_select_feasible_option` (global_mission_planner.py:158-165)
+    returns the first feasible entry of a score-descending sort, and all 23
+    options are feasible on all 3,120 steps with zero constraint violations.
+
+  Does the selection reach MissionDecision?
+    NO for arm_hi and arm_role_str - the MissionDecision comes back COMPLETELY
+    EMPTY. Verbatim, arm_hi step 2:
+        selected_option_id: "global_coverage_strategy_fire_front_tracking_mode"
+        uav_assignments: {}   task_assignments: {}   mission_mode: ""
+        relay_assignments: {} recall_orders: []      uncertainty_context: {}
+    YES for arm_role_dict, but only because the arm hand-built the dict the
+    planner requires. Verbatim, step 2:
+        uav_assignments: {"2500":"fire_tracker","2501":"fire_tracker",
+                          "2502":"fire_tracker","2503":"fire_tracker"}
+
+  Does anything downstream ACT on it?
+    YES, for uav_assignments only. GlobalExecutor applies 4 role assignments on
+    3107 of 3120 steps, and the live role state really changes and persists:
+        control        2500=fire_tracker;2501=fire_tracker;
+                       2502=victim_searcher;2503=victim_searcher
+        arm_role_dict  2500..2503 all =fire_tracker   (239 of 240 steps)
+
+  Do outcome metrics change?
+    Totals over the 13-run sample:
+
+    mode               rescued  dead  ff_deaths  never_detected  unreachable  burnt_cells
+    ------------------------------------------------------------------------------------
+    nopatch (control)       29    23          6               0            0        16053
+    observe                 29    23          6               0            0        16053
+    arm_lo                  29    23          6               0            0        16053
+    arm_hi                  29    23          6               0            0        16053
+    arm_role_str            29    23          6               0            0        16053
+    arm_role_dict           25    21          8               3            4        16053
+    arm_role_dict_gen       22    22         10               7            7        16053
+
+2.4  THE HEADLINE
+--------------------------------------------------------------------------------
+The armed run is NOT byte-identical - but the arm that works is not the one that
+fixes scoring.
+
+  * Fixing scoring alone (arm_hi) makes the planner SELECT the option and changes
+    NOTHING ELSE: 13/13 byte-identical outcomes. This is exactly the
+    _DELAY_CANCEL_BONUS pattern the round anticipated - a correct fix landing on a
+    second dead gate downstream.
+  * The second gate is `_uav_assignments_from_params`
+    (global_mission_planner.py:233-241). arm_role_str isolates it: the option is
+    selected 3107/3120 times, but `assigned_role` is a bare STRING and
+    `_string_dict` returns {} for anything that is not a dict, so the
+    MissionDecision is empty and outcomes are 13/13 byte-identical.
+  * Only when BOTH gates are bypassed (arm_role_dict) do outcomes move - in
+    13/13 runs, on eval, agent positions, stdout and role signature.
+
+So scoring is NOT the sole blocker, but it is also not pointless: it is the first
+of exactly two serial blockers on the role path, and both are small.
+
+TWO FURTHER MEASURED FACTS THAT BEAR DIRECTLY ON THE MAINTAINER'S NEXT WORK:
+
+  (A) THE FIRE IS UNTOUCHABLE FROM THIS LAYER. burnt_cells is 16053 in every
+      single mode, and the fire-map hash is identical in 13/13 runs for EVERY
+      arm including the strongest one. Maximal global role reassignment,
+      sustained for 239 of 240 steps, changes rescue outcomes and firefighter
+      deaths but does not perturb the fire by one cell. Whatever the global
+      layer can currently express, none of it reaches fire behaviour.
+
+  (B) THE ROLE VOCABULARY BREAK IS REAL AND COSTLY. arm_role_dict (live
+      vocabulary "fire_tracker") vs arm_role_dict_gen (generator vocabulary
+      "fire_tracking") differ in 13/13 runs, and the generator's vocabulary is
+      strictly worse (22 rescued vs 25, 10 firefighter deaths vs 8, 7
+      never-detected vs 3). Writing the generator's own role words into the model
+      produces roles that nothing downstream recognises. So even after fixing
+      both gates above, a third fix - the vocabulary - is required before the
+      path does something intended rather than merely something different.
+
+
+================================================================================
+PART 3 - SCOPE
+================================================================================
+
+3.1  BLOCKER ENUMERATION: "option generated" -> "option changes agent behaviour"
+--------------------------------------------------------------------------------
+Each blocker below survived an adversarial refutation pass (18 of 36 candidate
+blockers raised by the tracers were refuted and are excluded; several excluded
+items were real code observations that turned out to be inert dead code rather
+than live blockers).
+
+B1. THE NINE UTILITY KEYS HAVE NO PRODUCER            [plumbing]
+    src_extension/adaptation/global_adaptation_generator.py (all 4 families:
+    :127 role, :291 task, :482 coverage, :615 resource) vs
+    src_extension/planning/utility_evaluation.py:812-820
+    Evidence: 0 of 9 present in 71,760 measured scorings; 37-key parameter union
+    has EMPTY intersection with the nine; git -S shows no producer ever existed.
+    Frozen/shared: no. AdaptationOption.parameters is a plain dict[str, Any].
+    Test lock: NONE. Every global-utility test hand-writes the nine keys into
+    synthetic options, so a generator that started emitting them breaks nothing.
+    (tests/test_adaptation_integration.py:63-66 does assert absence of certain
+    keys on generated options - it must be checked, but it asserts a different
+    key set.)
+
+B2. pfloat's SILENT 0.0 DEFAULT HIDES B1              [plumbing]
+    src_extension/planning/utility_evaluation.py:793-797
+    A missing key is indistinguishable from a genuine zero. This is why the
+    failure is silent and survived to now. Not independently blocking, but it is
+    the reason B1 is invisible without instrumentation.
+    Frozen/shared: no.  Test lock: none.
+
+B3. assigned_role IS A STRING; THE PLANNER ONLY ACCEPTS A DICT   [plumbing]
+    src_extension/planning/global_mission_planner.py:233-241 (`_string_dict`
+    returns {} for non-dicts) vs global_adaptation_generator.py:147
+    (`parameters={**base_parameters, "assigned_role": role}` over the string list
+    at :134-140).
+    Evidence: MEASURED. arm_role_str selects the option 3107/3120 times and
+    produces an empty MissionDecision, 13/13 byte-identical. This is the second
+    serial gate, and it is the one that makes a scoring-only fix inert.
+    Frozen/shared: no - module-private helper, one caller.
+    Test lock: none found.
+
+B4. ROLE VOCABULARY MISMATCH                          [design gap]
+    global_adaptation_generator.py:134-140 emits fire_tracking, victim_search,
+    victim_confirmation, victim_tracking, communication_relay.
+    wildfire_model.py:656-662 uses fire_tracker and victim_searcher - two live
+    roles, zero spelling overlap, and the local path generator compares with
+    exact equality.
+    Evidence: MEASURED. arm_role_dict vs arm_role_dict_gen differ 13/13, and the
+    generator vocabulary performs strictly worse.
+    Design gap, not plumbing: three of the five generator roles
+    (victim_confirmation, victim_tracking, communication_relay) have NO runtime
+    counterpart at all. Somebody must decide what they mean before they can be
+    mapped.
+    Test lock: tests/test_uav_sector_assignment.py has two of the eight existing
+    baseline failures and is role-dependent - in the blast radius.
+
+B5. SIX REGION-SHAPED KEYS ARE GENERATED, NONE IS READ   [plumbing]
+    global_adaptation_generator.py:516/:626/:648 write target_regions PLURAL (a
+    list); global_mission_planner.py:251 reads target_region SINGULAR. Same for
+    critical_regions, priority_regions, candidate_regions, uncertainty_regions,
+    candidate_zones - none has a reader.
+    Frozen/shared: MissionDecision.task_assignments is dict[str, str], so a list
+    of regions cannot survive the trip even after the key is fixed.
+    Test lock: tests/test_global_adaptation.py:62 asserts the plural on the
+    generator side (`option.parameters["target_regions"] == ["r1"]`).
+
+B6. MissionDecision CANNOT CARRY GEOMETRY             [design gap]
+    src_extension/planning/decision_objects.py:19-34. frozen=True, 12 fields.
+    Four dicts, all dict[str, str]; recall_orders is tuple[str, ...]. The two
+    dict[str, Any] fields (uncertainty_context, comparison_summary) have zero
+    behavioural readers. Contrast FailSafeDecision (:79) which HAS a dedicated
+    `target_region: str` and an executor that parses it to coordinates
+    (uav_executor.py:4444, parser :4477-4480). MissionDecision has neither.
+    Frozen/shared: YES. Consumers: global_mission_planner.py:87/106,
+    planning_coordinator.py:112/239-242/335, decision_dispatcher.py:113/161-171,
+    global_executor.py:29-137, explanation_engine.py:29/195-199/320/325/351.
+    Test lock: YES - tests/test_planner_core.py:51 asserts the field roster by
+    EXACT SET EQUALITY against a hardcoded 12-name set. Adding any field fails
+    it. (Sibling at tests/test_utility_core.py:46 for OptionEvaluation.)
+
+B7. ONLY 1 OF 12 MissionDecision FIELDS HAS A BEHAVIOURAL READER  [design gap]
+    uav_assignments -> global_executor.py:45-60 -> UAVResourceModel.update_role +
+    managed_uav_states[uid].role, which agents.py:250-267 and
+    local_adaptation_generator.py:1997/2054/2075/2100/2335 branch on. That one
+    works - it is what moved outcomes in arm_role_dict.
+    The other eleven are inert:
+      task_assignments  - executor iterates it as if keyed by uav_id
+                          (global_executor.py:62), but the planner keys it by the
+                          literal string "target_region"/"task"
+                          (global_mission_planner.py:250/253), which never matches
+                          managed_uav_states. And UAVResourceModel has none of
+                          update_assigned_task / update_task / assign_task, so the
+                          fallback at global_executor.py:67-76 always falls
+                          through and writes nothing.
+      mission_mode      - writes sop.mission_mode (global_executor.py:79-81);
+                          read only by serialisation (shared_operational_picture.py
+                          :259/:277) and a dashboard string
+                          (planning_coordinator.py:238-242). Zero behavioural
+                          readers - confirms the earlier round's finding.
+      relay_assignments,
+      recall_orders     - appended to model.pending_global_commands
+                          (global_executor.py:83-105); decision_dispatcher.py:330
+                          drains ONLY communication commands, so these two kinds
+                          would accumulate forever. Currently unreachable because
+                          the planner never populates them.
+      the remaining six - logging / explanation / comparison only.
+
+B8. THE DISCONNECTION IS SYSTEM-WIDE, NOT GLOBAL-ONLY   [design gap]
+    rescue 0/6 and fail-safe 0/4 input keys produced; local 6/10 with every
+    penalty term unproduced (monotone-positive scoring). Only communication is
+    wired (4/5). Anything built on the global layer inherits neighbours in the
+    same state.
+
+3.2  QUESTION 7 - COULD FIRE-FIGHTING ASSIGNMENTS REACH A FIREFIGHTER TODAY?
+--------------------------------------------------------------------------------
+FROM THE GLOBAL LAYER: NO. Not by a broken path - the destination does not exist.
+
+The trace, mechanically extracted from agents.py:379-1178 (the whole Firefighter
+class). A Firefighter reads exactly SEVEN model attributes:
+
+    model.HEIGHT, model.WIDTH        grid dimensions
+    model.grid, model.schedule       to enumerate Fire agents and read geometry
+    model._agents_pending_removal    bookkeeping
+    model._rescue_path_clear_requested }  OUTBOUND - the firefighter WRITES these
+    model._on_firefighter_route_blocked}  (agents.py:546), they are signals out,
+                                          not orders in
+
+Its behaviour is otherwise driven entirely by its own instance fields:
+target_pos, exiting, exit_target, rescued_victim, assigned, status, dead. Two
+tuning constants (IDLE_RETREAT_SAFETY_BUFFER=3, IDLE_RETREAT_MAX_CELLS=6,
+agents.py:375-376) are module globals, so not even those are retunable at runtime.
+
+NONE of the seven is written by the global adaptation layer. GlobalExecutor
+(global_executor.py:40-105) writes exactly four sinks - uav_resource_model,
+managed_uav_states, shared_operational_picture.mission_mode, and
+pending_global_commands - and a Firefighter reads none of them. MissionDecision
+has no firefighter-directed field. The managed mirrors
+(managed/firefighter_state.py, knowledge/firefighter_model.py,
+monitoring/firefighter_monitor.py) are read-only: managed_firefighters is written
+only by wildfire_model itself and read only by the dashboard
+(dashboard_state_builder.py:257), and FirefighterOperationalState has fields for
+availability / assignment_state / route_state / rescue_progress - none for a
+region, sector or geometry.
+
+Four breaks, in depth order. Fixing any one alone changes nothing:
+  1. MissionDecision has no firefighter field  - the order cannot be EXPRESSED
+  2. GlobalExecutor has no firefighter sink    - it cannot be CARRIED
+  3. Firefighter reads no src_extension state  - it cannot be RECEIVED
+  4. target_pos is a single cell               - "region"/"sector" has NO
+                                                 REPRESENTATION anywhere
+
+THERE IS, HOWEVER, A LIVE MANAGING-SYSTEM -> FIREFIGHTER PATH - in the RESCUE
+lane, and it must not be overlooked, because it changes the shape of the work:
+
+    rescue_planner.select_rescue_assignment (PLANNING, rescue_planner.py:523)
+      <- called by wildfire_model.py:2904 (_handle_rescue_incident) and :4023
+         (_dispatch_firefighter_to_victim)
+      -> RescueExecutor.apply_physical_pairing_decision (rescue_executor.py:307)
+      -> execute_physical_command (:400) -> model.apply_physical_rescue_command
+      -> wildfire_model.py:3498-3503:
+             ff_marker.assigned = True
+             ff_marker.target_pos = victim_cell
+             ff_marker.rescued_victim = victim_marker
+             ff_marker.status = "en_route"
+
+This really moves real firefighters, and the pairing POLICY genuinely lives in
+the planning layer. But for the maintainer's purpose it has three
+disqualifying properties:
+  - It is the RESCUE scope, not the global one. It is never reached from the
+    adaptation-space / option / utility pipeline; no option, trigger or
+    MissionDecision touches it.
+  - It is INVERTED: wildfire_model initiates on a physics event (victim
+    confirmed, route blocked, casualty, rescue complete) and pulls an answer from
+    the planner. The planner cannot push an intent of its own.
+  - It is VICTIM-GATED. PhysicalRescueCommand (wildfire_model.py:82-88) is frozen
+    as (action, victim_id, firefighter_id, reason, metadata); all four actions
+    are assign / unassign / mark_unreachable / finalize_rescue; the assign branch
+    returns False if no victim_marker resolves (:3477-3478); and target_pos is
+    set to the victim's own cell. There is no vocabulary for "defend this
+    region", "hold this sector", or "move to this cell".
+
+PLAIN ANSWER: fire-fighting assignments - target regions to defend, fire-front
+sectors, coordinated positioning - CANNOT reach a Firefighter today by any path,
+global or rescue. Given the current structures, such behaviour would have to be
+hardcoded at agent level. Making it plannable instead means designing and
+building the missing channel end to end: a command vocabulary that can express a
+region, a decision field that can carry it, an executor sink that can apply it,
+and firefighter behaviour that consults it. None of those four exists.
+
+3.3  SCOPE VERDICT
+--------------------------------------------------------------------------------
+The answer depends on which of two questions is being asked, and they have
+different answers.
+
+  (Q-A) "Make the global planner select and act on non-baseline options,
+         within what it can already express (UAV roles)."
+        -> (M) MEDIUM. Three blockers, all mechanically fixable:
+             B1 write the nine utility keys in the generator (or narrow the
+                scorer to what is produced)
+             B3 emit assigned_role as a dict, or make
+                _uav_assignments_from_params accept a string
+             B4 reconcile the role vocabulary
+           MEASURED: with B1 and B3 bypassed the outcomes move in 13/13 runs, so
+           the path really does reach behaviour. No frozen structure needs to
+           change, and no test locks any of the three. The communication scope
+           already does the B1 half correctly, so there is a worked example
+           in-repo. This is defect repair.
+
+  (Q-B) "Have the global layer direct firefighters against the fire front."
+        -> (X) REBUILD. This is the maintainer's actual next task, and it is not
+           defect repair at any level. In addition to B1/B3/B4 it requires:
+             - a region/sector representation, which exists nowhere (B5, B6)
+             - a new field on a FROZEN MissionDecision with six consumers, and
+               tests/test_planner_core.py:51 asserts its field roster by exact
+               equality (B6)
+             - a firefighter sink in GlobalExecutor, which today writes only
+               UAV-side state (3.2 break 2)
+             - a firefighter command vocabulary beyond victim-centric assign /
+               unassign / mark_unreachable / finalize_rescue, on a FROZEN
+               PhysicalRescueCommand (3.2)
+             - Firefighter.advance() to consult assigned intent at all - it
+               currently reads no managing-system state whatsoever (3.2 break 3)
+             - and the intended behaviour itself, which is not specified anywhere:
+               the docs enumerate ten knowledge models and describe utility inputs
+               for exactly ONE scope (local), never for firefighter tasking.
+           MEASURED CEILING: even a maximal, sustained global intervention leaves
+           burnt_cells identical at 16053 and the fire map hash identical in 13/13
+           runs. The layer has no measured influence over fire whatsoever today,
+           so there is no partial capability to extend - it would be built from
+           nothing.
+
+CONFIDENCE
+  HIGH on Part 1 and Part 2. These are direct measurements at the real call
+  sites over 91 runs and 71,760 scorings, reproduced from scratch this session,
+  with a negative control that demonstrably has teeth and an observer-purity
+  control that is byte-identical. The prompt's caution is respected: nothing here
+  is inferred from a per-step snapshot.
+
+  HIGH on the (X) verdict for Q-B. It rests on absence, and absence was
+  established mechanically rather than by sampling: the complete list of model
+  attributes the Firefighter class reads, the complete list of sinks
+  GlobalExecutor writes, the complete 12-field MissionDecision roster, and the
+  complete 4-action PhysicalRescueCommand vocabulary. Four independent breaks all
+  point the same way.
+
+  MEDIUM-HIGH on the (M) verdict for Q-A. The three blockers were each measured
+  individually (arm_hi isolates B1, arm_role_str isolates B3, arm_role_dict vs
+  arm_role_dict_gen isolates B4), so the chain is established rather than
+  assumed. The residual uncertainty is coverage: exactly one of the 22 options
+  (the fire-tracking role option) was armed all the way to behaviour, and one
+  more (fire-front coverage) to selection. The role family is the family whose
+  MissionDecision field happens to have a live reader; the task_allocation,
+  coverage_strategy and resource_reallocation families all route through
+  task_assignments or mission_mode, which B7 shows are inert for independent
+  reasons. So (M) is the estimate for the ROLE path specifically. Extending the
+  same repair to the other three families is very likely LARGE, not medium,
+  because it runs into B5/B6 - the same frozen-structure and
+  no-region-representation wall as Q-B.
+
+  A caveat the maintainer should weigh: the campaign's prior is that a fix which
+  looks correct lands inert because a second gate sits downstream. That prior was
+  confirmed again here - arm_hi is exactly that failure - and the (M) estimate is
+  only safe because the arming experiment walked past BOTH gates and observed real
+  outcome movement. Any repair of the other three option families should be
+  arm-tested the same way BEFORE being written.
+
+================================================================================
+ARTEFACTS
+  outputs/_gp_probe.py        the probe (hooks, arming, aggregation)
+  outputs/_gp_run_*.json      91 runs, 7 modes x 13 canonical runs
+  outputs/_gp_probe.json      aggregated census + seed-matched comparisons
+  outputs/_gp_verify/         this session's from-scratch reproduction (3 runs)
+  outputs/_gp_traces.json     6 code traces
+  outputs/_gp_blockers.json   36 candidate blockers with adversarial verdicts
+  outputs/_gp_pytest_run1.txt test baseline run 1, complete (8 failed / 427 passed)
+  outputs/_gp_pytest_run2.txt test baseline run 2, replication (capture truncated)
+  outputs/_gp_pytest_run3.txt test baseline run 3, complete - list identical to run 1
+================================================================================
