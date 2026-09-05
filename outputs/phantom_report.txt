@@ -1,0 +1,444 @@
+================================================================================
+PHANTOM RESCUE FIX - PARTS 2 AND 3: IMPLEMENTATION AND VALIDATION
+================================================================================
+Design, written before any source edit and approved with D1/D2/D3:
+outputs/phantom_part1.txt (section 12 records the decisions added in Parts 2-3).
+
+  branch     firefighter-mission-features
+  base HEAD  5000f70  (Feature 2: victims step away from approaching fire)
+  changed    wildfire_model.py, tests/test_phantom_rescue_release.py (new, 20 tests)
+  harness    outputs/_ffr_harness.py (one read-only observer, ff_bind_steps),
+             outputs/_ph_analyze.py (new)
+  python     E:\Projects\SAS\.venv\Scripts\python.exe - 3.10.11, mesa 1.2.1
+  baseline   a pristine `git worktree add --detach` checkout of 5000f70; the
+             baseline arm ph5000 is identical to the stored Feature 2 final arm
+             vmon3 on all 15 recorded fields in 13/13 runs
+             (outputs/_ph_identity_ph5000_vmon3.txt)
+  final arm  phfix3 = this working tree. Intermediate arms phfix (first
+             implementation) and phfix2 (after the first review) are kept as
+             the identity chain: phfix == phfix2 on 13/13 runs; phfix2 vs
+             phfix3 differs on exactly one run, by a label and one stdout line
+             (section 7).
+
+THE DEFECT, as diagnosed in Part 1
+  The executor permits one victim to hold two firefighter claimants, and the
+  route_blocked replacement pathway depends on that: a unit blocked twice on the
+  same victim keeps its task (the incident handler returns early for a repeated
+  pair) and is invisible to _find_active_firefighter_for_victim, so a
+  replacement is dispatched. Whichever arrives first rescues. Nothing released
+  the other: it walked to a stale target_pos, started exiting against empty
+  ground, "completed" a rescue that was not counted, and drew a rescue absence
+  it had not earned. The victim_dead recall had the same hole from the same
+  lookup and left a route_blocked unit bound to a corpse.
+
+================================================================================
+HEADLINE
+================================================================================
+  * THE PROBE. Q1 (one victim assigned to two firefighters) STAYS YES. This is
+    the expected result, not a partial pass: fix (b) releases the loser when
+    the victim turns terminal and deliberately leaves double assignment
+    permitted, because the replacement pathway is built on it and in the only
+    recorded episode the second claimant was the unit that actually rescued the
+    victim (Part 1, section 3). Q2 flips from YES to "no - it was unassigned";
+    the phantom exit no longer reproduces (outputs/_ph_probe_after.txt).
+  * SEED-MATCHED, 13 runs vs 5000f70: rescued 34 -> 35, victims dead 12 -> 12,
+    firefighter deaths 8 -> 8, never_detected 1 -> 1. Fire map identical on
+    13/13 runs. 9/13 runs byte-identical; the 4 that differ are exactly the
+    runs the design said would differ (section 7).
+  * THE PHANTOM IS GONE: phantom exits 1 -> 0, phantom completions 1 -> 0,
+    rescue absences 35 -> 35 of which phantom 1 -> 0, loser bound-steps after
+    the rescue 48 -> 0, unit bound to a dead victim 24 steps -> 0.
+  * NO UNIT LEFT UNDISPATCHABLE: every released unit re-entered the dispatch
+    pool in the step it was released (4 checks, 0 flagged, section 8).
+  * FEATURE 2's DEATH REGRESSION (6 -> 8) IS NOT RECOVERED: 8 -> 8. All eight
+    deaths happen at the same step in both arms, and none of them lies in a
+    window the fix touches (section 9).
+  * TESTS: 20 new tests; full suite 8 failed / 490 passed against a baseline of 8 / 470 - the
+    same eight pre-existing failures with byte-identical assertion messages,
+    plus the 20 new tests. No new failure.
+  * ROUTE_BLOCKED GATE: PASS on all three items on the final source (outputs/_ph_rbgate_phfix3.txt):
+    rescued does not decrease on any of the 18 seeds; the recovery pass still
+    recovers units (recoveries 3 -> 10, firings 15 -> 24, as in the Feature 2
+    gate); no unit left latched as route_blocked at end of run (0 -> 0 in both
+    winds). Totals vs the 70e1b33 baseline: rescued 43 -> 52 (the Feature 2
+    gate had 43 -> 51: this fix adds one, D/east seed 303 - the same episode,
+    1 -> 3 there against 1 -> 2 in the Feature 2 gate), victims dead 25 -> 11,
+    firefighter deaths 15 -> 11 (unchanged from the Feature 2 gate).
+
+================================================================================
+1. WHAT WAS IMPLEMENTED
+================================================================================
+1.1  One helper, WildFireModel._release_other_claimants(victim_id,
+     victim_marker, keep_ff_id, reason) -> list[str], next to
+     _find_active_firefighter_for_victim. For every firefighter still bound to
+     the victim (rescued_victim identity or id match; NOT gated on `assigned`
+     or on status, so route_blocked claimants are included):
+       skip  dead units                      (the casualty sweep owns them)
+       skip  units with rescue_completed     (a unit that finished its own exit
+                                              this step; the drain finishes it)
+       skip  the unit named by keep_ff_id ONLY while it is exiting and no bound
+             unit has rescue_completed        (D4, section 3)
+       unassign through the executor, metadata {} (no reset_victim_pending: the
+             victim is terminal, that flag relabels the marker "confirmed")
+       then the label (D2): status en_route/assigned -> "available" and a
+             knowledge re-sync; status route_blocked -> left for the
+             revalidation pass, except when no victim needs rescue any more and
+             the unit is not fire-enclosed, in which case "available" (D6)
+       print "[Rescue Released] FF-x released from victim_y reason=..."
+       bump ff_claims_released_total and ff_claims_released_by_reason (D8)
+     Each unit is wrapped in try/except with a visible "[Rescue Release
+     Failed]" line, because _process_rescue_incidents swallows exceptions; the
+     relabel runs in its own guard so a relabel failure is reported as such and
+     the release is still counted (D5).
+
+1.2  Call sites in _handle_rescue_incident:
+       rescue_complete, after a successful finalize_rescue: keep = the
+         completing unit, reason "released_after_rescue_complete"; the release
+         runs BEFORE _activate_post_rescue_coverage_for_searchers (as designed).
+       rescue_complete, already-rescued early return (D3): keep = none, same
+         reason. Arriving here for a rescued victim is the phantom's own
+         signature; the reporting unit, if it is the phantom completer, is
+         protected by its rescue_completed flag.
+       victim_dead (D1): the former single-pair lookup is replaced by the
+         helper with keep = none and the incident reason ("fire_casualty").
+
+1.3  The drain (_process_pending_agent_removals, D7): a rescue absence is drawn
+     only for the completion that turned the victim rescued in this drain (not
+     rescued before it, not already completed by another unit in it, rescued
+     after finalize). A co-completer, a unit exiting against a victim already
+     carried out, or a corpse carrier is recycled in place with a "[Rescue
+     Hand-over Skipped]" line and draws nothing from the absence RNG.
+
+1.4  Not changed: the assign guard (apply_physical_rescue_command), the planner
+     lookup, _blocked_replacement_attempted, the unassign action, the
+     revalidation pass (_revalidate_route_blocked_firefighters), Feature 1's
+     absence machinery apart from 1.3, Feature 2.
+
+Unaffected runs stay byte-identical by construction: with no second claimant
+and no victim death the helper finds nothing bound, issues no command, prints
+nothing, writes nothing (proved on 9/13 runs, section 7).
+
+================================================================================
+2. THE PROBE (Part 3, item 1)
+================================================================================
+Stated before running: under fix (b) Q1 must stay YES and Q2 must flip to NO.
+
+  before (outputs/_ph_probe_before.txt, untouched 5000f70)
+    Q1  one victim assigned to two firefighters : YES
+    Q2  second unit still bound to the rescued victim : YES
+        ff_unit_1 walked 3 steps, now at (25, 25), exiting=True
+    Q2 RESULT: rescue started WITHOUT contact = YES - phantom exit reproduced
+
+  after (outputs/_ph_probe_after.txt, this working tree)
+    Q1  one victim assigned to two firefighters : YES
+        ff_unit_0 assign ok=True target=(25, 25)
+        ff_unit_1 assign ok=True target=(25, 25)
+    after ff_unit_0 completes the rescue:
+        victim status=rescued pos=None
+        ff_unit_1 assigned=False target=None rescued_victim=None
+    Q2  second unit still bound to the rescued victim : no - it was unassigned
+
+Q1 = YES is the design working as intended. Do not read it as a failure.
+
+================================================================================
+3. REVIEW, AND WHAT IT CHANGED
+================================================================================
+Two adversarial multi-lens review workflows were run against the working tree
+(six lenses: stranding/latch, ordering/re-entrancy, byte-identity, the
+victim_dead widening, downstream consumers, test adequacy; three refuters per
+finding). Both were cut short by session limits: run 1 completed one lens
+(consumers), run 2 completed five (stranding, ordering, identity, consumers,
+tests); the victim_dead lens never completed and no verifier completed. The
+findings were therefore triaged by hand against the code; each was checked
+before acting.
+
+Acted on (all in the final source, all covered by tests):
+  D4  keep rule (run 1, consumers; run 2, ordering). When the rescue_complete
+      incident carries no firefighter id, _finalize_rescued_victim names
+      _firefighter_id_for_victim = managed_victims[vid].firefighter_id, the
+      LAST-assigned unit - in a double claim the loser. A keep-by-id then
+      skipped the loser while rescue_completed skipped the carrier: nobody was
+      released. Latent (the drain always names the completer) and closed: the
+      name protects a unit only while it is exiting AND no bound unit has
+      rescue_completed.
+  D5  relabel misreport (stranding). If the knowledge sync inside the relabel
+      raised, the unit was in fact released but reported "[Rescue Release
+      Failed]" and not counted. The relabel now has its own guard.
+  D6  gate latch (route_blocked gate, section 10). See below.
+  D7  same-step co-completion (consumers, major). Two carriers of one victim
+      reaching exits in the same step both drew an absence; the second is
+      protected by rescue_completed by design, so the residual had to be closed
+      at the drain (1.3). Not exercised by the sample (0 phantom completions on
+      the fix arm), covered by a test.
+  order (consumers): release before coverage activation, as section 4.2 of the
+      design said; the helper now contains its own failures.
+  tests (tests lens): the already-rescued test advanced the step counter so the
+      same-step rescue_complete duplicate guard cannot make its assertion
+      vacuous, and asserts exactly one finalize command; the drain test uses a
+      victim cell that is closest to the released unit under both absence
+      configurations; the ignition comment was corrected (ignition is random in
+      [10,39]^2 and unseeded in tests; no assertion reads a position after a
+      move); tests added for the dead-unit skip with three claimants, the
+      relabel-failure path, the route_blocked release with and without live
+      victims, the keep rule with a completer present, and the co-completer.
+  D8  counter split by reason (consumers): the victim_dead path counts too.
+
+Not acted on - pre-existing, unchanged by this fix, listed as follow-ups:
+  * a unit released on the victim_dead path is in the pool but no dispatch
+    sweep runs there (dispatch is incident-driven: drain recycles, revalidation
+    recoveries, and the incident's own victim); a confirmed victim under a
+    "delay" decision waits for the next trigger. The pre-fix recall left the
+    unit in exactly the same state. One line would close it
+    (_try_dispatch_unresolved_confirmed_victims after a victim_dead release);
+    left out to keep this change to release semantics.
+  * Firefighter.advance labels every safe idle cell "standby at edge".
+  * the casualty sweep's own reset_victim_pending unassign relabels a
+    same-sweep dead victim's marker "confirmed".
+  * a re-dispatch path drawn inside the drain is wiped by the completer's
+    _rescue_path_clear_requested (visual only).
+  * the "victim_dead_recall" fallback reason string is unreachable (the
+    incident always carries "fire_casualty").
+  * the harness idle metric is keyed on the status label and is confounded by
+    the D2 relabel; it is not quoted anywhere in this report.
+
+================================================================================
+4. TESTS
+================================================================================
+tests/test_phantom_rescue_release.py, 20 tests on the real WildFireModel through
+the executor, the incident handler and the post-move drain:
+  second claimant released on completion (state, label, pool, print, audit);
+  completing unit untouched; released unit never walks to the stale target
+  (the probe's Q2 as a unit test); released unit is the planner's pick for the
+  next victim; knowledge model relabelled available/unassigned/idle (D2);
+  route_blocked claimant released and recovered by the revalidation pass; single
+  claimant emits no line and no command (byte-identity at unit level); already-
+  rescued completion releases a straggler with no second rescue_complete event
+  and one finalize command (D3); victim_dead releases every claimant including
+  route_blocked (D1); one-visible-claimant recall is the old recall plus the
+  relabel; end-to-end drain: advance() -> drain -> release -> re-dispatch in the
+  same drain; incident naming the loser still frees the loser (D4); named unit
+  kept only while carrying; counter split by reason (D8); named exiting unit
+  released once a completer exists; dead claimant skipped among three; relabel
+  failure neither undoes nor hides the release (D5); route_blocked release with
+  no victim left clears the flag (D6) and with a live victim leaves it to the
+  pass; same-step co-completer recycled without an absence (D7).
+
+Release and neighbouring suites (test_dead_victim_rescue_recall,
+test_rescue_event_bridge, test_physical_rescue_command,
+test_firefighter_rescue_absence, test_firefighter_dispatch_replacement,
+test_rescue_planner_authority, test_victim_fire_flight): 84 passed, 2 failed -
+the two pre-existing failures, with byte-identical assertion messages to the
+baseline run.
+
+Full suite on untouched 5000f70 (outputs/_ph_pytest_base.log): 8 failed, 470
+passed. Full suite on the final source (outputs/_ph_pytest_fix3.log):
+8 failed, 490 passed in 56 min. The eight failing tests are the same eight
+as the baseline, name for name; the two in the rescue suites
+(test_firefighter_dispatch_replacement::test_no_replacement_available_marks_
+victim_unreachable_once, test_rescue_planner_authority::test_no_firefighter_
+planner_delay_or_unreachable) fail with byte-identical assertion messages,
+including the VictimState repr. 470 + 20 new = 490.
+
+================================================================================
+5. METHOD
+================================================================================
+Same outputs/_ffr_harness.py for every arm (verified byte-identical to
+evaluate_scenarios in the Feature 1 round), 13 runs per arm, one process per
+seed: D/east half-roles 101-505, D/south half-roles 101-505, D/east default-
+roles 101/202/303, 240 steps, FIRE_SPREAD_MULTIPLIER 0.75. The harness gained
+one read-only observer this round, ff_bind_steps (per step, per unit: bound
+victim id and the _firefighter_available_for_dispatch predicate), under a new
+key so the earlier analyzers keep their row shape. outputs/_ph_analyze.py
+derives everything from the recorded trail; its event-based binding
+reconstruction agrees with the observer on all 6240 unit-steps of the baseline
+(0 mismatches), so the pre-observer arm vmon3 could be compared too.
+
+  ph5000  pristine 5000f70 worktree            == vmon3 on 13/13 runs
+  phfix   first implementation
+  phfix2  after review 1 (D4 v1, guard, D8)   == phfix on 13/13 runs
+  phfix3  final source (D4, D5, D6, D7, order) == phfix2 on 12/13; the one
+          difference is D6 in D/south/half 303 (section 7)
+
+================================================================================
+6. SEED-MATCHED RESULTS  (ph5000 -> phfix3)   r=rescued d=dead f=ff_deaths
+================================================================================
+  run              baseline                 fix                     verdict
+  east/half 101    r2 d1 f1 t=-             r2 d1 f1 t=-            identical
+  east/half 202    r2 d1 f1 n1 t=210        same                    label + 1 stdout line only
+  east/half 303    r2 d1 f0 t=-  (1 cand.)  r3 d1 f0 t=240          THE EPISODE: +1 rescued
+  east/half 404    r2 d2 f1 t=162           same                    identical
+  east/half 505    r2 d1 f0 t=-             same                    identical
+  south/half 101   r3 d0 f1 t=-             same                    identical
+  south/half 202   r4 d0 f0 t=202           same                    identical
+  south/half 303   r3 d1 f1 t=216           same                    D1/D6: cells differ from 217, eval same
+  south/half 404   r4 d0 f0 t=119           same                    identical
+  south/half 505   r3 d1 f0 t=108           same                    identical
+  east/def  101    r1 d2 f2 u1 t=109        same                    identical
+  east/def  202    r3 d1 f1 t=171           same                    label + 1 stdout line only
+  east/def  303    r3 d1 f0 t=125           same                    identical
+
+  TOTAL  rescued 34 -> 35   dead 12 -> 12   ff_deaths 8 -> 8   never_detected 1 -> 1
+  fire map identical on 13/13 runs (first-divergence step: none)
+
+================================================================================
+7. WHY EXACTLY THESE FOUR RUNS DIFFER
+================================================================================
+  east/half 303 - the phantom episode. Baseline: ff_unit_1 stayed bound to
+    victim_0 after ff_unit_0 carried it out at step 101, walked to the stale
+    target (49,24), flipped exiting at 148 against empty ground, "completed" at
+    149 (finalize returned early, rescued stayed 2), took a 3-step absence, and
+    victim_1 was still a candidate at the horizon. Fix: "[Rescue Released]
+    FF-ff_unit_1 released from victim_0" at step 101, in the dispatch pool the
+    same step (pool_step=101), assigned to victim_1 at step 202 (in the
+    baseline ff_unit_0 took that dispatch), completed at step 240: rescued
+    2 -> 3, terminal_step None -> 240. Between 101 and 202 there were 0 steps
+    in which ff_unit_1 was dispatchable while a confirmed victim waited
+    unassigned - the freed capacity idled only because there was no work.
+  south/half 303 - the dead-bound sibling (D1) and the gate case (D6).
+    Baseline: ff_unit_0, blocked a second time on victim_3 at step 216 and so
+    still assigned, was skipped by the recall when victim_3 died at 216, walked
+    toward the corpse from 222 and was still bound at the horizon (24 steps).
+    Fix: released at 216 ("reason=fire_casualty"); with every victim terminal
+    at 216 there was no path to test, so D6 cleared its flag ("[Route Cleared]
+    FF-ff_unit_0 released with no victim left to reach at (36, 23)"); it idles
+    as available to the horizon. Eval identical (all victims terminal at 216
+    in both arms); cells differ from step 217 because it no longer walks.
+  east/half 202 and east/def 202 - the ordinary one-claimant victim_dead
+    recall at step 27 (ff_unit_0, victim_0). The same unassign as before, plus
+    the D2 relabel en_route -> available and one "[Rescue Released]" line.
+    Cells, flags, victim rows and eval identical on every step; the identity
+    lens traced every decision consumer of the raw status string (dispatch
+    predicate, planner, revalidation, casualty sweep, executor, UAV and
+    communication planners) and found each distinguishes only "dead" and
+    "route_blocked", so this is guaranteed, not merely observed.
+  The other 9 runs are byte-identical: eval, per-step firefighter rows, victim
+  rows, fire digests, every recorded event list, stdout sha256.
+
+================================================================================
+8. MECHANISM REPORTING (Part 3, items 3 and 4)
+================================================================================
+                                        baseline    fix
+  double-assignment events               2           2      (one episode, D/east/half
+                                                            303 steps 75 and 77; permitted
+                                                            by design; outcome: the SECOND
+                                                            claimant rescued, both arms)
+  releases on rescue_complete            -           1      (east/303 @101)
+  releases on victim_dead that the old
+    recall would have missed             -           1      (south/303 @216, route_blocked)
+  phantom exits (exiting, no contact)    1           0
+  phantom completions                    1           0
+  rescue absences                        35          35
+    of which consumed by a phantom       1           0      (3 steps, east/303 @149)
+  loser bound after the rescue           48 steps    0
+  unit bound to a dead victim            24 steps    0
+  route_blocked+unassigned unit-steps
+    with no live victim (flag with
+    no referent)                         0           0      (25 before D6)
+  end-of-run alive route_blocked units   0           0
+
+The concrete wasted-capacity measure: one absence of 3 steps and 48 bound
+steps in the baseline, none in the fix; and 24 steps of a unit walking toward
+a corpse, none in the fix.
+
+Stranding check (item 4), every released or recalled unit on the fix arm
+(outputs/_ph_mechanism_final.txt, 4 checks, 0 flagged):
+  east/half 303  ff_unit_1 released@101   pool_step 101  next_assign 202  -> rescued victim_1
+  south/half 303 ff_unit_0 recalled@216   pool_step 216  no work left (all victims terminal)
+                                          final: available at (39,25) on the grid
+  east/half 202  ff_unit_0 recalled@27    pool_step 27   no later assign; died at step 231
+                                          (same step as baseline)
+  east/def  202  ff_unit_0 recalled@27    pool_step 27   next_assign 151; died at 225 (same)
+"pool_step" is the first step the recorded _firefighter_available_for_dispatch
+predicate is True for the unit; in all four cases it is the release step.
+
+================================================================================
+9. FEATURE 2's FIREFIGHTER-DEATH REGRESSION: NOT RECOVERED
+================================================================================
+Feature 2 moved firefighter deaths 6 -> 8. This fix moves capacity the other
+way but recovers none of it: 8 -> 8. Every death is at the same step in both
+arms: east/half 101 ff_unit_0 @30, east/half 202 ff_unit_0 @231, east/half 404
+ff_unit_0 @33, south/half 101 ff_unit_1 @147, south/half 303 ff_unit_1 @156,
+east/def 101 ff_unit_0 @42 and ff_unit_1 @195, east/def 202 ff_unit_0 @225.
+The fix changes unit movement only in two windows - east/half 303 from step
+101 (no death in that run, either arm) and south/half 303 from step 217 (its
+one death was at 156). The two label-only runs keep identical cells, so their
+deaths at 231 and 225 are the same events. The +2 is not made of phantom
+episodes; it lives in runs this fix does not touch.
+
+================================================================================
+10. ROUTE_BLOCKED GATE
+================================================================================
+The gate was run twice. The first run (prefix phfix, on the source after
+review 1) PASSED "rescued does not decrease on any seed" and "recovery pass
+still recovers units" but FAILED "no unit left latched as route_blocked at end
+of run" with one unit: D/south seed 303, ff_unit_0 at (39,25). That is the D1
+release of section 7: released from the dying victim at 216 while blocked, and
+with no live victim the revalidation pass has nothing to test a path against,
+so the flag stood to the horizon. It is not a latch in the 70e1b33 sense - the
+unit was in fact recoverable the step a victim appeared (test
+test_route_blocked_release_with_a_live_victim_leaves_the_flag_to_the_pass) -
+but the flag had no referent and the gate counts exactly that. D6 clears the
+flag in the helper in that one case, unless the unit is fire-enclosed; the
+revalidation pass is untouched.
+Final run on the final source (prefix phfix3, outputs/_ph_rbgate_phfix3.txt):
+all three items PASS. Seed sets match the baseline exactly (13 east, 5 south,
+no duplicates). D/east: rescued 30 -> 35, dead 19 -> 9, ff_deaths 12 -> 9,
+recoveries 3 -> 8, end-of-run units still blocked 0 -> 0. D/south: rescued
+13 -> 17, dead 6 -> 2, ff_deaths 3 -> 2, recoveries 0 -> 2, end-of-run units
+still blocked 0 -> 0 (the unit the first run flagged, D/south 303 ff_unit_0,
+is now "available" from step 216 - D6). All 18 runs: rescued 43 -> 52, dead
+25 -> 11, ff_deaths 15 -> 11. Against the Feature 2 gate (vmon: 43 -> 51,
+25 -> 11, 15 -> 11) the only change is +1 rescued.
+
+================================================================================
+11. GATE
+================================================================================
+  probe no longer reproduces the phantom exit      PASS  (Q1 YES by design, Q2 NO)
+  rescued does not decrease                        PASS  (34 -> 35, no run decreases)
+  no unit left permanently undispatchable          PASS  (4 checks, 0 flagged; 0 flag-
+                                                          without-referent unit-steps)
+  no NEW test failures                             PASS  (8 failed / 490 passed; same 8 names, same messages)
+  route_blocked gate passes                        PASS  (3/3 items; latched units 0 -> 0; rescued 43 -> 52)
+  fire map identical on every step (methodology)   PASS  13/13
+
+================================================================================
+12. LIMITATIONS AND WHAT I WOULD NOT CLAIM
+================================================================================
+  * 13 seeds of one scenario; one phantom episode and one dead-bound case in
+    the sample. The rescued +1 is one victim in one run. The mechanism claims
+    rest on the code paths and the tests, the magnitude on this sample only.
+  * D7 (co-completion) and the D4 fallback path are covered by tests but never
+    exercised by the sample; their behavioural effect on other scenarios is
+    unmeasured (they can only remove absences, never add one).
+  * The D2 relabel changes the knowledge-model labels of every recalled unit
+    (two runs here). Decision-invariance was traced through every consumer by
+    the identity lens and holds on the sample; a future consumer that reads the
+    raw status string for "en_route" would see the change.
+  * Removing a phantom absence draw shifts the dedicated absence-RNG sequence
+    for later completers in that run only; it cannot touch the fire map.
+  * The review verification stage never ran (session limits); findings were
+    triaged by hand. The victim_dead lens never reported.
+
+================================================================================
+13. REPRODUCTION
+================================================================================
+  ./.venv/Scripts/python.exe outputs/_vm_phantom_probe.py --repo .
+  git worktree add --detach <scratch>/base5000f70 5000f70
+  bash outputs/_ffr_runall.sh ph5000 <scratch>/base5000f70      # one wave at a time
+  bash outputs/_ffr_runall.sh phfix3 E:/Projects/SAS
+  ./.venv/Scripts/python.exe outputs/_ph_analyze.py --identity ph5000 vmon3
+  ./.venv/Scripts/python.exe outputs/_ph_analyze.py --base ph5000 --feat phfix3 --recall-check
+  ./.venv/Scripts/python.exe -m pytest tests -q -p no:cacheprovider
+  bash outputs/_ffr_rbgate.sh phfix3 && ./.venv/Scripts/python.exe outputs/_ir_rbmerge.py --prefix phfix3
+
+FILES
+  outputs/phantom_part1.txt              design (sections 11-12 added after approval)
+  outputs/_ph_probe_before.txt / _after  the probe on 5000f70 and on the final source
+  outputs/_ph_identity_ph5000_vmon3.txt  baseline == stored Feature 2 arm, 13/13
+  outputs/_ph_identity_phfix_phfix2.txt  review-1 revision behaviour-neutral, 13/13
+  outputs/_ph_mechanism_ph5000.txt       baseline mechanism report
+  outputs/_ph_mechanism_final.txt        ph5000 vs phfix3, mechanism + seed-matched + stranding
+  outputs/_ph_rbgate_phfix.txt           first gate (source after review 1): the latch finding
+  outputs/_ph_rbgate_phfix3.txt          final gate
+  outputs/_ph_pytest_base.log / _fix3    full suites, baseline and final
+  outputs/_ffr_ph5000_* / _ffr_phfix* / _ffr_phfix2_* / _ffr_phfix3_*   the arms

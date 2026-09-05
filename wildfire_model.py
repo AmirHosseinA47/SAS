@@ -288,6 +288,8 @@ class WildFireModel(mesa.Model):
         self._ff_absence_log: list[dict[str, Any]] = []
         self.ff_absence_removals_total = 0
         self.ff_absence_returns_total = 0
+        self.ff_claims_released_total = 0
+        self.ff_claims_released_by_reason: dict[str, int] = {}
         self._rescue_path_clear_requested = False
         self._rescue_failed_logged: set[str] = set()
         self._rescue_blocked_logged: set[tuple[str, str]] = set()
@@ -2526,6 +2528,15 @@ class WildFireModel(mesa.Model):
         pending = list(getattr(self, "_agents_pending_removal", []) or [])
         self._agents_pending_removal = []
         finalized_victim_ids: set[str] = set()
+        # Victims already carried out before this drain, and the unit whose
+        # completion turns each victim rescued in it: only that unit has a
+        # hand-over to make (see the Firefighter branch below).
+        rescued_before: set[str] = {
+            str(vid)
+            for vid in (getattr(self, "managed_victims", None) or {})
+            if self._victim_is_rescued(str(vid))
+        }
+        completed_by: dict[str, str] = {}
         index = 0
         try:
             recycled += self._return_absent_firefighters()
@@ -2579,23 +2590,47 @@ class WildFireModel(mesa.Model):
                             continue
                         rescued_victim = getattr(agent, "rescued_victim", None)
                         victim_id = ""
+                        ff_id = str(getattr(agent, "unit_id", "") or "")
+                        hand_over = False
                         if rescued_victim is not None:
                             vid = self._victim_id_from_agent(rescued_victim)
                             victim_id = vid
-                            ff_id = str(getattr(agent, "unit_id", "") or "")
                             if vid and vid not in finalized_victim_ids:
                                 self._finalize_rescued_victim(
                                     vid, rescued_victim, firefighter_id=ff_id
                                 )
                                 finalized_victim_ids.add(vid)
+                            # Only the completion that turned this victim
+                            # rescued is a hand-over. A co-completer (two
+                            # carriers reaching exits in the same step), a unit
+                            # exiting against a victim already carried out, or
+                            # a corpse carrier has nothing to hand over: it is
+                            # recycled in place and draws nothing from the
+                            # absence RNG.
+                            hand_over = bool(
+                                vid
+                                and vid not in rescued_before
+                                and vid not in completed_by
+                                and self._victim_is_rescued(vid)
+                            )
+                            if hand_over:
+                                completed_by[vid] = ff_id
                         # Feature 1: leave the environment for the hand-over, or
                         # recycle in place when the absence is disabled (MAX <= 0).
-                        duration = self._draw_firefighter_absence_duration()
+                        duration = (
+                            self._draw_firefighter_absence_duration() if hand_over else 0
+                        )
                         if duration > 0 and getattr(agent, "pos", None) is not None:
                             self._remove_firefighter_for_rescue_absence(
                                 agent, victim_id, duration
                             )
                         else:
+                            if rescued_victim is not None and not hand_over:
+                                print(
+                                    f"[Rescue Hand-over Skipped] FF-{ff_id}: "
+                                    f"{victim_id or 'victim'} was carried out by "
+                                    f"{completed_by.get(victim_id) or 'another unit'}"
+                                )
                             self._recycle_firefighter_after_exit(agent)
                         recycled += 1
                     else:
@@ -3130,20 +3165,13 @@ class WildFireModel(mesa.Model):
             victim_marker = (
                 markers.get(vid) if isinstance(markers, dict) else None
             )
-            pair = self._find_active_firefighter_for_victim(vid, victim_marker)
-            if pair is not None:
-                ff_id, _ff_marker = pair
-                executor = self._physical_rescue_executor()
-                executor.execute_physical_command(
-                    self,
-                    PhysicalRescueCommand(
-                        action="unassign",
-                        victim_id=vid,
-                        firefighter_id=ff_id,
-                        reason=reason or "victim_dead_recall",
-                        metadata={},
-                    ),
-                )
+            # One release path for both terminal outcomes (see
+            # _release_other_claimants). The single-pair lookup this used to
+            # call skips route_blocked units, so a unit blocked on a victim
+            # that then died stayed bound to the corpse (D/south/half 303).
+            self._release_other_claimants(
+                vid, victim_marker, "", reason or "victim_dead_recall"
+            )
             return
 
         executor = self._physical_rescue_executor()
@@ -3151,10 +3179,22 @@ class WildFireModel(mesa.Model):
         if itype == "rescue_complete":
             if not vid:
                 return
+            markers = getattr(self, "victim_marker_agents", None)
+            marker = markers.get(vid) if isinstance(markers, dict) else None
             managed = getattr(self, "managed_victims", None)
             if isinstance(managed, dict):
                 state = managed.get(vid)
                 if state is not None and getattr(state, "rescued", False):
+                    # A completion reported for a victim already carried out is
+                    # the signature of the phantom rescue: a second claimant
+                    # that walked to a stale target_pos and exited against
+                    # empty ground. Nothing to finalize; release any straggler
+                    # still bound. No unit is kept by id here - the reporting
+                    # unit, if it is the phantom completer, is protected by its
+                    # rescue_completed flag and finished by the drain.
+                    self._release_other_claimants(
+                        vid, marker, "", "released_after_rescue_complete"
+                    )
                     return
                 if state is not None and (
                     getattr(state, "dead", False)
@@ -3163,28 +3203,32 @@ class WildFireModel(mesa.Model):
                     in {"dead", "cancelled"}
                 ):
                     return
-            markers = getattr(self, "victim_marker_agents", None)
-            if isinstance(markers, dict):
-                marker = markers.get(vid)
-                if marker is not None and (
-                    str(getattr(marker, "status", "")).lower()
-                    in {"dead", "cancelled"}
-                ):
-                    return
-            agent = None
-            markers = getattr(self, "victim_marker_agents", None)
-            if isinstance(markers, dict):
-                agent = markers.get(vid)
-            executor.execute_physical_command(
+            if marker is not None and (
+                str(getattr(marker, "status", "")).lower()
+                in {"dead", "cancelled"}
+            ):
+                return
+            result = executor.execute_physical_command(
                 self,
                 PhysicalRescueCommand(
                     action="finalize_rescue",
                     victim_id=vid,
                     firefighter_id=ff_id or None,
                     reason=reason,
-                    metadata={"victim_agent": agent},
+                    metadata={"victim_agent": marker},
                 ),
             )
+            if isinstance(result, dict) and result.get("success"):
+                # The completing unit keeps its state for the drain; every
+                # other unit still bound to this victim is released now, so it
+                # does not walk to where the victim used to be. Before the
+                # coverage activation, as designed: the helper contains its own
+                # failures per unit, whereas a raise inside the activation
+                # would be swallowed by _process_rescue_incidents and skip the
+                # release if it came first.
+                self._release_other_claimants(
+                    vid, marker, ff_id, "released_after_rescue_complete"
+                )
             self._activate_post_rescue_coverage_for_searchers()
             return
 
@@ -3277,6 +3321,223 @@ class WildFireModel(mesa.Model):
             if rv is victim_marker or rv_id == victim_id:
                 return str(ff_id), ff_marker
         return None
+
+    def _release_other_claimants(
+        self,
+        victim_id: str,
+        victim_marker: Any,
+        keep_ff_id: str,
+        reason: str,
+    ) -> list[str]:
+        """Release every live firefighter still bound to a victim that is now terminal.
+
+        The executor allows one victim to hold two claimants, and the
+        route_blocked replacement pathway depends on that: a unit blocked twice
+        on the same victim keeps its task and resumes when its route reopens
+        (_handle_rescue_incident returns early for a repeated pair), while a
+        replacement is dispatched because _find_active_firefighter_for_victim
+        does not see route_blocked units. Whichever unit arrives first rescues.
+        Nothing released the other one: it kept walking to a stale target_pos,
+        started exiting against empty ground, and drew a rescue absence for a
+        victim someone else had carried out (D/east/half 303, steps 101-149).
+        The victim_dead recall had the same hole from the same lookup, and left
+        a route_blocked unit bound to a corpse (D/south/half 303, from 216).
+
+        This is the one release path for both terminal outcomes, and it is
+        deliberately broader than the lookup: not gated on `assigned` and not
+        on status, so route_blocked claimants are released as well. Skipped:
+        the unit named by keep_ff_id while it is carrying (exiting; the
+        completer, whose hand-over the drain finishes), dead units (the
+        casualty sweep owns them), and any unit with rescue_completed set (it
+        finished its own exit this step and is in the drain queue - this is
+        what keeps the true carrier safe when the incident arrives without a
+        firefighter id and _firefighter_id_for_victim names the last-assigned
+        unit instead, which in a double claim can be the loser; that unit is
+        not carrying, so the name alone does not protect it - and once any
+        bound unit has rescue_completed the name is ignored altogether, since an
+        exiting unit without the flag is then a second carrier, not the one that
+        finished).
+
+        The unassign goes through the executor with no reset_victim_pending:
+        the victim is terminal and that flag relabels the marker "confirmed".
+        A released unit whose status is en_route/assigned is relabelled
+        "available". The unassign action leaves status alone, and
+        _derive_firefighter_operational_fields maps status en_route with
+        assigned=False to availability "assigned": freed in fact, reported as
+        busy - the 70e1b33 consumer-latch shape. A route_blocked unit keeps its
+        flag for _revalidate_route_blocked_firefighters, which scans exactly
+        this state (unassigned, not exiting, on the grid) every step - except
+        when no victim needs rescue any more: the pass then has nothing to test
+        a path against and returns early, so the flag would stand until the
+        next confirmation with no referent, which the route_blocked gate counts
+        as an end-of-run latch. In that one case the unit is cleared to
+        available here, unless it is fire-enclosed.
+        """
+        vid = str(victim_id or "").strip()
+        keep = str(keep_ff_id or "").strip()
+        markers = getattr(self, "firefighter_marker_agents", None)
+        if not isinstance(markers, dict):
+            return []
+
+        def _bound(ff_marker: Any) -> bool:
+            rv = getattr(ff_marker, "rescued_victim", None)
+            if rv is None:
+                return False
+            if rv is victim_marker:
+                return True
+            return bool(vid) and self._victim_id_from_agent(rv) == vid
+
+        # Once a unit has completed its exit with this victim it is the
+        # carrier, protected by rescue_completed below; the name in keep_ff_id
+        # is then redundant, and a named unit that is exiting WITHOUT the flag
+        # is a second carrier the no-id fallback happened to name - a loser.
+        completer_present = any(
+            _bound(m) and getattr(m, "rescue_completed", False)
+            for m in markers.values()
+            if not getattr(m, "dead", False)
+        )
+        work_left: bool | None = None
+        released: list[str] = []
+        for ff_id, ff_marker in list(markers.items()):
+            ff_id_s = str(ff_id)
+            unit_label = str(getattr(ff_marker, "unit_id", ff_id_s) or ff_id_s)
+            try:
+                if getattr(ff_marker, "dead", False):
+                    continue
+                if str(getattr(ff_marker, "status", "") or "").strip().lower() == "dead":
+                    continue
+                if getattr(ff_marker, "rescue_completed", False):
+                    continue
+                # The named unit is kept only while it is actually carrying and
+                # no completer exists. When the incident arrives without a
+                # firefighter id the name comes from _firefighter_id_for_victim,
+                # i.e. the LAST-assigned unit, which in a double claim can be
+                # the loser; keeping it by id alone would release nobody.
+                if (
+                    keep
+                    and ff_id_s == keep
+                    and getattr(ff_marker, "exiting", False)
+                    and not completer_present
+                ):
+                    continue
+                if not _bound(ff_marker):
+                    continue
+                result = self._execute_physical_rescue_via_executor(
+                    PhysicalRescueCommand(
+                        action="unassign",
+                        victim_id=vid,
+                        firefighter_id=ff_id_s,
+                        reason=reason,
+                        metadata={},
+                    )
+                )
+                if not result.get("success"):
+                    print(
+                        f"[Rescue Release Failed] FF-{unit_label} for "
+                        f"{vid or 'victim'}: unassign refused"
+                    )
+                    continue
+            except Exception as exc:
+                # _process_rescue_incidents swallows exceptions; a failure here
+                # must stay visible and must not stop the other claimants.
+                print(
+                    f"[Rescue Release Failed] FF-{unit_label} for "
+                    f"{vid or 'victim'}: {type(exc).__name__}: {exc}"
+                )
+                continue
+            released.append(ff_id_s)
+            print(
+                f"[Rescue Released] FF-{unit_label} released from "
+                f"{vid or 'victim'} reason={reason}"
+            )
+            # The unassign has applied; what follows is the label. A failure
+            # here is a relabel failure, not a failed release.
+            try:
+                status = str(getattr(ff_marker, "status", "") or "").strip().lower()
+                if status in ("en_route", "assigned"):
+                    ff_marker.status = "available"
+                    self._sync_firefighter_operational_knowledge([ff_id_s])
+                elif status == "route_blocked":
+                    # The flag was raised about a target that no longer exists.
+                    # With a live victim somewhere, _revalidate_route_blocked_
+                    # firefighters tests a real path this same step and clears
+                    # it if one exists. With NO live victim the pass returns
+                    # early and the flag would outlive its referent until the
+                    # next confirmation, which the 70e1b33 gate counts as an
+                    # end-of-run latch. Nothing to be blocked from: clear it,
+                    # unless the unit is fire-enclosed - the trigger's own
+                    # "nowhere to step" condition, kept by the pass as well.
+                    if work_left is None:
+                        work_left = self._any_victim_needs_rescue()
+                    if not work_left and not self._firefighter_fire_enclosed(ff_marker):
+                        ff_marker.status = "available"
+                        self._sync_firefighter_operational_knowledge([ff_id_s])
+                        print(
+                            f"[Route Cleared] FF-{unit_label} released with no "
+                            f"victim left to reach at {ff_marker.pos}"
+                        )
+            except Exception as exc:
+                print(
+                    f"[Rescue Release] FF-{unit_label} relabel failed: "
+                    f"{type(exc).__name__}: {exc}"
+                )
+        if released:
+            self.ff_claims_released_total = (
+                int(getattr(self, "ff_claims_released_total", 0) or 0)
+                + len(released)
+            )
+            by_reason = getattr(self, "ff_claims_released_by_reason", None)
+            if not isinstance(by_reason, dict):
+                by_reason = {}
+                self.ff_claims_released_by_reason = by_reason
+            key = str(reason or "")
+            by_reason[key] = int(by_reason.get(key, 0) or 0) + len(released)
+        return released
+
+    def _any_victim_needs_rescue(self) -> bool:
+        """True while at least one victim is neither dead, rescued nor unreachable."""
+        markers = getattr(self, "victim_marker_agents", None)
+        if not isinstance(markers, dict):
+            return False
+        for vid, marker in markers.items():
+            if self._victim_needs_rescue(str(vid), marker):
+                return True
+        return False
+
+    def _victim_is_rescued(self, victim_id: str) -> bool:
+        vid = str(victim_id or "").strip()
+        if not vid:
+            return False
+        managed = getattr(self, "managed_victims", None)
+        state = managed.get(vid) if isinstance(managed, dict) else None
+        if state is not None and (
+            bool(getattr(state, "rescued", False))
+            or str(getattr(state, "status", "") or "").strip().lower() == "rescued"
+        ):
+            return True
+        markers = getattr(self, "victim_marker_agents", None)
+        marker = markers.get(vid) if isinstance(markers, dict) else None
+        return bool(
+            marker is not None
+            and str(getattr(marker, "status", "") or "").strip().lower() == "rescued"
+        )
+
+    @staticmethod
+    def _firefighter_fire_enclosed(ff_marker: Any) -> bool:
+        """The route_blocked trigger's own hard case: no neighbouring cell to step to.
+
+        Same test _revalidate_route_blocked_firefighters applies before it
+        considers clearing a flag. A unit with no position cannot be enclosed.
+        """
+        if getattr(ff_marker, "pos", None) is None:
+            return False
+        try:
+            neighbors = ff_marker._neighbor_cells()
+            return bool(neighbors) and all(
+                ff_marker._cell_contains_active_fire(c) for c in neighbors
+            )
+        except Exception:
+            return False
 
     def _find_closest_available_firefighter(
         self, victim_pos: tuple[int, int]

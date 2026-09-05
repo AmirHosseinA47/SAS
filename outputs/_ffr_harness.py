@@ -290,6 +290,7 @@ def main() -> int:
 
     fire_digests: list[str] = []
     ff_steps: list[list] = []
+    ff_bind_steps: list[list] = []
     victim_steps: list[list] = []
     # feature 2: first step at which each cell was observed burning. Small
     # (<= one entry per grid cell) and it is what answers "did the victim step
@@ -333,6 +334,21 @@ def main() -> int:
                     bool(getattr(m, "dead", False)),
                 ])
             ff_steps.append(row)
+            # phantom-rescue round: which victim each unit is bound to, plus the
+            # dispatch predicate, per step. A separate key so the 6-field
+            # ff_steps rows that the earlier analyzers unpack keep their shape.
+            # _firefighter_available_for_dispatch is a pure predicate on marker
+            # state - no RNG, no mutation.
+            brow = []
+            for ff_id, m in (getattr(model, "firefighter_marker_agents", {}) or {}).items():
+                brow.append([
+                    str(ff_id),
+                    _vid(model, getattr(m, "rescued_victim", None)),
+                    bool(model._firefighter_available_for_dispatch(m)),
+                    bool(getattr(m, "rescue_completed", False)),
+                    bool(getattr(m, "off_grid", False)),
+                ])
+            ff_bind_steps.append(brow)
             vrow = []
             for vid, m in (getattr(model, "victim_marker_agents", {}) or {}).items():
                 vrow.append([
@@ -392,6 +408,7 @@ def main() -> int:
         "fire_final_digest": fire_digests[-1] if fire_digests else None,
         "fire_digests": fire_digests,
         "ff_steps": ff_steps,
+        "ff_bind_steps": ff_bind_steps,
         "victim_steps": victim_steps,
         "victim_spawns": {
             str(vid): _cell(getattr(m, "spawn_cell", None))

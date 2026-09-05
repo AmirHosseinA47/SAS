@@ -1,0 +1,563 @@
+================================================================================
+PHANTOM RESCUE - PART 1: VERIFY AND DESIGN
+================================================================================
+Written before any source edit. Nothing under version control is changed except
+the measurement harness (a read-only observer, section 8).
+
+  branch        firefighter-mission-features
+  HEAD          5000f70  (Feature 2: victims step away from approaching fire)
+  python        E:\Projects\SAS\.venv\Scripts\python.exe (3.10.11, mesa 1.2.1)
+  baseline      a pristine `git worktree add --detach` checkout of 5000f70 at
+                <scratchpad>/base5000f70; the 13-run baseline wave (tag ph5000)
+                was launched against it at 12:28:52 and is running.
+  test baseline pytest on untouched 5000f70 running -> outputs/_ph_pytest_base.log
+  evidence      outputs/_ph_probe_before.txt          (probe on 5000f70, this round)
+                outputs/_ph_mechanism_vmon3_preview.txt (13-run mechanism preview)
+                outputs/_ph_analyze.py                (new analyzer, section 8)
+
+--------------------------------------------------------------------------------
+0. RE-VERIFICATION ON 5000f70
+--------------------------------------------------------------------------------
+outputs/_vm_phantom_probe.py --repo .  (no victim ever moves):
+
+  Q1  one victim assigned to two firefighters : YES
+        ff_unit_0 assign ok=True target=(25, 25)
+        ff_unit_1 assign ok=True target=(25, 25)
+  after ff_unit_0 completes the rescue:
+        victim status=rescued pos=None
+        ff_unit_1 assigned=True target=(25, 25) rescued_victim=victim_0
+  Q2  second unit still bound to the rescued victim : YES
+        ff_unit_1 walked 3 steps, now at (25, 25), exiting=True
+  Q2 RESULT: rescue started WITHOUT contact = YES - phantom exit reproduced
+
+Both halves reproduce on the current HEAD. Line numbers below are as of
+5000f70 and were re-read this round (they had not shifted from the Feature 2
+diagnosis for these two functions).
+
+--------------------------------------------------------------------------------
+1. THE TWO HALVES, QUOTED IN FULL
+--------------------------------------------------------------------------------
+1.1  The assign guard  (wildfire_model.py, apply_physical_rescue_command)
+
+  3802:             if getattr(ff_marker, "dead", False):
+  3803:                 return False
+  3804:             ff_status = str(getattr(ff_marker, "status", "") or "").strip().lower()
+  3805:             if ff_status in ("dead", "route_blocked"):
+  3806:                 return False
+  3807:             if getattr(ff_marker, "assigned", False):
+  3808:                 existing = getattr(ff_marker, "rescued_victim", None)
+  3809:                 if existing is not None:
+  3810:                     existing_id = self._victim_id_from_agent(existing)
+  3811:                     if existing_id and existing_id != vid:
+  3812:                         return False
+  3813:
+  3814:             victim_pos = meta.get("target_pos")
+  ...
+  3821:             ff_marker.assigned = True
+  3822:             ff_marker.target_pos = victim_cell
+  3823:             ff_marker.rescued_victim = victim_marker
+  3824:             ff_marker.status = "en_route"
+  3825:             ff_marker.exiting = False
+  3826:             ff_marker.exit_target = None
+
+Every clause is about the UNIT being assigned: dead, blocked, or already busy
+with a DIFFERENT victim. No clause asks whether the VICTIM already has a
+claimant. Confirmed: a second unit may be assigned to the same victim (Q1).
+
+The planner path is stricter than the executor. select_rescue_assignment
+(src_extension/planning/rescue_planner.py) skips a victim whose snapshot
+entry has active_firefighter_id, and RescueExecutor.apply_physical_pairing_
+decision refuses with "already_assigned" when _find_active_firefighter_for_
+victim returns a pair. Both rely on this lookup:
+
+  3259:     def _find_active_firefighter_for_victim(
+  3260:         self, victim_id: str, victim_marker: Any
+  3261:     ) -> tuple[str, Any] | None:
+  ...
+  3266:             if getattr(ff_marker, "dead", False):
+  3267:                 continue
+  3268:             if not getattr(ff_marker, "assigned", False):
+  3269:                 continue
+  3270:             status = str(getattr(ff_marker, "status", "") or "").strip().lower()
+  3271:             if status in ("dead", "route_blocked"):
+  3272:                 continue
+  ...
+  3277:             if rv is victim_marker or rv_id == victim_id:
+  3278:                 return str(ff_id), ff_marker
+  3279:         return None
+
+It skips route_blocked units and returns at most ONE pair. So in a real run the
+second claim gets past the planner exactly when the first claimant is
+route_blocked-and-still-assigned (section 2), and the same lookup is what the
+victim_dead recall uses to find the unit to release (section 1.2), which is
+why that recall can also miss a claimant (section 6).
+
+1.2  _handle_rescue_incident  (wildfire_model.py)
+
+  3120:     def _handle_rescue_incident(self, incident: dict[str, Any]) -> None:
+  3121:         itype = str(incident.get("type", "") or "").strip().lower()
+  3122:         vid = str(incident.get("victim_id", "") or "").strip()
+  3123:         ff_id = str(incident.get("firefighter_id", "") or "").strip()
+  3124:         reason = self._rescue_reason_for_incident(incident)
+  3125:
+  3126:         if itype == "victim_dead":
+  3127:             if not vid:
+  3128:                 return
+  3129:             markers = getattr(self, "victim_marker_agents", None)
+  3130:             victim_marker = (
+  3131:                 markers.get(vid) if isinstance(markers, dict) else None
+  3132:             )
+  3133:             pair = self._find_active_firefighter_for_victim(vid, victim_marker)
+  3134:             if pair is not None:
+  3135:                 ff_id, _ff_marker = pair
+  3136:                 executor = self._physical_rescue_executor()
+  3137:                 executor.execute_physical_command(
+  3138:                     self,
+  3139:                     PhysicalRescueCommand(
+  3140:                         action="unassign",
+  3141:                         victim_id=vid,
+  3142:                         firefighter_id=ff_id,
+  3143:                         reason=reason or "victim_dead_recall",
+  3144:                         metadata={},
+  3145:                     ),
+  3146:                 )
+  3147:             return
+  3148:
+  3149:         executor = self._physical_rescue_executor()
+  3150:
+  3151:         if itype == "rescue_complete":
+  3152:             if not vid:
+  3153:                 return
+  3154:             managed = getattr(self, "managed_victims", None)
+  3155:             if isinstance(managed, dict):
+  3156:                 state = managed.get(vid)
+  3157:                 if state is not None and getattr(state, "rescued", False):
+  3158:                     return
+  3159:                 if state is not None and (
+  3160:                     getattr(state, "dead", False)
+  3161:                     or getattr(state, "cancelled", False)
+  3162:                     or str(getattr(state, "status", "")).lower()
+  3163:                     in {"dead", "cancelled"}
+  3164:                 ):
+  3165:                     return
+  3166:             markers = getattr(self, "victim_marker_agents", None)
+  3167:             if isinstance(markers, dict):
+  3168:                 marker = markers.get(vid)
+  3169:                 if marker is not None and (
+  3170:                     str(getattr(marker, "status", "")).lower()
+  3171:                     in {"dead", "cancelled"}
+  3172:                 ):
+  3173:                     return
+  3174:             agent = None
+  3175:             markers = getattr(self, "victim_marker_agents", None)
+  3176:             if isinstance(markers, dict):
+  3177:                 agent = markers.get(vid)
+  3178:             executor.execute_physical_command(
+  3179:                 self,
+  3180:                 PhysicalRescueCommand(
+  3181:                     action="finalize_rescue",
+  3182:                     victim_id=vid,
+  3183:                     firefighter_id=ff_id or None,
+  3184:                     reason=reason,
+  3185:                     metadata={"victim_agent": agent},
+  3186:                 ),
+  3187:             )
+  3188:             self._activate_post_rescue_coverage_for_searchers()
+  3189:             return
+  3190:
+  3191:         if itype == "route_blocked":
+  3192:             if not vid or not ff_id:
+  3193:                 return
+  3194:             markers = getattr(self, "victim_marker_agents", None)
+  3195:             victim_marker = markers.get(vid) if isinstance(markers, dict) else None
+  3196:             if victim_marker is None:
+  3197:                 return
+  3198:             attempt_key = (ff_id, vid)
+  3199:             if attempt_key in self._blocked_replacement_attempted:
+  3200:                 return
+  3201:             self._blocked_replacement_attempted.add(attempt_key)
+  3202:             executor.execute_physical_command(
+  3203:                 self,
+  3204:                 PhysicalRescueCommand(
+  3205:                     action="unassign",
+  3206:                     victim_id=vid,
+  3207:                     firefighter_id=ff_id,
+  3208:                     reason=reason,
+  3209:                     metadata={"reset_victim_pending": True},
+  3210:                 ),
+  3211:             )
+  3212:
+  3213:         snapshot = self.get_rescue_operational_snapshot()
+  3214:         decision = select_rescue_assignment(snapshot, reason, victim_id=vid or None)
+  3215:         victim_marker = None
+  3216:         if vid:
+  3217:             markers = getattr(self, "victim_marker_agents", None)
+  3218:             if isinstance(markers, dict):
+  3219:                 victim_marker = markers.get(vid)
+  3220:         result = executor.apply_physical_pairing_decision(
+  3221:             self, decision, victim_marker=victim_marker
+  3222:         )
+  3223:
+  3224:         if itype in ("firefighter_casualty", "route_blocked") and not result.get("success"):
+  3225:             action = ""
+  3226:             if isinstance(decision, RescueDecision):
+  3227:                 action = str(decision.rescue_action or "").strip().lower()
+  3228:             elif isinstance(decision, dict):
+  3229:                 action = str(decision.get("action", "") or "").strip().lower()
+  3230:             if action == "mark_unreachable" and vid:
+  3231:                 if vid not in self._rescue_failed_logged:
+  3232:                     print(
+  3233:                         f"[Rescue Failed] no available replacement firefighter for {vid}"
+  3234:                     )
+  3235:                     self._rescue_failed_logged.add(vid)
+
+Confirmed: victim_dead (3126-3147) issues an unassign; rescue_complete
+(3151-3189) issues finalize_rescue and activates searcher coverage, and has no
+unassign branch. finalize_rescue (apply_physical_rescue_command, ~4040-4100)
+marks the victim rescued and records the event; it never touches a firefighter.
+The completing unit itself is reset by the drain (_recycle_firefighter_after_
+exit or _remove_firefighter_for_rescue_absence), not by this handler, so the
+handler has never had to know about firefighters on completion.
+
+--------------------------------------------------------------------------------
+2. HOW A REAL RUN PRODUCES TWO CLAIMANTS  (D/east/half 303, recorded trail)
+--------------------------------------------------------------------------------
+From outputs/_ffr_vmon3_east_half_303.json (the Feature 2 final arm; identity
+with the fresh 5000f70 wave is checked in Part 3):
+
+  step  41  assign   ff_unit_1 -> victim_0   initial
+  step  60  unassign ff_unit_1 <- victim_0   replacement_after_blocked   (1st block
+            of pair (ff_unit_1, victim_0): pair added to _blocked_replacement_attempted)
+  step  60  planner  replacement -> delay (pool empty)
+  step  60  assign   ff_unit_1 -> victim_0   initial   (revalidation cleared the
+            flag the same step and _try_dispatch_unresolved_confirmed_victims
+            handed the same unit the same victim)
+  step  60..75  ff_unit_1 blocks AGAIN on victim_0 -> route_blocked incident ->
+            handler returns at 3199-3200 WITHOUT unassigning. ff_unit_1 keeps
+            assigned=True, status=route_blocked. The lookup (3271) skips it, so
+            victim_0 has no visible claimant.
+  step  75  assign   ff_unit_0 -> victim_0   initial   <-- DOUBLE CLAIM
+  step  77  unassign ff_unit_0 / re-assign ff_unit_0 (first block of that pair,
+            same revalidation bounce as step 60)
+  step  91  ff_unit_0 starts exiting with victim_0, contact True, at (40,24)
+  step 101  ff_unit_0 completes at (49,24); absence 5 steps; victim_0 finalized
+  step 101..148  ff_unit_1: its route reopened, Firefighter._move_toward
+            (agents.py 1553-1556) flips its status back to "assigned"; Feature 2
+            had been re-targeting it onto the carried victim (retargets), and
+            once victim_0 turned terminal _refresh_target_from_victim stops, so
+            it walks to the last cell it saw: (49,24)
+  step 148  ff_unit_1 exiting=True at (49,24), victim pos None: PHANTOM EXIT
+  step 149  ff_unit_1 "completes"; finalize returns early (already rescued);
+            absence 3 steps: PHANTOM ABSENCE
+
+Two ingredients, both pre-existing:
+  (i)  the route_blocked repeat-block early return leaves a unit bound but
+       invisible to the active-claimant lookup, so a replacement is dispatched;
+  (ii) nothing releases the other claimant when the rescue completes.
+
+13-run preview (outputs/_ph_mechanism_vmon3_preview.txt):
+  double-assignment events 2 (one episode: the step-77 re-assign of the same
+  pair counts again) | phantom exits 1 | phantom completions 1 |
+  rescue absences 35, of which phantom 1 | loser bound after the rescue 48 steps
+  | dead-bound cases 1 (section 6).
+
+--------------------------------------------------------------------------------
+3. IS DOUBLE-ASSIGNMENT EVER LEGITIMATE?  YES - AND IT IS LOAD-BEARING
+--------------------------------------------------------------------------------
+The replacement pathway is built on it. A unit blocked for the second time on
+the same victim keeps its task (the handler deliberately does not unassign it a
+second time) and resumes by itself when its route reopens (agents.py 1553-1556,
+the only in-run clear). Meanwhile the victim shows no visible claimant and a
+replacement is sent. Two live claimants is the intended state of that pathway;
+whoever gets there first should rescue, and the other should be released.
+
+Measured in the sample: in the one episode (303), the SECOND claimant did the
+rescue (analyzer outcome second_rescued@101). ff_unit_1, the first claimant,
+did not reach the target cell until step 148 - 47 steps later, with victim_0
+fleeing fire in the meantime. Preventing the second claim would have made
+victim_0's rescue depend on the blocked unit.
+
+Both variants of fix (a) fail:
+  (a1) make the executor guard use the same lookup as the planner
+       -> a no-op in real runs (the planner already refuses on that lookup);
+          it changes only direct executor callers such as the probe and tests.
+  (a2) make the guard count route_blocked claimants too
+       -> refuses the replacement while a blocked unit holds the victim: the
+          replacement pathway stops working the second time a pair blocks.
+          Rescued can only go down.
+This is the same shape as the two load-bearing guards the campaign already
+tripped over (#7 clearing site, last_cell exclusion). (a) is rejected.
+
+DECISION: (b) RELEASE. Add a release on rescue_complete. The assign guard
+(3807-3812), the planner lookup, and _blocked_replacement_attempted stay
+exactly as they are.
+
+--------------------------------------------------------------------------------
+4. FIX (b) - DESIGN
+--------------------------------------------------------------------------------
+4.1  One new model helper, wildfire_model.py, next to _find_active_firefighter_
+     for_victim:
+
+     _release_other_claimants(victim_id, victim_marker, keep_ff_id, reason) -> list[str]
+
+     For every unit in firefighter_marker_agents:
+       skip  ff_id == keep_ff_id                (the completing unit, section 4.3)
+       skip  dead / status "dead"               (casualty path owns corpses; an
+                                                 unassign would relabel a dead
+                                                 unit's managed state "available")
+       skip  rescue_completed True              (a unit that finished its own exit
+                                                 this step; the drain recycles it)
+       bound test: rescued_victim is victim_marker, or its id == victim_id.
+             NOT gated on `assigned`, NOT gated on status: route_blocked
+             claimants are the whole point (sections 2 and 6).
+       release: executor unassign, metadata {} - deliberately NOT
+             reset_victim_pending: that flag relabels the victim marker
+             "confirmed" unconditionally, and the victim here is terminal.
+       then: if status is "en_route" or "assigned" -> status = "available"
+             (route_blocked is left for the revalidation pass; see 4.4), and
+             re-sync that unit's operational knowledge, because the unassign
+             action's own sync ran while status was still "en_route" and
+             _derive_firefighter_operational_fields (3586) maps status
+             "en_route" with assigned=False to availability "assigned" - a stale
+             label the victim_dead recall leaves behind today.
+       print "[Rescue Released] FF-x released from victim_y (reason)" and bump
+             ff_claims_released_total. No new rescue-event type: the executor
+             already records a physical_unassign event for the command.
+     Returns the released ids. A run with no second claimant emits nothing, so
+     unaffected runs stay byte-identical (Part 3 gate).
+
+4.2  Call site: the rescue_complete branch (3151-3189).
+       - after execute_physical_command(finalize_rescue), when result["success"]:
+           self._release_other_claimants(vid, agent, ff_id, "released_after_rescue_complete")
+       - in the already-rescued early return (3157-3158) as well, before
+         returning: arriving here for a rescued victim IS the phantom's
+         signature (the 149 completion in 303). It is idempotent - normally
+         nothing is bound any more - and costs one loop over 2-3 units.
+     Nothing else in the branch moves; coverage activation stays after the
+     release. The reason string "released_after_rescue_complete" is what the
+     analyzer keys on.
+
+4.3  The completing unit is excluded and must not be touched here. In the
+     drain (_process_pending_agent_removals, 2530-2600) the Firefighter entry
+     calls _finalize_rescued_victim(vid, rescued_victim, firefighter_id=unit_id)
+     and THEN removes/recycles the unit itself; the unassign action would clear
+     its `exiting` mid-hand-over. Exclusion is by the incident's ff_id, with
+     rescue_completed as the belt-and-braces (a completer always has it True
+     by then, an en-route claimant never does). If the victim entry ever came
+     first with no ff_id, _firefighter_id_for_victim would read
+     managed_victims[vid].firefighter_id = the LAST assigned unit, which in a
+     double claim can be the loser - the rescue_completed skip is what keeps
+     the true carrier safe in that order too.
+
+4.4  Released unit: made immediately available for dispatch, in place.
+     Not recycled: _recycle_firefighter_after_exit is the boundary hand-over
+     reset (it also clears rescue_completed and prints Recycled); a loser is
+     mid-field with nothing to hand over, and walking it to an edge would be
+     more wasted movement. Not left as-is either (the "en_route" label).
+     State after release: assigned False, target_pos None, rescued_victim None,
+     exiting False, exit_target None, rescue_completed unchanged (False),
+     status "available" (or route_blocked, unchanged), pos unchanged.
+     _firefighter_available_for_dispatch (2842-2853) checks dead / status in
+     (dead, route_blocked) / assigned / exiting / rescue_completed / pos - so the
+     unit is in the pool immediately. Firefighter.advance with no target and
+     not exiting takes the idle branches (idle retreat from fire, standby,
+     hold), the same path every recalled unit takes today.
+
+4.5  Cannot strand a unit - the 70e1b33 shape checked explicitly:
+     - non-blocked loser: dispatchable at once. The drain's own
+       _try_dispatch_unresolved_confirmed_victims runs right after (recycled>0
+       because the completer was just removed/recycled), so it can be
+       re-dispatched in the same step.
+     - route_blocked loser: assigned False, exiting False, pos not None ->
+       exactly the set _revalidate_route_blocked_firefighters (2431-2508)
+       scans every step from _sync_firefighter_marker_status; it flips the
+       unit to "available" as soon as a fire-free path to ANY live victim
+       exists and calls _try_dispatch_unresolved_confirmed_victims. The 70e1b33
+       latch was a unit in this state with NO revalidation; the revalidation is
+       what closed it and it applies unchanged here. If no live victim exists
+       the unit stays route_blocked with no work to do, and recovers the step
+       a new victim is confirmed (the pass runs every step).
+     - the completer: untouched, handled by the drain as today.
+     Part 3 asserts this on every released unit from the per-step
+     ff_bind_steps observer (section 8): later in the dispatch pool, or later
+     assigned, or dead/off-grid, or no confirmed victim left.
+
+4.6  What does NOT change: the assign guard, the planner lookup,
+     _blocked_replacement_attempted, the unassign action, Feature 1 and
+     Feature 2 code, the Victim custody clause (a rescued victim is off-grid).
+
+4.7  Feature interactions:
+     - Feature 1: the phantom completer no longer completes, so no phantom
+       absence is drawn. The absence RNG is a dedicated stream seeded once from
+       SYSTEM_RANDOM.getstate(); one fewer draw from it changes nothing in the
+       shared stream. Fire digests must stay identical on all 13 runs (gate).
+       Feature 2 moved firefighter deaths 6 -> 8 by tying units up longer; this
+       fix frees a unit ~48 steps earlier in 303 and removes a 3-step absence.
+       Part 3 reports whether any of the +2 comes back.
+     - Feature 2: _refresh_target_from_victim already stops on a terminal
+       victim; the loser was walking to the last cell it saw. After the fix it
+       has no target. No change to the flee rule or leash.
+
+--------------------------------------------------------------------------------
+5. DISPATCH-POOL RE-ENTRY: THE STEP-ORDER ARGUMENT
+--------------------------------------------------------------------------------
+Within one step: schedule.step() (moves; a completer flips rescue_completed and
+queues itself + victim) -> post-move cycle: _return_absent_firefighters at the
+head of the drain, the drain (finalize -> release -> completer removed or
+recycled -> re-dispatch pass), then _check_fire_casualties, then the
+route_blocked revalidation in _sync_firefighter_marker_status (order as stated
+in the _return_absent_firefighters docstring, 2323-2330). So a released unit is
+visible to the re-dispatch pass in the same step, and a released route_blocked
+unit is revalidated in the same step.
+
+--------------------------------------------------------------------------------
+6. SIBLING GAP FOUND WHILE VERIFYING: THE victim_dead RECALL HAS THE SAME HOLE
+--------------------------------------------------------------------------------
+The victim_dead branch releases via _find_active_firefighter_for_victim, which
+skips route_blocked units and returns one pair. D/south/half 303 (recorded):
+  step 156  ff_unit_0 -> victim_3 (replacement_after_blocked)
+  step 199  blocked -> unassigned -> delay; step 207 re-dispatched to victim_3
+  step 216  blocked AGAIN (early return: stays assigned, route_blocked)
+  step 216  victim_3 dies at (49,2). victim_dead recall: lookup skips the
+            route_blocked unit -> nobody unassigned.
+  step 222  route reopens -> status "assigned" -> ff_unit_0 walks toward the
+            corpse's cell; still bound at the 240 horizon (DEAD-BOUND 24 steps).
+Had the run been longer it would have arrived, flipped exiting against a dead
+marker, dragged that marker to the boundary, and taken an absence; the drain
+would then set the dead marker's status to "rescued" (2557-2560) - managed
+state stays "dead", so counts are safe, but it is the same phantom shape.
+No capacity was lost in this run (all victims were terminal at 216).
+
+RECOMMENDATION: route the victim_dead branch through the same helper
+(keep_ff_id="", reason unchanged "fire_casualty"/"victim_dead_recall"). For the
+common case - one visible claimant - it issues the identical unassign command;
+the only added effects are (i) route_blocked and second claimants are released
+too, (ii) the status relabel of 4.1. This is one helper, two call sites, and
+the analyzer reports the two paths separately (release reason vs dead-bound
+count), so attribution in Part 3 stays clean. Alternative: rescue_complete only,
+and file the dead-bound case as a follow-up.
+
+--------------------------------------------------------------------------------
+7. TESTS (new file tests/test_phantom_rescue_release.py, real WildFireModel)
+--------------------------------------------------------------------------------
+  T1 two claimants, first finalizes -> second has assigned False, target None,
+     rescued_victim None, exiting False, status "available", and
+     _firefighter_available_for_dispatch is True   (the probe as a test)
+  T2 the released unit is chosen by select_rescue_assignment for another
+     confirmed victim on the very next snapshot (dispatch-pool re-entry)
+  T3 a route_blocked second claimant is released (assigned False, status still
+     route_blocked) and _revalidate_route_blocked_firefighters recovers it when
+     a path exists -> dispatched   (the 70e1b33 shape)
+  T4 the completing unit is not touched by the release (exiting and
+     rescue_completed unchanged until the drain handles it)
+  T5 single claimant -> no [Rescue Released] line, no extra unassign event
+     (byte-identity of unaffected runs, at unit level)
+  T6 already-rescued rescue_complete (the phantom completion) releases any
+     straggler and still records no second rescue_complete event
+  T7 (if section 6 is approved) victim_dead with a route_blocked claimant ->
+     released; and with two claimants -> both released
+  Existing suites to keep green: test_dead_victim_rescue_recall,
+  test_firefighter_dispatch_replacement, test_rescue_planner_authority,
+  test_physical_rescue_command, test_firefighter_rescue_absence,
+  test_victim_fire_flight. Test baseline to match: 8 failed / 470 passed.
+
+--------------------------------------------------------------------------------
+8. MEASUREMENT PREPARED THIS ROUND (no simulation code touched)
+--------------------------------------------------------------------------------
+  - outputs/_ffr_harness.py: one read-only observer added, key ff_bind_steps:
+    per step, per unit [id, bound victim id, _firefighter_available_for_dispatch,
+    rescue_completed, off_grid]. Separate key so the 6-field ff_steps rows the
+    earlier analyzers unpack keep their shape; the predicate is pure. Smoke-run
+    on the 5000f70 worktree (3 steps): rows present, import from the worktree.
+  - outputs/_ph_analyze.py: derives per run double-assignments (with outcome:
+    which claimant rescued), releases, phantom exits/completions/absences,
+    loser bound-steps, dead-bound cases, the stranding check per released
+    unit, seed-matched deltas, fire-map first divergence, and a two-arm
+    identity check (to confirm the fresh ph5000 wave equals the stored vmon3
+    arm before quoting either as "5000f70").
+  - baseline wave ph5000 launched against the pristine 5000f70 worktree
+    (13 processes, started 12:28:52). pytest baseline running.
+
+--------------------------------------------------------------------------------
+9. PART 3 EXPECTATIONS, STATED NOW
+--------------------------------------------------------------------------------
+  probe    Q1 stays YES (by design: (b) does not prevent the second claim)
+           Q2 becomes "no - it was unassigned"; no phantom exit
+  sample   fire map identical on 13/13; runs with no release byte-identical;
+           D/east/half 303 differs from step 101 (release) with rescued >= 2,
+           no phantom exit, absences 3 -> 2; D/south/half 303 differs only if
+           section 6 is approved (release at 216, no eval change expected:
+           all victims terminal at 216). rescued must not decrease anywhere.
+  strand   every released unit: pool re-entry step or re-assign step recorded,
+           or dead/off-grid, or no confirmed victim left. Zero flagged.
+  gates    pytest: no new failures vs 8/470. route_blocked gate: rbgate + rbmerge.
+
+--------------------------------------------------------------------------------
+10. DECISIONS NEEDED BEFORE PART 2
+--------------------------------------------------------------------------------
+  D1  Include the victim_dead widening (section 6)?           recommended: YES
+  D2  Relabel released en_route units to "available" (4.1)?   recommended: YES
+  D3  Also release in the already-rescued early return (4.2)? recommended: YES
+  Everything else above is fixed by the analysis.
+
+--------------------------------------------------------------------------------
+11. BASELINE LANDED (added after the wave completed)
+--------------------------------------------------------------------------------
+  ph5000 (pristine 5000f70 worktree, 13/13 runs, 335-417 s each) is identical to
+  the stored Feature 2 final arm vmon3 on all 15 recorded fields in 13/13 runs
+  (outputs/_ph_identity_ph5000_vmon3.txt). Every count quoted above therefore
+  holds for HEAD: 2 double-assign events (1 episode, second claimant rescued),
+  1 phantom exit, 1 phantom completion, 1 phantom absence of 35, loser bound
+  48 steps, 1 dead-bound case of 24 steps (outputs/_ph_mechanism_ph5000.txt).
+  Analyzer self-check: the event-trail binding reconstruction (assigns /
+  unassigns / completions) agrees with the new per-step ff_bind_steps observer
+  on all 6240 unit-steps of the 13 ph5000 runs, 0 mismatches. The two
+  independent views of "who is bound to whom" are therefore interchangeable,
+  and the vmon3 counts (no observer) are trustworthy.
+  Test baseline on untouched 5000f70 (outputs/_ph_pytest_base.log): 8 failed,
+  470 passed in 36 min, matching the stated baseline. The 8 pre-existing
+  failures, which Part 3 must not add to:
+    test_behavior_regression::test_descriptive_next_action_uses_target_position
+    test_dashboard_panel::test_dashboard_panel_render_returns_string
+    test_firefighter_dispatch_replacement::test_no_replacement_available_marks_victim_unreachable_once
+    test_rescue_planner_authority::test_no_firefighter_planner_delay_or_unreachable
+    test_uav_sector_assignment::test_fire_tracker_uavs_receive_different_target_sets
+    test_uav_sector_assignment::test_fire_tracker_still_overridden_by_search_mode_fail_safe
+    test_wind_aware_trajectory_regression::test_north_vs_south_trajectories_diverge_over_40_steps
+    test_wind_aware_victim_search::test_victim_search_wind_aware_action_when_downwind_exists
+
+--------------------------------------------------------------------------------
+12. DEVIATIONS AND ADDITIONS DECIDED DURING PARTS 2-3 (recorded for traceability;
+    the full account is in outputs/phantom_report.txt)
+--------------------------------------------------------------------------------
+  D4  keep rule. The named unit (keep_ff_id) is kept only while it is exiting
+      AND no bound unit has rescue_completed. Found by the review: when the
+      incident carries no firefighter id, _finalize_rescued_victim names the
+      LAST-assigned unit (managed_victims[vid].firefighter_id), which in a
+      double claim is the loser; keeping it by id alone released nobody.
+      Latent only (the drain always names the completer), closed anyway.
+  D5  relabel guard. The unassign has applied before the relabel; a failure in
+      the relabel/sync is reported as "[Rescue Release] ... relabel failed" and
+      the release is still counted. Every unit is wrapped in try/except with a
+      visible "[Rescue Release Failed]" line, because _process_rescue_incidents
+      swallows exceptions.
+  D6  a released route_blocked unit is cleared to "available" when NO victim
+      needs rescue any more and the unit is not fire-enclosed. Found by the
+      route_blocked gate: D1 released ff_unit_0 from the dying victim_3 at
+      step 216 of D/south/half 303 while it was blocked; with every victim
+      terminal the revalidation pass has nothing to test a path against and
+      returned early, so the flag stood to the horizon and the gate counted an
+      end-of-run latch (0 -> 1). With a live victim present the flag is left
+      for the pass exactly as designed. The 70e1b33 pass itself is untouched.
+  D7  the drain draws a rescue absence only for the completion that turned the
+      victim rescued. Found by the review: two carriers of one victim reaching
+      exits in the same step (a co-completer is protected by rescue_completed)
+      both drew an absence - a residual phantom absence. A co-completer, a unit
+      exiting against a victim already carried out, or a corpse carrier is now
+      recycled in place ("[Rescue Hand-over Skipped]") and draws nothing from
+      the absence RNG. Nothing in the 13-run sample exercises it (0 phantom
+      completions on the fix arm); tests cover it.
+  D8  counter split: ff_claims_released_by_reason alongside the total, because
+      the victim_dead path also counts (under its incident reason
+      "fire_casualty"), including the ordinary one-claimant recall.
+  Order: release runs BEFORE searcher-coverage activation, as section 4.2 said.
