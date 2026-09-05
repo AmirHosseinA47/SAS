@@ -1,0 +1,658 @@
+================================================================================
+FEATURE 2 - VICTIMS MOVE AWAY FROM APPROACHING FIRE
+PART 1: DESIGN.  No source file has been modified.  Awaiting confirmation.
+================================================================================
+
+BRANCH    firefighter-mission-features
+HEAD      9c3eac6  (Feature 1: firefighter leaves the environment for 3-5 steps)
+          verified with `git branch --show-current` and `git log --oneline -1`
+          before any other work; working tree clean.
+ENV       .venv\Scripts\python.exe - Python 3.10, mesa 1.2.1 (confirmed at run
+          time: mesa.__version__ == "1.2.1")
+SAMPLE    the campaign's canonical 13 runs, 240 steps, scenario D,
+          FIRE_SPREAD_MULTIPLIER 0.75, BATCH_SIZE 300, PROBABILITY_MAP False:
+            D/east  half-roles (2 trackers / 2 searchers) seeds 101..505
+            D/south half-roles                            seeds 101..505
+            D/east  default-roles (legacy n-1,1)          seeds 101,202,303
+
+REQUIREMENT, as stated by the maintainer's supervisor
+  "Simple movement for victims so when fire reaches the victim, it should move
+   and stay away from it until it be found and rescued."
+
+EVERY LINE NUMBER BELOW WAS RE-READ AT HEAD 9c3eac6.  One prior-round line
+number is stale and is corrected in section 1.3.
+
+
+================================================================================
+1.1  THE VICTIM CLASS, AND EVERY CONSUMER OF VICTIM POSITION
+================================================================================
+
+1.1.1  Victim, quoted in full (agents.py:359-372)
+--------------------------------------------------
+
+    class Victim(mesa.Agent):
+        """Display-only victim marker."""
+
+        def __init__(self, unique_id, model, victim_id: str, position: tuple):
+            super().__init__(unique_id, model)
+            self.victim_id = victim_id
+            self.status = "candidate"
+            self.marker_only = True
+
+        def step(self):
+            pass
+
+        def advance(self):
+            pass
+
+Three fields, and both scheduler hooks are no-ops.  Note what is NOT stored:
+the constructor accepts `position` and DISCARDS it.  The class has no memory of
+where it started.  A spawn anchor is therefore something this feature must add,
+not something it can read.
+
+Placement (wildfire_model.py:522-569, `_init_managed_victims`):
+  * positions come from a closed-form ring - angle = 2*pi*i/NUM_VICTIMS,
+    radius 0.30 or 0.45 of the grid alternating on i%2 - with NO fire-state
+    check and NO RNG draw.
+  * the float position is stored in `VictimState.last_known_position`
+    (wildfire_model.py:551); the marker is placed at the ROUNDED cell (555-566).
+  * for the sample's NUM_VICTIMS=5 on a 50x50 grid the cells are, verified
+    against the live formula:
+        victim_0 (40, 25)   victim_1 (32, 46)   victim_2 (13, 34)
+        victim_3 ( 7, 12)   victim_4 (30, 11)
+    These exact coordinates are hard-coded in at least one committed
+    investigation harness (outputs/_diag_sweep_coverage.py:47-48 pins
+    victim_0 to (40, 25)); that file also re-derives them offline and asserts
+    them against a live model (lines 590-630).  Fixed spawns are relied on.
+  * the ignition seed is drawn at wildfire_model.py:1982-1983 inside a
+    10-cell margin, so fire starts somewhere in the central 30x30 block and the
+    victim ring straddles the region the front sweeps.
+
+1.1.2  Scheduler order - the single most important fact for this feature
+------------------------------------------------------------------------
+
+mesa 1.2.1 `SimultaneousActivation.step` (read from the installed package)
+iterates `self._agents`, an insertion-ordered dict: every agent's `step()`,
+then every agent's `advance()`.  Insertion order is fixed by `reset()`:
+
+    Fire      wildfire_model.py:135  set_fire_agents()
+    UAV       wildfire_model.py:151-162
+    Victim    wildfire_model.py:167 -> _init_runtime_knowledge -> :173
+    Firefighter                      -> :177
+
+so within one scheduler pass the advance order is
+        Fire ... , UAV ... , Victim ... , Firefighter ...
+
+Three consequences, all load-bearing:
+
+  (a) Fire commits `burning = next_burning_state` in `Fire.advance`
+      (agents.py:119-125) BEFORE any victim advances.  A victim that moves in
+      `advance()` therefore reads THIS step's committed fire, not last step's.
+
+  (b) `_check_fire_casualties` runs in the POST-MOVE cycle, after the whole
+      scheduler pass (adaptation_manager.py:182, order locked by
+      tests/test_adaptation_manager_cycle.py:33-50).  So a victim whose own
+      cell ignites at step T can still step off it at step T and be alive when
+      the casualty sweep looks.  Escape from one's own igniting cell is
+      possible.  This is by far the largest behavioural lever in the feature
+      and section 1.2.4 argues it explicitly rather than letting it happen by
+      accident.
+
+  (c) Victims advance BEFORE firefighters.  A firefighter that re-reads its
+      target in its own `advance()` sees the victim's position AFTER this
+      step's flee.  No stale-by-one-step window exists on the approach.  The
+      converse also holds and is a hazard: on the step a firefighter arrives,
+      the victim moves first - see section 1.4.
+
+1.1.3  Mortality (wildfire_model.py:4408-4500, `_check_fire_casualties`)
+-------------------------------------------------------------------------
+
+Confirmed exactly as the prior rounds recorded: it collects burning cells, and
+for each victim marker whose status is not in ("dead", "rescued")
+(wildfire_model.py:4429-4431) and whose live cell is in that set, sets marker
+and managed status to "dead".  There is no health, no injury, no graded
+survival - one boolean test on one cell.
+
+  * IT DOES NOT REMOVE THE MARKER from the grid or the scheduler.  A dead
+    victim keeps its cell and keeps being scheduled, so `Victim.advance()`
+    still runs for it.  A status guard in the new code is therefore mandatory,
+    not defensive.
+  * the skip set is ("dead", "rescued") and nothing else.  An "unreachable" or
+    "cancelled" victim is still alive and can still burn.
+
+Re-verified: a live victim cannot stand on a burnt cell.  `burnt` is written in
+exactly one place (agents.py:110) and requires `has_burned`, which requires the
+cell to have been burning (agents.py:106), and any victim present during that
+passage is killed by the sweep in the same step.  Under this feature the
+invariant survives for a new reason as well: burning cells are excluded as
+movement destinations (section 1.2.2), so a victim can never walk into the
+state that precedes burnt.
+
+1.1.4  Every consumer of victim position, and what a moving victim does to it
+-----------------------------------------------------------------------------
+
+Swept: wildfire_model.py, agents.py, all of src_extension/, main.py,
+Canvas_Grid_Visualization.py, serve_dashboard.py, evaluate_scenarios.py,
+evaluate_extended_metrics.py, tests/.  Two sources of victim position exist and
+must not be confused:
+
+    LIVE   marker.pos on the mesa grid
+    BELIEF VictimRuntimeModel.victims[vid].estimated_position, written only by
+           a detection event
+
+  #   site                                              source  verdict
+  --  ------------------------------------------------  ------  --------------
+  1   _detect_victims_in_uav_radius                      LIVE    safe
+      wildfire_model.py:967-1000
+  2   _check_fire_casualties     wildfire_model.py:4428  LIVE    safe (1.1.3)
+  3   _update_unreachable_victims  wildfire_model.py:4187 LIVE   PERTURBED
+  4   get_rescue_operational_snapshot  wf.py:2875-2890   LIVE    improves
+  5   select_rescue_assignment   rescue_planner.py:580,649 LIVE  improves
+  6   apply_physical_rescue_command "assign"  wf.py:3822 LIVE-ONCE  BREAKS
+  7   _draw_rescue_path   wf.py:2790, called at wf.py:3884  LIVE-ONCE cosmetic
+  8   _record_rescue_event       wildfire_model.py:3463-3467 LIVE safe
+  9   _find_closest_available_firefighter  wf.py:3282     LIVE   caller-dependent
+  10  dashboard _build_victim_view  dashboard_state_builder.py:221-226  LIVE safe
+  11  _collect_victim_positions  local_adaptation_generator.py:3113,4192 BELIEF stale
+  12  _victim_positions_from_runtime  uav_executor.py:1604 BELIEF stale
+  13  _build_evaluation          serve_dashboard.py:285-327  none  safe
+  14  agent_portrayal            main.py:18-31               grid  safe
+  15  VictimState.last_known_position  written wf.py:551 only  SPAWN-PINNED
+
+Detail on the four that matter.
+
+  #6 THE ONE THAT BREAKS (wildfire_model.py:3822).  On "assign" the executor
+     writes `ff_marker.target_pos = victim_cell` once and nothing ever
+     refreshes it.  A grep for every `target_pos =` write in production code
+     returns exactly five sites: agents.py:389 (constructor, None),
+     wildfire_model.py:2115 and :2199 (clear on recycle / on absence removal),
+     :3822 (this write), :3916 (clear on unassign).  There is no refresh.
+     Harmless while victims are static; not harmless now.  Handled in 1.3.
+     CORRECTION: the prior round cited wildfire_model.py:3348 for this write.
+     Line 3348 at HEAD is inside `_physical_rescue_executor`.  The finding is
+     right, the line number has drifted with the file; :3822 is current.
+
+  #3 THE ONE THAT IS PERTURBED (wildfire_model.py:4187-4290).  This pass keeps
+     `self._ff_victim_distances`, a per-(firefighter, victim) manhattan
+     distance from the previous step, and sets `approaching = True` only when
+     the ASSIGNED unit's distance DECREASED (wildfire_model.py:4258-4262).  A
+     fleeing victim can grow that distance for a reason that has nothing to do
+     with the firefighter, so `approaching` goes False and the victim looks
+     unserved.  Reach of the damage, traced into rescue_planner.py:485-520:
+       - `_is_productively_served` (rescue_planner.py:443-448) reads exactly
+         those flags, so `served` can go False spuriously.
+       - the GEOGRAPHIC streak advances only on `not served AND not
+         geo_reachable` (rescue_planner.py:499).  `geo_reachable` is recomputed
+         from the victim's LIVE cell against the fire-avoiding BFS each step,
+         so a victim that is fleeing is almost always still reachable; the
+         streak stays 0.  Threshold is 30 consecutive steps.
+       - the UNDETECTED streak advances only on `not served AND not assigned
+         AND never confirmed` (rescue_planner.py:504).  A confirmed victim is
+         excluded by `_is_never_confirmed`; an unassigned never-confirmed
+         victim was never "served" in the first place, so `approaching` does
+         not change its streak either.  Threshold is 210 steps.
+     CONCLUSION: the `approaching` corruption is real but very largely inert,
+     because both consumers gate on a second condition that a fleeing victim
+     does not satisfy.  No repair is proposed.  Part 3 measures it directly:
+     `geographically_isolated` and `never_detected` are reported per run, and
+     the baseline for both on this sample is 0 and 0 (from
+     outputs/_ffr_ffabs_analysis.txt).  Any non-zero value is a finding.
+
+  #11/#12 THE DETECTION-STALENESS QUESTION, answered precisely.  These two are
+     the UAV targeting paths and they read the BELIEF, not the grid.  But
+     DETECTION ITSELF (#1) reads the LIVE marker: `_detect_victims_in_uav_radius`
+     compares the UAV's cell to `marker.pos` with a euclidean radius of
+     UAV_OBSERVATION_RADIUS = 8, every step, for every undetected victim.  So a
+     moving victim does NOT become invisible; it is detected the moment any UAV
+     comes within 8 of wherever it now is.  What degrades is re-TARGETING: a
+     searcher steering toward a belief written at the last detection will steer
+     at a cell the victim has left.  `VictimRuntimeModel.apply_time_decay`
+     already models exactly this - confidence decays and
+     `position_uncertainty_radius` grows with age - so the knowledge layer has
+     the vocabulary for it and nothing new is required there.
+     The residual risk is the one the gate names: searcher sweep bands were
+     tuned against fixed spawns, and a victim that drifts out of its band may
+     never come within 8 of a UAV.  That is what bounding the movement is for
+     (1.2.3), and `never_detected` is the metric that proves it either way.
+
+  #15 `VictimState.last_known_position` is written once at
+     wildfire_model.py:551 and never again, anywhere in the tree.  It is read
+     in two places, both only as a fallback when the marker is gone
+     (wildfire_model.py:4247; dashboard_state_builder.py:226).  A field named
+     "last known position" that is pinned to spawn while the victim walks away
+     is misleading.  DECISION: the feature updates it whenever the victim
+     actually moves, under the same kill switch.  Blast radius is nil - both
+     readers are guarded by "marker missing", which in production means the
+     victim was removed as rescued, and both become strictly more accurate.
+
+NOT AFFECTED, stated because it is what the gate is scored on: the headline
+metrics never read a victim position.  `_build_evaluation`
+(serve_dashboard.py:285-327) counts statuses only.  Rendering
+(main.py:18-31) draws from the grid, so a moving victim animates correctly with
+no rendering change at all.
+
+1.1.5  What a victim's presence in a cell does to everything else: nothing
+--------------------------------------------------------------------------
+
+Checked because a moving agent that blocks or is sensed would couple this
+feature to the fire RNG.  Fire spread (`Fire.probability_of_fire`,
+agents.py:53-85) filters `type(agent) is Fire`; firefighter hazard tests
+(`_cell_contains_active_fire`, agents.py) filter `type(agent) is Fire`; UAV
+spacing (`not_UAV_adjacent`, agents.py) filters `type(agent) is UAV`.  The grid
+is a MultiGrid, so occupancy never blocks.  A victim is inert to fire, to UAVs
+and to firefighter pathing.  The ONLY coupling from victim position into the
+rest of the system is through the rescue subsystem and detection.
+
+
+================================================================================
+1.2  THE MOVEMENT RULE
+================================================================================
+
+1.2.1  Choice
+--------------
+
+CHOSEN: (b) THRESHOLD TRIGGER + (a) GREEDY STEP + A LEASH TO SPAWN.
+
+  trigger  move only when the nearest actively burning cell is within
+           VICTIM_FLEE_TRIGGER_DISTANCE (default 3) manhattan; otherwise hold.
+  step     among the four orthogonal neighbours, take the one that maximises
+           manhattan distance to the nearest burning cell.
+  leash    never step to a cell more than VICTIM_FLEE_MAX_DISPLACEMENT
+           (default 6) manhattan from the victim's SPAWN cell.
+
+Why not (a) alone.  Pure greedy has no idle state: with fire anywhere on the
+map a victim drifts every step from step 1, so every victim leaves its spawn
+immediately and permanently.  That breaks the requirement's own wording -
+"WHEN fire reaches the victim" describes a reaction, not a constant drift - and
+it maximises the damage to searcher coverage for no survival benefit, since
+distant fire is not a threat.  It also puts every one of the fixed-spawn
+investigations (outputs/burntcells_part1.txt, the searcher-coverage reports,
+outputs/_diag_sweep_coverage.py) out of date on step 1 of every run.
+
+Why not a bare threshold with no leash.  Under a wind-driven front the fire
+sweeps the whole grid, so an unleashed victim is pushed continuously ahead of
+the front until it is cornered against the boundary.  That is not "stay away
+from it until it be found and rescued"; it is a 40-step marathon that ends in a
+death somewhere else - precisely the outcome the Part 3 key question is there
+to catch.  It also guarantees the searcher-coverage regression rather than
+merely risking it.
+
+Why these two constants.  Both are borrowed, not invented:
+  * 3 is IDLE_RETREAT_SAFETY_BUFFER (agents.py:375), already the codebase's
+    definition of "fire is too close to stand here" for an idle firefighter
+    (`_idle_needs_survival_move`).
+  * 6 is IDLE_RETREAT_MAX_CELLS (agents.py:376), already the codebase's leash
+    on how far a unit may wander during exactly this kind of manoeuvre.
+Using the same numbers means a victim's notion of danger and a firefighter's
+notion of danger agree, and no new magic number enters the model.
+
+1.2.2  Exact rule, as it will be implemented
+---------------------------------------------
+
+Called from `Victim.advance()`.  Every guard is a hard return.
+
+  G1  feature disabled (VICTIM_FLEE_TRIGGER_DISTANCE <= 0)          -> return
+  G2  self.pos is None                                              -> return
+  G3  status in ("dead", "rescued")                                 -> return
+      identical to the `_check_fire_casualties` skip set at
+      wildfire_model.py:4429-4431, so the set of victims that CAN MOVE is
+      exactly the set that CAN DIE.  "unreachable" and "cancelled" victims are
+      alive, can still burn, and therefore still flee.
+  G4  a firefighter has taken custody of this victim                -> return
+      (defined and justified in section 1.4)
+  G5  no actively burning cell exists                               -> return
+
+  R1  d0 = min manhattan distance from the current cell to a burning cell
+  R2  if d0 > VICTIM_FLEE_TRIGGER_DISTANCE                          -> hold
+  R3  candidates = the four orthogonal neighbours, filtered by
+        - in bounds (grid.out_of_bounds)
+        - does not contain an actively burning Fire agent
+        - manhattan distance from SPAWN <= VICTIM_FLEE_MAX_DISPLACEMENT
+  R4  if no candidate survives                                      -> hold
+  R5  pick the candidate maximising distance-to-nearest-fire; ties broken by
+      smaller distance-to-spawn, then by a FIXED neighbour order
+      ((1,0), (-1,0), (0,1), (0,-1)) - the same tuple order
+      `Firefighter._neighbor_cells` uses
+  R6  move only if it strictly improves:  best_d > d0
+      EXCEPTION: if d0 == 0 the victim is standing in fire and dies this step
+      unless it moves; any non-burning candidate is taken even without a
+      strict improvement.
+  R7  on an actual move: grid.move_agent, then update
+      VictimState.last_known_position, then append one entry to the
+      per-model flee log (section 1.6).
+
+Diagonals are deliberately excluded.  Fire spread is radius-based and
+firefighter movement is 4-connected throughout (`_neighbor_cells`,
+`_path_exists_avoiding_fire`, `_move_toward`); a victim that could cut corners
+a firefighter cannot would be inconsistent with every distance and reachability
+computation in the rescue subsystem.
+
+The spawn anchor.  `Victim.__init__` discards its `position` argument today.
+The feature stores the rounded spawn cell on the marker at construction
+(`self.spawn_cell`) - the same value `_init_managed_victims` already computes
+at wildfire_model.py:555-563 - so the leash needs no lookup and no model state.
+
+1.2.3  Does a moving victim make detection harder, and is that acceptable
+--------------------------------------------------------------------------
+
+Answered in 1.1.4 #11/#12 with the mechanism.  Summarising the decision:
+
+  * detection is a LIVE radius test, so movement cannot hide a victim from a
+    UAV that reaches it;
+  * what movement degrades is a searcher's belief-driven steering, and the
+    knowledge layer already models belief staleness (apply_time_decay);
+  * the real exposure is coverage geometry, and it is bounded by construction:
+    with a leash of 6 a victim stays inside a disc of radius 6 around a spawn
+    cell, well inside a detection radius of 8.  A searcher pass that would have
+    detected the victim at spawn will, in general, still pass within 8 of it.
+  * YES, movement is bounded so a victim stays near its spawn.  That is the
+    leash, and it is chosen for this reason as much as for the "relocated
+    death" reason.
+
+This is a claim, not a proof.  `never_detected` is the metric that decides it
+and it is a hard gate in Part 3.  Baseline on the 13-run sample is 0.
+
+1.2.4  The consequence that must be stated out loud
+----------------------------------------------------
+
+Because victims advance before `_check_fire_casualties` runs (1.1.2b), and
+because the trigger includes d0 == 0, a victim whose own cell ignites at step T
+can step off it at step T and survive.  Deaths then happen only when the victim
+is SURROUNDED - every orthogonal neighbour burning, out of bounds, or outside
+the leash.  `dead` should fall, possibly a long way.
+
+This is intended, and it is the honest reading of "when fire reaches the
+victim, it should move".  It is also the exact reason the Part 3 key question
+exists.  A drop in `dead` is not by itself evidence the feature works; the
+report must separate
+
+    deaths avoided   - a victim alive at the terminal step that, in the
+                       seed-matched baseline, died
+    deaths relocated - a victim that fled and died anyway, reported with how
+                       long it survived and how far it got
+
+and must state the second number as prominently as the first.
+
+
+================================================================================
+1.3  ASSIGNED / BEING-APPROACHED VICTIMS: THE STALE target_pos
+================================================================================
+
+The defect.  `ff_marker.target_pos` is written once at wildfire_model.py:3822
+and never refreshed.  With a moving victim the firefighter walks to a cell the
+victim has left, `self.pos == self.target_pos` fires in `Firefighter.advance`
+(agents.py:504-506), the unit flips to `exiting`, and on the first exit step
+`self.model.grid.move_agent(self.rescued_victim, self.pos)` (agents.py:566-567)
+TELEPORTS the
+victim to the firefighter.  A rescue would complete with no contact ever made.
+That is not a metric artefact; it is a fabricated rescue.
+
+DECISION: THE FIREFIGHTER RE-TARGETS EVERY STEP.
+
+Where.  In `Firefighter.advance`, on the approach path only (`self.target_pos`
+set and `not self.exiting`), before the arrival test: re-read the live cell of
+`self.rescued_victim` - the victim the executor bound at assign - and, if it
+differs from `self.target_pos`, write the new cell.
+
+Why this is not an authority violation.  `target_pos` is a movement waypoint,
+not assignment state.  The executor owns `assigned`, `rescued_victim` and
+`status`, and the refresh touches none of them; it does not change WHICH victim
+the unit is bound to, only where that same victim currently is.  The agent
+already writes state of exactly this class in the same method - `self.exiting`,
+`self.exit_target` (agents.py:506-517) and `self.status = "route_blocked"` via
+`_mark_route_blocked`.  `_assert_no_direct_rescue_mutation`
+(wildfire_model.py:3358+) audits assign/unassign commands and is untouched.
+
+Guards on the refresh.
+  * skipped entirely when the feature is off, so the pre-feature code path is
+    taken literally, byte for byte (section 1.6);
+  * `rescued_victim` may be None (an assignment made through a path that set
+    target_pos without a marker) - fall back to the existing target;
+  * a victim whose status has gone terminal is not chased: if the bound victim
+    is "dead" or "rescued", leave `target_pos` alone and let the existing
+    recall paths (`victim_dead` incident, wildfire_model.py:3129+) unassign the
+    unit as they do today;
+  * an off-grid victim (pos None) leaves the target unchanged.
+
+Side effects that follow for free, and are wanted:
+  * `route_blocked` is re-evaluated against the CURRENT target every step,
+    because `_move_toward` computes `_path_exists_avoiding_fire` from its
+    `target` argument, which advance() passes as `self.target_pos`
+    (agents.py:1087, 1107). A victim that flees out of a pocket
+    clears its own route-blocked condition.
+  * the arrival test becomes a genuine contact test.
+
+Side effect NOT fixed: `_draw_rescue_path` (wildfire_model.py:2790) is called
+once at assign (wildfire_model.py:3884) and the PathMarker line does not follow
+the victim.  PathMarker is display-only (Layer 1, main.py:47-56), is cleared on
+`_rescue_path_clear_requested`, and under a leash of 6 the drift is at most a
+few cells.  Recorded as accepted cosmetic drift, not repaired.
+
+Firefighter dispatch and pairing need no change: `get_rescue_operational_snapshot`
+(wildfire_model.py:2875) already reads the live marker, so the planner has
+always paired against the current cell.
+
+
+================================================================================
+1.4  INTERACTION WITH THE EXIT PHASE
+================================================================================
+
+Confirmed necessary.  During exit the carrier moves the victim explicitly -
+`self.model.grid.move_agent(self.rescued_victim, self.pos)` in
+`Firefighter.advance` - so without suppression the two writers fight, and
+because victims advance FIRST (1.1.2c) the victim's flee would be overwritten
+by the carry in the same step, producing an invisible but real oscillation.
+
+Suppression rule (guard G4).  A victim holds when some firefighter marker
+satisfies
+
+    ff.rescued_victim is this victim
+    AND ( ff.exiting  OR  ff.pos == victim.pos )
+
+Both clauses are required, and the second is the subtle one.  Trace the arrival
+step:
+
+    step T-1  firefighter's `_move_toward` lands it on the victim's cell.
+              `exiting` is still False.
+    step T    Victim.advance runs FIRST.  The carrier is co-located but
+              `exiting` is still False - the flag is set later in the same
+              pass.  Without the co-location clause a victim with fire nearby
+              would flee one cell at step T, and the firefighter would then set
+              `exiting` and start carrying from a cell the victim has left,
+              teleporting it on the first carry move.
+
+The co-location clause closes that window and is also the literal reading of
+the requirement: the victim moves "until it be found", and a firefighter
+standing on its cell has found it.
+
+Feature 1 interaction, per the brief.  An off-grid firefighter has `pos is
+None`; `None == victim.pos` is False, so the co-location clause is
+None-safe with no special case.  The `exiting` clause is also safe:
+`_remove_firefighter_for_rescue_absence` (wildfire_model.py:2197-2207) clears
+`exiting` and `rescued_victim` before the unit goes off-grid, and it only ever
+runs after the carried victim has been finalised and removed from the
+scheduler, so that victim's `advance()` no longer runs at all.
+
+Cost.  O(victims x firefighters) = 5 x 3 per step, four attribute reads each.
+Negligible.
+
+
+================================================================================
+1.5  RNG
+================================================================================
+
+THE MOVEMENT IS FULLY DETERMINISTIC.  NO RNG IS INVOLVED, AND NO DEDICATED
+STREAM IS CREATED.
+
+Every input is a deterministic function of grid state: the burning-cell set,
+the four neighbour offsets in a fixed tuple order, manhattan distances, and the
+spawn cell.  Ties are broken by an explicit total order (R5), never by choice.
+Per the brief's requirement 5, the Feature 1 isolation machinery
+(`_make_ff_absence_rng`, wildfire_model.py:2134-2151) is NOT needed and will
+not be replicated.
+
+Why the fire map must still be identical, and why it will be.  The fire stream
+is consumed only by `Fire.step` (agents.py:103, `random.random()`).  Victim
+movement draws nothing, and section 1.1.5 established that a victim's presence
+in a cell is invisible to `Fire.probability_of_fire`.  `grid.move_agent` was
+read from the installed mesa 1.2.1 and is `torus_adj` + `remove_agent` +
+`place_agent` - no RNG.  So the per-step fire digest the harness records must
+be identical to the baseline on every step of every seed, in the FEATURE arm as
+well as the control arm.  Any divergence is a leaked draw and a hard failure,
+not a curiosity.  This is a stronger check than Feature 1 could make of itself,
+and it is free.
+
+
+================================================================================
+1.6  KILL SWITCH
+================================================================================
+
+Equivalent to Feature 1's `FF_RESCUE_ABSENCE_MAX_STEPS <= 0`.
+
+    VICTIM_FLEE_TRIGGER_DISTANCE <= 0  disables the entire feature.
+
+New constants in common_fixed_variables.py, both overridable per run through
+`apply_scenario_config` (local_adaptation_generator.py:270-273) like every
+other scenario parameter, and both read AT CALL TIME so an override applies:
+
+    VICTIM_FLEE_TRIGGER_DISTANCE  = 3   # 0 or less disables the feature
+    VICTIM_FLEE_MAX_DISPLACEMENT  = 6   # leash from the spawn cell
+
+What "disabled" means, precisely - three code paths, one switch:
+  1. `Victim.advance()` returns immediately at G1, exactly as the current
+     `pass` does;
+  2. the `target_pos` refresh in `Firefighter.advance` (1.3) is not entered, so
+     the approach path is the pre-feature code literally;
+  3. `last_known_position` is not updated (1.1.4 #15).
+No other production line changes behaviour.  The single new attribute on the
+marker (`spawn_cell`) is written at construction and read only inside the
+disabled-by-G1 path.
+
+Control arm.  `_ffr_runall.sh <tag> <repo> --set VICTIM_FLEE_TRIGGER_DISTANCE=0`
+against the feature checkout, compared to the 9c3eac6 baseline wave, must be
+byte-identical on all 13 runs across every recorded field - fire digests, per-
+step firefighter trajectories, completions, recycles, assigns, unassigns,
+planner decisions, `_build_evaluation`, and the sha256 of captured stdout.
+This is the same standard Feature 1's max-0 arm met (13/13, recorded in
+outputs/_ffr_ffabs_analysis.txt) and it is proved BEFORE any behavioural claim.
+
+Mechanism log for Part 3.  A read-only per-model list `_victim_flee_log`, one
+entry per actual move: step, victim_id, from cell, to cell, nearest-fire
+distance before and after, displacement from spawn after, and whether the move
+was a d0 == 0 escape.  The harness reads it with `getattr`, exactly as it reads
+`_ff_absence_log` today, so no harness change is needed to collect it.
+
+
+================================================================================
+1.7  IMPLEMENTATION SURFACE (for confirmation before any edit)
+================================================================================
+
+common_fixed_variables.py
+  + VICTIM_FLEE_TRIGGER_DISTANCE, VICTIM_FLEE_MAX_DISPLACEMENT, with the
+    kill-switch comment in the style of the Feature 1 block.
+
+agents.py
+  ~ Victim.__init__      store the rounded spawn cell (the argument the class
+                         currently discards).
+  ~ Victim.advance       the rule of 1.2.2; guards, candidate scan, one move.
+  + small private helpers on Victim: burning-cell set, min distance, custody
+    test.  The firefighter's `_fire_cells` is an instance method on
+    Firefighter; the victim gets its own equivalent rather than reaching
+    across classes.
+  ~ Firefighter.advance  the live re-target of 1.3, behind the kill switch, on
+                         the approach path only.
+
+wildfire_model.py
+  ~ update VictimState.last_known_position on an actual victim move, and append
+    to `_victim_flee_log`.  (Placed model-side so the log lives with the model,
+    as `_ff_absence_log` does.)
+
+tests/test_victim_fire_flight.py  (new)
+  drives the real WildFireModel, in the style of
+  tests/test_firefighter_rescue_absence.py: trigger threshold respected; hold
+  when fire is far; burning cells never chosen; leash enforced; escape from an
+  igniting cell; custody suppression on both clauses (exiting, and co-located
+  with exiting still False); kill switch is a no-op; target_pos tracks a moving
+  victim; determinism (same model state -> same move).
+
+NO CHANGE to: the planner, the executor, the adaptation manager stage order,
+the dashboard, the renderers, or `_build_evaluation`.
+
+
+================================================================================
+1.8  PART 3 VALIDATION PLAN (as specified in the brief)
+================================================================================
+
+  1. CONTROL, kill switch on: 13-run wave with
+     `--set VICTIM_FLEE_TRIGGER_DISTANCE=0` against the feature checkout;
+     byte-identity vs 9c3eac6 including the stdout sha256.  GATE.
+  2. FEATURE arm, seed-matched: rescued, dead, ff_deaths, never_detected,
+     terminal_step, plus the fire-digest identity check of section 1.5.
+  3. MECHANISM: victims that moved, total displacement, final distance from
+     spawn, moves into a cell that later burned, victims that died anyway.
+  4. KEY QUESTION: deaths avoided vs deaths relocated, per 1.2.4, with survival
+     duration and final displacement for every relocated death.
+  5. DETECTION: never_detected per run; if it rises, report whether the victim
+     outran the searchers' coverage, using the flee log against searcher
+     tracks.
+  6. route_blocked gate; full pytest.  Baseline being measured now at 9c3eac6
+     for comparison (brief states 8 failed / 435 passed; 443 tests collected,
+     which is consistent).
+
+  GATE: kill switch byte-identical; `dead` does not increase; `never_detected`
+  does not increase materially; no NEW test failures; route_blocked gate passes.
+
+
+================================================================================
+1.9  RISKS I AM CARRYING INTO PART 2
+================================================================================
+
+  R1  `dead` may fall sharply (1.2.4).  Directionally allowed by the gate, but
+      it is a large behavioural change and the report must not present it as an
+      unqualified win.  Mitigated by the avoided/relocated split.
+  R2  `never_detected` is the one metric that can move the wrong way.  Bounded
+      by the leash; measured; hard gate.
+  R3  The `target_pos` refresh touches `Firefighter.advance`, the most
+      heavily-tested method in the tree (test_firefighter_fire_avoidance,
+      test_firefighter_dispatch_replacement, test_executor_routing_and_burnt,
+      test_execution_drives_movement).  The kill-switch gate means the control
+      arm proves the untouched path is untouched.
+  R4  The `approaching` perturbation (1.1.4 #3) is argued inert, not proven
+      inert.  `geographically_isolated` is reported per run; baseline 0.
+  R5  Fixed-spawn investigations (outputs/burntcells_part1.txt, the
+      searcher-coverage reports, outputs/_diag_sweep_coverage.py) describe a
+      world in which victims do not move.  They are not invalidated - with the
+      kill switch off the world is byte-identical - but any future re-run of
+      them with the feature ON needs the leash in mind.
+
+================================================================================
+END OF PART 1.  No source file modified.  Stopping for confirmation.
+================================================================================
+
+================================================================================
+APPENDIX A - EMPIRICAL CONFIRMATION OF THE FOUR LOAD-BEARING CLAIMS
+================================================================================
+Run against a live WildFireModel at HEAD 9c3eac6, seed 101, scenario defaults.
+These are observations, not arguments.
+
+A1  SCHEDULER ADVANCE ORDER (claim 1.1.2)
+      advance order (type, count): Fire 2500, UAV 3, Victim 5, Firefighter 3
+    Victims advance after fire commits and before firefighters move.  CONFIRMED.
+
+A2  VICTIM SPAWN CELLS (claim 1.1.1)
+      victim_0 (40, 25)  victim_1 (32, 46)  victim_2 (13, 34)
+      victim_3 ( 7, 12)  victim_4 (30, 11)
+    Identical to the offline formula and to the coordinates pinned in
+    outputs/_diag_sweep_coverage.py:47.  CONFIRMED.
+
+A3  A DEAD VICTIM IS STILL SCHEDULED (claim 1.1.3 - forces guard G3)
+    Forced victim_0's cell burning, called _check_fire_casualties directly:
+      [Casualty] victim_0 reached by fire at (40, 25)
+      after casualty: status=dead  pos=(40, 25)  in_schedule=True
+    The marker keeps its cell and its scheduler slot, so Victim.advance() keeps
+    being called for a dead victim.  The status guard is mandatory.  CONFIRMED.
+
+A4  grid.move_agent CONSUMES NO SHARED RNG (claim 1.5)
+    Captured the shared stream's state, moved a victim marker, compared:
+      rng untouched by move_agent: True
+    CONFIRMED.

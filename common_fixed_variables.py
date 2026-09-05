@@ -119,6 +119,29 @@ BATTERY_CRITICAL_THRESHOLD = 15.0
 FF_RESCUE_ABSENCE_MIN_STEPS = 3
 FF_RESCUE_ABSENCE_MAX_STEPS = 5
 
+# Victim fire flight (feature 2). A victim holds its cell until the nearest
+# ACTIVELY BURNING cell is within VICTIM_FLEE_TRIGGER_DISTANCE (manhattan), then
+# steps to the orthogonal neighbour that maximises distance from fire - never
+# onto a burning cell, and never further than VICTIM_FLEE_MAX_DISPLACEMENT from
+# the cell it spawned on. The leash is what keeps a fleeing victim inside the
+# searcher coverage its spawn sat in, and what stops a victim outrunning the
+# front for the whole run only to die somewhere else.
+#
+# The two defaults are borrowed, not invented: 3 is IDLE_RETREAT_SAFETY_BUFFER
+# and 6 is IDLE_RETREAT_MAX_CELLS (agents.py), already this codebase's notions
+# of "fire is too close to stand here" and "how far a unit may wander during
+# this kind of manoeuvre", so a victim's sense of danger matches a
+# firefighter's.
+#
+# TRIGGER <= 0 is the kill switch: Victim.advance goes back to a no-op, the
+# firefighter's live re-target is skipped so the approach path is the
+# pre-feature code literally, and last_known_position stops being updated.
+# Overridable per run through apply_scenario_config like every other scenario
+# parameter, and read at call time so an override applies. The rule is fully
+# deterministic - it draws from no RNG at all.
+VICTIM_FLEE_TRIGGER_DISTANCE = 3
+VICTIM_FLEE_MAX_DISPLACEMENT = 6
+
 N_ACTIONS = 4
 UAV_OBSERVATION_RADIUS = 8
 side = ((UAV_OBSERVATION_RADIUS * 2) + 1)

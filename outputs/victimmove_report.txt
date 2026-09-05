@@ -1,0 +1,610 @@
+================================================================================
+FEATURE 2 - VICTIMS MOVE AWAY FROM APPROACHING FIRE
+PARTS 2 AND 3: IMPLEMENTATION AND VALIDATION
+================================================================================
+Design, written before any source edit: outputs/victimmove_part1.txt
+
+  branch     firefighter-mission-features
+  base HEAD  9c3eac6  (Feature 1: firefighter rescue absence)
+  changed    agents.py, wildfire_model.py, common_fixed_variables.py,
+             tests/test_victim_fire_flight.py (new, 35 tests)
+  harness    outputs/_ffr_harness.py (read-only victim observers added),
+             outputs/_vm_analyze.py, outputs/_vm_phantom_probe.py (new)
+  python     E:\Projects\SAS\.venv\Scripts\python.exe - 3.10.11, mesa 1.2.1
+  baseline   a pristine `git worktree add --detach ... 9c3eac6` checkout, so the
+             baseline arm is the commit itself, not an edited working tree
+
+REQUIREMENT, as stated by the maintainer's supervisor
+  "Simple movement for victims so when fire reaches the victim, it should move
+   and stay away from it until it be found and rescued."
+
+TWO GUARDS were added after the first measurement round, at the maintainer's
+direction: DEAD-END AVOIDANCE (guard 1) and LEASH RE-ANCHORING (guard 2). Both
+are measured in isolation below, because they turn out to do very different
+amounts of work.
+
+================================================================================
+HEADLINE
+================================================================================
+  * KILL SWITCH: byte-identical to 9c3eac6 on ALL 22 recorded fields across all
+    13 runs, with BOTH guards present - captured-stdout sha256 and per-step fire
+    digests included.
+  * FIRE MAP: identical on every step of all 13 runs in EVERY arm, as the design
+    predicted. Nothing about victim movement couples into fire spread.
+  * GUARD 2 IS WHAT MAKES THE FEATURE WORK. Guard 1 changed three movement
+    decisions and ZERO outcomes.
+        arm                rescued  dead  ff_deaths
+        9c3eac6                 29    23          6
+        feature, no guards      31    17          6
+        + guard 1               31    17          6
+        + guard 2               34    12          8
+  * THE KEY QUESTION: with both guards, 12 of the 23 baseline deaths are
+    PREVENTED against 11 RELOCATED - the first arm where prevention outweighs
+    relocation (it was 7 against 16 before the guards). One death is CAUSED.
+    One relocated victim ran for 165 steps and died anyway; that is counted as a
+    relocation, not a save.
+  * DETECTION still fails the gate BY THE LETTER, and still not because of
+    detection: the never_detected mark is identical in every arm and moves only
+    because the victim now survives instead of burning.
+  * A RESCUE BEGAN WITHOUT CONTACT in the guard-2 arm. It is a PRE-EXISTING
+    defect in rescue-assignment authority, proved by reproducing it on untouched
+    9c3eac6 where victims cannot move at all. Guard 2 exposed it; it did not
+    create it. Reported, not fixed - it belongs in its own round.
+  * THE COST is unchanged in kind and now confirmed twice: victims that survive
+    longer consume rescue capacity, and the victim that pays is one that never
+    moved.
+
+Nothing here was tuned to produce a pass.
+
+================================================================================
+1. WHAT WAS IMPLEMENTED
+================================================================================
+
+1.1  The rule (agents.py, Victim._flee_approaching_fire)
+---------------------------------------------------------
+A victim holds until the nearest ACTIVELY BURNING cell is within
+VICTIM_FLEE_TRIGGER_DISTANCE (3) manhattan, then steps to the orthogonal
+neighbour that maximises distance from the nearest burning cell, subject to:
+
+  * in bounds, and containing no actively burning Fire agent;
+  * within VICTIM_FLEE_MAX_DISPLACEMENT (6) manhattan of the LEASH ANCHOR;
+  * the step must strictly increase distance from fire, or the victim holds.
+
+Ties break by distance to the anchor, then by a fixed offset order. A total
+order over a deterministic candidate set: IT DRAWS FROM NO RNG AT ALL, so no
+dedicated stream was created and none was needed.
+
+Five guards, each a hard return: feature disabled; no grid position; status in
+("dead", "rescued") - the SAME skip set `_check_fire_casualties` uses, so the
+set of victims that can move is exactly the set that can die, and mandatory
+because that sweep leaves dead victims on the grid and in the scheduler; a
+firefighter has custody; nothing is burning.
+
+1.2  Why a victim can escape its own igniting cell
+---------------------------------------------------
+mesa advances agents in insertion order - Fire, UAV, Victim, Firefighter - and
+`_check_fire_casualties` runs later still, in the post-move cycle. So when a
+victim advances, this step's fire has committed and the casualty sweep has not
+yet looked. Verified on a live model. Deaths then occur only when a victim is
+surrounded, which is why section 7 is the accounting this makes necessary.
+
+1.3  Guard 1 - dead-end avoidance
+----------------------------------
+PREFER a destination that still has an onward exit: at least one orthogonal
+neighbour that is in bounds and not burning, NOT COUNTING the cell being
+vacated. Excluding the vacated cell is what gives the test content; counting it
+would make the answer True for every candidate whenever the victim is not
+already standing in fire.
+
+A preference, not a filter: when every reachable cell is a dead end the victim
+still takes the best of them rather than freezing. Same shape as the trapped
+guard added in 70e1b33, which skips a route_blocked clear when every in-bounds
+neighbour burns.
+
+GEOMETRIC LIMIT, verified exhaustively on a small grid and confirmed by every
+firing in the sample: a cell is a dead end only if a neighbour burns, so a dead
+end ALWAYS sits at fire distance 1. It can therefore never be strictly further
+from fire than an open cell, and the guard can only ever BREAK A TIE among
+distance-1 cells. Combined with the strict-improvement rule that makes it live
+exactly when the victim is standing IN fire choosing an escape - the
+enclosure-shaped case. Correctly aimed, narrower than "prefer" suggests.
+
+1.4  Guard 2 - leash re-anchoring
+----------------------------------
+The leash was measured against `spawn_cell`, which has exactly ONE writer in the
+tree and is never reassigned, so a victim was confined to a permanent diamond
+around where it spawned while the front, which has no leash, kept coming. When
+the front arrives FROM the spawn side the leash stopped the victim escaping
+rather than bounding a manoeuvre. The firefighter's `_idle_retreat_origin` never
+had that problem: it re-anchors on reaching safety, making its budget renewable.
+
+`leash_anchor` now re-anchors to the current cell whenever the victim is safe -
+fire beyond the trigger radius, or nothing burning at all. Same threshold as the
+trigger, so no new constant enters the model, and the number coincides with the
+firefighter's ideal standoff of BUFFER + 1 = 4.
+
+THE 93f23b7 RESET HOLE IS NOT INHERITED. The firefighter's two re-anchor sites
+also null `_idle_retreat_last_cell`, its anti-oscillation memory - diagnosed in
+93f23b7 as real but inert. A leash re-anchor has no business discarding
+oscillation history, so the INTENDED behaviour is mirrored: re-anchoring writes
+exactly one field. The victim rule keeps no such memory today, and a test
+asserts unrelated state survives a re-anchor so a future one cannot be silently
+wiped.
+
+`spawn_cell` stays IMMUTABLE, so every report still means the true spawn by
+"displacement from spawn".
+
+1.5  Custody, and the stale target_pos
+---------------------------------------
+A victim holds when a firefighter is bound to it, is not dead, and either is
+`exiting` OR is standing on its cell. The co-location clause closes a one-step
+hole: victims advance BEFORE firefighters, so on the step a unit sets `exiting`
+the flag is still False while the unit is already co-located. A dead carrier is
+skipped explicitly - a corpse must not pin a live victim.
+
+`target_pos` was written once at assign (wildfire_model.py:3822) and never
+refreshed. `Firefighter._refresh_target_from_victim` re-reads the bound victim's
+live cell at the top of `advance()`. It never changes WHICH victim the unit is
+bound to, only where that victim now is; the executor keeps sole authority over
+`assigned`, `rescued_victim` and `status`.
+
+1.6  Kill switch
+-----------------
+VICTIM_FLEE_TRIGGER_DISTANCE <= 0 disables every touched path: the flee rule
+returns at its first line, both guards are unreachable behind it, the
+firefighter's re-target is skipped so the approach path is the pre-feature code
+literally, and last_known_position stops being updated. Read at call time
+through the `cfv` module so a per-run override is actually seen.
+
+================================================================================
+2. METHOD
+================================================================================
+Four arms, all from the SAME outputs/_ffr_harness.py so every field lines up
+seed for seed, on the canonical 13-run sample (scenario D, 240 steps,
+FIRE_SPREAD_MULTIPLIER 0.75; D/east and D/south half-roles seeds 101-505,
+D/east default-roles 101/202/303):
+
+  vmbase   pristine 9c3eac6 worktree                      (the reference)
+  vmoff2   feature source, --set VICTIM_FLEE_TRIGGER_DISTANCE=0, BOTH guards
+           present                                        (kill switch)
+  vmon2    feature + guard 1                              (guard 1 isolated)
+  vmon3    feature + guard 1 + guard 2                    (final)
+
+An earlier arm, vmon, measured the feature with NO guards and is retained for
+attribution.
+
+PROVENANCE. vmbase was checked against the stored Feature 1 arm (tag ffabs)
+before anything was compared against it, and reproduces it exactly: identical on
+all 7 eval metrics, on per-step fire digests, and on captured-stdout sha256, all
+13/13 runs. Totals 29 rescued, 23 dead, 6 firefighter deaths.
+
+Harness additions are read-only observers: per-step victim rows, spawn cells,
+leash anchors and re-anchor counts, the flee log, hold-reason counters, the
+first step each cell was seen burning, the end-of-run ground state, every
+exiting False->True transition with a contact flag, and every target_pos change.
+
+Machine output: outputs/_vm_analysis.txt, outputs/_vm_guard1_attribution.txt,
+outputs/_vm_guard2_attribution.txt, outputs/_vm_phantom_finding.txt,
+outputs/_vm_gate_killswitch.txt.
+
+================================================================================
+3. GATE 1 - KILL-SWITCH BYTE IDENTITY.  PASS
+================================================================================
+With the trigger at 0 and BOTH guards present in the source, the feature
+checkout is indistinguishable from 9c3eac6 on all 13 runs, across all 22
+recorded fields: eval, per-step fire_digests, per-step ff_steps, completions,
+recycles, assigns, unassigns, unreachable_marks, planner decisions,
+recycle_to_next_assign, idle, absence_log, absence_counters,
+unreachable_escape_log, rescue_event_counts, rescue_failed, terminal_step,
+pending_removal_failures_total, leftover_pending, stdout_sha256, first_burn_step,
+fire_ground_final.
+
+  byte-identical: 13/13 runs.  Totals identical: rescued 29, dead 23,
+  unreachable 0, never_detected 0, geographically_isolated 0, ff_deaths 6.
+
+Proved twice - once before the guards (tag vmoff) and again with both guards
+present (tag vmoff2). This is what licenses every behavioural claim below.
+
+================================================================================
+4. GATE 2 - FIRE-MAP IDENTITY, REQUIRED ON BOTH ARMS.  PASS
+================================================================================
+Victim movement draws from no RNG, a victim in a cell is invisible to
+`Fire.probability_of_fire` (which filters on the Fire type), and
+`grid.move_agent` was read from the installed mesa 1.2.1 and consumes nothing.
+So a seed-matched run must reproduce the fire map step for step in the FEATURE
+arms too, not only in the control.
+
+  control  vs baseline : identical on every step of all 13 runs
+  guard 1  vs baseline : identical on every step of all 13 runs
+  guard 1+2 vs baseline: identical on every step of all 13 runs
+
+A divergence would have meant a coupling that should not exist. There was none
+in any arm.
+
+================================================================================
+5. OUTCOMES AND GUARD ATTRIBUTION
+================================================================================
+  metric                     baseline   noGuard    guard1  guard1+2
+  ------------------------------------------------------------------
+  rescued                          29        31        31        34
+  dead                             23        17        17        12
+  unreachable                       0         2         2         2
+  never_detected                    0         1         1         1
+  geographically_isolated           0         1         1         1
+  firefighter_deaths                6         6         6         8
+
+GUARD 1 IN ISOLATION: REAL, CORRECTLY AIMED, INERT ON OUTCOMES.
+  seeds with identical outcomes on all 6 metrics : 13/13
+  flee moves                                     : 258 -> 254
+  seeds whose flee path changed                  : 3/13
+  every decision it changed:
+    D/east/half 303  step 204 victim_1  [20,49]->[21,49]  becomes [20,49]->[20,48]
+    D/south/half 202 step  75 victim_3  [21, 3]->[22, 3]  becomes [21, 3]->[21, 4]
+    D/south/half 505 step  81 victim_3  [24, 0]->[25, 0]  becomes [24, 0]->[24, 1]
+  ALL THREE have fire distance 0 before the move - the victim standing IN fire,
+  choosing among escape cells that all tie at distance 1 - exactly the case
+  section 1.3 predicts is the only one it can reach. Two of the three are on a
+  grid edge, where the boundary helps seal the pocket.
+
+GUARD 2 IS WHERE THE OUTCOME CHANGE COMES FROM: +3 rescued, -5 dead,
++2 firefighter deaths, and it is what lets a victim leave the spawn diamond at
+all (192 re-anchors; displacement from the true spawn goes from median 4 / max 6
+to median 10 / max 32).
+
+MISSION DURATION. Victims surviving longer keeps the mission open longer;
+several runs terminate much later and some not at all inside 240 steps.
+
+================================================================================
+6. GATE 3 - dead DOES NOT INCREASE.  PASS  (23 -> 12)
+================================================================================
+The count alone is the wrong thing to read, which is what section 7 is for.
+
+================================================================================
+7. THE KEY QUESTION - DEATHS AVOIDED vs DEATHS RELOCATED
+================================================================================
+Of the 23 baseline deaths, with both guards:
+
+  PREVENTED (alive at the horizon)                             12
+      became rescued      7
+      still assigned      4   (alive, mission unresolved at the horizon)
+      became unreachable  1   (section 8.1)
+  POSTPONED (fled, then died anyway)                           11
+  UNCHANGED (dead in both arms, never moved)                    0
+  CAUSED    (alive at baseline, dead in the feature arm)         1
+
+  net 23 - 12 + 1 = 12, reproducing the eval count independently.
+
+This is the first arm in which prevention outweighs relocation. Before the
+guards it was 7 prevented against 16 relocated.
+
+THE 11 POSTPONED DEATHS - the number that matters:
+  extra survival between first flee and death
+      n=11   min 18 steps   median 24   max 165
+  displacement from spawn at the moment of death
+      min 1   median 10   max 32
+
+  D/south/half 303 victim_3 fled for 165 steps, reached displacement 25, and
+  died at step 216. D/east/half 404 victim_0 fled 108 steps to displacement 32
+  and died at 162. NEITHER IS A SAVE and neither is counted as one.
+
+EVERY ONE OF THE 12 FEATURE-ARM DEATHS HAPPENED ON A CELL THE VICTIM MOVED TO.
+None died on the cell it started on. In the baseline the reverse holds exactly:
+all 23 died where they stood.
+
+WHY THEY STILL DIE: 334 of the 413 flee moves went into ground that caught fire
+LATER in the run. Guard 2 removes the spawn diamond, so this is no longer the
+leash trapping them - it is that a victim moving one cell per step inside a
+front that eventually covers the map buys time rather than safety.
+
+================================================================================
+8. GATE 4 - DETECTION.  FAILS BY THE LETTER; THE CAUSE IS NOT DETECTION
+================================================================================
+never_detected 0 -> 1 and geographically_isolated 0 -> 1. Both reported per run
+against the baseline of zero, as required, and both traced to a cause.
+
+8.1  never_detected: D/east/half 202 victim_1 - A RECLASSIFICATION
+-------------------------------------------------------------------
+The escape-hatch mark is IDENTICAL in every arm - baseline, kill switch, and
+feature: step 210, victim_1, cause never_detected, streak 210. The searchers
+missed that victim in the baseline exactly as much as in the feature arm. What
+differs is what happened after:
+
+  baseline  marked unreachable at 210, then BURNED TO DEATH at 225, so
+            `_build_evaluation` (which counts final status) recorded it as dead.
+  feature   marked unreachable at 210, then FLED and survived to the horizon, so
+            the status stayed unreachable and is counted under never_detected.
+
+IS THE MOVEMENT OUTRUNNING THE SEARCHERS? No. The gate asked for that judgement
+and the answer is negative, proved by the identical mark rather than argued. The
+metric moved because a victim that used to die now survives; the same victim
+appears in section 7 as a death prevented.
+
+Design note, corrected by evidence: Part 1 argued a moving victim could outrun
+searcher coverage and named never_detected as the metric to watch. The mechanism
+was right; on this sample it never fired.
+
+8.2  geographically_isolated: D/east/default 101 - A REAL REGRESSION
+----------------------------------------------------------------------
+Genuine, and the same seed and the same mechanism as before the guards:
+rescued 2 -> 1, firefighter deaths 1 -> 2.
+
+  baseline  victim_0 dies at step 54, freeing ff_unit_1, which goes on to rescue
+            victim_2 at 120.                                     -> 2 rescued
+  feature   victim_0 FLEES, surviving to step 117 instead of 54, so ff_unit_1 is
+            occupied for 63 extra steps; ff_unit_1 dies at 195; victim_2 is
+            marked geographically_isolated at 109.                -> 1 rescued
+
+THE VICTIM THAT WAS LOST NEVER MOVED. victim_2 has moves=0 in both arms. It was
+rescued in the baseline and lost in the feature arm because the firefighter that
+would have collected it spent its remaining life on a victim that fled and died
+anyway. This is the honest cost of the feature, and it is not a detection
+problem.
+
+================================================================================
+9. MECHANISM - WHAT THE MOVEMENT ACTUALLY DID (guard 1 + 2)
+================================================================================
+  TOTAL   victims 52, victims that moved 26, moves 413, own-cell escapes 47,
+          moves into ground that burned later 334, leash re-anchors 192
+
+Every step is one cell, so TOTAL DISPLACEMENT equals the move count: 413.
+
+  final displacement from the TRUE spawn, victims that moved:
+      n=17   min 1   median 10   max 32      (raw leash 6; guard 2 renews it)
+
+  ground a moved victim ends the run standing on:
+      burnt 9, scorched 4, green 4, off-grid because rescued 9
+
+A STATIC VICTIM COULD NEVER STAND ON BURNT OR SCORCHED GROUND. The old invariant
+"a live victim can never stand on a burnt cell" is broken benignly: burnt ground
+is fuel-exhausted and permanently safe, so fleeing onto it is the best available
+outcome. Scorched ground - has_burned with fuel remaining - is the dangerous
+state, and 4 victims end there.
+
+OWN-CELL ESCAPES: 47 of the 413 moves were made while STANDING IN FIRE, which
+the scheduler order permits. Those are moves that would have been deaths in the
+baseline.
+
+================================================================================
+10. GATE 5 - NO FABRICATED RESCUE.  ONE FAILURE, PROVED PRE-EXISTING
+================================================================================
+  baseline    exit transitions 29   without contact 0
+  guard 1     exit transitions 33   without contact 0
+  guard 1+2   exit transitions 36   without contact 1
+
+The one failure is D/east/half 303 step 148: ff_unit_1 started exiting at
+(49,24) with its bound victim_0 already rescued and off the grid.
+
+IT IS NOT VICTIM MOVEMENT. outputs/_vm_phantom_probe.py drives the model
+directly with NO VICTIM EVER MOVING and reproduces it identically on untouched
+9c3eac6:
+
+  Q1  one victim assigned to two firefighters      : YES on both checkouts
+  Q2  second unit still bound after the first
+      completes the rescue                          : YES on both checkouts
+      it then walks to the stale target and starts
+      exiting against empty ground                  : YES on both checkouts
+
+Mechanism: the executor's assign guard only blocks giving a DIFFERENT victim to
+an already-assigned unit, so one victim can be claimed by two firefighters; and
+`_handle_rescue_incident` unassigns on victim_dead but NOT on rescue_complete,
+so the loser is never released. Guard 2 changed which unit survived long enough
+to reach the stale target - in the pre-guard arms the rival died first, so the
+sample never exposed it.
+
+It does NOT inflate the rescue count: `_finalize_rescued_victim` returns early
+for an already-rescued victim (3 completions, 2 rescued in that seed). The cost
+is wasted capacity - 88 steps bound to a victim someone else had carried out,
+then a rescue absence it had not earned.
+
+OUT OF SCOPE and NOT FIXED HERE: this is rescue-assignment authority, not victim
+movement. Recommended for its own round.
+
+The live re-target itself is heavily exercised and correct: it fired 141 times
+across 10 of 13 runs in the pre-guard arm, against 0 in the baseline, and no
+rescue in any arm began against a LIVE victim standing elsewhere.
+
+================================================================================
+11. LATERAL-WHEN-PINNED, MEASURED RATHER THAN ASSERTED
+================================================================================
+Raised as a possible third guard and deliberately kept separate. An earlier
+claim that verification had shown it blocks escape INDEPENDENTLY of the anchor
+was an overstatement: the verification read code, ran nothing, and framed it as
+an aggravating detail OF the leash pinning. It is now instrumented.
+
+  no_candidate                            37
+  no_candidate.leash_removed               6
+  no_improvement                         231
+  no_improvement.lateral_available       175
+  no_improvement.leash_removed            17
+
+Of 231 holds where a triggered victim found no strictly-improving step, 175 had
+a lateral (equal-distance) step available and only 17 involved the leash
+discarding any candidate. So roughly 158 lateral-blocked holds are
+ANCHOR-INDEPENDENT, and re-anchoring does not address them. The strict
+improvement rule at agents.py refuses a lateral step that merely maintains fire
+distance, which is what a victim needs to slide around an approaching front.
+
+This IS a real separate consideration, now with a number rather than an
+inference. It is not proposed as part of this feature.
+
+================================================================================
+12. PREMISE CORRECTIONS
+================================================================================
+Four premises behind the guard request were re-verified against the tree rather
+than trusted. Three needed correction.
+
+  (a) TRAPPED GUARD (70e1b33) - CONFIRMED, with a refinement. It exists and is
+      written as "skip if ALL neighbours burn", equivalent to requiring >= 1
+      fire-free neighbour. But it is NECESSARY, NOT SUFFICIENT: a live BFS
+      reachability test runs after it. Also "fire-free" means only "no burning
+      Fire agent" - smoke and scorched ground still count as free - and
+      out-of-bounds neighbours are dropped from the list rather than treated as
+      blocked.
+
+  (b) "3 OF 6 FIREFIGHTER DEATHS WERE GENUINE ENCLOSURE" - the figure is 3 of
+      SEVEN, not 3 of six. It is bucket C1 of the idle-retreat residual, defined
+      as every neighbour burning. A separate "3 of the 6 remaining" figure does
+      exist but counts deaths on SCORCHED ground re-igniting under a stationary
+      unit - a different mechanism, and not the same three units.
+
+  (c) "THE last_cell ROUND'S C4 RESIDUAL" - the description is accurate (a unit
+      on a burning cell with exactly one free neighbour) but C4 is the case that
+      round CLOSED, not one it left open, and the load-bearing cause was that
+      the single free neighbour WAS `_idle_retreat_last_cell`, so the
+      anti-oscillation filter removed it. Without that clause C4 is
+      indistinguishable from C3, which was excluded by the leash instead.
+
+  (d) LEASH ASYMMETRY - CONFIRMED AND TOTAL, and it is what guard 2 fixes. The
+      firefighter re-anchors via one explicit branch plus five reset sites; the
+      victim's `spawn_cell` had exactly one writer and never re-anchored.
+
+================================================================================
+13. GATE SUMMARY
+================================================================================
+  kill switch byte-identical to 9c3eac6      PASS   13/13, 22 fields, both guards
+  fire map identical, BOTH arms              PASS   13/13 every step, every arm
+  dead does not increase                     PASS   23 -> 12
+  never_detected not materially up           FAIL BY THE LETTER (0 -> 1),
+                                             cause proved to be reclassification,
+                                             not detection (section 8.1)
+  geographically_isolated                    FAIL (0 -> 1), real, one seed,
+                                             mechanism identified (section 8.2)
+  no fabricated rescue                       ONE FAILURE, proved pre-existing on
+                                             untouched 9c3eac6 (section 10)
+  no NEW test failures                       PASS   8 failed / 470 passed vs
+                                             8 failed / 435 passed; identical
+                                             failure set, +35 new tests
+  route_blocked gate                         PASS   all three items; 0 units
+                                             left latched; rescued down on no
+                                             seed across 18 runs
+
+FOUR OF SIX GATES PASS OUTRIGHT. The two that do not are reported with their
+causes established rather than argued:
+  - the detection gate moves because a victim that used to burn now survives,
+    with the escape-hatch mark proved identical in every arm (8.1), plus one
+    real single-seed regression whose mechanism is the chase, not detection (8.2);
+  - the contact gate has one failure that reproduces on untouched 9c3eac6 with
+    no victim able to move at all (10).
+
+================================================================================
+14. TEST SUITE AND route_blocked GATE
+================================================================================
+
+14.1  Test suite.  PASS - no new failures
+------------------------------------------
+  9c3eac6 baseline, measured on the pristine worktree : 8 failed, 435 passed
+  final source, both guards                           : 8 failed, 470 passed
+  NEW failures                                        : NONE
+  net new passing                                     : +35
+
+The failing set is IDENTICAL, name for name, on both runs:
+  test_behavior_regression::test_descriptive_next_action_uses_target_position
+  test_dashboard_panel::test_dashboard_panel_render_returns_string
+  test_firefighter_dispatch_replacement::test_no_replacement_available_marks_victim_unreachable_once
+  test_rescue_planner_authority::test_no_firefighter_planner_delay_or_unreachable
+  test_uav_sector_assignment::test_fire_tracker_uavs_receive_different_target_sets
+  test_uav_sector_assignment::test_fire_tracker_still_overridden_by_search_mode_fail_safe
+  test_wind_aware_trajectory_regression::test_north_vs_south_trajectories_diverge_over_40_steps
+  test_wind_aware_victim_search::test_victim_search_wind_aware_action_when_downwind_exists
+
+The 8-failure baseline was confirmed twice - once in the working tree before any
+edit and once in the pristine 9c3eac6 worktree - because the first measurement
+depended on import timing and that is too fragile to rest a gate on.
+
+ARTIFACT PROVENANCE, disclosed rather than quietly repaired. The completed gate
+run (43:39) was read and reported, and then a stray background script -
+outputs/_vm_finalgates.sh, which a TaskStop had detached from but not killed -
+fired a SECOND pytest at 10:30 and began OVERWRITING
+outputs/_vm_pytest_final.txt. The stray was stopped at about 15%; its fragment
+is kept at _vm_pytest_final.TRUNCATED_BY_STRAY_RERUN.txt, and
+_vm_pytest_final.txt now holds the completed run's own captured output recovered
+verbatim from the task log, under a header saying so. The per-test progress dots
+are gone; the summary line and the full failure list are intact, and the numbers
+reported here are the ones the completed run actually produced. Anyone wanting a
+natively-written file can regenerate it with a single pytest invocation.
+
+The +35 are tests/test_victim_fire_flight.py: the flee rule, the leash, both
+custody clauses, the kill switch on all three touched paths, the live re-target
+and the contact assertion, determinism and RNG neutrality, guard 1 including its
+tie-break geometry and its no-exit fallback, and guard 2 including a paired
+control showing the same advancing front pins the victim at displacement 6 with
+re-anchoring disabled and lets it escape with it enabled.
+
+ONE TEST WAS FIXED FOR PASSING VACUOUSLY. The first dead-end test relocated a
+victim without re-basing the leash anchor, so every candidate fell outside the
+leash, the victim held, and "it avoided the pocket" succeeded without the guard
+doing anything. It now asserts the victim actually moved, that the tie is real,
+and that the pocket would have won on offset order without the guard.
+
+14.2  route_blocked gate.  PASS - all three items
+--------------------------------------------------
+Run with outputs/_ffr_rbgate.sh on the final source at its defaults, merged with
+outputs/_ir_rbmerge.py, on the campaign's standard 18-run gate sample - which is
+WIDER than the 13-run measurement sample above and includes eight seeds it does
+not contain (606, 707, 808, 909, 111, 222, 333, 444). Full output:
+outputs/_vm_gate_rb.txt.
+
+  [PASS] rescued does not decrease on any seed
+  [PASS] recovery pass still recovers units
+         recoveries 3 -> 10, route_blocked firings 15 -> 24
+  [PASS] no unit left latched as route_blocked at end of run   (0 -> 0)
+
+  route_blocked mechanics, D/east and D/south combined:
+    fires                              15 ->   24
+    recoveries                          3 ->   10
+    reval_calls                      4320 -> 4320
+    reval_calls_with_blocked_unit      41 ->  126
+    end-of-run units still blocked      0 ->    0
+
+READ THE OUTCOME COLUMN WITH CARE. This gate's stored baseline is 70e1b33, which
+PREDATES FEATURE 1, so its headline deltas (rescued 43 -> 51, dead 25 -> 11,
+ff_deaths 15 -> 11 across 18 runs) bundle Feature 1 and Feature 2 together and
+are NOT this feature's effect alone. The seed-matched attribution against
+9c3eac6 in section 5 is the number to quote for Feature 2.
+
+What the wider sample does add independently: rescued did not decrease on ANY of
+the 18 seeds, including the eight outside the measurement sample. That is a
+useful robustness signal for a change measured mainly on 13.
+
+The firefighter-death picture is mixed here and worth stating rather than
+averaging away: 3 seeds up (east 606, east 909, south 303) and 6 seeds down
+(east 303, east 505, east 808, east 333, south 101, south 404).
+
+================================================================================
+15. HOW TO REPRODUCE
+================================================================================
+  # baseline checkout (shares the parent .venv; git prunes it automatically
+  # once the temp directory is gone)
+  git worktree add --detach <scratch>/base9c3eac6 9c3eac6
+
+  # the four waves, ONE AT A TIME - the box's limit is commit charge
+  bash outputs/_ffr_runall.sh vmbase <scratch>/base9c3eac6
+  bash outputs/_ffr_runall.sh vmoff2 . --set VICTIM_FLEE_TRIGGER_DISTANCE=0
+  bash outputs/_ffr_runall.sh vmon2  .        # guard 1 only, needs guard 2 reverted
+  bash outputs/_ffr_runall.sh vmon3  .
+
+  # analysis and the guard attribution
+  ./.venv/Scripts/python.exe outputs/_vm_analyze.py --base vmbase --ctrl vmoff2 --feat vmon3
+
+  # the phantom-rescue reproduction, on either checkout
+  ./.venv/Scripts/python.exe outputs/_vm_phantom_probe.py --repo <scratch>/base9c3eac6
+  ./.venv/Scripts/python.exe outputs/_vm_phantom_probe.py --repo .
+
+  # gates
+  ./.venv/Scripts/python.exe -m pytest tests -q
+  bash outputs/_ffr_rbgate.sh vmon && ./.venv/Scripts/python.exe outputs/_ir_rbmerge.py --prefix vmon
+
+================================================================================
+16. LIMITATIONS AND WHAT I WOULD NOT CLAIM
+================================================================================
+  * 13 seeds of one scenario. Every per-seed effect below about 2 counts is
+    inside the noise this sample can resolve.
+  * Guard 1 is inert on outcomes here. That is a statement about this sample,
+    not a proof that dead-end avoidance never matters; its reach is provably
+    narrow (section 1.3) but its firing rate on other scenarios is unmeasured.
+  * The +2 firefighter deaths under guard 2 are not diagnosed to a mechanism.
+    The chase dynamic in section 8.2 is the leading candidate and is confirmed
+    in one seed, but it was not traced in the other.
+  * Two runs no longer reach an all-victims-terminal state inside 240 steps, so
+    their final counts are horizon-truncated rather than settled.
+  * The phantom-rescue defect is reported, not fixed, and it remains live.

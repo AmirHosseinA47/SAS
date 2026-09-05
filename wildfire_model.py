@@ -4583,6 +4583,91 @@ class WildFireModel(mesa.Model):
         self._revalidate_route_blocked_firefighters()
         self._sync_firefighter_operational_knowledge()
 
+    # ------------------------------------------------------------------
+    # Feature 2: bookkeeping for a victim that stepped away from fire
+    # ------------------------------------------------------------------
+    def _record_victim_flee(
+        self,
+        marker: Any,
+        from_cell: tuple[int, int],
+        to_cell: tuple[int, int],
+        fire_dist_before: int,
+        fire_dist_after: int,
+        leash_anchor: tuple[int, int] | None = None,
+    ) -> None:
+        """Called by Victim.advance after an actual move. Two model-side jobs.
+
+        First, keep `VictimState.last_known_position` honest. It was written
+        once in `_init_managed_victims` and never again anywhere in the tree, so
+        every consumer that falls back to it - this model's own unreachable pass
+        and the dashboard victim view, both only when the marker is gone - saw
+        the spawn cell forever. A field named "last known position" pinned to
+        spawn while the victim walks away is misleading; both readers become
+        strictly more accurate.
+
+        Second, append to `_victim_flee_log`, the read-only mechanism record the
+        validation harness reads by getattr, exactly as it reads
+        `_ff_absence_log`. Nothing in the simulation reads it back.
+
+        Only reachable while the feature is on: the sole caller is the move path
+        in `Victim.advance`, which returns at its kill-switch guard.
+        """
+        vid = self._victim_id_from_agent(marker)
+        dest = (int(to_cell[0]), int(to_cell[1]))
+
+        managed = getattr(self, "managed_victims", None)
+        if vid and isinstance(managed, dict):
+            state = managed.get(vid)
+            if state is not None:
+                try:
+                    state.last_known_position = (float(dest[0]), float(dest[1]))
+                except Exception:
+                    pass
+
+        log = getattr(self, "_victim_flee_log", None)
+        if not isinstance(log, list):
+            log = []
+            self._victim_flee_log = log
+        spawn = getattr(marker, "spawn_cell", None)
+        log.append(
+            {
+                "step": int(getattr(self, "evaluation_timesteps_counter", 0) or 0),
+                "victim_id": vid,
+                "from": [int(from_cell[0]), int(from_cell[1])],
+                "to": [dest[0], dest[1]],
+                "fire_dist_before": int(fire_dist_before),
+                "fire_dist_after": int(fire_dist_after),
+                # `spawn` is the immutable true spawn cell, so "displacement"
+                # keeps meaning distance from where the victim actually started.
+                "spawn": None if spawn is None else [int(spawn[0]), int(spawn[1])],
+                "displacement": (
+                    None
+                    if spawn is None
+                    else abs(dest[0] - int(spawn[0])) + abs(dest[1] - int(spawn[1]))
+                ),
+                # `anchor` is what the leash was measured against for THIS move.
+                # It equals spawn until guard 2 re-anchors on reaching safety.
+                "anchor": (
+                    None
+                    if leash_anchor is None
+                    else [int(leash_anchor[0]), int(leash_anchor[1])]
+                ),
+                "anchor_displacement": (
+                    None
+                    if leash_anchor is None
+                    else abs(dest[0] - int(leash_anchor[0]))
+                    + abs(dest[1] - int(leash_anchor[1]))
+                ),
+                "reanchors_so_far": int(getattr(marker, "leash_reanchors", 0) or 0),
+                # A move made while standing in fire: the cell was fatal this
+                # step and the casualty sweep has not run yet.
+                "escaped_own_cell": int(fire_dist_before) == 0,
+            }
+        )
+        self.victim_flee_moves_total = (
+            int(getattr(self, "victim_flee_moves_total", 0) or 0) + 1
+        )
+
     def _victim_id_from_agent(self, agent: Any) -> str:
         """Resolve managed victim id from a Victim marker agent."""
         vid = str(getattr(agent, "victim_id", "") or "").strip()

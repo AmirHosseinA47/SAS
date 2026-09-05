@@ -153,6 +153,9 @@ def main() -> int:
         "unassigns": [],
         "unreachable_marks": [],
         "planner": [],
+        # feature 2 observers
+        "exit_starts": [],
+        "retargets": [],
     }
 
     # ---- observers (call original, return unchanged) --------------------------
@@ -177,8 +180,35 @@ def main() -> int:
 
     def _obs_advance(self):
         before = bool(getattr(self, "rescue_completed", False))
+        before_exiting = bool(getattr(self, "exiting", False))
+        before_target = _cell(getattr(self, "target_pos", None))
         result = _orig_advance(self)
         after = bool(getattr(self, "rescue_completed", False))
+        # feature 2: the exiting False->True transition is the moment a rescue
+        # is declared. Record whether the unit was actually STANDING ON the
+        # victim then. A False here is a rescue completed with no contact -
+        # exactly the failure mode the live re-target exists to prevent.
+        if bool(getattr(self, "exiting", False)) and not before_exiting:
+            rv = getattr(self, "rescued_victim", None)
+            ff_cell = _cell(getattr(self, "pos", None))
+            v_cell = _cell(getattr(rv, "pos", None)) if rv is not None else None
+            REC["exit_starts"].append({
+                "step": _step_of(self.model),
+                "ff": str(getattr(self, "unit_id", "") or ""),
+                "victim": _vid(self.model, rv),
+                "ff_pos": ff_cell,
+                "victim_pos": v_cell,
+                "contact": bool(ff_cell is not None and v_cell is not None and ff_cell == v_cell),
+            })
+        after_target = _cell(getattr(self, "target_pos", None))
+        if before_target is not None and after_target is not None and before_target != after_target:
+            REC["retargets"].append({
+                "step": _step_of(self.model),
+                "ff": str(getattr(self, "unit_id", "") or ""),
+                "victim": _vid(self.model, getattr(self, "rescued_victim", None)),
+                "from": before_target,
+                "to": after_target,
+            })
         if after and not before:
             REC["completions"].append({
                 "step": _step_of(self.model),
@@ -260,6 +290,11 @@ def main() -> int:
 
     fire_digests: list[str] = []
     ff_steps: list[list] = []
+    victim_steps: list[list] = []
+    # feature 2: first step at which each cell was observed burning. Small
+    # (<= one entry per grid cell) and it is what answers "did the victim step
+    # into a cell that burned LATER".
+    first_burn_step: dict = {}
     terminal_step = None
     step = 0
     t0 = time.perf_counter()
@@ -280,6 +315,12 @@ def main() -> int:
             for a in model.schedule.agents:
                 if type(a).__name__ == "Fire":
                     parts.append("%s:%d%d%s" % (a.unique_id, int(bool(a.burning)), int(bool(a.burnt)), a.fuel))
+                    if a.burning:
+                        pos = getattr(a, "pos", None)
+                        if pos is not None:
+                            key = "%d,%d" % (int(pos[0]), int(pos[1]))
+                            if key not in first_burn_step:
+                                first_burn_step[key] = step
             fire_digests.append(hashlib.sha256("|".join(parts).encode()).hexdigest())
             row = []
             for ff_id, m in (getattr(model, "firefighter_marker_agents", {}) or {}).items():
@@ -292,6 +333,14 @@ def main() -> int:
                     bool(getattr(m, "dead", False)),
                 ])
             ff_steps.append(row)
+            vrow = []
+            for vid, m in (getattr(model, "victim_marker_agents", {}) or {}).items():
+                vrow.append([
+                    str(vid),
+                    _cell(getattr(m, "pos", None)),
+                    str(getattr(m, "status", "") or ""),
+                ])
+            victim_steps.append(vrow)
         evaluation = _build_evaluation(model, terminal_step, step, params)
     wall = time.perf_counter() - t0
     stdout_text = buf.getvalue()
@@ -343,6 +392,38 @@ def main() -> int:
         "fire_final_digest": fire_digests[-1] if fire_digests else None,
         "fire_digests": fire_digests,
         "ff_steps": ff_steps,
+        "victim_steps": victim_steps,
+        "victim_spawns": {
+            str(vid): _cell(getattr(m, "spawn_cell", None))
+            for vid, m in (getattr(model, "victim_marker_agents", {}) or {}).items()
+        },
+        "victim_flee_log": list(getattr(model, "_victim_flee_log", []) or []),
+        "first_burn_step": first_burn_step,
+        # end state of the ground: `burnt` is fuel-exhausted and permanently
+        # safe; `has_burned and not burnt` is the "scorched" state the burnt-cell
+        # investigation found re-ignites. A fleeing victim can now stand on
+        # either, which a static victim never could.
+        "fire_ground_final": {
+            "%d,%d" % (int(a.pos[0]), int(a.pos[1])): [
+                int(bool(getattr(a, "has_burned", False))),
+                int(bool(getattr(a, "burnt", False))),
+                int(bool(getattr(a, "burning", False))),
+            ]
+            for a in model.schedule.agents
+            if type(a).__name__ == "Fire" and getattr(a, "pos", None) is not None
+        },
+        "victim_flee_moves_total": int(getattr(model, "victim_flee_moves_total", 0) or 0),
+        "victim_flee_hold_counts": dict(getattr(model, "victim_flee_hold_counts", {}) or {}),
+        "victim_leash_anchors": {
+            str(vid): _cell(getattr(m, "leash_anchor", None))
+            for vid, m in (getattr(model, "victim_marker_agents", {}) or {}).items()
+        },
+        "victim_leash_reanchors": {
+            str(vid): int(getattr(m, "leash_reanchors", 0) or 0)
+            for vid, m in (getattr(model, "victim_marker_agents", {}) or {}).items()
+        },
+        "exit_starts": REC["exit_starts"],
+        "retargets": REC["retargets"],
         "completions": REC["completions"],
         "recycles": REC["recycles"],
         "assigns": REC["assigns"],

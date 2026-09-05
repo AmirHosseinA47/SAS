@@ -1,0 +1,66 @@
+================================================================================
+PHANTOM RESCUE: PRE-EXISTING, NOT CAUSED BY VICTIM MOVEMENT
+================================================================================
+Observed in the guard-2 arm, D/east/half 303: ff_unit_1 and ff_unit_0 were both
+assigned to victim_0; ff_unit_0 rescued it at step 101; ff_unit_1 was never
+unassigned, walked to the cell victim_0 had occupied, arrived at step 148
+against empty ground and completed a second, phantom exit.
+
+outputs/_vm_phantom_probe.py drives the model directly. NO VICTIM EVER MOVES.
+It reproduces on BOTH checkouts, identically:
+
+---------------- 9c3eac6 (pre-feature, victims cannot move) ----------------
+checkout          : C:\Users\ahrar\AppData\Local\Temp\claude\E--Projects-SAS\32224ace-ed33-4961-aaa0-5cbb9a77e432\scratchpad\base9c3eac6
+victim flee rule  : ABSENT (pre-feature)
+
+Q1  one victim assigned to two firefighters : YES
+      ff_unit_0 assign ok=True target=(25, 25)
+      ff_unit_1 assign ok=True target=(25, 25)
+
+after ff_unit_0 completes the rescue:
+      victim status=rescued pos=None
+      ff_unit_1 assigned=True target=(25, 25) rescued_victim=victim_0
+
+Q2  second unit still bound to the rescued victim : YES
+      ff_unit_1 walked 3 steps, now at (25, 25), exiting=True
+      victim position at that moment: None
+
+Q2 RESULT: rescue started WITHOUT contact = YES - phantom exit reproduced
+
+---------------- feature source, both guards ----------------
+checkout          : E:\Projects\SAS
+victim flee rule  : PRESENT
+
+Q1  one victim assigned to two firefighters : YES
+      ff_unit_0 assign ok=True target=(25, 25)
+      ff_unit_1 assign ok=True target=(25, 25)
+
+after ff_unit_0 completes the rescue:
+      victim status=rescued pos=None
+      ff_unit_1 assigned=True target=(25, 25) rescued_victim=victim_0
+
+Q2  second unit still bound to the rescued victim : YES
+      ff_unit_1 walked 3 steps, now at (25, 25), exiting=True
+      victim position at that moment: None
+
+Q2 RESULT: rescue started WITHOUT contact = YES - phantom exit reproduced
+
+CONCLUSION
+  1. The executor permits assigning ONE victim to TWO firefighters. The assign
+     guard only blocks giving a DIFFERENT victim to an already-assigned unit.
+  2. Nothing unassigns the second unit when the first completes the rescue.
+     _handle_rescue_incident unassigns on victim_dead but not on rescue_complete.
+  3. The second unit therefore walks to a stale target_pos and starts exiting
+     against a victim that is no longer on the grid.
+
+  Guard 2 did not create this. It changed which unit survived long enough to
+  reach the stale target. In the pre-guard arms ff_unit_0 died first, so only
+  one claimant remained and the sample never exposed it.
+
+  It does NOT inflate the rescue count - _finalize_rescued_victim returns early
+  when the victim is already rescued (3 completions, 2 rescued in that seed).
+  The cost is wasted capacity: ff_unit_1 spent steps 60-148 bound to an
+  already-rescued victim, then took a rescue absence it had not earned.
+
+  OUT OF SCOPE for feature 2 - this is rescue-assignment authority, not victim
+  movement. Recommended for its own round.

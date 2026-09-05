@@ -356,20 +356,351 @@ class UAV(mesa.Agent):
                 buf.add_local_observation(str(self.unique_id), self.latest_local_observation)
 
 
+def victim_flee_trigger_distance() -> int:
+    """Feature 2 trigger radius; <= 0 disables the feature entirely.
+
+    Read from the `cfv` module rather than the star-imported copy, and read at
+    call time. `apply_scenario_config` sets attributes on common_fixed_variables
+    and wildfire_model but NOT on this module, so a per-run override - the
+    kill-switch arm included - is only visible through `cfv`.
+    """
+    try:
+        return int(getattr(cfv, "VICTIM_FLEE_TRIGGER_DISTANCE", 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def victim_flee_max_displacement() -> int:
+    """Feature 2 leash from the spawn cell, in manhattan cells."""
+    try:
+        return max(0, int(getattr(cfv, "VICTIM_FLEE_MAX_DISPLACEMENT", 0)))
+    except (TypeError, ValueError):
+        return 0
+
+
+# Orthogonal offsets in a FIXED order for the victim's flee scan. The same four
+# offsets in the same order are hardcoded in `Firefighter._neighbor_cells`; that
+# copy is deliberately left alone so the firefighter's approach path stays
+# byte-identical with the feature off. Movement here is 4-connected for the same
+# reason firefighter movement is: every distance and reachability computation in
+# the rescue subsystem is manhattan / 4-connected, and a victim that could cut a
+# corner a firefighter cannot would be inconsistent with all of them. The order
+# is also the flee rule's last tie-break, which is what makes it deterministic.
+ORTHOGONAL_OFFSETS = ((1, 0), (-1, 0), (0, 1), (0, -1))
+
+VICTIM_TERMINAL_STATUSES = ("dead", "rescued")
+
+
 class Victim(mesa.Agent):
-    """Display-only victim marker."""
+    """Victim marker that steps away from approaching fire (feature 2).
+
+    Was a display-only marker with no-op step/advance. It now runs the flee rule
+    described in outputs/victimmove_part1.txt section 1.2.2: hold until fire is
+    within the trigger radius, then take the orthogonal step that maximises
+    distance from the nearest burning cell, bounded by a leash to the spawn cell.
+    """
 
     def __init__(self, unique_id, model, victim_id: str, position: tuple):
         super().__init__(unique_id, model)
         self.victim_id = victim_id
         self.status = "candidate"
         self.marker_only = True
+        # Feature 2: the constructor used to accept `position` and discard it,
+        # so the class had no memory of where it started. This is the same
+        # rounded cell `_init_managed_victims` places the marker on.
+        #
+        # Two separate things, deliberately. `spawn_cell` is IMMUTABLE and is
+        # what every report means by "displacement from spawn". `leash_anchor`
+        # is what the leash is actually measured against, and it RE-ANCHORS when
+        # the victim reaches safety - the firefighter's `_idle_retreat_origin`
+        # has exactly this renewable semantics and the victim's did not, which
+        # is what pinned a fleeing victim inside a permanent diamond around its
+        # spawn while the front, which has no leash, kept coming.
+        self.spawn_cell = self._round_cell(position)
+        self.leash_anchor = self.spawn_cell
+        self.leash_reanchors = 0
+
+    @staticmethod
+    def _round_cell(position) -> tuple[int, int] | None:
+        try:
+            return (
+                int(round(float(position[0]))),
+                int(round(float(position[1]))),
+            )
+        except (TypeError, ValueError, IndexError):
+            return None
 
     def step(self):
         pass
 
     def advance(self):
-        pass
+        self._flee_approaching_fire()
+
+    # ------------------------------------------------------------------
+    # Feature 2: move away from approaching fire
+    # ------------------------------------------------------------------
+    def _flee_approaching_fire(self) -> None:
+        """One deterministic step away from fire, or hold. Draws from no RNG.
+
+        Ordering makes this work and is not incidental: mesa's
+        SimultaneousActivation advances agents in insertion order - Fire, UAV,
+        Victim, Firefighter - so by the time this runs the fire has already
+        committed THIS step's burning state, and `_check_fire_casualties` has
+        not yet run (it is in the post-move cycle). A victim whose own cell
+        ignites this step can therefore still step off it and be alive when the
+        casualty sweep looks.
+        """
+        trigger = victim_flee_trigger_distance()
+        if trigger <= 0:
+            return  # G1 kill switch: advance() is a no-op, as it always was
+        if self.pos is None:
+            return  # G2
+        if str(getattr(self, "status", "") or "").strip().lower() in (
+            VICTIM_TERMINAL_STATUSES
+        ):
+            # G3. `_check_fire_casualties` does NOT remove a dead victim from
+            # the grid or the scheduler, so advance() keeps being called for
+            # corpses; this guard is mandatory, not defensive. The skip set is
+            # deliberately identical to that sweep's, so the set of victims that
+            # can MOVE is exactly the set that can DIE - an "unreachable" or
+            # "cancelled" victim is still alive and still flees.
+            return
+        if self._in_firefighter_custody():
+            return  # G4
+        fire_cells = self._burning_cells()
+        if not fire_cells:
+            # Nothing is burning anywhere: the safest state there is, so the
+            # leash re-centres here (guard 2).
+            self._reanchor_leash()
+            return  # G5
+
+        cell = (int(self.pos[0]), int(self.pos[1]))
+        dist_before = self._min_fire_distance(cell, fire_cells)
+        if dist_before > trigger:
+            # R2: fire is not close enough to be worth moving for. This is the
+            # victim's "safe standoff", and reaching it RE-ANCHORS THE LEASH
+            # (guard 2) exactly as the firefighter's does. Same threshold as the
+            # trigger, so no new constant enters the model, and the number
+            # matches the firefighter's ideal standoff of BUFFER + 1 = 4.
+            self._reanchor_leash()
+            return
+
+        leash = victim_flee_max_displacement()
+        anchor = (
+            getattr(self, "leash_anchor", None)
+            or getattr(self, "spawn_cell", None)
+            or cell
+        )
+        grid = self.model.grid
+        candidates: list[tuple[int, int, int, tuple[int, int], bool]] = []
+        leash_blocked = 0
+        for order, (off_x, off_y) in enumerate(ORTHOGONAL_OFFSETS):
+            ncell = (cell[0] + off_x, cell[1] + off_y)
+            if grid.out_of_bounds(ncell):
+                continue
+            if ncell in fire_cells:
+                continue
+            from_anchor = abs(ncell[0] - anchor[0]) + abs(ncell[1] - anchor[1])
+            if from_anchor > leash:
+                leash_blocked += 1
+                continue
+            candidates.append(
+                (
+                    self._min_fire_distance(ncell, fire_cells),
+                    from_anchor,
+                    order,
+                    ncell,
+                    self._cell_has_onward_exit(ncell, cell, fire_cells),
+                )
+            )
+        if not candidates:
+            # R4: boxed in - surrounded, at the grid edge, or out of leash.
+            self._note_flee_hold("no_candidate", leash_removed=leash_blocked > 0)
+            return
+
+        # R4b DEAD-END AVOIDANCE. Greedy distance-maximising is exactly what walks
+        # an agent into a pocket: a cell can be locally further from the nearest
+        # flame while the front closes around it. So PREFER a destination that
+        # still has somewhere to go next step. This is a preference, not a filter:
+        # when every reachable cell is a dead end, the victim still takes the best
+        # of them rather than freezing in the open.
+        with_exit = [item for item in candidates if item[4]]
+        pool = with_exit if with_exit else candidates
+
+        # R5: furthest from fire wins; ties go to the cell nearer the anchor,
+        # then to the fixed offset order. A total order, so no RNG and no
+        # arbitrary choice.
+        dist_after, _from_anchor, _order, target, _has_exit = min(
+            pool, key=lambda c: (-c[0], c[1], c[2])
+        )
+
+        # R6: a step must genuinely buy distance. The "standing in fire" case
+        # needs no separate branch: candidates exclude burning cells, so every
+        # candidate is at distance >= 1, which already beats dist_before == 0.
+        if dist_after <= dist_before:
+            # Instrumented, because whether a LATERAL step should be allowed
+            # here is an open question and deserves a measurement rather than an
+            # assertion. `lateral_available` marks the holds a lateral rule
+            # would actually change; `leash_removed` marks the ones where the
+            # leash had already discarded a candidate.
+            self._note_flee_hold(
+                "no_improvement",
+                lateral_available=any(item[0] == dist_before for item in pool),
+                leash_removed=leash_blocked > 0,
+            )
+            return
+
+        self.model.grid.move_agent(self, target)
+        recorder = getattr(self.model, "_record_victim_flee", None)
+        if callable(recorder):
+            recorder(self, cell, target, dist_before, dist_after, anchor)
+
+    def _reanchor_leash(self) -> None:
+        """Guard 2: re-centre the leash on the current cell once the victim is safe.
+
+        The victim's leash was measured against `spawn_cell`, which has exactly
+        one writer in the whole tree and is never reassigned - so a victim was
+        confined to a permanent diamond around where it spawned, while the fire
+        front, which has no leash, kept coming. When the front arrives FROM the
+        spawn side the leash therefore stops the victim escaping rather than
+        bounding a manoeuvre. The firefighter's `_idle_retreat_origin` never had
+        that problem: it re-anchors whenever the unit reaches safety, which makes
+        its budget renewable. This gives the victim the same property.
+
+        SCOPE: THIS TOUCHES EXACTLY ONE FIELD, AND THAT IS DELIBERATE. The
+        firefighter's two re-anchor sites also null `_idle_retreat_last_cell`,
+        its anti-oscillation memory - the reset hole diagnosed in 93f23b7
+        (verdict B, real but inert, left documented because the obvious fix is a
+        provable no-op given both sites clear it). A leash re-anchor has no
+        business discarding oscillation history, so the INTENDED behaviour is
+        mirrored here and the hole is not inherited. The victim rule keeps no
+        such memory today; this method is written so that if one is ever added,
+        re-anchoring will still not wipe it.
+
+        `spawn_cell` stays immutable so that every report continues to mean the
+        true spawn by "displacement from spawn".
+        """
+        if self.pos is None:
+            return
+        cell = (int(self.pos[0]), int(self.pos[1]))
+        if getattr(self, "leash_anchor", None) == cell:
+            return
+        self.leash_anchor = cell
+        self.leash_reanchors = int(getattr(self, "leash_reanchors", 0) or 0) + 1
+
+    def _note_flee_hold(self, reason: str, **flags: bool) -> None:
+        """Count why a triggered victim held instead of moving. Observation only.
+
+        Cheap counters on the model, read by the validation harness. Nothing in
+        the simulation reads them back.
+        """
+        model = getattr(self, "model", None)
+        if model is None:
+            return
+        counts = getattr(model, "victim_flee_hold_counts", None)
+        if not isinstance(counts, dict):
+            counts = {}
+            try:
+                model.victim_flee_hold_counts = counts
+            except Exception:
+                return
+        counts[reason] = int(counts.get(reason, 0) or 0) + 1
+        for name, flag in flags.items():
+            if not flag:
+                continue
+            key = "%s.%s" % (reason, name)
+            counts[key] = int(counts.get(key, 0) or 0) + 1
+
+    def _cell_has_onward_exit(
+        self,
+        ncell: tuple[int, int],
+        from_cell: tuple[int, int],
+        fire_cells: set[tuple[int, int]],
+    ) -> bool:
+        """One-step lookahead: would the victim still have somewhere to go?
+
+        True when `ncell` has at least one orthogonal neighbour that is in
+        bounds and not burning, NOT COUNTING the cell being vacated.
+
+        Excluding `from_cell` is what gives the test any content. Counting it
+        would make the answer True for every candidate whenever the victim is
+        not already standing in fire, since the cell it is leaving is by
+        definition non-burning then - the guard would be vacuous exactly in the
+        common case it exists to cover.
+
+        Deliberately NOT leash-aware: it asks whether the cell is a physical
+        pocket, which is what "dead end" means here. A cell whose only onward
+        exits sit outside the leash is a pocket for this victim specifically,
+        and folding that in would couple this guard to the anchor rule; that is
+        left open pending the second guard.
+        """
+        grid = self.model.grid
+        for off_x, off_y in ORTHOGONAL_OFFSETS:
+            onward = (ncell[0] + off_x, ncell[1] + off_y)
+            if onward == from_cell:
+                continue
+            if grid.out_of_bounds(onward):
+                continue
+            if onward in fire_cells:
+                continue
+            return True
+        return False
+
+    def _in_firefighter_custody(self) -> bool:
+        """True once a firefighter has this victim - carrying it, or on its cell.
+
+        Both clauses are required. `exiting` alone leaves a one-step hole on the
+        arrival step: victims advance BEFORE firefighters, so at the step a unit
+        sets `exiting` the flag is still False while the unit is already
+        standing on the victim. Without the co-location clause the victim would
+        step away first and the carry would then teleport it back. Co-location
+        is also the requirement's own stopping condition - the victim moves
+        "until it be found", and a firefighter on its cell has found it.
+
+        Feature 1's off-grid units carry pos None, which compares unequal to any
+        cell, so they need no special case here.
+        """
+        markers = getattr(self.model, "firefighter_marker_agents", None)
+        if not isinstance(markers, dict):
+            return False
+        for ff_marker in markers.values():
+            if getattr(ff_marker, "rescued_victim", None) is not self:
+                continue
+            if getattr(ff_marker, "dead", False):
+                # A casualty keeps its `rescued_victim` binding until an
+                # unassign clears it, and `exiting` is not reset on death. A
+                # corpse must not hold a live victim in place; the recall paths
+                # will unassign it. (In practice a unit that dies carrying dies
+                # on the victim's own cell, so the victim dies in the same
+                # sweep - but the invariant should not depend on that.)
+                continue
+            if getattr(ff_marker, "exiting", False):
+                return True
+            if getattr(ff_marker, "pos", None) == self.pos:
+                return True
+        return False
+
+    def _burning_cells(self) -> set[tuple[int, int]]:
+        """Actively burning cells. Same construction as Firefighter._fire_cells."""
+        cells: set[tuple[int, int]] = set()
+        for agent in self.model.schedule.agents:
+            if type(agent) is not Fire:
+                continue
+            if not agent.is_burning():
+                continue
+            pos = getattr(agent, "pos", None)
+            if pos is not None:
+                cells.add((int(pos[0]), int(pos[1])))
+        return cells
+
+    @staticmethod
+    def _min_fire_distance(
+        cell: tuple[int, int], fire_cells: set[tuple[int, int]]
+    ) -> int:
+        if not fire_cells:
+            return 999
+        cx, cy = cell
+        return min(abs(cx - fx) + abs(cy - fy) for fx, fy in fire_cells)
 
 
 IDLE_RETREAT_SAFETY_BUFFER = 3
@@ -459,9 +790,53 @@ class Firefighter(mesa.Agent):
     def step(self):
         pass
 
+    def _refresh_target_from_victim(self) -> None:
+        """Track a moving victim (feature 2): re-read the bound victim's cell.
+
+        `target_pos` is written once by the executor at assign
+        (wildfire_model.apply_physical_rescue_command) and nothing ever
+        refreshed it. That was harmless while victims never moved. With feature
+        2 the unit would otherwise walk to a cell the victim has left, find
+        `self.pos == self.target_pos` against empty ground, flip to `exiting`,
+        and TELEPORT the victim to itself on the first carry step - a completed
+        rescue with no contact ever made.
+
+        This is a movement waypoint, not assignment state: it never changes
+        WHICH victim the unit is bound to, only where that same victim now is.
+        The executor keeps sole authority over `assigned`, `rescued_victim` and
+        `status`, and `_assert_no_direct_rescue_mutation` is untouched. advance()
+        already writes state of exactly this class - `exiting`, `exit_target`,
+        and `status` via `_mark_route_blocked`.
+
+        Skipped entirely when the feature is off, so the pre-feature approach
+        path runs literally.
+        """
+        if victim_flee_trigger_distance() <= 0:
+            return
+        if self.exiting or not self.target_pos:
+            return
+        victim = getattr(self, "rescued_victim", None)
+        if victim is None:
+            return
+        if str(getattr(victim, "status", "") or "").strip().lower() in (
+            VICTIM_TERMINAL_STATUSES
+        ):
+            # Do not chase a corpse to a new cell: leave the target where it was
+            # and let the existing victim_dead recall path unassign this unit.
+            return
+        pos = getattr(victim, "pos", None)
+        if pos is None:
+            return
+        cell = (int(pos[0]), int(pos[1]))
+        if cell != self.target_pos:
+            self.target_pos = cell
+
     def advance(self):
         if self.pos is None or getattr(self, "dead", False):
             return
+        # Before any branch reads self.target_pos - the survival-retreat path
+        # walks toward it too, not just the approach path below.
+        self._refresh_target_from_victim()
         recorded = False
         if self._needs_immediate_survival_retreat():
             before_pos = self.pos
