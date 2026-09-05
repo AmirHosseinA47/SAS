@@ -140,6 +140,12 @@ percentage of the grid covered by vegetation.
 
 `SECURITY_DISTANCE`: It establishes the minimum distance that UAVs should be separated from each other for avoiding collisions.
 
+### Firefighters
+
+`NUM_FIREFIGHTERS`: It establishes the number of ground firefighter units available for victim rescue.
+
+`FF_RESCUE_ABSENCE_MIN_STEPS`, `FF_RESCUE_ABSENCE_MAX_STEPS`: When a firefighter carries a victim to the grid edge, the victim is rescued and the firefighter leaves the environment for a number of steps drawn from this range (the hand-over), then re-enters at the cell it left from and becomes available again. Setting the maximum to `0` disables the absence, so the firefighter is available immediately as before. Both can be overridden per run (`evaluate_scenarios.py --ff-absence-min / --ff-absence-max`).
+
 ## Configuration examples
 
 Six default examples of how different variables can be configured to develop distinct scenarios, can be seen below. All scenarios shown are captured in `time step = 20`, in different time steps scenarios might look different.

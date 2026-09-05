@@ -1,0 +1,811 @@
+================================================================================
+FEATURE 1 - FIREFIGHTER LEAVES THE ENVIRONMENT DURING A RESCUE
+PART 1: WHAT EXISTS, AND THE DESIGN.  No production code changed in this part.
+================================================================================
+Branch : firefighter-mission-features
+HEAD   : 1511ada  (== tag bugfix-campaign-complete; tree clean)
+Env    : .venv python 3.10.11, mesa 1.2.1
+Sample : the campaign's canonical 13-run sample, scenario D, 240 steps
+         D/east half-roles 101-505, D/south half-roles 101-505,
+         D/east default-roles 101/202/303
+Tools  : outputs/_ffr_harness.py   read-only measurement harness, mirrors
+                                   evaluate_scenarios._run_seed seed-for-seed
+         outputs/_ffr_runall.sh    13 runs, one process per seed
+         outputs/_ffr_analyze.py   summary / seed-matched comparison
+         baseline JSON            outputs/_ffr_base1511_<wind>_<roles>_<seed>.json
+
+REQUIREMENT (maintainer's supervisor, verbatim):
+  "When the victim is found and FF reaches it, rescue mission happens,
+   firefighter can be removed from the environment for 3-5 steps so it acts as
+   a real rescue, and then comes back to the environment and assists the rescue
+   mission. (At the current stage, only the victim is removed)"
+
+DESIGN IN ONE PARAGRAPH
+  When a firefighter reaches its exit cell with a victim, the victim is
+  finalised and removed exactly as today, and the firefighter is additionally
+  taken OFF THE GRID (mesa remove_agent, pos = None) but KEPT in the scheduler
+  and in firefighter_marker_agents, with status "off_grid" and a return step
+  drawn uniformly from [FF_RESCUE_ABSENCE_MIN_STEPS, FF_RESCUE_ABSENCE_MAX_STEPS]
+  = [3, 5] on a dedicated RNG stream seeded from the run seed. In the post-move
+  cycle of the return step it is re-placed on its exit cell (or the nearest safe
+  cell within the idle-retreat leash if that cell has become unsafe) and handed
+  to the unchanged _recycle_firefighter_after_exit, which makes it available and
+  triggers the same immediate re-dispatch pass that runs today. Setting the max
+  to 0 restores the current behaviour byte for byte. One planner change is
+  proposed alongside (section 3.4): while a unit is off-grid and returning, an
+  empty dispatch pool yields "delay" instead of "mark_unreachable".
+
+--------------------------------------------------------------------------------
+1. THE CURRENT RESCUE-COMPLETION PATH, END TO END
+--------------------------------------------------------------------------------
+
+Order of events inside one WildFireModel.step() (wildfire_model.py:4595):
+  datacollector -> pre-move MAPE cycle -> schedule.step()
+     [SimultaneousActivation: every agent.step(), then every agent.advance();
+      Fire.advance applies the burning state, Firefighter.advance moves]
+  -> _run_post_move_decision_cycle  (adaptation_manager._run_post_move_cycle, :130)
+     stage 1  _process_pending_agent_removals        <- victim removed, FF recycled
+     stage 2  _clear_rescue_path_if_requested
+     ...
+     stage 11 _check_fire_casualties                  (:182)
+     stage 13 _sync_firefighter_marker_status         (route_blocked revalidation + knowledge sync)
+     stage 14 _sync_victim_agent_status
+              _check_rescue_assignment_invariant      (:186, the 63e1a6c-era checker)
+              _assert_no_direct_rescue_mutation
+  -> _update_unreachable_victims -> _log_step_summary -> get_dashboard_state
+
+1.1 WHAT MARKS A RESCUE COMPLETE  - agents.py, Firefighter.advance
+
+  Arrival at the victim (agents.py:497-521) sets exiting and picks the exit
+  cell, which is ALWAYS a boundary cell by construction:
+
+        if self.pos == self.target_pos:
+            self.exiting = True
+            H = getattr(self.model, "HEIGHT", 50)
+            W = getattr(self.model, "WIDTH", 50)
+            x, y = self.pos
+            dists = {
+                (0, y): x,
+                (H - 1, y): H - 1 - x,
+                (x, 0): y,
+                (x, W - 1): W - 1 - y,
+            }
+            self.exit_target = min(dists, key=dists.get)          # :510
+
+  Completion (agents.py:536-560) - this is the ONLY place a rescue is declared
+  complete. Note the queue order: the firefighter is appended BEFORE its victim.
+
+        elif self.exiting and self.exit_target:
+            if self.pos == self.exit_target:
+                if not hasattr(self.model, "_agents_pending_removal"):
+                    self.model._agents_pending_removal = []
+                self.model._agents_pending_removal.append(self)
+                if self.rescued_victim is not None:
+                    self.model._agents_pending_removal.append(
+                        self.rescued_victim
+                    )
+                self.rescue_completed = True                          # :545
+                self.model._rescue_path_clear_requested = True
+                print(
+                    f"[Rescue Complete] FF-{self.unit_id} exited with victim"
+                )
+                self._record_movement_reason(
+                    "exiting_complete",
+                    "carrying rescued victim to boundary (exit complete)",
+                    exit_target=self.exit_target,
+                )
+                recorded = True
+            else:
+                self._move_toward(self.exit_target)
+                if self.rescued_victim is not None:
+                    try:
+                        self.model.grid.move_agent(
+                            self.rescued_victim, self.pos
+                        )
+                    except Exception:
+                        pass
+                ...
+
+  While exiting, the victim marker is dragged along cell by cell (the
+  move_agent above), so at completion both stand on the exit cell.
+  rescue_completed=True makes _firefighter_available_for_dispatch (:2536)
+  return False and _derive_firefighter_operational_fields (:3207) report
+  availability "unavailable" / route_state "completed" until the drain resets it
+  in the same step.
+
+1.2 WHAT REMOVES THE VICTIM
+
+  (a) The queue drain, Victim branch of _process_pending_agent_removals
+      (wildfire_model.py:2251-2270, quoted in full in 1.4): finalize (deduped per
+      drain), marker.status = "rescued", grid.remove_agent, schedule.remove.
+      Because the firefighter entry precedes the victim entry, the FINALIZE is
+      triggered from the firefighter branch (with firefighter_id) and the victim
+      branch only does the physical removal.
+
+  (b) _finalize_rescued_victim (wildfire_model.py:4278-4322):
+
+    def _finalize_rescued_victim(
+        self,
+        victim_id: str,
+        agent: Any | None = None,
+        firefighter_id: str | None = None,
+    ) -> None:
+        """Mark a victim rescued and remove it from active UAV targeting."""
+        vid = str(victim_id or "").strip()
+        if not vid and agent is not None:
+            vid = self._victim_id_from_agent(agent)
+        if not vid:
+            return
+
+        managed = getattr(self, "managed_victims", None)
+        if isinstance(managed, dict):
+            state = managed.get(vid)
+            if state is not None and (
+                getattr(state, "dead", False)
+                or getattr(state, "cancelled", False)
+                or str(getattr(state, "status", "")).lower()
+                in {"dead", "cancelled"}
+            ):
+                return
+        markers = getattr(self, "victim_marker_agents", None)
+        if isinstance(markers, dict):
+            marker = markers.get(vid)
+            if marker is not None and (
+                str(getattr(marker, "status", "")).lower() in {"dead", "cancelled"}
+            ):
+                return
+
+        ff_id = str(firefighter_id or "").strip() or self._firefighter_id_for_victim(vid)
+        self._enqueue_rescue_incident(
+            {
+                "type": "rescue_complete",
+                "victim_id": vid,
+                "firefighter_id": ff_id or None,
+                "reason": "physical_rescue_complete",
+                "metadata": {"victim_agent": agent},
+            }
+        )
+        self._process_rescue_incidents()
+
+  (c) The incident is routed by _handle_rescue_incident (:2841) to the executor
+      action "finalize_rescue" in apply_physical_rescue_command
+      (wildfire_model.py:3710-3777): managed state rescued=True / status
+      "rescued" / cancelled=False / unreachable=False; the entry is deleted from
+      victim_runtime_model.victims; marker.status = "rescued";
+      _record_rescue_event(vid, ff_id, "rescue_complete", ...). Nothing in this
+      chain touches the firefighter.
+
+1.3 _recycle_firefighter_after_exit AND EVERYTHING IT TOUCHES
+    (wildfire_model.py:2079-2117, in full)
+
+    def _recycle_firefighter_after_exit(self, ff_marker: Any) -> None:
+        """Return a firefighter that exited with a victim to available standby at the edge."""
+        ff_id = self._firefighter_id_from_marker(ff_marker)
+        standby_pos = getattr(ff_marker, "pos", None)
+        if standby_pos is None:
+            managed_ff = getattr(self, "managed_firefighters", None)
+            if isinstance(managed_ff, dict):
+                state = managed_ff.get(ff_id)
+                if state is not None:
+                    base_pos = getattr(state, "position", None)
+                    if base_pos is not None:
+                        standby_pos = (
+                            int(round(base_pos[0])),
+                            int(round(base_pos[1])),
+                        )
+        if standby_pos is not None and not self.grid.out_of_bounds(standby_pos):
+            try:
+                if getattr(ff_marker, "pos", None) != standby_pos:
+                    self.grid.move_agent(ff_marker, standby_pos)
+            except Exception:
+                pass
+
+        ff_marker.status = "available"
+        ff_marker.assigned = False
+        ff_marker.target_pos = None
+        ff_marker.exiting = False
+        ff_marker.exit_target = None
+        ff_marker.rescued_victim = None
+        ff_marker.rescue_completed = False
+        ff_marker.dead = False
+
+        unit_label = str(getattr(ff_marker, "unit_id", ff_id) or ff_id)
+        pos = getattr(ff_marker, "pos", None)
+        print(f"[Firefighter Recycled] FF-{unit_label} available at {pos}")
+
+        if ff_id:
+            self._sync_firefighter_operational_knowledge([ff_id])
+        else:
+            self._sync_firefighter_operational_knowledge()
+
+  What it touches:
+    - position: standby_pos is the CURRENT pos (never None on this path, the
+      unit is standing on its exit cell), so the move_agent branch is dead and
+      the unit is parked where it is - on the boundary. The managed-position
+      fallback exists only for a marker that has no pos, which never happens
+      today. (It will be exercised by nothing in the new design either: the
+      return path places the unit first, then calls this function.)
+    - the eight marker fields above (status/assigned/target_pos/exiting/
+      exit_target/rescued_victim/rescue_completed/dead)
+    - stdout: "[Firefighter Recycled] FF-x available at (x, y)"
+    - _sync_firefighter_operational_knowledge([ff_id]) (:3376) ->
+      _sync_one_firefighter_operational_knowledge -> _derive_firefighter_
+      operational_fields (:3207) -> managed_firefighters[ff_id] gets
+      availability "available", assignment_state "unassigned", route_state
+      "idle", rescue_progress "none", position; firefighter_model.
+      mirror_operational_state gets the same picture.
+    - in the caller (1.4): recycled += 1, and after the drain
+      `if recycled > 0: self._try_dispatch_unresolved_confirmed_victims()`
+      (:2119) which re-dispatches every confirmed, unassigned, still-needy
+      victim through the planner - this is how a unit that comes back is put
+      to work again; there is no periodic idle scan anywhere else.
+
+1.4 THE REMOVAL QUEUE  - _process_pending_agent_removals (wildfire_model.py:2220-2320)
+    Read together with commit 63e1a6c (defect #5). The structure below IS that
+    fix: per-entry try/except with _report_pending_removal_failure, an outer
+    handler that re-queues pending[index:], the else: on the type chain, and the
+    return value counting recycles. The design keeps all of it and adds inside
+    the Firefighter branch only.
+
+    def _process_pending_agent_removals(self) -> int:
+        """Finalize rescued victims and recycle exiting firefighters back to available standby.
+
+        Failures are contained per queue entry: a bad entry is reported and
+        skipped, instead of aborting the drain and silently discarding every
+        entry queued behind it. Returns the number of entries handled, counting
+        firefighter recycles alongside grid/schedule removals.
+        """
+        removed = 0
+        recycled = 0
+        self.pending_removal_failures_last_step = 0
+        pending = list(getattr(self, "_agents_pending_removal", []) or [])
+        self._agents_pending_removal = []
+        finalized_victim_ids: set[str] = set()
+        index = 0
+        try:
+            while index < len(pending):
+                agent = pending[index]
+                index += 1
+                try:
+                    if type(agent) is agents.PathMarker or type(agent).__name__ == "PathMarker":
+                        try:
+                            if getattr(agent, "pos", None) is not None:
+                                self.grid.remove_agent(agent)
+                        except Exception:
+                            pass
+                        try:
+                            if agent.unique_id in getattr(self.schedule, "_agents", {}):
+                                self.schedule.remove(agent)
+                        except Exception:
+                            pass
+                        removed += 1
+                    elif type(agent) is agents.Victim or type(agent).__name__ == "Victim":
+                        vid = self._victim_id_from_agent(agent)
+                        if vid and vid not in finalized_victim_ids:
+                            self._finalize_rescued_victim(vid, agent)
+                            finalized_victim_ids.add(vid)
+                        try:
+                            agent.status = "rescued"
+                        except Exception:
+                            pass
+                        try:
+                            if getattr(agent, "pos", None) is not None:
+                                self.grid.remove_agent(agent)
+                        except Exception:
+                            pass
+                        try:
+                            self.schedule.remove(agent)
+                        except Exception:
+                            pass
+                        removed += 1
+                    elif type(agent) is agents.Firefighter or type(agent).__name__ == "Firefighter":
+                        if getattr(agent, "dead", False):
+                            try:
+                                if getattr(agent, "pos", None) is not None:
+                                    self.grid.remove_agent(agent)
+                            except Exception:
+                                pass
+                            try:
+                                self.schedule.remove(agent)
+                            except Exception:
+                                pass
+                            removed += 1
+                            continue
+                        rescued_victim = getattr(agent, "rescued_victim", None)
+                        if rescued_victim is not None:
+                            vid = self._victim_id_from_agent(rescued_victim)
+                            ff_id = str(getattr(agent, "unit_id", "") or "")
+                            if vid and vid not in finalized_victim_ids:
+                                self._finalize_rescued_victim(
+                                    vid, rescued_victim, firefighter_id=ff_id
+                                )
+                                finalized_victim_ids.add(vid)
+                        self._recycle_firefighter_after_exit(agent)          # <- the change lands here
+                        recycled += 1
+                    else:
+                        self._report_pending_removal_failure(
+                            agent, "unhandled agent type"
+                        )
+                except Exception as exc:
+                    self._report_pending_removal_failure(
+                        agent, f"{type(exc).__name__}: {exc}"
+                    )
+        except Exception as exc:
+            # A failure outside any single entry would otherwise discard the rest
+            # of the queue. Keep whatever the drain never reached so the next
+            # step retries it instead of losing it. Nothing here may raise: this
+            # is the last handler, and an escape would abort the whole step.
+            try:
+                self._requeue_unprocessed_removals(pending[index:])
+            except Exception:
+                pass
+            try:
+                self._report_pending_removal_failure(
+                    None, f"{type(exc).__name__}: {exc}"
+                )
+            except Exception:
+                pass
+        if recycled > 0:
+            self._try_dispatch_unresolved_confirmed_victims()
+        return removed + recycled
+
+  How agents leave the scheduler and the grid (mesa 1.2.1):
+    - MultiGrid.remove_agent(agent)  (mesa/space.py:628): removes the agent
+      from its cell's list and sets agent.pos = None. It requires pos to be
+      non-None (it unpacks it), hence the `if pos is not None` guards above.
+    - MultiGrid.place_agent(agent, pos) (:619): appends to the cell list when
+      agent.pos is None or the agent is not already in that cell, then sets
+      agent.pos. A unit with pos None can therefore be re-placed directly;
+      move_agent is remove+place and cannot be used for an off-grid unit.
+    - SimultaneousActivation.remove (mesa/time.py:71): del _agents[unique_id];
+      add (:57) raises if the id is already present. _agents is an insertion-
+      ordered dict; step() iterates a snapshot of its keys.
+  Dead firefighters are the only firefighters ever removed from the scheduler
+  today; a recycled one never leaves either structure.
+
+--------------------------------------------------------------------------------
+2. THE EXISTING RECYCLE BEHAVIOUR, PRECISELY  (measured at 1511ada, 13 runs)
+--------------------------------------------------------------------------------
+
+2.1 Why every recycle lands on a boundary cell
+  It is not a sample statistic, it is a property of the code: exit_target is
+  chosen from {(0,y), (H-1,y), (x,0), (x,W-1)} (1.1), completion requires
+  pos == exit_target, and _recycle_firefighter_after_exit parks the unit at its
+  current pos (1.3). 29 of 29 in the prior sample is therefore 100% by
+  construction; a recycle landing anywhere else would be a bug.
+
+2.2 The measured picture at 1511ada
+  Harness fidelity first: for the three seeds that outputs/_pr_control_post.json
+  covers (D/east half 101, D/south half 101, D/east default 101) the harness's
+  eval AND its captured-stdout sha256 are identical to that control run, so
+  the numbers below are the stock evaluate_scenarios numbers for 1511ada, not
+  a re-implementation of them. 13/13 runs completed, 0 failures, 4-10 min each
+  in one parallel wave (outputs/_ffr_runall_base1511.log).
+
+  combo                  rescued  dead  unrch  nvdet  ffdd terminal compl recyc
+  D/east/half 101              2     2      0      0     1      210     2     2
+  D/east/half 202              2     2      0      0     0      210     2     2
+  D/east/half 303              1     3      0      0     0      141     1     1
+  D/east/half 404              2     2      0      0     1       96     2     2
+  D/east/half 505              1     3      0      0     0      183     1     1
+  D/south/half 101             3     1      0      0     1      197     3     3
+  D/south/half 202             3     1      0      0     0      190     3     3
+  D/south/half 303             3     1      0      0     0      113     3     3
+  D/south/half 404             2     2      0      0     1      106     2     2
+  D/south/half 505             3     1      0      0     0      108     3     3
+  D/east/default 101           2     2      0      0     1      165     2     2
+  D/east/default 202           3     1      0      0     1      171     3     3
+  D/east/default 303           2     2      0      0     0      115     2     2
+  TOTAL                       29    23      0      0     6             29    29
+  (compl = rescue completions seen in Firefighter.advance, recyc = calls to
+   _recycle_firefighter_after_exit; every run reached all-victims-terminal)
+
+  Recycles: 29 of 29 land on a boundary cell, 0 land anywhere other than the
+  exit cell the unit was standing on (the move_agent branch in 1.3 never
+  fires). The same 29 the prior measurement counted. Landing cells are the
+  four edge midpoints only - (0,25) x11, (25,49) x8, (25,0) x5, (49,25) x5 -
+  because victims are laid out on the x=25 / y=25 lines and the exit rule
+  projects the victim's cell onto the nearest edge. Under the feature these
+  four cells are therefore the return cells, and whether fire has reached an
+  edge midpoint by step S+d decides how often the safety fallback of 2.3 is
+  exercised.
+
+  Idle posture: 2,690 idle firefighter-steps (status "available", unassigned,
+  not exiting, alive, on the grid), 1,518 of them on a grid edge = 56.4%,
+  per run from 0% to 91%. A broader "functionally idle" definition (any
+  status, unassigned, not exiting - it adds 877 steps carrying a stale
+  "en_route" status after an unassign and 74 route_blocked steps) gives
+  1,675 / 3,641 = 46.0%. The 61% quoted in the brief is reproduced by neither;
+  the file it came from (standby_investigation.txt) is not in outputs/, so its
+  definition is unknown. The qualitative claim holds under every definition:
+  a unit that has finished a rescue idles on the edge it exited from.
+
+  Deaths, and which of them are the standby mechanism:
+    D/east/default 101  ff_unit_0 step  42 at (41,41)  no prior rescue
+    D/east/default 202  ff_unit_0 step 225 at (34,49)  recycled at (25,49)@169: edge standby death
+    D/east/half 101     ff_unit_0 step  30 at (44,40)  no prior rescue
+    D/east/half 404     ff_unit_0 step  33 at (31,38)  no prior rescue
+    D/south/half 101    ff_unit_1 step 135 at (1,0)    recycled at (25,0)@45:  edge standby death
+    D/south/half 404    ff_unit_1 step  57 at (3,20)   no prior rescue
+  2 of the 6 deaths are post-recycle deaths on the boundary, 56 and 90 steps
+  after the unit's return to standby. Both fall far outside any 3-5 step
+  window, which is why the feature cannot be expected to move ff_deaths by
+  itself (a returned unit stands where a recycled unit stood) and why the
+  standby posture stays out of scope (2.3).
+
+  Re-dispatch exposure - the thing the absence window directly touches:
+    recycle -> next successful assign of the SAME unit, 29 recycles:
+      never re-dispatched  13
+      re-dispatched        16   gaps [0,0,0,0,0,0,5,5,19,19,20,25,30,36,37,73]
+                                reasons: initial 13, replacement_after_blocked 3
+      within 5 steps        8 of 29 (28%), six of them gap 0
+    gap 0 means the unit was dispatched in the very same post-move drain by
+    the _try_dispatch_unresolved_confirmed_victims call that follows the
+    recycle, to a victim that was already confirmed and waiting under a
+    "delay" decision. The eight:
+      D/east/half 101      ff_unit_1  recycle@46   gap 0  initial   (ff_unit_0 dead since 30: sole unit)
+      D/east/half 101      ff_unit_1  recycle@106  gap 0  initial   (sole unit)
+      D/east/half 303      ff_unit_1  recycle@36   gap 0  initial
+      D/east/half 404      ff_unit_1  recycle@44   gap 0  initial   (ff_unit_0 dead since 33: sole unit)
+      D/east/half 505      ff_unit_1  recycle@44   gap 5  replacement_after_blocked
+      D/south/half 101     ff_unit_0  recycle@35   gap 5  initial
+      D/east/default 101   ff_unit_1  recycle@45   gap 0  initial   (ff_unit_0 dead since 42: sole unit)
+      D/east/default 101   ff_unit_1  recycle@115  gap 0  initial   (sole unit)
+    Under the feature each of these dispatches moves d in [3,5] steps later,
+    and in the four "sole unit" runs nothing else can serve the victim in the
+    meantime. That is exactly the tradeoff the gate anticipates; whether a
+    3-5 step later start costs the rescue is decided by the fire, per seed,
+    and Part 3 will name each such seed.
+
+  Casualty exposure (3.4): planner decisions taken with an empty pool were
+  initial -> delay (5) and replacement_after_blocked -> delay (4). No
+  replacement_after_casualty decision met an empty pool, and no death falls
+  within 5 steps after a recycle. At baseline timing the planner change of
+  3.4 would therefore alter zero decisions in this sample; it is a safety net
+  against a case the code allows but the sample does not contain. Any effect
+  in Part 3 can only come from the feature's own re-timing of events.
+
+  Horizon: no completion later than step 197 in any run, so no return is
+  truncated by the 240-step horizon and returns == removals must hold
+  strictly. Unreachable escape hatch: unreachable = 0 in every run (one
+  never_detected mark at step 210 in D/east/half 202 was overtaken by the
+  victim's death), so there is no geo-streak near threshold that a window
+  could tip; Part 3 still reports the check.
+
+  Files: outputs/_ffr_base1511_*.json (per-step fire digests, per-step
+  firefighter states, completions, recycles, assigns, planner decisions),
+  outputs/_ffr_base1511_analysis.txt (the summary above).
+
+2.3 Preserve, change, or sidestep?  -> PRESERVE the edge-standby posture.
+  The standby-death mechanism (outputs/ffdeath_investigation.txt: 14/16 deaths
+  while idle and unassigned, 12/16 on a boundary cell; the unit exits at the
+  nearest edge, stands by there, the wind-driven front reaches the edge, and
+  the idle retreat has nowhere left to go) is downstream of WHERE the unit is
+  parked, and that investigation explicitly scopes a standby/safe-harbour
+  policy as "a different investigation". This feature is about the absence
+  window, not the parking policy, so:
+    - the returning unit re-enters at the cell it left from. That is the
+      physically natural reading of "comes back to the environment" and it
+      keeps the post-return state identical to today's post-recycle state, so
+      any metric movement in Part 3 is attributable to the absence window alone
+      and not to a relocation policy smuggled in with it;
+    - the one deviation is forced by the feature itself: a cell that was safe
+      when the unit left can be burning when it returns, and re-placing a unit
+      into fire is an immediate _check_fire_casualties death CAUSED by the
+      feature (today's unit would have run _idle_needs_survival_move during
+      those steps). The return therefore re-tests the exit cell with the same
+      predicate the idle logic uses (_cell_meets_required_idle_safety: not
+      burning, not adjacent to fire, no smoke) and, if it fails, re-enters at
+      the nearest safe cell (Manhattan distance from the exit cell, ties by
+      (x, y)) within IDLE_RETREAT_MAX_CELLS = 6 of it - exactly the mobility the
+      idle retreat would have granted the unit had it stayed. Fallbacks, in
+      order: nearest non-burning cell within the leash; the exit cell itself
+      (reported as "forced"). The leash cap is deliberate: a returning unit must
+      not be teleported to safety that a present unit could not have reached,
+      or ff_deaths would improve for a reason that is not the feature.
+    - nothing else about standby changes: no relocation away from the edge, no
+      change to IDLE_RETREAT_*, no change to the retreat scan.
+  So: preserved, with a safety re-test that is the minimum needed to make the
+  absence itself not lethal. The placement category of every return is logged
+  and reported in Part 3.
+
+--------------------------------------------------------------------------------
+3. WHERE THE FIREFIGHTER GOES WHILE REMOVED
+--------------------------------------------------------------------------------
+
+3.1 The options
+  (a) genuinely removed from grid AND scheduler, re-placed and re-added on
+      return. Grid removal is right (below). Scheduler removal buys nothing:
+      Firefighter.step() is a no-op and Firefighter.advance() returns at once
+      when pos is None (agents.py:457), so an off-grid unit costs nothing to
+      keep scheduled - and re-adding it means one more thing that must succeed
+      on every return (schedule.add raises on a duplicate id), plus every
+      consumer that scans schedule.agents for Firefighter (serve_dashboard
+      frame/trails, PathMarker guards, the campaign probes' _in_sched checks)
+      would have to be reasoned about twice.
+  (b) kept in the scheduler but flagged unavailable and skipped - if it also
+      stays ON the grid it is not removed from the environment at all: fire
+      kills it (_check_fire_casualties keys on pos), it counts as a BFS start
+      for geographic reachability, it is drawn on the map, it occupies a cell.
+      Every position-keyed consumer would need a new flag check. Rejected in
+      its pure form.
+  (c) moved off-grid to a holding position - MultiGrid has no off-grid cell;
+      out_of_bounds positions cannot be placed. A holding cell on the grid is
+      (b). Rejected.
+
+3.2 Decision: (a) for the grid, (b) for the scheduler, plus an explicit state.
+  The unit is removed from the grid (pos = None), stays in the scheduler and in
+  firefighter_marker_agents, gets status = "off_grid", off_grid = True,
+  absent_until_step = S + d, and the same field resets the recycle performs
+  (assigned/target_pos/exiting/exit_target/rescued_victim/rescue_completed) so
+  it carries no stale assignment through the window. It is also registered in
+  a model-level dict _absent_firefighters[ff_id] with removed_step, duration,
+  return_step, exit_cell, victim_id, so the return is driven by the model, not
+  by the marker's own activation (which is a no-op while off-grid).
+
+  Why pos = None is the right idiom: it is what mesa's remove_agent produces,
+  and the code base already guards for it everywhere it matters -
+    Firefighter.advance                     agents.py:457   returns
+    _firefighter_available_for_dispatch     wf:2536-2548    False (pos None)
+    select_rescue_assignment                planner:590-597 skips position None
+    _check_fire_casualties                  wf:4085+        `if pos is None: continue`
+    _revalidate_route_blocked_firefighters  wf:2141+        `if pos is None: continue`
+    _update_unreachable_victims             wf:3876-3888    excluded from BFS starts
+    get_rescue_operational_snapshot         wf:2569+        position None
+    _derive_firefighter_operational_fields  wf:3207+        current_position None
+    _sync_one_firefighter_operational_knowledge             position not overwritten
+    dashboard _build_firefighter_view       falls back to managed position
+    _record_rescue_event / _agent_grid_pos                  None-safe
+    Canvas_Grid_Visualization.render        iterates grid cells: not drawn
+  Consumers that are NOT None-safe and must change:
+    serve_dashboard._frame  :165 `fx, fy = int(a.pos[0]), int(a.pos[1])` and
+                            :185 `pt = [int(a.pos[0]), int(a.pos[1])]`
+                            -> skip units with pos None in both loops.
+  Reached only through an assign, which the planner never issues for a
+  pos-None unit: wf:3566 `_manhattan_distance(ff_marker.pos, ...)`, wf:2200.
+
+3.3 Implications, one by one
+  Dispatch pool: excluded twice over (marker predicate and planner position
+    filter). A victim confirmed during the window gets action "delay" (planner
+    :600-602; the executor's delay branch mutates nothing), stays confirmed and
+    needy, and is picked up by _try_dispatch_unresolved_confirmed_victims when
+    the unit returns - the identical mechanism that today's recycle triggers,
+    just d steps later.
+  route_blocked recovery pass: skips pos None, so an absent unit is never
+    "recovered" mid-window. Irrelevant in practice: at removal the status is
+    overwritten with "off_grid" and at return the recycle sets "available",
+    which is exactly what the recycle does today to a unit that finished its
+    exit while flagged route_blocked (possible: _mark_route_blocked fires on
+    the exiting path when no non-burning neighbour exists). Only the timing of
+    the clear moves, by d steps. The pass's BFS from a unit's current position
+    is never run for an absent unit (no position), and the return placement
+    runs BEFORE stage 13 in the same post-move cycle, so a returned unit is
+    seen by the pass with a real position on the very step it returns.
+  Rescue invariant checker (_check_rescue_assignment_invariant, :225): it only
+    looks at units with assigned=True and rescued_victim set. The removal
+    applies the recycle's field resets in the same drain that finalises the
+    victim, so the absent unit is invisible to it exactly as a recycled unit is
+    today, and the victim is terminal from the same step. No new divergence
+    category; the checker needs no change.
+  Metrics that count firefighters:
+    firefighter_deaths (serve_dashboard._build_evaluation, :307) - dead flag /
+      status "dead": unaffected; an absent unit cannot die (no pos).
+    dashboard firefighter_casualty_count - dead: unaffected.
+    dashboard firefighter_view - one row per marker, unchanged length; the row
+      gains off_grid and return_step, status shows "off_grid", position falls
+      back to the last synced managed position (the exit cell).
+    mission-goal alive_firefighters (_build_mission_goal_runtime_context) -
+      counts not-dead: an absent unit still counts as alive, which is true;
+      its only consumer is rescue_adaptation_generator's
+      resource_constrained = alive_firefighters <= 1, semantics unchanged.
+    geographic reachability (_update_unreachable_victims, :3864): BFS starts
+      are the positions of living, non-exiting units; an absent unit is not a
+      start. With NUM_FIREFIGHTERS = 2 this matters when the other unit is
+      dead or also absent: reachable_cells is then empty for the window and
+      every non-terminal unserved victim's geo streak increments. The threshold
+      is UNREACHABLE_STREAK_STEPS = 30 CONSECUTIVE steps, reset to 0 by any
+      reachable step, so a <= 5-step window cannot mark a victim by itself; it
+      can only complete a streak that was already >= 25. Kept as-is
+      deliberately - counting the exit cell of a unit that is not in the
+      environment as a reachability source would be a fiction - and Part 3
+      reports every geographically_isolated mark whose streak overlapped an
+      absence window.
+    serve_dashboard frame - skips absent units (3.2).
+
+3.4 One planner interaction that needs a decision (recommended: include)
+  select_rescue_assignment's empty-pool branch (rescue_planner.py:600-609):
+        if not available:
+            if _is_initial_reason(reason_s) or reason_l == "victim_confirmed":
+                action = "delay"
+            elif reason_l in ("replacement_after_blocked", "route_blocked") or "blocked" in reason_l:
+                action = "delay"
+            else:
+                action = "mark_unreachable"
+  "else" is the casualty-replacement path. Today, when unit A dies while unit B
+  has just finished a rescue, B is already available (recycled in the same
+  drain) and is dispatched as the replacement. Under the feature B is off-grid
+  for 3-5 steps, the pool is empty, and the victim is marked UNREACHABLE -
+  terminal - three steps before B walks back in "to assist the rescue
+  mission". That converts a wait into a lost rescue and would show up in Part
+  3 as a rescued decrease that is an artefact of the window, not a resource
+  shortage. Proposed: the snapshot gains per-unit off_grid / return_step, and
+  the empty-pool branch chooses "delay" for ANY reason when at least one alive
+  unit is off-grid; the return's re-dispatch pass then serves the victim. The
+  all-dead case (tests/test_rescue_planner_authority.py::test_no_firefighter_
+  planner_delay_or_unreachable, one of the 8 known failures) is untouched. This
+  is a planner change and is listed separately so it can be declined; Part 3
+  reports how many decisions it actually altered.
+
+--------------------------------------------------------------------------------
+4. DURATION MECHANISM
+--------------------------------------------------------------------------------
+
+4.1 Decision: configurable bounds, per-rescue uniform draw, dedicated RNG stream
+  common_fixed_variables.py:
+      FF_RESCUE_ABSENCE_MIN_STEPS = 3
+      FF_RESCUE_ABSENCE_MAX_STEPS = 5
+  Star-imported into wildfire_model like every other scenario constant and
+  overridable through apply_scenario_config (which sets the attribute on both
+  modules), so evaluate_scenarios / serve_dashboard / probes can pass them like
+  NUM_FIREFIGHTERS. Semantics:
+      MAX <= 0            feature OFF: the drain calls _recycle_firefighter_
+                          after_exit in place, byte-identical to today (the
+                          control arm of Part 3 and the kill switch)
+      MIN == MAX > 0      fixed constant, no draw made
+      MIN <  MAX          d ~ Uniform{MIN..MAX} per rescue completion
+  A fixed constant alone was rejected because the requirement says "3-5" and
+  the brief asks for the distribution of absence durations; a constant would
+  exercise one value and prove nothing about the bounds.
+
+4.2 Which RNG, and why not the shared one
+  The whole validation methodology rests on one seeded stream:
+  evaluate_scenarios._run_seed binds a single random.Random(seed) to
+  cfv.SYSTEM_RANDOM, wf.SYSTEM_RANDOM and agents.random. A repo-wide audit of
+  draw sites outside tests/outputs (grep for random./SYSTEM_RANDOM):
+      agents.py:23     Fire.__init__ fuel            init only
+      agents.py:103    Fire.step spread draw         EVERY burning-eligible cell,
+                                                     every FIRE_SPREAD_SPEED steps
+      agents.py:189    mixed wind                    only if not FIXED_WIND (never)
+      wf:1970-1978     ignition + vegetation         init only
+      wf:2061          random UAV directions         only when the extension
+                                                     pipeline is inactive (never:
+                                                     decision_dispatcher is always
+                                                     built in _init_runtime_knowledge)
+      src_extension    no RNG use at all
+  So after init the stream is consumed ENTIRELY by Fire.step, whose draw count
+  depends only on the fire state, which firefighters never influence (they do
+  not extinguish; UAVs and victims do not either). Consequence, and the key
+  diagnostic for Part 3: the fire map is a pure function of the seed, and a
+  seed-matched feature run must reproduce the baseline fire map digest step
+  for step. ONE draw from the shared stream per rescue would shift every
+  subsequent spread draw, change the fire map from that step on, and make
+  every metric difference unattributable. Therefore the draw comes from a
+  dedicated instance:
+      self._ff_absence_rng = random.Random(seed_material)
+  created at the top of WildFireModel.reset(), BEFORE set_fire_agents draws
+  anything, with seed_material = sha256(repr(SYSTEM_RANDOM.getstate())).
+  getstate() consumes nothing, and at that moment the state is exactly
+  random.Random(seed).getstate(), a pure function of the run seed - so the
+  duration sequence is reproducible per seed, differs across seeds, and never
+  touches the shared stream. Under the unseeded default (common_fixed_variables
+  SYSTEM_RANDOM = random.SystemRandom(), main.py) getstate() raises
+  NotImplementedError; the fallback is random.Random() from OS entropy, which
+  is no worse than the run already is. Determinism is verified in Part 3 two
+  ways: (i) fire digests identical to 1511ada on all 13 runs, (ii) a repeated
+  feature run reproduces the absence log exactly.
+  Considered and set aside: hashing (ff_id, victim_id, step) into [3,5] needs
+  no RNG object and is equally deterministic, but makes the duration
+  independent of the seed, which reads oddly against "random in [3,5]".
+
+--------------------------------------------------------------------------------
+5. THE CHANGE, PRECISELY (what Part 2 will implement)
+--------------------------------------------------------------------------------
+
+5.1 State
+  model:   _absent_firefighters: dict[ff_id -> {marker, victim_id,
+           removed_step, duration, return_step, exit_cell}]
+           _ff_absence_log: list of {"event": "removed"|"returned", ...}
+           ff_absence_removals_total, ff_absence_returns_total
+           _ff_absence_rng
+  marker:  off_grid = False, absent_until_step = None, absence_exit_cell = None
+           (defaults added in Firefighter.__init__; status value "off_grid")
+
+5.2 Removal - inside the Firefighter branch of _process_pending_agent_removals,
+    replacing the direct recycle call, still inside the per-entry try:
+      d = self._draw_firefighter_absence_duration()        # 0 when disabled
+      if d <= 0:
+          self._recycle_firefighter_after_exit(agent)       # legacy, unchanged
+      else:
+          self._remove_firefighter_for_rescue_absence(agent, vid, d)
+      recycled += 1                                          # entry handled
+    _remove_firefighter_for_rescue_absence: exit_cell = pos; grid.remove_agent
+    (pos -> None); the recycle's field resets; status "off_grid", off_grid
+    True, absent_until_step = S + d; register in _absent_firefighters; log;
+    print "[Firefighter Off-Grid] FF-x removed at (x, y) for d steps, returns
+    at step S+d"; _record_rescue_event("firefighter_off_grid", firefighter-
+    keyed with the victim id in metadata, so _latest_physical_rescue_by_victim
+    [vid] keeps rescue_complete as the victim's final record);
+    _sync_firefighter_operational_knowledge([ff_id]) through a new off_grid
+    branch of _derive_firefighter_operational_fields (availability
+    "unavailable", assignment_state "unassigned", route_state "off_grid",
+    rescue_progress_status "handover", current_assignment None).
+
+5.3 Return - _return_absent_firefighters(), called at the START of
+    _process_pending_agent_removals (stage 1, before the drain, inside the
+    same outer handler; each return in its own try/except reporting through
+    _report_pending_removal_failure). For each ff_id in sorted order with
+    absent_until_step <= current step: choose the cell (2.3), grid.place_agent,
+    off_grid False, absent_until_step None, then the UNCHANGED
+    _recycle_firefighter_after_exit(marker) (which now finds pos = cell, resets
+    the fields, prints "[Firefighter Recycled]", syncs knowledge); log + print
+    "[Firefighter Returned] FF-x at (x, y) after d steps (placement=...)";
+    record "firefighter_returned"; counters; recycled += 1 so the existing
+    `if recycled > 0: _try_dispatch_unresolved_confirmed_victims()` fires.
+    A return that raises is reported (never silent) and the unit stays
+    registered, so it is retried on the next step; the end-of-run registry
+    is what Part 3 asserts empty.
+    No new adaptation-manager stage: the stage order pinned by
+    tests/test_adaptation_manager_cycle.py stays as it is.
+
+5.4 Timing, so "3-5 steps" has one meaning
+    removal in post-move of step S; off-grid for the schedule.step() of
+    S+1 .. S+d (d activations in which it cannot move, be dispatched, or die);
+    return in post-move of step S+d, before _check_fire_casualties of that
+    step (same fire state for the safety test and the casualty test); acts
+    again from S+d+1. Reported absence = return_step - removed_step = d.
+
+5.5 Planner (3.4, if confirmed)
+    get_rescue_operational_snapshot: per-unit "off_grid", "return_step".
+    select_rescue_assignment: empty pool + any alive off_grid unit -> "delay".
+
+5.6 Other consumers
+    serve_dashboard._frame: skip pos None (marker loop and trail loop).
+    dashboard _build_firefighter_view: add off_grid, return_step.
+    common_fixed_variables.py: the two constants with a comment; README note.
+
+5.7 Tests (new file tests/test_firefighter_rescue_absence.py)
+    - completion removes the unit from the grid, not the scheduler; status
+      off_grid; not dispatchable; victim finalised exactly as today
+    - return after exactly d steps at the exit cell when safe; fields reset;
+      "[Firefighter Recycled]" printed; a victim confirmed during the window is
+      assigned on the return step
+    - unsafe exit cell -> relocation within the leash to a required-safe cell
+    - same seed -> same durations across two models; the shared RNG's state is
+      identical before and after the draw
+    - MAX = 0 -> legacy path (recycle in the same drain)
+    - planner: empty pool + off-grid unit -> delay; all dead -> unchanged
+    Existing tests: the helpers that reset firefighters set the old fields
+    directly and never drive a unit through the exit, the cycle-order test is
+    unaffected (no new stage), the dashboard test counts rows (unchanged).
+
+--------------------------------------------------------------------------------
+6. VALIDATION PLAN FOR PART 3 (so the design can be judged against it now)
+--------------------------------------------------------------------------------
+  Harness: outputs/_ffr_harness.py, identical for all arms (it wraps, never
+  mutates; it draws nothing). Three arms on the 13-run sample:
+    base1511  1511ada worktree                                (done, section 2)
+    ffoff     feature source, FF_RESCUE_ABSENCE_MAX_STEPS = 0  expected byte-
+              identical to base1511: fire digests, per-step firefighter
+              trajectories, stdout sha256, eval, every planner decision
+    ffabs     feature source, defaults [3,5]                  seed-matched vs
+              base1511 on rescued, dead, ff_deaths, never_detected,
+              terminal_step, with the fire digest identical on every run
+  Mechanism, reported directly: removals, returns, returns == removals per
+  run (a unit still absent at step 240 is legitimate only if its return step
+  lies beyond the horizon, and is reported as such, separately from a genuine
+  non-return), the distribution of realised durations with min/max, the
+  placement category of every return, every planner decision taken with an
+  empty pool while a unit was off-grid, and per-seed explanations of every
+  rescued change from the assign/completion timelines. Route_blocked gate:
+  outputs/_rblatch_campaign2.py in the same four shards, merged with
+  _ir_rbmerge.py against the 70e1b33 baseline (its "rescued does not
+  decrease" item already carries a pre-existing [FAIL] on D/east 505). Tests:
+  full suite, baseline 8 failed / 427 passed, plus the new file.
+
+STOP - awaiting confirmation before Part 2.
+Open decisions for the maintainer:
+  (1) the planner "delay while a unit is returning" change (3.4) - include?
+  (2) return placement: exit cell with a leash-bounded safety fallback (2.3) -
+      or exit cell unconditionally, accepting feature-caused deaths?
+  (3) constants at [3, 5] with MAX = 0 as the kill switch (4.1) - agreed?
+Everything else is implied by the requirement and the code as it stands.

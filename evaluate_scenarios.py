@@ -60,7 +60,7 @@ def _scenario_params(args: argparse.Namespace) -> dict:
         getattr(args, "fire_trackers", None),
         getattr(args, "victim_searchers", None),
     )
-    return {
+    params = {
         "NUM_AGENTS": num_agents,
         "NUM_VICTIMS": int(args.victims if args.victims is not None else preset.get("NUM_VICTIMS", 5)),
         "NUM_FIREFIGHTERS": int(
@@ -73,6 +73,15 @@ def _scenario_params(args: argparse.Namespace) -> dict:
         "NUM_FIRE_TRACKERS": fire_trackers,
         "NUM_VICTIM_SEARCHERS": victim_searchers,
     }
+    # Feature 1 knobs are only passed when given, so a bare run takes the
+    # common_fixed_variables defaults exactly like every other constant.
+    absence_min = getattr(args, "ff_absence_min", None)
+    absence_max = getattr(args, "ff_absence_max", None)
+    if absence_min is not None:
+        params["FF_RESCUE_ABSENCE_MIN_STEPS"] = int(absence_min)
+    if absence_max is not None:
+        params["FF_RESCUE_ABSENCE_MAX_STEPS"] = int(absence_max)
+    return params
 
 
 def _reproduce_line(args: argparse.Namespace, seeds: list[int]) -> str:
@@ -98,6 +107,10 @@ def _reproduce_line(args: argparse.Namespace, seeds: list[int]) -> str:
         parts.append("--fire-trackers %d" % args.fire_trackers)
     if getattr(args, "victim_searchers", None) is not None:
         parts.append("--victim-searchers %d" % args.victim_searchers)
+    if getattr(args, "ff_absence_min", None) is not None:
+        parts.append("--ff-absence-min %d" % args.ff_absence_min)
+    if getattr(args, "ff_absence_max", None) is not None:
+        parts.append("--ff-absence-max %d" % args.ff_absence_max)
     return "REPRODUCE: " + " ".join(parts)
 
 
@@ -186,6 +199,20 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--firefighters", type=int, default=None)
     parser.add_argument("--fire-trackers", type=int, default=None, dest="fire_trackers")
     parser.add_argument("--victim-searchers", type=int, default=None, dest="victim_searchers")
+    parser.add_argument(
+        "--ff-absence-min",
+        type=int,
+        default=None,
+        dest="ff_absence_min",
+        help="Override FF_RESCUE_ABSENCE_MIN_STEPS: fewest steps a firefighter stays off-grid after a rescue",
+    )
+    parser.add_argument(
+        "--ff-absence-max",
+        type=int,
+        default=None,
+        dest="ff_absence_max",
+        help="Override FF_RESCUE_ABSENCE_MAX_STEPS; 0 disables the absence (legacy immediate recycle)",
+    )
     parser.add_argument(
         "--seeds",
         default=None,

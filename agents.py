@@ -391,6 +391,12 @@ class Firefighter(mesa.Agent):
         self.exiting = False
         self.exit_target = None
         self.rescue_completed = False
+        # Rescue-absence state (feature 1): while off_grid the unit has pos None
+        # (advance() is a no-op), stays scheduled, and is re-placed by the model
+        # in the post-move cycle of absent_until_step.
+        self.off_grid = False
+        self.absent_until_step = None
+        self.absence_exit_cell = None
         self._idle_retreat_origin = None
         self._idle_retreat_steps = 0
         self._idle_retreat_stalled = False

@@ -278,6 +278,8 @@ class DashboardStateBuilder:
                     "exiting": bool(getattr(marker, "exiting", False)),
                     "route_blocked": status == "route_blocked",
                     "status": status,
+                    "off_grid": bool(getattr(marker, "off_grid", False)),
+                    "return_step": getattr(marker, "absent_until_step", None),
                 }
             )
         rows.sort(key=lambda r: r["id"])

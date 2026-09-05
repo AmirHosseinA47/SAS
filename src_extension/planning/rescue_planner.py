@@ -598,7 +598,21 @@ def select_rescue_assignment(
         available.append((ff_s, (int(pos[0]), int(pos[1]))))
 
     if not available:
-        if _is_initial_reason(reason_s) or reason_l == "victim_confirmed":
+        # Feature 1: a unit that is off the grid for a rescue hand-over comes
+        # back within a few steps, and its return re-runs dispatch for every
+        # waiting victim. Giving the victim up now would turn that wait into a
+        # lost rescue, so an empty pool with a returning unit delays regardless
+        # of the reason - casualty replacement included.
+        returning = sorted(
+            str(ff_id)
+            for ff_id, entry in firefighters.items()
+            if isinstance(entry, dict)
+            and bool(entry.get("off_grid", False))
+            and not bool(entry.get("dead", False))
+        )
+        if returning:
+            action = "delay"
+        elif _is_initial_reason(reason_s) or reason_l == "victim_confirmed":
             action = "delay"
         elif reason_l in (
             "replacement_after_blocked",
@@ -607,6 +621,14 @@ def select_rescue_assignment(
             action = "delay"
         else:
             action = "mark_unreachable"
+        payload: dict[str, Any] = {"reason": reason_s, "distance": None}
+        explanation = f"No available firefighter; {action}"
+        if returning:
+            payload["returning_firefighters"] = returning
+            explanation = (
+                f"No available firefighter; {len(returning)} unit(s) off-grid "
+                f"and returning ({', '.join(returning)}); {action}"
+            )
         return RescueDecision(
             decision_id=f"physical-pair-{action}-{chosen_vid}-{step}",
             selected_option_id="physical_pairing",
@@ -614,11 +636,11 @@ def select_rescue_assignment(
             victim_id=chosen_vid,
             firefighter_id="",
             route_choice="",
-            payload={"reason": reason_s, "distance": None},
+            payload=payload,
             confidence_score=1.0,
             uncertainty_context={"physical_pairing": True},
             comparison_summary={"summary": f"No firefighter for {chosen_vid}"},
-            explanation=f"No available firefighter; {action}",
+            explanation=explanation,
         )
 
     best_ff: str | None = None

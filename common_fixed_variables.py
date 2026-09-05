@@ -109,6 +109,16 @@ BATTERY_CRITICAL_THRESHOLD = 15.0
 
 # ============================================================
 
+# Firefighter rescue absence (feature 1). When a firefighter carries a victim to
+# its exit cell, the victim is finalised as before and the firefighter is removed
+# from the grid for a per-rescue draw of [MIN, MAX] steps (the hand-over), then
+# re-enters at that exit cell and becomes available again. MAX <= 0 disables the
+# absence and restores the immediate recycle. Overridable per run through
+# apply_scenario_config like every other scenario parameter. The draw comes from
+# a dedicated RNG seeded from the run seed, never from SYSTEM_RANDOM.
+FF_RESCUE_ABSENCE_MIN_STEPS = 3
+FF_RESCUE_ABSENCE_MAX_STEPS = 5
+
 N_ACTIONS = 4
 UAV_OBSERVATION_RADIUS = 8
 side = ((UAV_OBSERVATION_RADIUS * 2) + 1)

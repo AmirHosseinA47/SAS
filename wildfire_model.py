@@ -1,6 +1,8 @@
 # python libraries
 
+import hashlib
 import math
+import random
 import sys
 from collections import deque
 from dataclasses import asdict, dataclass
@@ -119,6 +121,10 @@ class WildFireModel(mesa.Model):
     # method is called
     def reset(self):
 
+        # Feature 1: the absence-duration stream is derived from SYSTEM_RANDOM's
+        # state BEFORE anything draws from it, so it is a pure function of the run
+        # seed, and getstate() consumes nothing. Must precede set_fire_agents().
+        self._ff_absence_rng = self._make_ff_absence_rng()
         self.unique_agents_id = 0
         # Inverted width and height order, because of matrix accessing purposes, like in many examples:
         #   https://snyk.io/advisor/python/Mesa/functions/mesa.space.MultiGrid
@@ -276,6 +282,12 @@ class WildFireModel(mesa.Model):
         self._agents_pending_removal: list[Any] = []
         self.pending_removal_failures_last_step = 0
         self.pending_removal_failures_total = 0
+        # Feature 1: firefighters currently off the grid after a rescue hand-over,
+        # keyed by unit id; drained by _return_absent_firefighters each step.
+        self._absent_firefighters: dict[str, dict[str, Any]] = {}
+        self._ff_absence_log: list[dict[str, Any]] = []
+        self.ff_absence_removals_total = 0
+        self.ff_absence_returns_total = 0
         self._rescue_path_clear_requested = False
         self._rescue_failed_logged: set[str] = set()
         self._rescue_blocked_logged: set[tuple[str, str]] = set()
@@ -2116,6 +2128,284 @@ class WildFireModel(mesa.Model):
         else:
             self._sync_firefighter_operational_knowledge()
 
+    # ------------------------------------------------------------------
+    # Feature 1: a firefighter leaves the environment during a rescue hand-over
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _make_ff_absence_rng() -> random.Random:
+        """Dedicated RNG for the absence draw, isolated from the shared stream.
+
+        Seeded from a digest of SYSTEM_RANDOM's current state: getstate()
+        consumes nothing, and once a harness has bound random.Random(seed) that
+        state is a pure function of the seed. The duration sequence is therefore
+        reproducible per seed without shifting a single fire-spread draw, which
+        is what keeps a seed-matched fire map identical to the pre-feature one.
+        SystemRandom (the unseeded default) has no state to read; such a run is
+        non-reproducible anyway, so OS entropy is used.
+        """
+        try:
+            state = SYSTEM_RANDOM.getstate()
+        except (NotImplementedError, AttributeError):
+            return random.Random()
+        digest = hashlib.sha256(repr(state).encode("utf-8")).hexdigest()
+        return random.Random(int(digest, 16))
+
+    def _draw_firefighter_absence_duration(self) -> int:
+        """Steps a firefighter stays off the grid after a rescue; 0 means disabled.
+
+        Reads FF_RESCUE_ABSENCE_MIN/MAX_STEPS at call time so a per-run
+        apply_scenario_config override is honoured. MAX <= 0 disables the
+        feature without touching any RNG; MIN == MAX is a fixed constant,
+        also drawn from nothing.
+        """
+        try:
+            hi = int(FF_RESCUE_ABSENCE_MAX_STEPS)
+            lo = int(FF_RESCUE_ABSENCE_MIN_STEPS)
+        except (NameError, TypeError, ValueError):
+            return 0
+        if hi <= 0:
+            return 0
+        lo = max(1, min(lo, hi))
+        if lo == hi:
+            return lo
+        rng = getattr(self, "_ff_absence_rng", None)
+        if rng is None:
+            rng = self._make_ff_absence_rng()
+            self._ff_absence_rng = rng
+        return int(rng.randint(lo, hi))
+
+    def _remove_firefighter_for_rescue_absence(
+        self, ff_marker: Any, victim_id: str, duration: int
+    ) -> None:
+        """Take a unit that just exited with a victim off the grid for `duration` steps.
+
+        The unit keeps its scheduler slot and its marker entry (advance() is a
+        no-op without a position), carries no assignment through the window,
+        and is registered for the return that _return_absent_firefighters
+        performs in the post-move cycle of removed_step + duration. Every
+        consumer that matters already treats pos None as "not here": dispatch,
+        casualties, the route_blocked revalidation, the reachability BFS.
+        """
+        ff_id = self._firefighter_id_from_marker(ff_marker)
+        step = int(getattr(self, "evaluation_timesteps_counter", 0) or 0)
+        duration = int(duration)
+        pos = getattr(ff_marker, "pos", None)
+        exit_cell = (int(pos[0]), int(pos[1])) if pos is not None else None
+        if pos is not None:
+            self.grid.remove_agent(ff_marker)
+
+        ff_marker.status = "off_grid"
+        ff_marker.assigned = False
+        ff_marker.target_pos = None
+        ff_marker.exiting = False
+        ff_marker.exit_target = None
+        ff_marker.rescued_victim = None
+        ff_marker.rescue_completed = False
+        ff_marker.dead = False
+        ff_marker.off_grid = True
+        ff_marker.absent_until_step = step + duration
+        ff_marker.absence_exit_cell = exit_cell
+
+        absent = getattr(self, "_absent_firefighters", None)
+        if not isinstance(absent, dict):
+            absent = {}
+            self._absent_firefighters = absent
+        absent[ff_id] = {
+            "marker": ff_marker,
+            "victim_id": str(victim_id or ""),
+            "removed_step": step,
+            "duration": duration,
+            "return_step": step + duration,
+            "exit_cell": exit_cell,
+        }
+        self.ff_absence_removals_total = (
+            int(getattr(self, "ff_absence_removals_total", 0) or 0) + 1
+        )
+        log = getattr(self, "_ff_absence_log", None)
+        if not isinstance(log, list):
+            log = []
+            self._ff_absence_log = log
+        unit_label = str(getattr(ff_marker, "unit_id", ff_id) or ff_id)
+        log.append(
+            {
+                "event": "removed",
+                "step": step,
+                "ff": unit_label,
+                "victim": str(victim_id or ""),
+                "duration": duration,
+                "return_step": step + duration,
+                "exit_cell": exit_cell,
+            }
+        )
+        print(
+            f"[Firefighter Off-Grid] FF-{unit_label} removed at {exit_cell} "
+            f"for {duration} steps, returns at step {step + duration}"
+        )
+        # Firefighter-keyed on purpose: recording it under the victim would
+        # overwrite _latest_physical_rescue_by_victim[vid], whose rescue_complete
+        # entry is what the same-step duplicate guard in _record_rescue_event reads.
+        self._record_rescue_event(
+            "",
+            ff_id,
+            "firefighter_off_grid",
+            f"FF-{unit_label} off-grid hand-over of {victim_id or 'victim'} "
+            f"for {duration} steps (returns step {step + duration})",
+            {
+                "victim_id": str(victim_id or ""),
+                "duration": duration,
+                "return_step": step + duration,
+                "exit_cell": exit_cell,
+            },
+        )
+        if ff_id:
+            self._sync_firefighter_operational_knowledge([ff_id])
+
+    def _choose_firefighter_return_cell(
+        self, ff_marker: Any, exit_cell: tuple[int, int] | None
+    ) -> tuple[tuple[int, int], str]:
+        """Re-entry cell for a returning unit: its exit cell, unless fire got there.
+
+        The exit cell is re-tested with the idle logic's own predicate
+        (_cell_meets_required_idle_safety: not burning, not adjacent to fire,
+        no smoke). When it fails, the nearest passing cell within
+        IDLE_RETREAT_MAX_CELLS of the exit cell is used - exactly the mobility
+        the idle retreat would have granted a unit that had stayed - then the
+        nearest non-burning cell within that leash, and only then the exit cell
+        regardless ("forced"). A returning unit must not be teleported to safety
+        a present unit could not have reached, or ff_deaths would move for a
+        reason that is not the feature. Search order is deterministic:
+        (Manhattan distance, x, y).
+        """
+        width = int(self.grid.width)
+        height = int(self.grid.height)
+        if exit_cell is None:
+            exit_cell = getattr(ff_marker, "absence_exit_cell", None)
+        if exit_cell is None:
+            managed_ff = getattr(self, "managed_firefighters", None)
+            state = (
+                managed_ff.get(self._firefighter_id_from_marker(ff_marker))
+                if isinstance(managed_ff, dict)
+                else None
+            )
+            base = getattr(state, "position", None) if state is not None else None
+            exit_cell = (
+                (int(round(base[0])), int(round(base[1])))
+                if base is not None
+                else (0, 0)
+            )
+        exit_cell = (
+            max(0, min(int(exit_cell[0]), width - 1)),
+            max(0, min(int(exit_cell[1]), height - 1)),
+        )
+        fire_cells = ff_marker._fire_cells()
+        if ff_marker._cell_meets_required_idle_safety(exit_cell, fire_cells):
+            return exit_cell, "exit_cell"
+        leash = int(getattr(agents, "IDLE_RETREAT_MAX_CELLS", 6))
+        ex, ey = exit_cell
+        candidates: list[tuple[int, int, int]] = []
+        for x in range(max(0, ex - leash), min(width - 1, ex + leash) + 1):
+            for y in range(max(0, ey - leash), min(height - 1, ey + leash) + 1):
+                dist = abs(x - ex) + abs(y - ey)
+                if dist == 0 or dist > leash:
+                    continue
+                candidates.append((dist, x, y))
+        candidates.sort()
+        for _dist, x, y in candidates:
+            if ff_marker._cell_meets_required_idle_safety((x, y), fire_cells):
+                return (x, y), "relocated_safe"
+        for _dist, x, y in candidates:
+            if not ff_marker._cell_contains_active_fire((x, y)):
+                return (x, y), "relocated_unburning"
+        return exit_cell, "forced"
+
+    def _return_absent_firefighters(self) -> int:
+        """Re-enter every unit whose absence ends this step; returns how many did.
+
+        Runs at the head of _process_pending_agent_removals, so a returned unit
+        is on the grid before _check_fire_casualties and the route_blocked
+        revalidation of the same post-move cycle, and its recycle counts toward
+        the re-dispatch pass that follows the drain. A return that raises is
+        reported through _report_pending_removal_failure and stays registered,
+        so it is retried next step: a unit can be delayed by a fault, never
+        lost silently.
+        """
+        absent = getattr(self, "_absent_firefighters", None)
+        if not isinstance(absent, dict) or not absent:
+            return 0
+        step = int(getattr(self, "evaluation_timesteps_counter", 0) or 0)
+        due = sorted(
+            ff_id
+            for ff_id, record in absent.items()
+            if int(record.get("return_step", 0) or 0) <= step
+        )
+        returned = 0
+        for ff_id in due:
+            record = absent.get(ff_id) or {}
+            marker = record.get("marker")
+            try:
+                if marker is None:
+                    raise ValueError("absent record without marker")
+                cell, placement = self._choose_firefighter_return_cell(
+                    marker, record.get("exit_cell")
+                )
+                if getattr(marker, "pos", None) is None:
+                    self.grid.place_agent(marker, cell)
+                elif (int(marker.pos[0]), int(marker.pos[1])) != cell:
+                    self.grid.move_agent(marker, cell)
+                marker.off_grid = False
+                marker.absent_until_step = None
+                marker.absence_exit_cell = None
+                absent.pop(ff_id, None)
+                removed_step = int(record.get("removed_step", step) or 0)
+                actual = step - removed_step
+                unit_label = str(getattr(marker, "unit_id", ff_id) or ff_id)
+                log = getattr(self, "_ff_absence_log", None)
+                if not isinstance(log, list):
+                    log = []
+                    self._ff_absence_log = log
+                log.append(
+                    {
+                        "event": "returned",
+                        "step": step,
+                        "ff": unit_label,
+                        "victim": str(record.get("victim_id", "") or ""),
+                        "duration": actual,
+                        "planned_duration": int(record.get("duration", 0) or 0),
+                        "removed_step": removed_step,
+                        "return_step": int(record.get("return_step", step) or 0),
+                        "exit_cell": record.get("exit_cell"),
+                        "cell": cell,
+                        "placement": placement,
+                    }
+                )
+                print(
+                    f"[Firefighter Returned] FF-{unit_label} at {cell} after "
+                    f"{actual} steps (placement={placement})"
+                )
+                self._recycle_firefighter_after_exit(marker)
+                self.ff_absence_returns_total = (
+                    int(getattr(self, "ff_absence_returns_total", 0) or 0) + 1
+                )
+                self._record_rescue_event(
+                    "",
+                    ff_id,
+                    "firefighter_returned",
+                    f"FF-{unit_label} returned at {cell} after {actual} steps "
+                    f"({placement})",
+                    {
+                        "victim_id": str(record.get("victim_id", "") or ""),
+                        "duration": actual,
+                        "cell": cell,
+                        "placement": placement,
+                    },
+                )
+                returned += 1
+            except Exception as exc:
+                self._report_pending_removal_failure(
+                    marker, f"return failed: {type(exc).__name__}: {exc}"
+                )
+        return returned
+
     def _try_dispatch_unresolved_confirmed_victims(self) -> None:
         """Re-dispatch confirmed victims that still need rescue when firefighters become available."""
         managed = getattr(self, "managed_victims", None)
@@ -2224,6 +2514,11 @@ class WildFireModel(mesa.Model):
         skipped, instead of aborting the drain and silently discarding every
         entry queued behind it. Returns the number of entries handled, counting
         firefighter recycles alongside grid/schedule removals.
+
+        Feature 1: a firefighter that reaches its exit cell with a victim is
+        taken off the grid for FF_RESCUE_ABSENCE_MIN..MAX steps instead of being
+        recycled in place; its return, handled here before the drain, is the
+        recycle it deferred and is counted the same way.
         """
         removed = 0
         recycled = 0
@@ -2233,6 +2528,7 @@ class WildFireModel(mesa.Model):
         finalized_victim_ids: set[str] = set()
         index = 0
         try:
+            recycled += self._return_absent_firefighters()
             while index < len(pending):
                 agent = pending[index]
                 index += 1
@@ -2282,15 +2578,25 @@ class WildFireModel(mesa.Model):
                             removed += 1
                             continue
                         rescued_victim = getattr(agent, "rescued_victim", None)
+                        victim_id = ""
                         if rescued_victim is not None:
                             vid = self._victim_id_from_agent(rescued_victim)
+                            victim_id = vid
                             ff_id = str(getattr(agent, "unit_id", "") or "")
                             if vid and vid not in finalized_victim_ids:
                                 self._finalize_rescued_victim(
                                     vid, rescued_victim, firefighter_id=ff_id
                                 )
                                 finalized_victim_ids.add(vid)
-                        self._recycle_firefighter_after_exit(agent)
+                        # Feature 1: leave the environment for the hand-over, or
+                        # recycle in place when the absence is disabled (MAX <= 0).
+                        duration = self._draw_firefighter_absence_duration()
+                        if duration > 0 and getattr(agent, "pos", None) is not None:
+                            self._remove_firefighter_for_rescue_absence(
+                                agent, victim_id, duration
+                            )
+                        else:
+                            self._recycle_firefighter_after_exit(agent)
                         recycled += 1
                     else:
                         self._report_pending_removal_failure(
@@ -2640,6 +2946,10 @@ class WildFireModel(mesa.Model):
                     "status": status,
                     "available": self._firefighter_available_for_dispatch(ff_marker),
                     "target_victim_id": target_victim_id,
+                    # Feature 1: off the grid for a rescue hand-over, back at
+                    # return_step; lets the planner wait instead of giving up.
+                    "off_grid": bool(getattr(ff_marker, "off_grid", False)),
+                    "return_step": getattr(ff_marker, "absent_until_step", None),
                 }
 
         incidents = list(getattr(self, "_rescue_incident_queue", []) or [])
@@ -3211,6 +3521,7 @@ class WildFireModel(mesa.Model):
         status = str(getattr(ff_marker, "status", "") or "").strip().lower()
         assigned = bool(getattr(ff_marker, "assigned", False))
         route_blocked = status == "route_blocked"
+        off_grid = bool(getattr(ff_marker, "off_grid", False)) or status == "off_grid"
         exiting = bool(getattr(ff_marker, "exiting", False))
         rescue_completed = bool(getattr(ff_marker, "rescue_completed", False))
         pos = getattr(ff_marker, "pos", None)
@@ -3233,6 +3544,16 @@ class WildFireModel(mesa.Model):
             rescue_progress_status = "casualty"
             route_risk_score = 1.0
             route_feasibility_confidence = 0.0
+        elif off_grid:
+            # Feature 1: off the grid for a rescue hand-over, back within steps.
+            availability_status = "unavailable"
+            assignment_state = "unassigned"
+            route_state = "off_grid"
+            current_assignment = None
+            route_status = "off_grid"
+            rescue_progress_status = "handover"
+            route_risk_score = 0.1
+            route_feasibility_confidence = 0.9
         elif rescue_completed:
             availability_status = "unavailable"
             assignment_state = "unassigned"
@@ -3285,6 +3606,7 @@ class WildFireModel(mesa.Model):
             "dead": dead,
             "assigned": assigned,
             "route_blocked": route_blocked,
+            "off_grid": off_grid,
             "operational_status": status,
             "current_position": current_position,
             "target_position": target_position,
@@ -3343,6 +3665,7 @@ class WildFireModel(mesa.Model):
                 extra["dead"] = fields["dead"]
                 extra["assigned"] = fields["assigned"]
                 extra["route_blocked"] = fields["route_blocked"]
+                extra["off_grid"] = bool(fields.get("off_grid", False))
                 extra["operational_status"] = fields["operational_status"]
                 extra["target_position"] = fields["target_position"]
                 extra["target_victim_id"] = fields["target_victim_id"]

@@ -1,0 +1,495 @@
+================================================================================
+FEATURE 1 - FIREFIGHTER LEAVES THE ENVIRONMENT DURING A RESCUE
+PARTS 2 AND 3: IMPLEMENTATION AND VALIDATION
+================================================================================
+BRANCH   firefighter-mission-features
+BASE     1511ada  (== tag bugfix-campaign-complete)
+DATE     2026-09-04
+PART 1   outputs/ffrescue_part1.txt - design, approved with three decisions:
+           (1) planner delays instead of marking unreachable while a unit is
+               off-grid and returning - INCLUDED, delay path verified (sec 2)
+           (2) return to the exit cell with the leash-bounded safety fallback
+           (3) [3,5] with MAX = 0 as the kill switch, scenario-config overridable
+ENV      .venv python 3.10.11, mesa 1.2.1
+SAMPLE   the campaign's canonical 13 runs, scenario D, 240 steps:
+           D/east half-roles 101-505, D/south half-roles 101-505,
+           D/east default-roles 101/202/303
+
+--------------------------------------------------------------------------------
+GATE STATUS
+--------------------------------------------------------------------------------
+  every removed firefighter returns; returns == removals ......... PASS  29 removals,
+                                                                        29 returns,
+                                                                        13/13 runs
+  absence duration within [3,5] in every instance ................ PASS  {3: 11, 4: 3, 5: 15}
+                                                                        min 3, max 5
+  no NEW test failures ........................................... PASS  8 failed / 435
+                                                                        passed (427 + 8
+                                                                        new); failing set
+                                                                        identical to the
+                                                                        baseline's 8
+  route_blocked gate ............................................. PASS  vs the prior
+                                                                        round (rhfix ==
+                                                                        1511ada) all three
+                                                                        items pass, 17/18
+                                                                        seeds identical;
+                                                                        vs 70e1b33 the
+                                                                        pre-existing
+                                                                        D/east 505 [FAIL]
+                                                                        line is carried
+                                                                        unchanged (sec 10)
+  rescued does not decrease ...................................... PASS  29 -> 29 over the
+                                                                        13 seeds, no seed
+                                                                        down; dead 23 -> 23,
+                                                                        ff_deaths 6 -> 6
+  control arm (feature source, MAX = 0) == 1511ada ............... PASS  13/13 runs, every
+                                                                        recorded field
+  fire map identical to 1511ada with the feature ON .............. PASS  13/13 runs, all
+                                                                        240 steps
+  same seed twice reproduces the absence log ..................... PASS  D/east/half 202
+                                                                        re-run: every
+                                                                        field identical
+
+NOTHING WAS TUNED. No constant adjusted after seeing a result, no arm re-run
+after seeing its result, no gate item redefined to accommodate an outcome.
+The one behavioural change beyond the requirement - the planner delay while a
+unit is returning - was proposed in Part 1 and approved before implementation.
+
+--------------------------------------------------------------------------------
+1. WHAT CHANGED
+--------------------------------------------------------------------------------
+common_fixed_variables.py
+  FF_RESCUE_ABSENCE_MIN_STEPS = 3, FF_RESCUE_ABSENCE_MAX_STEPS = 5, with a
+  comment. Star-imported into wildfire_model like every other scenario
+  constant; apply_scenario_config overrides both modules per run.
+
+agents.py  Firefighter.__init__
+  off_grid = False, absent_until_step = None, absence_exit_cell = None.
+  Firefighter.advance is untouched: its existing `if self.pos is None: return`
+  is what makes an off-grid unit inert.
+
+wildfire_model.py
+  reset()           self._ff_absence_rng = self._make_ff_absence_rng() as the
+                    first statement, before set_fire_agents() draws anything.
+  _init_runtime_knowledge   _absent_firefighters, _ff_absence_log,
+                    ff_absence_removals_total, ff_absence_returns_total.
+  _make_ff_absence_rng      random.Random(sha256(repr(SYSTEM_RANDOM.getstate())));
+                    getstate() consumes nothing; SystemRandom (unseeded default)
+                    raises NotImplementedError -> random.Random() from OS entropy.
+  _draw_firefighter_absence_duration  reads the two constants at call time;
+                    MAX <= 0 -> 0 (disabled, no RNG touched); MIN == MAX -> that
+                    constant, no draw; else randint on the dedicated stream.
+  _remove_firefighter_for_rescue_absence  grid.remove_agent (pos None), the
+                    recycle's field resets, status "off_grid", off_grid True,
+                    absent_until_step = S + d, registry entry, log entry,
+                    "[Firefighter Off-Grid] ..." print, a firefighter-keyed
+                    rescue event (firefighter_off_grid; victim in metadata so
+                    _latest_physical_rescue_by_victim[vid] keeps rescue_complete),
+                    knowledge sync through a new off_grid branch.
+  _choose_firefighter_return_cell  exit cell if it passes
+                    _cell_meets_required_idle_safety; else the nearest passing
+                    cell within IDLE_RETREAT_MAX_CELLS (= 6) of it, ordered by
+                    (Manhattan distance, x, y); else the nearest non-burning cell
+                    within the leash; else the exit cell, tagged "forced".
+  _return_absent_firefighters  called first thing inside the outer try of
+                    _process_pending_agent_removals: every unit with
+                    return_step <= step is re-placed (grid.place_agent on a
+                    pos-None unit), un-flagged, logged, printed
+                    ("[Firefighter Returned] ..."), and handed to the UNCHANGED
+                    _recycle_firefighter_after_exit, which prints
+                    "[Firefighter Recycled]" and syncs knowledge as today; the
+                    return counts in `recycled` so the existing
+                    `if recycled > 0: _try_dispatch_unresolved_confirmed_victims()`
+                    fires. A return that raises goes through
+                    _report_pending_removal_failure ([RemovalFailure] + counters)
+                    and the unit stays registered for the next step.
+  _process_pending_agent_removals  Firefighter branch: after the victim
+                    finalize, `d = _draw...(); remove for d if d > 0 and pos is
+                    not None, else recycle in place`. The 63e1a6c containment
+                    (per-entry try, outer re-queue, unhandled-type report,
+                    return value) is untouched.
+  _derive_firefighter_operational_fields  new off_grid branch: availability
+                    "unavailable", assignment_state "unassigned", route_state /
+                    route_status "off_grid", rescue_progress_status "handover";
+                    "off_grid" in the derived dict and in managed extra.
+  get_rescue_operational_snapshot  per firefighter: "off_grid", "return_step".
+
+src_extension/planning/rescue_planner.py  select_rescue_assignment
+  Empty-pool branch: if any alive unit has off_grid True -> "delay" for every
+  reason, casualty replacement included; payload gains
+  returning_firefighters and the explanation names them. When no unit is
+  returning the branch, payload and explanation are exactly as before.
+
+serve_dashboard.py  _capture_frame
+  Skips firefighters with pos None in the marker loop and the trail loop (the
+  only consumer that indexed a firefighter's pos without a guard).
+
+src_extension/dashboard/dashboard_state_builder.py  firefighter_view rows
+  gain "off_grid" and "return_step".
+
+evaluate_scenarios.py
+  --ff-absence-min / --ff-absence-max, passed to apply_scenario_config only
+  when given and echoed in the REPRODUCE line, threaded the way
+  --fire-trackers / --victim-searchers were.
+
+README.md  "Firefighters" subsection documenting the two constants.
+
+tests/test_firefighter_rescue_absence.py  8 tests, section 8.
+
+Not changed, deliberately: standby placement, IDLE_RETREAT_*, the retreat
+scan, the adaptation-manager stage order, the rescue invariant checker, the
+unreachable escape hatch.
+
+--------------------------------------------------------------------------------
+2. THE DELAY-PATH CHECK YOU ASKED FOR
+--------------------------------------------------------------------------------
+The concern: the _DELAY_CANCEL_BONUS round found "delay" structurally
+unselectable through _is_delay_or_cancel_option, and after the predicate fix
+at 0e9c912 a second dead gate downstream kept it inert.
+
+That predicate belongs to the planner-UTILITY path (adaptation options scored
+by RescuePlanner). The delay this feature relies on is the PHYSICAL PAIRING
+path: select_rescue_assignment's empty-pool branch returns a RescueDecision
+with rescue_action "delay", and RescueExecutor.apply_physical_pairing_decision
+returns {"message": "delayed"} without mutating anything. Three checks that it
+fires, none of them assumed:
+
+  (a) code, downstream of the decision: _handle_rescue_incident (wildfire_
+      model.py:2898-2930) applies the decision and, for casualty / route_blocked
+      incidents whose result is not a success, only prints "[Rescue Failed]"
+      when the action was mark_unreachable, then syncs knowledge. There is no
+      second gate: a delayed victim keeps status "confirmed" (the casualty path
+      unassigns it with reset_victim_pending=True first) and remains needy, and
+      the only thing that ever re-dispatches such a victim is
+      _try_dispatch_unresolved_confirmed_victims, which runs after every
+      recycle - and therefore after every return.
+  (b) baseline data, 1511ada, 13 runs: 9 empty-pool "delay" decisions were
+      taken; 8 of the 9 victims were dispatched later, every one of them by the
+      post-recycle pass (same step as a recycle). The ninth (D/south/half 404,
+      step 57, replacement_after_blocked) was overtaken by the victim's death.
+  (c) end to end on the real model, tests/test_firefighter_rescue_absence.py::
+      test_planner_delays_casualty_replacement_while_a_unit_is_returning:
+      unit B exits with a victim and goes off-grid for 3 steps; unit A,
+      assigned to another victim, is burned by _check_fire_casualties; the
+      real replacement path runs; the victim is NOT marked unreachable, stays
+      "confirmed", no rescue_failed event; the re-derived decision is "delay"
+      with returning_firefighters == ["ff_unit_1"]; on B's return step the
+      drain re-places B and the post-drain pass assigns it to that victim.
+      The all-dead control (test_planner_still_gives_up_when_every_unit_is_dead)
+      still yields mark_unreachable.
+In the canonical sample the new branch changed no outcome: the 7 empty-pool
+decisions taken while a unit was off-grid were all "initial" reasons, which
+delayed before the change too, and no casualty fell inside a window (sec 7).
+
+--------------------------------------------------------------------------------
+3. VALIDATION ARMS AND HARNESS FIDELITY
+--------------------------------------------------------------------------------
+Harness: outputs/_ffr_harness.py, one process per seed, identical code for all
+arms, run against a checkout given by --repo. It mirrors
+evaluate_scenarios._run_seed statement for statement (seeding order,
+apply_scenario_config, debug_log False, stdout redirected, per-step
+get_dashboard_state() polling until the terminal step) and layers read-only
+observers on top. Fidelity was proven before use: on the three seeds that
+outputs/_pr_control_post.json covers, its eval AND its captured-stdout sha256
+are identical to that earlier control run.
+
+  base1511  1511ada worktree                             outputs/_ffr_base1511_*.json
+  ffoff     feature source, --set FF_RESCUE_ABSENCE_MAX_STEPS=0
+                                                          outputs/_ffr_ffoff_*.json
+  ffabs     feature source, defaults [3,5]                outputs/_ffr_ffabs_*.json
+  analysis  outputs/_ffr_ffabs_analysis.txt (this section's tables, verbatim)
+
+--------------------------------------------------------------------------------
+4. CONTROL ARM: THE PLUMBING IS INERT WHEN DISABLED
+--------------------------------------------------------------------------------
+ffoff vs base1511, 13/13 runs: fire digests (all 240 steps), per-step
+firefighter trajectories, stdout sha256, eval, every planner decision, every
+assign/unassign/unreachable mark, completions, recycles, rescue event counts,
+unreachable escape log, queue residue - IDENTICAL on every run. The only
+differing recorded field is the explicit kill-switch parameter itself. The
+two things the disabled feature still does at runtime - creating the
+dedicated RNG at reset() (getstate() only) and calling
+_return_absent_firefighters on an empty registry - leave no trace.
+
+--------------------------------------------------------------------------------
+5. FEATURE ARM, SEED-MATCHED AGAINST 1511ada
+--------------------------------------------------------------------------------
+  combo                  rescued      dead        unreach    nvdet      ff_deaths   terminal      fire-map
+  D/east/half 101        2 -> 2       2 -> 2      0 -> 0     0 -> 0     1 -> 1      210 -> 210    identical
+  D/east/half 202        2 -> 2       2 -> 2      0 -> 0     0 -> 0     0 -> 0      210 -> 210    identical
+  D/east/half 303        1 -> 1       3 -> 3      0 -> 0     0 -> 0     0 -> 0      141 -> 141    identical
+  D/east/half 404        2 -> 2       2 -> 2      0 -> 0     0 -> 0     1 -> 1       96 ->  99    identical
+  D/east/half 505        1 -> 1       3 -> 3      0 -> 0     0 -> 0     0 -> 0      183 -> 183    identical
+  D/south/half 101       3 -> 3       1 -> 1      0 -> 0     0 -> 0     1 -> 1      197 -> 197    identical
+  D/south/half 202       3 -> 3       1 -> 1      0 -> 0     0 -> 0     0 -> 0      190 -> 190    identical
+  D/south/half 303       3 -> 3       1 -> 1      0 -> 0     0 -> 0     0 -> 0      113 -> 113    identical
+  D/south/half 404       2 -> 2       2 -> 2      0 -> 0     0 -> 0     1 -> 1      106 -> 106    identical
+  D/south/half 505       3 -> 3       1 -> 1      0 -> 0     0 -> 0     0 -> 0      108 -> 108    identical
+  D/east/default 101     2 -> 2       2 -> 2      0 -> 0     0 -> 0     1 -> 1      165 -> 165    identical
+  D/east/default 202     3 -> 3       1 -> 1      0 -> 0     0 -> 0     1 -> 1      171 -> 171    identical
+  D/east/default 303     2 -> 2       2 -> 2      0 -> 0     0 -> 0     0 -> 0      115 -> 115    identical
+  TOTAL                 29 -> 29     23 -> 23     0 -> 0     0 -> 0     6 -> 6
+
+Every outcome metric is unchanged on every seed. The one number that moved is
+the terminal step of D/east/half 404: 96 -> 99. That is the second rescue of
+that run (victim_2) completing 3 steps later, because the unit that performed
+it was off-grid for d = 3 when the dispatch would otherwise have happened
+(sec 7). The fire map being identical on 13/13 runs is the direct proof that
+the absence draw never touches the shared RNG stream: the fire subsystem is
+the only per-step consumer of that stream, so one leaked draw would have
+diverged the digest from the first rescue onward.
+
+--------------------------------------------------------------------------------
+6. THE MECHANISM, REPORTED DIRECTLY
+--------------------------------------------------------------------------------
+  combo                  removals returns pending  durations     placement
+  D/east/half 101               2       2       0  [5, 5]        exit, exit
+  D/east/half 202               2       2       0  [3, 5]        exit, exit
+  D/east/half 303               1       1       0  [5]           exit
+  D/east/half 404               2       2       0  [3, 3]        exit, exit
+  D/east/half 505               1       1       0  [3]           exit
+  D/south/half 101              3       3       0  [5, 5, 3]     exit, RELOCATED, exit
+  D/south/half 202              3       3       0  [3, 5, 4]     exit, exit, exit
+  D/south/half 303              3       3       0  [5, 5, 3]     exit, exit, exit
+  D/south/half 404              2       2       0  [3, 3]        exit, exit
+  D/south/half 505              3       3       0  [3, 5, 4]     exit, exit, exit
+  D/east/default 101            2       2       0  [5, 5]        exit, exit
+  D/east/default 202            3       3       0  [3, 5, 4]     exit, exit, exit
+  D/east/default 303            2       2       0  [5, 5]        exit, exit
+  TOTAL                        29      29       0
+
+  removals 29 = the 29 rescue completions of the baseline (every completion
+    now removes the unit); returns 29; a unit still absent at step 240: none
+    in any run, so returns == removals holds STRICTLY, not modulo horizon
+    truncation (latest removal at step 197, back at 200, well inside 240).
+  durations: 3 x11, 4 x3, 5 x15; min 3, max 5. 120 off-grid activations in
+    total (11*3 + 3*4 + 15*5).
+  timing audit (per-step trajectories, every window): the unit has pos None
+    at the end of steps S .. S+d-1 and a position again at the end of step
+    S+d, i.e. exactly d activations in which it could not move, be dispatched
+    or die; on-grid the step before removal; never dead while away; queue
+    residue 0; [RemovalFailure] 0 in 13 runs.
+  placement: 28 returns on the exit cell, 1 relocated. The relocation is
+    D/south/half 101, ff_unit_1, return step 50: the fire front had reached the
+    exit cell (25,0) itself during the 5-step absence - (25,0) and (26,0)
+    burning, (24,0), (23,0), (25,1) adjacent to fire - and (22,0), three cells
+    along the same edge, was the nearest cell passing the idle-safety
+    predicate, well inside the 6-cell leash. All 29 returns landed on a
+    boundary cell, the relocated one included. Without the fallback that unit
+    would have been re-placed into fire and killed by _check_fire_casualties
+    in the same post-move cycle; in the baseline it stood on (25,0) and
+    retreated along the edge instead. No "forced" placements.
+  stdout, per rescue: "[Rescue Complete]" -> "[Firefighter Off-Grid] FF-x
+    removed at (x, y) for d steps, returns at step R" -> d steps later
+    "[Firefighter Returned] FF-x at (x, y) after d steps (placement=...)" ->
+    "[Firefighter Recycled] FF-x available at (x, y)" -> any "[Dispatch]" the
+    post-drain pass issues.
+  determinism: D/east/half 202 (durations [3, 5]) run a second time in a
+    fresh process (outputs/_ffr_ffabs2_east_half_202.json): absence log, fire
+    digests, per-step firefighter states, stdout sha256 and eval all
+    identical to the first run. Together with the fire-map identity across
+    arms this is the two-sided proof the design promised: the dedicated
+    stream is a pure function of the seed, and the shared stream never sees
+    the draw (test_duration_draw_is_seeded_and_leaves_shared_rng_untouched
+    asserts the getstate() equality directly).
+
+--------------------------------------------------------------------------------
+7. THE EIGHT SAME-DRAIN RE-DISPATCHES, TRACED
+--------------------------------------------------------------------------------
+Part 1 identified the feature's direct exposure: 8 of 29 baseline recycles
+were followed by a dispatch of the same unit within 5 steps, six of them in
+the very same drain. Each traced into the feature arm (victim's first assign
+at or after the baseline recycle step):
+
+  combo                  recycle  base asg  feat asg    base outcome  feat outcome  victim
+  D/east/half 101        46       46        51  (+5)    dead          dead          victim_0
+  D/east/half 101        106      106       116 (+10)   dead          dead          victim_3
+  D/east/half 303        36       36        41  (+5)    dead          dead          victim_0
+  D/east/half 404        44       44        47  (+3)    rescued@96    rescued@99    victim_2
+  D/east/half 505        44       49        49  (+0)    dead          dead          victim_3
+  D/south/half 101       35       40        40  (+0)    dead          dead          victim_2
+  D/east/default 101     45       45        50  (+5)    dead          dead          victim_0
+  D/east/default 101     115      115       125 (+10)   dead          dead          victim_1
+
+  - the six same-drain dispatches moved by exactly that unit's d (+5, +5, +3,
+    +5) or by d plus the shift the unit's earlier absence had already put on
+    its second rescue (+10 = 5 + 5 in D/east/half 101 and D/east/default 101:
+    the second completion itself came 5 steps later, then another 5 off-grid);
+  - the two gap-5 cases moved +0: in both, the dispatch was not waiting on the
+    recycled unit (D/east/half 505: a replacement_after_blocked at step 49
+    that the returned unit, back at 47, still took; D/south/half 101: an
+    initial dispatch at 40 taken by the unit returning at exactly 40);
+  - outcomes: 7 of the 8 victims died in BOTH arms, so the delay cost nothing
+    there - those victims were lost to the fire regardless of a 3-10 step
+    later start; the one victim that was rescued (D/east/half 404 victim_2)
+    was still rescued, 3 steps later, which is the terminal_step 96 -> 99.
+  Planner decisions taken with an empty pool while a unit was off-grid: 7,
+  all reason "initial" -> delay (D/east/half 101 x3, 303, 404, D/east/default
+  101 x2), each served on the unit's return by the post-drain pass. Empty-pool
+  decisions overall: initial -> delay 5 -> 12, replacement_after_blocked ->
+  delay 4 -> 4; replacement_after_casualty with an empty pool: 0 in both arms,
+  so the approved planner change altered no decision in this sample (it is
+  exercised by the end-to-end test in sec 2 instead).
+
+--------------------------------------------------------------------------------
+8. OTHER INTERACTIONS CHECKED
+--------------------------------------------------------------------------------
+  reachability escape hatch: 41 steps (of the 120 off-grid activations) had
+    no BFS start at all because every alive unit was off-grid or exiting,
+    against 50 such steps that exist anyway (all units dead/exiting). No
+    geographically_isolated mark in any run, in either arm; unreachable 0 -> 0.
+  rescue invariant checker: 0 [RescueInvariant] lines in the captured stderr
+    of all 13 feature runs (outputs/_ffr_logs/ffabs_*.err), and 0
+    [KnowledgeMismatch] / [RescueAuthority] / [RemovalFailure] lines in their
+    stdout. By construction an absent unit is unassigned with no
+    rescued_victim, so the checker never sees it.
+  idle posture: idle firefighter-steps 2,690 -> 2,595 (the 120 off-grid steps
+    are not idle, and the delayed dispatches shift the rest); on a grid edge
+    56.4% -> 54.8%. Recycle landings on a boundary cell 29/29 in both arms.
+  standby deaths: unchanged at 6 - the same units die at the same steps on the
+    same cells in both arms, every run - because a returned unit stands where a
+    recycled unit stood, and every death lies far outside any 3-5 step window
+    (the two post-recycle edge deaths of the baseline recur at steps 135 and
+    225, 85 and 51 steps after the returns at 50 and 174).
+  horizon: no completion later than step 120, so no return is truncated.
+  live dashboard: serve_dashboard._capture_frame skips absent units; the
+    dashboard state's firefighter_view keeps one row per unit, status
+    "off_grid" with off_grid / return_step, position falling back to the last
+    synced managed position (the exit cell) as it already did for pos None.
+  knowledge mirror: firefighter_model.mirror_operational_state stores
+    current_position None while the unit is away, and FirefighterMonitor's
+    pre-existing fallback reports (0, 0) for a None position - the same
+    treatment a dead unit already receives after its grid removal; not
+    changed here, noted as a shared quirk.
+  timeline: two firefighter-keyed rescue events per hand-over
+    (firefighter_off_grid, firefighter_returned) with the victim, duration,
+    cells and placement in metadata; console types unchanged.
+
+--------------------------------------------------------------------------------
+9. TESTS
+--------------------------------------------------------------------------------
+tests/test_firefighter_rescue_absence.py - 8 tests, all on the real model,
+driven through Firefighter.advance and _process_pending_agent_removals:
+  test_completion_removes_firefighter_from_grid_but_not_scheduler
+  test_return_after_duration_recycles_at_exit_cell_and_redispatches
+  test_unsafe_exit_cell_relocates_to_nearest_safe_cell_within_leash
+  test_duration_draw_is_seeded_and_leaves_shared_rng_untouched
+  test_disabled_absence_recycles_in_place
+  test_planner_delays_casualty_replacement_while_a_unit_is_returning
+  test_planner_still_gives_up_when_every_unit_is_dead
+  test_failed_return_is_reported_and_retried_not_lost
+An autouse fixture restores the module-level constants and RNG bindings the
+tests override, since apply_scenario_config mutates module globals shared by
+the whole session.
+
+Full suite (outputs/_ffr_pytest_post.txt, 35 min, run concurrently with the
+control wave): 8 failed / 435 passed. Baseline was 8 failed / 427 passed
+(outputs/_rh_pytest_post.txt); the failing name set is byte-identical:
+  test_behavior_regression::test_descriptive_next_action_uses_target_position
+  test_dashboard_panel::test_dashboard_panel_render_returns_string
+  test_firefighter_dispatch_replacement::test_no_replacement_available_marks_victim_unreachable_once
+  test_rescue_planner_authority::test_no_firefighter_planner_delay_or_unreachable
+  test_uav_sector_assignment::test_fire_tracker_uavs_receive_different_target_sets
+  test_uav_sector_assignment::test_fire_tracker_still_overridden_by_search_mode_fail_safe
+  test_wind_aware_trajectory_regression::test_north_vs_south_trajectories_diverge_over_40_steps
+  test_wind_aware_victim_search::test_victim_search_wind_aware_action_when_downwind_exists
+Two of these (the dispatch-replacement and planner-authority ones) fail for a
+reason worth knowing in this context: the default preset has THREE
+firefighters, so their "no unit available" setups, which kill only
+ff_unit_0/1, leave ff_unit_2 available and the planner assigns it. The new
+tests avoid the same trap by killing every unit not under test. The slow
+full-model tests (test_unresolved_victim_coverage, scenario A to step 300)
+still pass with the feature on.
+
+--------------------------------------------------------------------------------
+10. ROUTE_BLOCKED GATE  (source changed -> required)
+--------------------------------------------------------------------------------
+Same harness (outputs/_rblatch_campaign2.py), same 18 runs, same four shards
+and tag convention as every round since 70e1b33 (outputs/_ffr_rbgate.sh,
+outputs/_ffr_rb_ffabs*.log, outputs/_rblatch_camp2_ffabs*_D_*.json). Merged
+with _ir_rbmerge.py against the 70e1b33 baseline as the gate is defined
+(outputs/_ffr_gate_ffabs.txt), and additionally compared seed for seed with
+the previous round's shards - rhfix, 2acfb54, behaviourally identical to
+1511ada per recoveryhysteresis_report.txt - because that is the head this
+feature was branched from (outputs/_ffr_rbcompare.py ->
+outputs/_ffr_gate_ffabs_vs_rhfix.txt).
+
+  gate as defined (vs 70e1b33), 18 runs:
+    rescued 43 -> 44 (+1)   victims dead 25 -> 26 (+1)   ff_deaths 15 -> 9 (-6)
+    [FAIL] rescued does not decrease on any seed: D/east 505, 2 -> 1.
+           PRE-EXISTING: the identical line has been carried by every round
+           since it first appeared (pendingremoval_part1.txt,
+           recoveryhysteresis_report.txt); vs rhfix that seed is 1 -> 1.
+    [PASS] recovery pass still recovers units: recoveries 3 -> 5,
+           route_blocked firings 15 -> 13
+    [PASS] no unit left latched as route_blocked at end of run
+    ff_deaths seeds up: none; down: east 202, 303, 505, 808, south 101
+
+  this round (vs rhfix), 18 runs:
+    rescued 43 -> 44 (+1)   victims dead 26 -> 26 (+0)   ff_deaths 11 -> 9 (-2)
+    17 of 18 seeds identical on rescued / dead / ff_deaths. Terminal step
+    identical on 16: D/east 404 96 -> 99 (the same 3-step absence delay the
+    canonical sample shows for that seed), D/east 808 159 -> 170.
+    [PASS] rescued does not decrease on any seed
+    [PASS] recovery pass still recovers units: 5 recoveries, 13 firings;
+           revalidation calls identical (4,320), calls with a blocked unit
+           71 -> 72; assign-into-blocked-route 1 -> 0
+    [PASS] no unit left latched as route_blocked at end of run
+    The one changed seed, D/east 808: rescued 2 -> 3, ff_deaths 2 -> 0. Its
+    trajectory diverges from step 41, when ff_unit_1 leaves the grid after
+    rescuing victim_2 (4 steps) and the dispatch that followed the recycle
+    happens later; everything downstream re-times, and in this seed the
+    re-timing ends with both units alive and one more victim out. That is a
+    favourable draw of the same coin the canonical sample showed as neutral,
+    not a property to bank on.
+
+  One new line in this round's stderr, reproduced deterministically and NOT
+  caused by the absence mechanics: 6 x "[RescueInvariant] step=48..53
+  victim=victim_3 assigned but firefighters=[]" in shard b, from seed 808.
+  ff_unit_0 was route-blocked on victim_3 at step 40, unassigned and
+  re-dispatched to it at 42 after its route reopened, then route-blocked on
+  the SAME pair again at 48. _handle_rescue_incident's attempted-pair guard
+  (wildfire_model.py:3199, `if attempt_key in self._blocked_replacement_
+  attempted: return`) returns on a repeat BEFORE the unassign, so the unit
+  stays assigned-but-blocked and the victim stays marked assigned - the exact
+  divergence the checker exists to flag - until _move_toward cleared the
+  status at step 54 and the unit went on to rescue that victim (part of the
+  +1). The off-grid unit, ff_unit_1, was back on the grid since step 45 and is
+  not in the flagged pair; the guard is untouched by this feature. 0 such
+  lines in the 13-run sample in any arm (captured stderr), 0 in the prior
+  rounds' 18 runs: the feature re-timed one seed into a pattern the guard
+  already allowed. Worth its own ticket - "repeat route_blocked on an
+  already-attempted pair skips the unassign, leaving victim and unit marked
+  assigned while the unit is undispatchable" - not fixed here because it is
+  outside this feature's scope and the defect campaign is closed.
+
+--------------------------------------------------------------------------------
+11. VERDICT AND WHAT TO WATCH
+--------------------------------------------------------------------------------
+The feature does what the requirement says: on every rescue completion the
+firefighter leaves the grid for 3-5 steps, comes back at the cell it left
+from (or the nearest safe cell within the idle-retreat leash when fire has
+taken that cell), and is immediately available to assist - the same
+post-drain dispatch pass that served a recycled unit before now serves a
+returned one. On the canonical sample it costs nothing measurable: every
+outcome metric is identical on every seed, and the only movement is one
+rescue completing 3 steps later. The cost it CAN incur is the one Part 1
+predicted - a waiting victim starts 3-5 steps later, cumulatively for a unit
+that rescues back to back - and the 8 traced cases show that in this sample
+those victims were either lost regardless or rescued regardless.
+
+Where to look first if rescued ever drops under this feature: the empty-pool
+"initial -> delay" decisions taken while a unit is off-grid (the harness
+records n_offgrid_alive per planner decision), and the +d / +2d shifts on the
+same-drain re-dispatches; a casualty inside a window now delays instead of
+marking the victim unreachable, and that branch is covered by the end-to-end
+test rather than by the sample, which contains no such case.
+
+Files: source diff (8 files) + tests/test_firefighter_rescue_absence.py on the
+branch, uncommitted; outputs/_ffr_harness.py, _ffr_runall.sh, _ffr_analyze.py,
+_ffr_rbgate.sh, _ffr_rbcompare.py; outputs/_ffr_{base1511,ffoff,ffabs}_*.json
+(+ .stdout.txt, stderr in outputs/_ffr_logs/); outputs/_ffr_ffabs2_east_half_
+202.json (determinism re-run); outputs/_ffr_base1511_analysis.txt,
+_ffr_ffabs_analysis.txt; outputs/_ffr_pytest_post.txt; outputs/_ffr_rb_*.log,
+_rblatch_camp2_ffabs*_D_*.json, _ffr_rbgate.out, _ffr_gate_ffabs.txt,
+_ffr_gate_ffabs_vs_rhfix.txt.

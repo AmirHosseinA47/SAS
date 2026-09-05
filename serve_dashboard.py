@@ -163,6 +163,8 @@ def _capture_frame(model, step):
     assignments = []  # firefighter -> assigned-victim lines (A)
     for a in model.schedule.agents:
         if type(a).__name__ == "Firefighter":
+            if getattr(a, "pos", None) is None:
+                continue  # off the grid during a rescue hand-over (feature 1)
             fx, fy = int(a.pos[0]), int(a.pos[1])
             dead = str(getattr(a, "status", "") or "").strip().lower() == "dead"
             ffs.append({"id": str(getattr(a, "unique_id", "")), "x": fx, "y": fy,
@@ -179,6 +181,8 @@ def _capture_frame(model, step):
         tname = type(a).__name__
         if tname not in ("Firefighter", "UAV"):
             continue
+        if getattr(a, "pos", None) is None:
+            continue  # off the grid during a rescue hand-over (feature 1)
         uid = str(getattr(a, "unique_id", ""))
         key = tname + ":" + uid
         hist = trails.setdefault(key, [])
