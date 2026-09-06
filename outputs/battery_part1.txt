@@ -1,0 +1,1284 @@
+================================================================================
+UAV BATTERY - DIAGNOSIS (does a battery exist, and does anything act on it?)
+================================================================================
+Repo      : E:\Projects\SAS
+Branch    : firefighter-mission-features
+HEAD      : fd743f5 (confirmed before any work)
+Runtime   : E:\Projects\SAS\.venv\Scripts\python.exe
+            sys.version 3.10.11, mesa.__version__ 1.2.1 (confirmed)
+Tests     : 8 failed / 490 passed in 34m04s, the same eight tests the brief
+            names as the baseline. No source file was touched in this round.
+Scope     : diagnosis only. No implementation, no design beyond the
+            integration-point list the brief asks for. The only files added
+            are read-only probes and their outputs under outputs/:
+              _bat_probe.py      direct read/write hooks + seed-matched arms
+              _bat_runall.sh     the three waves that produced the sample
+              _bat_analyze.py    aggregation -> _bat_analysis.txt
+              _bat_<arm>_<wind>_<roles>_<seed>.json, _bat_logs/
+            .claude/worktrees/** was excluded from every search (stale copies).
+
+All file:line references are to the checkout at fd743f5.
+
+--------------------------------------------------------------------------------
+EXECUTIVE SUMMARY
+--------------------------------------------------------------------------------
+VERDICT: (B) TRACKED BUT INERT for the battery as it exists; (D) ABSENT for
+everything a base station needs. Details in 3.1.
+
+1. A battery exists, on the agent: agents.py:236-242, six attributes, one
+   drain method (270-281) called from advance() (346). level = 100 - 0.1/step
+   - 0.2/move, clamped, labelled "low" <= 30 / "critical" <= 15 from the
+   agent's OWN hardcoded gates. It only ever goes down; no code path raises it.
+   It is written by agents.py and nothing else (12,480 drain writes over 13
+   runs, 0 from anywhere else) and read by the monitor, the managed mirror,
+   the alert manager and the dashboard builder. Every downstream mention -
+   knowledge fields, three analyzer gates, a monitor event, a fail-safe
+   reason, four fail-safe options, a constraint, a feasibility rule, a
+   utility term per scope, a weight profile, docs - was imported in a4a01b4
+   and never touched since.
+
+2. It depletes faster than the arithmetic in the brief's own terms suggests,
+   because UAVs move on 236.6 of 240 steps: 0.297/step measured, so the level
+   at step 240 is 28.0-34.6 (mean 28.7). Consequences inside the canonical
+   horizon: the 30% gate is crossed in the last 1-7 steps (47 of 52 UAV-runs,
+   first at step 234), the knowledge runway gate from step 215, and the fleet
+   mean-battery "worsening" test is true on every step from 3 (3,094 of 3,094).
+   The 15% gate is never reached (minimum 28.0; earliest possible step 284).
+
+3. None of it changes behaviour. Seed-matched with the drain zeroed, all 13
+   runs are byte-identical to stock in every UAV cell on every step, every
+   fire digest, every evaluation, every fail-safe decision, mode and phase -
+   while LOW_BATTERY (486), RESOURCE_DEGRADING (2,498) and TREND_WORSENING
+   (3,094) vanish. The constraint filter saw None on 555,100 of 555,100 calls,
+   the feasibility rule saw no battery key on 483,428 of 483,428, the safety
+   checker produced 0 battery reasons. The local analyzer's primary input for
+   the battery is empty on every call (0 of 12,480); the knowledge fallback,
+   one step stale, is the only live path.
+
+4. Forced across the gates on three seeds: LOW alone does nothing (positions
+   identical to stock for 33 steps of LOW_BATTERY). CRITICAL does something,
+   but not a return: with the ever-present collision reason it classifies
+   EMERGENCY, the planner picks safe_hold (return_to_base loses by 0.01 on
+   every one of 1,280 emergency decisions), the dispatcher overrides every
+   path, and the executor's hold KEEPS THE CURRENT HEADING - trackers drift
+   to the grid edge, the battery hits 0 at step 41-88 and the UAV flies on.
+   Fire and rescue outcomes were identical to stock anyway.
+
+5. For the base-station scope: depletion is the only piece that exists and
+   is correct. Missing outright: a base cell, a recharge, a return leg, a
+   charging state, the role-loop exclusion (lanes and sectors are rebuilt from
+   the live ROLE list every call, so a UAV must leave the role to leave the
+   lane, and each transition reshuffles everyone), pos-None tolerance in seven
+   UAV consumers (the serve_dashboard.py:156 break of feature 1, repeated), and
+   one threshold source instead of five. Integration points are named in 3.2,
+   interactions with features 1/2 and the lane work in 3.3.
+
+6. Latent defects met on the way, none fixed (diagnosis only): the executor's
+   "hold" is a heading, not a hold; return_to_base is selected by tie-break on
+   step 1 of every run and vetoed; LOW_BATTERY has no fail-safe mapping;
+   the knowledge model's own battery labels are overwritten every step; the
+   managed mirror and local_battery_state are write-only; TREND_WORSENING is
+   always-true; Scenario B "Battery Fail-Safe Validation" ships with the
+   threshold override commented out and cannot validate what it says; the
+   dashboard colours use 50/20 while the alerts use 30.
+
+================================================================================
+PART 1 - DOES A BATTERY EXIST?
+================================================================================
+
+1.1  SEARCH: every hit in the live tree
+--------------------------------------------------------------------------------
+Terms searched, case-insensitive, over every *.py/*.md/*.txt/*.json/*.html/*.js
+outside .venv, outputs and .claude/worktrees: battery, recharge, charge, energy,
+power, fuel, endurance, flight_time. "fuel" was checked separately: every one
+of its 40 hits is Fire.fuel (agents.py:23-109 Fire, cfv FUEL_*, the colour
+normalisers in main.py/serve_dashboard.py, one rescue_planner comment, the
+burnt-cell tests). There is no UAV fuel concept. "recharge", "endurance" and
+"flight_time" have ZERO hits anywhere. "charge" and "power" hit only inside
+other words ("discharge" nowhere; "low_power_mode" and one "RTB / low-power"
+note, both covered below). So the whole concept lives under the one word
+"battery", and NOTHING in the tree names a base, a station, a charger, or a
+return leg.
+
+The hits, grouped by what they are. (A) is the managed agent, (B)-(H) is the
+managing system's pipeline in execution order, (I) is display, (J) is intent.
+
+(A) THE AGENT - agents.py, class UAV (227-356)
+    236   comment: "Managed operational battery (observed by Step 5 monitoring;
+          does not affect movement)."
+    237   self.battery_level = 100.0
+    238   self.battery_status = "normal"
+    239   self.battery_drain_per_step = 0.1
+    240   self.battery_drain_per_move = 0.2
+    241   self.battery_low_threshold = 30.0        <- hardcoded, NOT cfv
+    242   self.battery_critical_threshold = 15.0   <- hardcoded, NOT cfv
+    270   _update_battery_after_step(moved): docstring "(no movement or
+          planning effects)"; -0.1 always, -0.2 more if the UAV moved, clamp
+          [0,100], then the label: <=15 "critical", <=30 "low", else "normal".
+    346   the ONE call site: UAV.advance(), right after self.move().
+    The six battery attributes and the drain method are the entire mechanic.
+    There is no step() on UAV, no landing state, no charge-up branch, and
+    battery_level can only go down (there is no code path that adds to it).
+
+(B) CONFIG - common_fixed_variables.py
+    86    LOW_BATTERY_THRESHOLD = 30.0
+    87    BATTERY_CRITICAL_THRESHOLD = 15.0
+    89-94 "Scenario B - Battery Fail-Safe Validation / Expected: fail-safe mode
+          activation when battery falls below threshold", with
+          "# BATTERY_CRITICAL_THRESHOLD = 50.0" COMMENTED OUT (and 101/108 in
+          presets C/D, also commented). serve_dashboard.py:39's builtin preset
+          "B - Battery Fail-Safe" carries only NUM_AGENTS/NUM_VICTIMS/
+          NUM_FIREFIGHTERS - it does not raise the threshold either. So the
+          shipped "battery fail-safe validation" scenario runs with the same
+          15% gate as every other scenario. Part 2 shows why that gate cannot
+          be reached inside a 240-step run.
+    Who reads the two constants: wildfire_model.py:237-243 passes them into
+    LocalUAVAnalyzer/GlobalAnalyzer at construction; alert_manager.py:10 binds
+    LOW_BATTERY_THRESHOLD at import. The agent's own labels (A) do NOT read
+    them - agents.py carries its own 30/15 copies. apply_scenario_config
+    (local_adaptation_generator.py:270-273) does setattr on cfv and
+    wildfire_model, so an override reaches the analyzers only if it is applied
+    before WildFireModel() is built, never reaches alert_manager (import-time
+    binding), and never reaches the agent labels.
+
+(C) MONITORING - the observe step
+    monitoring_interfaces.py:22-23   LocalObservation.battery_level/status
+    local_uav_monitor.py:253-270     _battery_and_comm_from_uav: getattr(uav,
+                                     "battery_level") with a fallback to the
+                                     knowledge copy (_resource_snapshot:243-251)
+    local_uav_monitor.py:311,343-344 collect_observation copies both into the
+                                     LocalObservation built in UAV.advance()
+    global_monitor.py:185-236        _uav_team_summary: battery_levels[uid] from
+                                     uav.latest_local_observation (201), else the
+                                     knowledge copy (220-225)
+    global_monitor.py:340-357        classify_events -> resource_events
+                                     low_battery / critical_battery, with its OWN
+                                     hardcoded gates: "critical" or <=15.0;
+                                     "low" or <=30.0; and a third branch
+                                     0 < bl < 20 that the first two make
+                                     unreachable.
+    monitoring_buffer.py:23-27       clear(): wipes local_observations at the
+                                     START of every step (step():5285). This
+                                     matters in 2.4.
+
+(D) KNOWLEDGE - the runtime models
+    uav_resource_model.py:28-29      UAVResourceRuntimeState.battery_level/status
+    uav_resource_model.py:171-198    update_battery: clamps, then derives status
+                                     with a THIRD set of gates - <20 "critical",
+                                     <50 "low", else "nominal" - and computes
+                                     predicted_remaining_useful_time (PRUT) =
+                                     level / (drain per step observed).
+    uav_resource_model.py:109-119    update_uav_state: calls update_battery, then
+                                     IMMEDIATELY overwrites state.battery_status
+                                     with the agent's label when one is passed.
+                                     wildfire_model.py:1087-1088 always passes
+                                     it. So the <20/<50/"nominal" gates are
+                                     dead-value: computed, then clobbered, every
+                                     step (measured in 2.3: the knowledge label
+                                     never takes a value the agent did not
+                                     write).
+    wildfire_model.py:1072-1094      _apply_uav_resource_updates: the only writer
+                                     of the knowledge battery, from the post-move
+                                     buffer (adaptation_manager.py:169-175 ->
+                                     wildfire_model.py:2753-2757).
+    local_observation_model.py:29,46,70-71,105  local_battery_state, written
+                                     from wildfire_model.py:1240. Read by
+                                     nothing (grep: only its own to_dict and
+                                     two tests).
+    managed/uav_extension_state.py:27-28  UAVExtensionState.battery_level/
+                                     status, the "managed mirror"; written from
+                                     the agent every post-move step at
+                                     wildfire_model.py:728-730 and at init
+                                     (710-711). Read by nobody except the
+                                     getattr default on its own writer line
+                                     and tests/test_system_boundary.py:42-44.
+    mission_goal_model.py:34,255     preserve_battery_margin constraint flag
+    mission_goal_model.py:98-100,272-298  min_battery = 0.15 / 0.35 / 0.25 /
+                                     0.30 by phase - FRACTIONS, while every
+                                     battery value in the system is a 0-100
+                                     percentage. Never compared to a number
+                                     (see F).
+    mission_goal_model.py:120-140    utility_weight_mode(): "battery_
+                                     constrained_mode" when the fail-safe mode
+                                     is "degraded" (or the phase is
+                                     degraded_operation with no overriding
+                                     fail-safe mode).
+
+(E) ANALYSIS - where the gates live
+    local_uav_analyzer.py:34-35      low 30 / critical 15 (from cfv via the model)
+    local_uav_analyzer.py:123-212    _analyze_local_resource: CRITICAL_BATTERY if
+                                     level<=15 or label "critical";
+                                     LOW_BATTERY if level<=30 or label "low";
+                                     RESOURCE_DEGRADING if PRUT < 120.0 (or plan
+                                     reliability below its threshold).
+    local_uav_analyzer.py:214-231    _coalesce_battery_reading: level from the
+                                     "latest_local_observation" dict, falling
+                                     back to the knowledge copy.
+    global_analyzer.py:43-49,664-786 _analyze_resource_status: the same two
+                                     gates per UAV from uav_team_summary.
+                                     battery_levels, plus a fleet-level
+                                     RESOURCE_DEGRADING when >=2 UAVs are
+                                     critical (766-786).
+    global_analyzer.py:1459-1537     _analyze_trends: TREND_WORSENING when the
+                                     fleet mean battery fell by more than
+                                     eps=0.02 since the previous analysis
+                                     (1494-1495); TREND_IMPROVING if it rose.
+                                     Because the mean can only fall, by at least
+                                     0.1 per step, this gate is TRUE on every
+                                     step after the first two. Measured in 2.4.
+
+(F) ADAPTATION - option generation and filtering
+    failsafe_adaptation_generator.py:110-160  _generate_uav_failsafe_options:
+                                     EVERY step, with no trigger gating, emits
+                                     four FailSafeAdaptationOptions -
+                                     return_to_base, low_power_mode,
+                                     abandon_task, hold_position - carrying a
+                                     "battery" parameter read from
+                                     runtime_models["battery"] (which does not
+                                     exist -> None) and the explanation_hint
+                                     "Fail-safe option only; no UAV behavior is
+                                     executed." (157).
+    global_adaptation_generator.py:115-131,583-651  every global option carries
+                                     "battery"/"battery_state" (None, same
+                                     reason) and two resource-reallocation
+                                     options NAME battery as a weakness/strength
+                                     source (640-651) without reading it.
+    local_adaptation_generator.py:1770,4664-4688  an option id
+                                     "reduce_sensing_battery_save" ("Reduce
+                                     sensing duty cycle to conserve onboard
+                                     energy"). A name only; nothing reads the
+                                     battery to produce or score it.
+    constraint_filter.py:53,91-121   _battery_reasons: rejects an option if
+                                     runtime_models["battery"] (or
+                                     "battery_state") is a NUMBER below
+                                     mission min_battery or below the option's
+                                     required_battery. Neither key exists in the
+                                     runtime_models dict the model builds
+                                     (wildfire_model.py:1684-1696) -> the value
+                                     is None on every call (measured 2.4).
+    constraint_filter.py:179-182     "battery margin preservation" rejects
+                                     options flagged high_battery_cost /
+                                     battery_intensive. No generator sets either.
+
+(G) PLANNING - scoring and the fail-safe decision
+    utility_evaluation.py:54,72,88,104,120,136,152  battery_cost_weight per
+                                     weight profile; 113-126 the
+                                     "battery_constrained_mode" profile
+                                     (battery weight 2.0, and DIFFERENT fire/
+                                     uncertainty/switching weights too).
+    utility_evaluation.py:255-269    _check_utility_feasibility:
+                                     "battery_below_critical" if a merged
+                                     option/context param battery_level or
+                                     projected_battery_after_option <= 15.
+                                     No generator writes either key
+                                     (measured 2.4: 0 of all calls).
+    utility_evaluation.py:660-684,818-887  Cost_battery from "battery_cost"
+                                     (global, local); 1242-1255 battery_pressure
+                                     (communication); 1382-1496
+                                     energy_failure_risk -> R_energy_failure
+                                     (fail-safe). All read keys no generator
+                                     produces: this is the "battery_cost present
+                                     0 / 71,760" finding of
+                                     outputs/globalplanner_scope.txt:138,
+                                     re-verified here for every scope.
+    fail_safe_planner.py:24-33       _CRITICAL_TRIGGER_MARKERS includes "BATTERY"
+                                     -> any trigger name containing it sets
+                                     prefer_critical, a +0.75 bonus for options
+                                     whose type contains return_to_base /
+                                     low_power / critical / emergency (348-357).
+    fail_safe_planner.py:48-55       EMERGENCY mode prefers ("safe_hold",
+                                     "return_to_base"); DEGRADED prefers
+                                     ("critical_tasks_only",
+                                     "reduce_mission_scope").
+    fail_safe_planner.py:84-217      plan(): reasons from SafetyChecker ->
+                                     classify_mode -> score fail-safe options ->
+                                     select (mode-override select when
+                                     should_override_utility) ->
+                                     FailSafeDecision(fail_safe_action, mission_
+                                     mode, search_mode_active, ...).
+
+(H) EXECUTION
+    failsafe_modes.py:27             FailSafeReason.CRITICAL_BATTERY
+    safety_checker.py:18-28          CRITICAL_BATTERY trigger -> reason
+                                     critical_battery (LOW_BATTERY maps to
+                                     nothing).
+    safety_checker.py:61-88          classify_mode: critical_battery alone falls
+                                     through to DEGRADED (88); it is EMERGENCY
+                                     only together with collision_risk or
+                                     no_feasible_path (165-172); INFORMATION_
+                                     RECOVERY and SAFETY_FIRST reasons take
+                                     precedence over it (69-84).
+    safety_checker.py:90-109         should_override_utility: True when
+                                     critical_battery is among the reasons.
+    mode_manager.py:22-70            update(): reasons -> FailSafeState(mode,
+                                     active_reasons); wildfire_model.py:1880-1912
+                                     stores it as latest_failsafe_state and
+                                     pushes the mode into the mission goal model
+                                     (2998-3041 -> 153-195).
+    decision_dispatcher.py:25-45     "return_to_base" is a REAL override token
+                                     (40).
+    decision_dispatcher.py:91-104    ... but any override is vetoed when
+                                     latest_failsafe_state.mode is "normal".
+    decision_dispatcher.py:483-516   _adjust_local_path_for_fail_safe: for
+                                     return_to_base the local path is KEPT only
+                                     if _path_consistent_with_return_to_base
+                                     (538-548) finds one of the substrings
+                                     "return", "base", "home", "rtb" in the
+                                     path's action/option id/segment/waypoints;
+                                     otherwise the path is dropped (None,
+                                     False) and the UAV gets no direction. No
+                                     planner ever emits such a path, and the
+                                     substring test would also pass an option
+                                     id that merely contains "baseline".
+    decision_dispatcher.py:192-231   _dispatch_fail_safe executes a decision's
+                                     "actions" through the UAV executor of
+                                     whatever uav_id / target_entity the
+                                     selected option carries. The four UAV
+                                     fail-safe options carry the shared input's
+                                     target_entity, the literal "mission"
+                                     (wildfire_model.py:1745 -> failsafe
+                                     generator 118-122), which resolves to no
+                                     agent (uav_executor.py:320-322,
+                                     "agent_not_found"). Only the fallback
+                                     _FallbackPlanOptions (search mode) carry a
+                                     real UAV id, via the first affected entity.
+    uav_executor.py:140-145          _commit_execution_direction is the one
+                                     place a managed direction reaches the
+                                     agent (selected_dir + execution_direction_
+                                     applied=True). A UAV that does not get it
+                                     holds: agents.py:322-324 returns False with
+                                     execution_action "no_managed_direction_
+                                     hold".
+    uav_executor.py:4566-4589        _direction_toward(agent, target): a greedy,
+                                     bounds-checked one-step-toward-target
+                                     primitive used by search mode. Guards pos
+                                     None. There is no base target anywhere for
+                                     it to be pointed at.
+
+(I) DISPLAY
+    dashboard_state_builder.py:207   uav_status_view[].battery from the agent
+    alert_manager.py:10,24,233-244   low_battery alert when the agent level
+                                     <= LOW_BATTERY_THRESHOLD (30)
+    live_dashboard_panel.py:269-270  colour: >=50 green, >=20 amber, else red
+    serve_dashboard.py:91,692        same three keys and the same 50/20 colours
+                                     in the browser panel - a FOURTH gate set,
+                                     inconsistent with 30/15 everywhere else
+    wildfire_model.py:5141-5145,5245 the per-UAV debug log line
+                                     "battery=xx.x" (debug_log only)
+    comparison_parser.py:138         a label "exploration_vs_battery_
+                                     conservation" for the explanation engine
+
+(J) INTENT - docs and tests
+    docs/01_system_boundary.md:49,113,210  "battery-aware adaptation", dashboard
+          "UAV battery", "battery-aware replanning"
+    docs/02_managed_vs_managing.md:41,93,117,144,204,209 and 03:27,59
+          "battery consumption updates" managed-side; "whether battery is
+          becoming critical" managing-side
+    docs/04_clean_separation_table.md:19,198-199,217,311
+          "battery depletion as operational state update" vs "adaptation option
+          generation"; PRUT = "horizon of useful operation given battery"
+    src_extension/MANAGING_SYSTEM_OVERVIEW.md:24
+    tests (all pass in the baseline):
+      test_uav_battery_monitoring.py:10-35   monitor reads the agent value and
+          the resource model receives it; battery decreases after advance()
+      test_system_boundary.py:42-44          managed mirror == agent
+      test_uav_movement_monitor_timestep.py:38, test_knowledge_models.py:150-164
+          (update_battery(15.0) -> "critical" with the knowledge gates that the
+          model then overwrites), test_local_analysis.py:89-101 (LOW_BATTERY
+          from a hand-built latest-observation DICT - the input path that is
+          empty at runtime, see 2.4), test_local_observation_knowledge.py,
+          test_sop_local_obs_integration.py:48 (local_battery_state),
+          test_adaptation_trigger_normalization.py, test_global_adaptation.py:65,
+          test_trigger_normalization.py, test_failsafe_core.py,
+          test_failsafe_planner_mode.py, test_utility_constraints.py:93-108
+          (projected_battery_after_option -> battery_below_critical),
+          test_specialized_utility.py:129 (return_to_base scores higher with
+          energy_failure_risk 0.92), test_mission_goal_model.py:52,
+          test_gap_fixes.py, test_*_utility.py, test_planner_core.py,
+          test_rescue_failsafe_planners.py.
+      Every downstream test feeds the battery in by hand (a dict, a param, a
+      synthetic trigger). Only the first two exercise the real agent value,
+      and only up to the knowledge model.
+
+    git: `git log -S battery -- agents.py src_extension wildfire_model.py`
+    returns a4a01b4 (the bulk import, 2nd of the repo's commits) and b838895
+    (pycache removal). Nothing battery-related has been touched since import.
+
+1.2  PER-CANDIDATE CLASSIFICATION
+--------------------------------------------------------------------------------
+Legend: F = field on the UAV agent, K = knowledge-model field, M = managed
+mirror field, C = config constant, S = scoring input/weight, D = dashboard,
+N = name only (option id / label / docstring). "Written" and "read" are the
+MEASURED hook totals from 2.3 unless marked static.
+
+candidate                          kind  written at runtime by            read (behaviour-relevant?)         over time
+---------------------------------  ----  -------------------------------  ---------------------------------  ------------------
+UAV.battery_level                  F     agents.py only: __init__ (100.0)  monitor -> observation; managed    monotone down:
+                                         and _update_battery_after_step,   mirror; alert_manager; dashboard   0.1/step + 0.2/move,
+                                         once per UAV per step             builder. None of them moves a UAV. clamp [0,100]
+UAV.battery_status                 F     agents.py only, same method       monitor -> observation; mirror     derived label,
+                                                                                                              own 30/15 gates
+UAV.battery_drain_per_step/move    F     __init__ only (0.1 / 0.2)         _update_battery_after_step only    constant
+UAV.battery_low/critical_threshold F     __init__ only (30 / 15)           _update_battery_after_step only    constant; ignores cfv
+cfv LOW_BATTERY_THRESHOLD (30)     C     never                            LocalUAVAnalyzer, GlobalAnalyzer     constant
+cfv BATTERY_CRITICAL_THRESHOLD(15) C     never                            (at model init), alert_manager       constant
+LocalObservation.battery_*         -     monitor, every UAV every step     _apply_uav_resource_updates,       copy of F
+                                                                          uav_team_summary, classify_events,
+                                                                          local_battery_state (write-only)
+UAVResourceRuntimeState.battery_*  K     update_battery/update_uav_state,  local analyzer (fallback path,     copy of F, one
+                                         once per UAV per step             the only live one), global trend,  step stale
+                                                                          global resource (step 1 only)
+  status via <20/<50 "nominal"     K     computed then overwritten         never observable                   dead-value
+predicted_remaining_useful_time    K     update_battery                   local/global RESOURCE_DEGRADING     level/drain:
+                                                                          gate (<120); global option param    333..1000 stock
+UAVExtensionState.battery_*        M     wildfire_model.py:728-730         nothing (own getattr default,      copy of F
+                                                                          one test)                           write-only
+LocalObservationModel.             K     wildfire_model.py:1240            nothing                            write-only
+  local_battery_state
+runtime_models["battery"/          -     never created                     constraint_filter, failsafe and    absent -> None
+  "battery_state"/"battery_level"]                                        global generators (param = None)
+option params battery_cost,        S     never produced by any generator   utility_evaluation weighted terms  absent -> 0.0
+  battery_pressure, energy_failure_                                       and feasibility gates
+  risk, battery_level, projected_
+  battery_after_option, battery_
+  distance_to_critical
+battery_cost_weight per profile    S     constant                         multiplies a permanently-0 term     constant
+"battery_constrained_mode"         S     selected by utility_weight_mode  changes OTHER live weights when     see 2.4/2.6
+                                         when fail-safe mode is degraded  selected
+mission min_battery (0.15-0.35)    C     _sync_legacy_fields each refresh  constraint_filter, vs None         fraction, wrong
+                                                                                                              unit anyway
+CRITICAL_BATTERY / LOW_BATTERY     -     analyzers, gated                 fail-safe reasons/mode; prefer_     see 2.4/2.6
+  triggers                                                                critical; global generator context
+RESOURCE_DEGRADING (runway part)   -     analyzers, gated on PRUT<120     as above                            see 2.4
+TREND_WORSENING (mean_battery)     -     global analyzer, every step       global generator trigger_context    see 2.4/2.5
+resource_events.low/critical       -     global monitor, gated            GlobalObservationSnapshot.event_    see 2.4
+                                                                          flags (analysis input)
+return_to_base / low_power_mode /  N+S   failsafe generator, EVERY step,  fail-safe planner selection;        never battery-
+  abandon_task / hold_position               ungated                      dispatcher override token           driven (2.4)
+reduce_sensing_battery_save        N     local generator option id         nothing battery-related            name only
+uav_status_view.battery, alerts,   D     from the agent each step          humans                             display
+  colours, debug log
+docs "battery-aware ..."           N     -                                -                                  intent statements
+
+1.3  THE UAV CLASS, COMPLETELY
+--------------------------------------------------------------------------------
+agents.py:227-356. Instance fields set in __init__ (230-247), verbatim:
+
+    self.moore = True
+    self.selected_dir = 0
+    self.execution_direction_applied = False
+    self.execution_action: str | None = None
+    # Managed operational battery (observed by Step 5 monitoring; does not affect movement).
+    self.battery_level = 100.0
+    self.battery_status = "normal"
+    self.battery_drain_per_step = 0.1
+    self.battery_drain_per_move = 0.2
+    self.battery_low_threshold = 30.0
+    self.battery_critical_threshold = 15.0
+    # Local monitoring (observe-only); monitor object is attached after runtime knowledge init.
+    self.local_monitor = None
+    self.latest_local_observation = None
+    self._monitor_prev_actual_delta = (0, 0)
+    self._monitor_prev_drift_error = 0.0
+
+plus mesa's unique_id, model and pos. Set from outside the class: selected_dir
+and execution_direction_applied/execution_action (uav_executor.py:140-145),
+local_monitor (wildfire_model.py:212-218). Property: current_role (250-268,
+managed_uav_states[uid].role, else the knowledge model's current_role).
+Methods: _update_battery_after_step (270-281), not_UAV_adjacent (285-292),
+surrounding_states (294-307), move (309-336), advance (339-356). There is NO
+step() (SimultaneousActivation calls the base no-op).
+
+The drain, verbatim (270-281):
+
+    def _update_battery_after_step(self, moved: bool) -> None:
+        """Apply per-step and per-move drain; update status labels (no movement or planning effects)."""
+        self.battery_level -= self.battery_drain_per_step
+        if moved:
+            self.battery_level -= self.battery_drain_per_move
+        self.battery_level = max(0.0, min(100.0, float(self.battery_level)))
+        if self.battery_level <= self.battery_critical_threshold:
+            self.battery_status = "critical"
+        elif self.battery_level <= self.battery_low_threshold:
+            self.battery_status = "low"
+        else:
+            self.battery_status = "normal"
+
+advance(), verbatim (339-356):
+
+    def advance(self):
+        move_x = [1, 0, -1, 0]
+        move_y = [0, -1, 0, 1]
+        current_time = float(self.model.evaluation_timesteps_counter)
+        pos_before = self.pos
+        intended_delta = (move_x[self.selected_dir], move_y[self.selected_dir])
+        moved = self.move()
+        self._update_battery_after_step(moved)
+        if self.local_monitor is not None:
+            self.local_monitor.finalize_step_after_move(
+                self, pos_before, self.pos, intended_delta
+            )
+            self.latest_local_observation = self.local_monitor.collect_observation(
+                self, current_time
+            )
+            buf = getattr(self.model, "monitoring_buffer", None)
+            if buf is not None:
+                buf.add_local_observation(str(self.unique_id), self.latest_local_observation)
+
+move() (309-336) reads selected_dir and pos only. Its first branch (322-324)
+is the movement contract that any return-to-base leg has to respect: when the
+MAPE pipeline is active and no executor committed a direction this step, the
+UAV does not move and stamps execution_action = "no_managed_direction_hold".
+Nothing in move() or advance() reads battery_level or battery_status. The
+class comment, the method docstring and the code agree: on the agent, the
+battery is a counter that is decremented and labelled, and nothing more.
+
+The arithmetic that the rest of this report keeps coming back to: with the
+drain above, level(t) = 100 - 0.1*t - 0.2*m(t), m = moves so far. At the
+canonical horizon t = 240 that is 76 - 0.2*m. The agent's "low" label (<=30)
+needs m >= 230 moves in 240 steps; "critical" (<=15) needs m >= 305, i.e. is
+UNREACHABLE inside a 240-step run by construction, whatever the UAV does; the
+knowledge runway gate PRUT < 120 needs level < 36 on a step the UAV moved,
+i.e. m > 200 by step 240; the global monitor's third branch (< 20) is likewise
+unreachable. The measurements below confirm these bounds are not approached.
+================================================================================
+PART 2 - IS IT LIVE?
+================================================================================
+
+2.1  METHOD - direct hooks, seed-matched arms
+--------------------------------------------------------------------------------
+outputs/_bat_probe.py mirrors evaluate_scenarios._run_seed byte for byte (the
+same seeding order into cfv/wf/agents, apply_scenario_config with the stock
+parameter dict, model.debug_log = False, stdout redirected, the per-step
+get_dashboard_state() poll for the terminal step) and layers observers on top
+that call the original and return its result unchanged. Nothing in the probe
+draws from any RNG, so a seed-matched arm can be compared step for step.
+
+The reads and writes are hooked DIRECTLY, not inferred from snapshots:
+  - agents.UAV.battery_level and battery_status are replaced on the class by
+    a property whose getter and setter record the CALLER (file:function:line,
+    from the frame one above the accessor), the step, and for writes the
+    value range. Every getattr(), every "self.battery_level -=", every
+    dataclass asdict() passes through it. The same is done for the knowledge
+    copy (UAVResourceRuntimeState.battery_level/status) and the managed
+    mirror (UAVExtensionState.battery_level). The probe's own per-step trace
+    reads the raw storage slot, so it never appears in its own tables.
+  - method observers on every gate found in Part 1: UAV._update_battery_
+    after_step (moved flag, before/after), UAVResourceModel.update_battery
+    (count, PRUT), LocalUAVAnalyzer._analyze_local_resource (the inputs it
+    coalesced and the triggers it returned), GlobalAnalyzer._analyze_
+    resource_status and _analyze_trends, GlobalMonitor.classify_events,
+    ConstraintFilter._battery_reasons and _rejection_reasons, Utility
+    Evaluation._check_utility_feasibility (and whether the merged params ever
+    carried battery_level / projected_battery_after_option), FailSafePlanner.
+    plan (the decision it returned), SafetyChecker.extract_fail_safe_reasons,
+    ModeManager.update, MissionGoalModel.utility_weight_mode.
+  - a per-step trace of every UAV: cell, selected_dir, execution_action,
+    role, agent level/label, knowledge level/label, PRUT, managed mirror,
+    plus the step's trigger names, the execution result (override flag and
+    reason, per-UAV applied/reason/action), fail-safe mode, mission phase,
+    low_battery alert count, and the fire digest (sha256 of every Fire
+    agent's burning/burnt/fuel, as in outputs/_ffr_harness.py).
+
+Arms (--arm), all on the canonical sample the brief names - D/east half-roles
+101-505, D/south half-roles 101-505, D/east default-roles 101/202/303, 240
+steps, 13 runs each, one 13-run wave at a time:
+  stock    unmodified.
+  nodrain  both drain constants zeroed after UAV.__init__, so the battery is
+           pinned at 100.0 for the whole run. This is the direct counterfactual
+           for "does the value matter at all": if every UAV cell, every fire
+           digest and the evaluation are identical to stock, the battery's
+           value had no behavioural effect over the horizon.
+  low25    battery_level forced to 25.0 after UAV.__init__ (below LOW 30,
+           above CRIT 15; the agent label becomes "low" on the first advance).
+           On D/east half 101, D/south half 101, D/east default 101.
+  crit12   battery_level forced to 12.0 (below CRIT 15). Same three runs.
+The forced arms exist because Part 1's arithmetic says the stock drain cannot
+reach either gate in 240 steps; they answer the separate question "IF the
+gates were crossed, would anything move a UAV?" by crossing them at step 1.
+The forced arms write the raw slot, so they never appear in the write table.
+
+Aggregation is outputs/_bat_analyze.py -> outputs/_bat_analysis.txt; every
+number below is copied from it.
+
+2.2  THE VALUE OVER TIME - stock arm, 13 runs, 52 UAV-runs
+--------------------------------------------------------------------------------
+The one assumption in 1.3's arithmetic that the sample corrects: UAVs move on
+almost EVERY step. holds (execution_action "no_managed_direction_hold") = 0 in
+all 12,480 UAV-steps - the executor commits a direction every step - and the
+only non-moves are bounds/adjacency refusals inside move(). Moves per UAV in
+240 steps: min 207, max 240, mean 236.6; 17 of 52 UAV-runs moved on all 240.
+So the drain runs at its ceiling: mean 0.2972/step, max 0.3000/step.
+
+level at step 240: min 28.00, max 34.60, mean 28.68 (17 UAV-runs at exactly
+28.00 = 100 - 0.3*240). The trace is a straight line down; there is no other
+writer (2.3), so nothing else could bend it.
+
+Consequences, all measured in the per-step trace:
+  agent label "low" (<= 30)      reached in 47 of 52 UAV-runs, first at step 234
+                                 in 12 runs (level 29.8), step 235 in D/south
+                                 101. Held for 1..7 steps. 290 UAV-steps total.
+  agent label "critical" (<= 15) never. Minimum level anywhere: 28.00. At the
+                                 0.3 ceiling it needs step 284, i.e. it cannot
+                                 happen inside the 240-step canonical horizon
+                                 but WOULD happen in the last ~16 steps of a
+                                 300-step run (evaluate_scenarios.py's --steps
+                                 default is 300; BATCH_SIZE is 300).
+  knowledge PRUT (level/drain)   minimum 93.3 (= 28/0.3). The RESOURCE_DEGRADING
+                                 runway gate (< 120, i.e. level < 36 while
+                                 moving) opens at step 215 and stays open: 26
+                                 steps x 4 UAVs per run.
+  knowledge label "<50 -> low"   computed from step 167 on (3,721 writes at
+                                 uav_resource_model.py:188) and overwritten by
+                                 the agent's label on every one of the 12,480
+                                 update_uav_state calls (line 119). "nominal"
+                                 (line 190, 8,759 writes) was likewise never
+                                 observable: the per-step trace shows only
+                                 "normal"/"low" on the knowledge side, exactly
+                                 the agent's values.
+
+So within the canonical horizon the battery does cross ONE real gate (30%),
+late - the last 1 to 7 steps of a 240-step run - and it crosses the runway
+gate for the last ~26 steps. Whether that changes anything is 2.4-2.6.
+
+2.3  WHO READS AND WRITES IT - direct hook totals, 13 stock runs
+--------------------------------------------------------------------------------
+Full tables: outputs/_bat_analysis.txt section 2. Totals are over 13 runs x
+240 steps x 4 UAVs = 12,480 UAV-steps; "steps" is the first..last step seen.
+
+agents.UAV.battery_level
+  WRITES - agents.py and nothing else:
+    __init__:237                              52  step 0     100.0
+    _update_battery_after_step:272        12,480  steps 1..240   (-0.1)
+    _update_battery_after_step:274        12,304  steps 1..240   (-0.2, = total moves)
+    _update_battery_after_step:275        12,480  steps 1..240   (clamp)
+  READS:
+    alert_manager._alerts_from_uavs:236                   22,008  1..240  display
+    dashboard_state_builder._build_uav_status_view:207    22,008  1..240  display
+    agents._update_battery_after_step (5 lines)           61,984  1..240  itself
+    local_uav_monitor._battery_and_comm_from_uav:256      12,480  1..240  -> LocalObservation
+    wildfire_model._update_managed_uav_states_from_agents:728  12,480  1..240  -> mirror
+    wildfire_model._init_managed_uav_states:710               52  0       -> mirror
+  (the two display readers run ~1.76x per step: once inside step() for
+  latest_dashboard_state and once from the harness's terminal poll)
+
+agents.UAV.battery_status
+  WRITES - agents.py only: 281 "normal" 12,190; 279 "low" 290 (steps 234..240);
+           277 "critical" 0; __init__ 52.
+  READS:  local_uav_monitor:258 12,480; wildfire_model:730 12,480; :711 52.
+
+UAVResourceRuntimeState.battery_level (knowledge)
+  WRITES: uav_resource_model.update_battery:184  12,480 (1..240); dataclass init 52.
+  READS:
+    local_uav_analyzer._coalesce_battery_reading:224  12,480  1..240  the "is the
+                                                              observation dict
+                                                              empty?" test
+    local_uav_analyzer._coalesce_battery_reading:225  12,428  2..240  THE FALLBACK
+                                                              READ: every analysis
+                                                              after step 1 took it
+    global_analyzer._trend_mean_battery:1559           12,480  1..240  TREND_*
+    local_uav_monitor._resource_snapshot:247           12,480  1..240  computed and
+                                                              discarded (the agent
+                                                              always has the attr)
+    dataclasses._asdict_inner (UAVResourceModel.snapshot) 12,480  1..240  SOP/dashboard
+    global_monitor._uav_team_summary:223                   52  1..1    fallback, step 1
+    global_analyzer._analyze_resource_status:687           52  1..1    fallback, step 1
+  The global resource analyzer takes the LEVEL from uav_team_summary.battery_
+  levels (the previous step's LocalObservation, held on the agent) after step
+  1, and the LABEL from the knowledge copy every step (:696, 12,480).
+
+UAVResourceRuntimeState.battery_status (knowledge)
+  WRITES: update_battery:190 "nominal" 8,759 (1..188); :188 "low" 3,721
+          (167..240); update_uav_state:119 (the agent label, overwriting the
+          two above) 12,480 (1..240).
+  READS:  local analyzer :229/:230 12,480/12,428; global analyzer :696 12,480;
+          monitor :249 12,480 (discarded); asdict 12,480.
+
+UAVExtensionState.battery_level (managed mirror)
+  WRITES: wildfire_model.py:728 12,480 (+52 init).
+  READS:  wildfire_model.py:728 12,480 - the getattr DEFAULT on its own writer
+          line, i.e. the value is read only to be replaced. No other reader.
+
+Two runtime facts the static reading did not give:
+  (1) The local analyzer's primary input path is EMPTY at runtime. In all
+      12,480 _analyze_local_resource calls the latest_local_observation dict
+      contained no battery_level (0/12,480): step() clears the monitoring
+      buffer (5285) before the pre-move analysis runs, and UAV.advance() only
+      refills it after. So every battery reading the local analyzer ever made
+      came through the knowledge fallback - the previous step's value. That is
+      why the agent label flips at 234, the alert and the monitor event fire
+      at 234, and LOW_BATTERY fires at 235. tests/test_local_analysis.py:89-101
+      exercises the dict path, which the running system never takes.
+  (2) The battery is the ONLY thing that can write the knowledge label that
+      the analyzers read; the knowledge model's own 20/50 gates never surface.
+
+2.4  EVERY THRESHOLD, GUARD AND BRANCH THAT READS IT - measured fire counts
+--------------------------------------------------------------------------------
+Stock arm, 13 runs, 3,120 steps, 12,480 UAV-steps. "fires" = the branch took
+the battery-dependent side.
+
+gate (file:line)                                   condition            fires        when
+-------------------------------------------------  -------------------  -----------  --------------------
+agents.py:278 label "low"                          level <= 30          290 UAV-st   234..240
+agents.py:276 label "critical"                     level <= 15          0            (needs step 284)
+alert_manager.py:237 low_battery alert             level <= 30          290 alerts   234..240
+global_monitor.py:349 critical_battery event       "critical" or <=15   0
+global_monitor.py:352 low_battery event            "low" or <=30        167 calls    234..240 (2 calls/step)
+global_monitor.py:355 0<bl<20                      -                    0            unreachable
+local_uav_analyzer.py:142 CRITICAL_BATTERY         <=15 or "critical"   0
+local_uav_analyzer.py:145 LOW_BATTERY              <=30 or "low"        243 trig.    235..240
+local_uav_analyzer.py:186 RESOURCE_DEGRADING       PRUT < 120           1,249 trig.  215..240, ALL runway-
+                                                   (or reliability)                  driven (0 reliability)
+global_analyzer.py:703 CRITICAL_BATTERY            same, from snapshot  0
+global_analyzer.py:706 LOW_BATTERY                 same                 243 trig.    235..240
+global_analyzer.py:747 RESOURCE_DEGRADING          PRUT < 120           1,249 trig.  215..240
+global_analyzer.py:766 fleet RESOURCE_DEGRADING    >=2 critical UAVs    0
+global_analyzer.py:1494 TREND_WORSENING            mean fell > 0.02     3,094 / 3,094 possible steps
+                                                                        (238 per run, from step 3);
+                                                                        mean_battery in the context of
+                                                                        ALL 3,094; the ONLY worsening
+                                                                        item in 3,024 (97.7%); the other
+                                                                        item ever present: "delivery"
+global_analyzer.py:1496 TREND_IMPROVING (battery)  mean rose > 0.02     0            impossible
+safety_checker.py:19 reason critical_battery       CRITICAL_BATTERY     0            LOW_BATTERY has no map
+mode_manager -> fail-safe mode from battery        -                    0
+fail_safe_planner.py:29 prefer_critical            any name w/ BATTERY  239/239 steps in EVERY run - but
+                                                                        from step 2, before any battery
+                                                                        trigger exists: RESOURCE/
+                                                                        COMMUNICATION/CRITICAL_LINK_*
+                                                                        already set it. The BATTERY
+                                                                        marker is redundant.
+fail_safe_planner: return_to_base selected         utility tie-break    13 (exactly once per run, at
+                                                                        step 1, before ANY trigger; the
+                                                                        four ungated UAV options score
+                                                                        equal and it is first). Never
+                                                                        again in 3,107 later decisions.
+decision_dispatcher.py:91-104 veto                 mode normal          13 / 13 - the step-1 return_to_
+                                                                        base was never an active override
+utility_weight_mode "battery_constrained_mode"     fs mode degraded     4 calls, D/south 202 steps 16-17,
+                                                                        reason critical_communication.
+                                                                        Not battery.
+constraint_filter.py:97 _battery_reasons           number < min         555,100 calls; value None in
+                                                                        555,100; 0 rejections
+constraint_filter.py:179 battery margin            flags on option      0
+utility_evaluation.py:265/268 battery_below_crit.  params key           483,428 calls; key present 0;
+                                                                        violations 0
+utility_evaluation Cost_battery / R_energy etc.    params key           absent (0.0) - as globalplanner_
+                                                                        scope.txt:138, re-verified
+dashboard uav_status_view.battery, colours          display              every step
+
+So, downstream of monitoring, the battery reaches: two analyzer triggers late
+in the run (LOW_BATTERY from 235, RESOURCE_DEGRADING from 215), one trigger
+on every step (TREND_WORSENING), one dashboard alert, one dashboard field. It
+never reaches a fail-safe reason, a mode, a weight profile, a constraint, a
+feasibility verdict or a utility term. The three triggers it does reach are
+consumed by nothing by name: grep for LOW_BATTERY / RESOURCE_DEGRADING /
+TREND_WORSENING / recommended_planner outside src_extension/analysis returns
+only the two threshold constants. They travel on as entries in trigger-name
+lists and in the trigger_context TEXT that adaptation_trigger_metadata
+(trigger_input.py:48-76) joins into a string for the generators' substring
+tests ("CRITICAL", "DEGRADATION", "FAIL", "SEARCH", ...). Whether that text
+ever changed a choice is what the counterfactual in 2.5 measures directly.
+
+2.5  DOES BEHAVIOUR EVER DIFFER BASED ON ITS VALUE? - the counterfactual
+--------------------------------------------------------------------------------
+nodrain vs stock, seed-matched, all 13 runs. Everything the battery could
+have influenced is compared step for step; the numbers are per run.
+
+                      stock                     nodrain (pinned at 100)   difference
+UAV cells, per step   -                         -                         IDENTICAL, 0 of 240
+                                                                          steps differ, 13/13
+fire digests          -                         -                         identical 13/13
+evaluation            -                         -                         identical 13/13
+fail-safe action      -                         -                         same on 240/240, 13/13
+override flag/reason  -                         -                         same on 240/240
+fail-safe mode        -                         -                         same on 240/240
+mission phase         -                         -                         same on 240/240
+weight profile calls  -                         -                         same counts 13/13
+LOW_BATTERY           12..48                    0                         gone
+RESOURCE_DEGRADING    124..208                  0                         gone (it was all runway)
+TREND_WORSENING       238 (every step)          2..10                     gone; the residue is
+                                                                          the "delivery" item
+TREND_IMPROVING       0                         1..7                      appears (delivery)
+
+Read it as: ~3,000 trigger instances per run were produced by the battery
+(TREND_WORSENING on 238 steps, RESOURCE_DEGRADING on 26 x 4 UAVs x 2
+analyzers, LOW_BATTERY on 6 x 4 x 2) and consumed by the generators,
+the fail-safe planner and the mode manager - and the removal of every one of
+them changed not a single decision, position, burn or outcome across 3,120
+steps. The battery's value has ZERO behavioural effect over the canonical
+horizon, measured directly, not inferred: the arm is byte-identical in every
+managed-state observable.
+
+This also settles what TREND_WORSENING is. It fires on 3,094 of 3,094
+possible steps in stock because the fleet mean battery falls by >= 0.1 per
+step against an eps of 0.02; with the drain off it fires on 2-10 steps, all
+from the comm delivery term. A trigger that is true by construction on every
+step carries no information, and here it is also read by nothing that would
+act on it. It is a cousin of the unreachable-gate class (an always-false
+gate) - an always-TRUE gate - and is worth a line in the trend analyzer's
+own notes: any monotone resource will trip an absolute-eps "worsening" test
+on every step.
+
+Why none of it reached a decision, traced through 2.4:
+  LOW_BATTERY        -> no SafetyChecker mapping, so no reason, no mode; its
+                        name feeds prefer_critical, which was already on.
+  RESOURCE_DEGRADING -> same; its "RESOURCE" marker was already tripped by
+                        other triggers from step 2.
+  TREND_WORSENING    -> no consumer by name; only trigger_context text.
+  All three          -> land in every generator's trigger_context string and
+                        in the dashboards' trigger counts. Whatever the
+                        generators' substring tests ("CRITICAL",
+                        "DEGRADATION", "FAIL", "SEARCH", "UNSAFE", ...) made
+                        of that text, it reached no decision: the option
+                        chosen, the mode and the override are the same on
+                        every step of every run, because the information-
+                        recovery / safety-first reasons that actually drive
+                        the fail-safe machinery on 239 of 240 steps are
+                        present in both arms identically, and the utility
+                        terms the text could have perturbed are the
+                        permanently-zero ones of Part 1 (G).
+
+2.6  IF THE GATES WERE CROSSED - the forced arms
+--------------------------------------------------------------------------------
+Three seeds (D/east half 101, D/south half 101, D/east default 101), battery
+forced to 25.0 (low25) or 12.0 (crit12) at construction, everything else
+stock. Per run:
+
+                                  low25 (3 runs)             crit12 (3 runs)
+LOW_BATTERY / CRITICAL_BATTERY    266..280 / 1,632..1,646    0 / 1,912
+RESOURCE_DEGRADING                2,088..2,108               2,143
+first LOW step / first CRIT step  2 / 35,36,35               - / 2
+level reaches 0.0 at step         84..88 (all 4 UAVs)        41..45 (all 4 UAVs)
+monitor low / critical calls      479 / 405..413             479 / 479
+low_battery alerts                334..342                   161..168
+safety reasons w/ critical_battery 615..618                  717
+fail-safe mode per step           emergency 205..206         emergency 221
+                                  (info-recovery 29..33,     (info-recovery 18,
+                                  safety_first 0..5)         from step 20 on)
+fail-safe action chosen           safe_hold 206..210,        safe_hold 221,
+                                  activate_search_mode       activate_search_mode
+                                  29..33, return_to_base 1   18, return_to_base 1
+                                  (step 1, as in stock)      (step 1)
+override active                   239/239 steps              239/239 steps
+mission phase                     emergency 205..206         emergency 221
+weight profile                    safety_first_mode          safety_first_mode
+                                  410..418 calls             440 calls
+battery_constrained_mode          0                          0
+constraint / feasibility          0 / 0                      0 / 0
+positions vs stock                first divergent step       first divergent step
+                                  35, 44, 36; differing      20, 25, 20; differing
+                                  203, 197, 205 of 240       221, 216, 221 of 240
+fire digests vs stock             identical 3/3              identical 3/3
+evaluation vs stock               identical 3/3              identical 3/3
+
+What the crossing does, step by step (all measured):
+  LOW alone changes nothing. In low25 the level is below 30 from step 1 and
+  LOW_BATTERY fires on every step from 2, yet the UAV cells are identical to
+  stock until the first CRITICAL step (35/36/35) or later (44 on south 101).
+  33 steps x 4 UAVs x 2 analyzers of LOW_BATTERY: zero effect, because it maps
+  to no SafetyChecker reason and its name only feeds a preference flag that is
+  already on.
+
+  CRITICAL alone changes nothing either. In crit12 CRITICAL_BATTERY fires from
+  step 2 but the first divergence is step 20 (= LAUNCH_GRACE_STEPS, cfv:152):
+  COLLISION_RISK triggers are filtered out before that step (wildfire_model.py:
+  1656), and critical_battery becomes EMERGENCY only together with
+  collision_risk or no_feasible_path (safety_checker.py:165-172). On its own
+  it falls through to DEGRADED (88), which the information-recovery reasons
+  present on those steps pre-empt (69-72). So steps 2-19: reason present, mode
+  unchanged, positions unchanged.
+
+  CRITICAL + collision_risk -> EMERGENCY on 205-221 of the remaining steps
+  (collision_risk is present on nearly every step of every run). Then:
+    fail-safe planner: mode-override selection; the EMERGENCY preferred
+      actions are ("safe_hold", "return_to_base"); the fallback catalogue
+      (fallback_strategy.py:150-153) contributes emergency-hold / emergency-
+      rtb / suspend options because every scored option is 0.0 so
+      _needs_fallback_options is always True; the index-ranked preference
+      bonus (fail_safe_planner.py:609-617) gives safe_hold +2.02 and
+      return_to_base +2.01, so safe_hold wins every time. return_to_base is
+      never chosen: 0 of 1,280 emergency-mode decisions across the six runs.
+    dispatcher: override "emergency_mode; fail_safe_action:safe_hold" on
+      every step; _adjust_local_path_for_fail_safe replaces every UAV's
+      next_action with "hold" (decision_dispatcher.py:495-496).
+    executor: "hold" for a non-searcher reaches _execute_hold (uav_executor.py:
+      523-529), which returns the CURRENT selected_dir with the label "hold"
+      (or an escape direction when stuck). A hold does not hold: the UAV keeps
+      its last heading. Measured: moves per UAV under emergency are unchanged
+      (232-240 vs stock 229-240), stationary steps after onset 0-7; the fire-
+      tracker actions fire_flank_relocate / fire_safe_standoff / fire_flank_
+      hold vanish after onset and the trackers ride their heading to the grid
+      edge and stay there ((0,6), (0,16), (0,49), (38,1), (48,0), (22,0) at
+      step 240). Victim searchers mostly keep searching: the "hold" branch
+      re-enters _resolve_direction_intent("victim_search_wind_aware") whenever
+      the wind-search state asks for a retarget (140-399 such steps per run).
+    the battery: reaches 0.0 between step 41 and 88 and stays there (the clamp
+      at agents.py:275). Nothing notices: no dead, landed or grounded state
+      exists; the UAV keeps flying at 0.0 for 150-200 steps, PRUT is 0,
+      CRITICAL_BATTERY fires on, the mode stays emergency.
+    the mission: identical rescue outcomes and identical fire on all six
+      forced runs. The trackers' abandonment of the fire and the drift to the
+      edges cost nothing in _build_evaluation's terms on these three seeds
+      (the evaluation has no UAV or fire-tracking term; detection had already
+      happened where it mattered).
+
+So the one gate that can act, acts like this: it does not return anything
+anywhere, it strands the fire trackers on a heading, and it leaves a UAV at
+0% battery flying. The name "return_to_base" appears in the preferred-action
+list, in the fallback catalogue and in the dispatcher's override token, and is
+outranked by 0.01 in the only mode that could pick it; even if it were picked,
+the dispatcher would drop the path (no producer emits a path containing
+"return"/"base"/"home"/"rtb") and the UAV would take the managed hold at
+agents.py:322-324 instead.
+
+2.7  CLASSIFICATION AGAINST THE CAMPAIGN'S TAXONOMY (item 5)
+--------------------------------------------------------------------------------
+The battery is not one instance; its pieces fall into five of the classes the
+campaign has already named, plus one new one. In the campaign's terms:
+
+(a) DEAD-INPUT (reader of a permanently absent input) - the class of
+    _DELAY_CANCEL_BONUS, the role string/dict mismatch, belief_gap_regions and
+    the global utility vector (globalplanner_scope.txt 1.3). Three further
+    sub-instances here, all measured:
+      - constraint_filter._battery_reasons reads runtime_models["battery"] /
+        ["battery_state"]; neither key is ever created (wildfire_model.py:
+        1684-1696): None on 555,100 of 555,100 calls, 0 rejections.
+      - utility feasibility reads params battery_level / projected_battery_
+        after_option: present on 0 of 483,428 calls. (The weighted terms
+        battery_cost / battery_pressure / energy_failure_risk are the seventh
+        instance already counted; re-verified absent in every scope.)
+      - the local analyzer's primary input, latest_local_observation
+        ["battery_level"]: absent on 12,480 of 12,480 calls (buffer cleared
+        before analysis). The knowledge fallback is the only live path. The
+        unit test for this branch (test_local_analysis.py:89) feeds the dict
+        by hand.
+(a') DEAD-VALUE (input present, value constant and unable to raise a term) -
+    the Cost_switch / role_switch_count=None variant of (a):
+      - "battery" / "battery_state" params on every global and fail-safe
+        option: always None.
+      - uav_resource_model.py:185-190's own 20/50 status gates: computed
+        12,480 times, overwritten 12,480 times by update_uav_state:119.
+      - mission min_battery (0.15-0.35): a fraction compared to nothing.
+(w) WRITE-ONLY (written every step, read by nothing) - the class of
+    should_return_to_normal and sop.mission_mode:
+      - UAVExtensionState.battery_level/status (12,480 writes; the only read
+        is the getattr default on the writer line)
+      - LocalObservationModel.local_battery_state (12,480 writes, 0 reads)
+      - LocalUAVMonitor._resource_snapshot (12,480 computed, 0 used)
+(u) UNREACHABLE GATE (a correct branch that arithmetic keeps closed) - the
+    class of _move_toward tier 2:
+      - every "critical" gate (agent 276, analyzers 142/703, monitor 349):
+        needs step 284 at the 0.3 ceiling; horizon is 240. Minimum seen 28.0.
+      - global_monitor.py:355 (0 < bl < 20): shadowed by 352.
+      - global_analyzer.py:766 (>= 2 critical UAVs).
+(t) ALWAYS-TRUE GATE - new, the mirror image of (u): TREND_WORSENING's
+    mean_battery test (global_analyzer.py:1494) is true on 3,094 of 3,094
+    steps because a monotone counter beats an absolute eps of 0.02 every step.
+    Information-free by construction, and consumed by nothing by name.
+(r) REACHABLE, PRODUCED, CONSUMED, INERT - the piece with no exact precedent:
+    LOW (<= 30) and the runway gate (PRUT < 120) DO open late in the horizon
+    and DO produce triggers that DO reach the generators and the fail-safe
+    planner as text - and the seed-matched counterfactual shows zero effect.
+    This is the dead-input class seen from the producer's side: the producer
+    and the consumers are both live, the mapping between them (LOW_BATTERY ->
+    no reason; trigger names -> substring flags already set by other triggers)
+    is what is missing.
+
+Which instance does it resemble most? Not any single one. What makes the
+battery different from the seven dead-input instances is that the producer is
+real and correct (the drain), the observation chain is real and correct
+(agent -> LocalObservation -> knowledge -> analyzers -> dashboard), and the
+disconnect is PARAMETRIC (gates placed where drain x horizon cannot reach) and
+ACTION-LEVEL (the one reachable-by-forcing gate produces a heading-hold, not a
+return). Its nearest relative is the _move_toward tier-2 gate: a branch that
+is written, correct as far as it goes, and mathematically closed under the
+evaluated conditions. The difference is that the battery's closed branch
+would not do the right thing even if it opened.
+
+================================================================================
+PART 3 - SCOPE (not design)
+================================================================================
+
+3.1  VERDICT (item 6)
+--------------------------------------------------------------------------------
+(B) TRACKED BUT INERT.
+
+A battery exists on the UAV agent, depletes every step, and is tracked
+faithfully by monitoring, the knowledge model, the managed mirror and the
+dashboard. Over the canonical 240-step horizon nothing acts on its value:
+pinning it at 100 reproduces every UAV cell, every burn and every outcome of
+all 13 stock runs exactly, while three battery-driven trigger streams
+(LOW_BATTERY from step 235, RESOURCE_DEGRADING from step 215, TREND_WORSENING
+on every step) come and go without touching a decision.
+
+Two qualifications, both needed for scoping:
+
+  - There is a sliver of (A) behind a gate the drain cannot reach in 240
+    steps: CRITICAL_BATTERY (<= 15, earliest step 284). Forced open, it does
+    act - but only with a co-occurring collision reason, only as EMERGENCY /
+    safe_hold, and safe_hold keeps the current heading. Fire trackers ride
+    to the grid edge, searchers keep searching, the battery reaches 0 and the
+    UAV flies on. That is not a return, and a 300-step run (the
+    evaluate_scenarios.py default) would reach it in its last ~16 steps.
+
+  - Everything base-station-specific is (D) ABSENT: no base cell (the spawn
+    cluster at the grid centre is not stored), no recharge path (battery_level
+    only ever decreases), no return leg (return_to_base is a token whose only
+    effect is to drop a path, and it is outranked by 0.01 in the one mode that
+    could choose it), no landed / charging / dead state, no exclusion of a UAV
+    from the lane and sector lists, and no pos-None tolerance in the UAV
+    consumers.
+
+What (B) would need wired, in one line each (the detail is 3.2):
+  1. one threshold source (today five inconsistent copies; the agent's own
+     30/15 are hardcoded and unreachable by apply_scenario_config);
+  2. a gate that fires at the return threshold and reaches an action - either
+     a managed-side check next to the drain, or a SafetyChecker mapping for
+     LOW_BATTERY plus a fail-safe action that is not pre-empted by the
+     information-recovery reasons present on 239 of 240 steps;
+  3. a base cell, and a return leg built on the executor's existing
+     _direction_toward primitive;
+  4. a charging state with the role-loop exclusion (lanes, sectors) and the
+     re-entry, on the feature 1 removal/return pattern;
+  5. the recharge itself (the first code path that ever raises battery_level);
+  6. pos-None guards on the seven UAV position consumers if the base is
+     off-grid, and dashboard/metric fields that say "charging".
+
+3.2  INTEGRATION POINTS A BATTERY-DRIVEN RETURN-TO-BASE WOULD NEED (item 7)
+--------------------------------------------------------------------------------
+Named, not designed. Each point is where the existing code already touches the
+concept, what it does today, and what is missing. Where two homes are possible
+both are named with the measured facts that bear on the choice.
+
+(i) DEPLETION - exists. agents.py:270-281, called once per UAV per step from
+    advance() (346), after move(). It is the only writer of battery_level and
+    the only place the drain constants are read. What is missing:
+      - a way UP. There is no code path anywhere that increases battery_level;
+        a recharge branch would be the first. The clamp at 281 already caps at
+        100, so a recharge that overshoots is harmless.
+      - one source of truth for the constants. The drain (0.1/0.2) and the
+        agent's 30/15 gates are hardcoded on the instance (237-242) and are
+        not in common_fixed_variables, so apply_scenario_config cannot reach
+        them and a per-run override is impossible today. The same two numbers
+        exist as cfv LOW_BATTERY_THRESHOLD/BATTERY_CRITICAL_THRESHOLD (read by
+        the analyzers and the alert manager), as 15/30/20 literals in
+        global_monitor.py:349-356, as 20/50 in uav_resource_model.py:185-190
+        (dead-value), and as 50/20 in the two dashboard colour maps. A return
+        threshold is a FIFTH number unless the copies are collapsed. The
+        precedent for reading cfv at call time from agents.py is
+        victim_flee_trigger_distance (agents.py:359-371), written exactly so a
+        per-run override is visible to the agent.
+
+(ii) THE THRESHOLD CHECK - two candidate homes, neither exists today.
+    (a) Managed side, next to the drain: a check in UAV.advance()/move()
+        (agents.py:339-356 / 309-336) that flips the UAV into a returning
+        state when battery_level <= the return threshold, the way features 1
+        and 2 were built as managed-agent rules with no MAPE involvement.
+        Nothing there reads the battery today; the movement contract at
+        322-324 (no committed direction -> hold) is what the returning state
+        would have to pre-empt.
+    (b) Managing side, through the pipeline that already exists:
+        LocalUAVAnalyzer/GlobalAnalyzer LOW_BATTERY/CRITICAL_BATTERY (E) ->
+        SafetyChecker reason critical_battery -> ModeManager mode ->
+        FailSafePlanner fail_safe_action -> DecisionDispatcher override ->
+        UAVExecutor. Measured facts that bear on (b), from 2.6:
+          - only CRITICAL_BATTERY produces a reason; LOW_BATTERY maps to
+            nothing in safety_checker.py:18-28, so "return at 30%" through (b)
+            needs a new mapping.
+          - critical_battery alone classifies as DEGRADED, and is pre-empted by
+            information-recovery / safety-first reasons that are present on
+            most steps of every run; the planner then never chooses
+            return_to_base (2.6 shows what it chose instead).
+          - even when return_to_base IS the action, decision_dispatcher.py:
+            483-516 has no path to give: it keeps the local path only if the
+            path text contains "return/base/home/rtb", otherwise drops it and
+            the UAV holds. There is no base cell, no path producer, and
+            _dispatch_fail_safe (192-231) cannot address a UAV because the
+            fail-safe options carry target_entity "uav", a literal.
+          - the analyzers see the knowledge copy, one step stale (2.4), which
+            is fine for a threshold but means the reaction lands one step
+            after the crossing.
+        Whichever home is chosen, the gate itself is one comparison; the work
+        is everything in (iii).
+
+(iii) TAKING A UAV OUT OF ITS ROLE LOOP AND PUTTING IT BACK
+    The role loop, per step, pre-move (adaptation_manager.py:80-128):
+      _run_analysis (per UAV with a resource-model entry, wildfire_model.py:
+      1626-1643) -> local_adaptation_generator.generate per local_result
+      (1699-1719) -> planning_coordinator local path planner per UAV ->
+      decision_dispatcher._dispatch_local_paths -> UAVExecutor.execute ->
+      _commit_execution_direction (uav_executor.py:140-145) -> agents.py
+      move() at schedule.step().
+    Existing precedence mechanisms a return leg could reuse:
+      - the dispatcher's fail-safe override (decision_dispatcher.py:427-516):
+        already knows the token "return_to_base"; today its only effect is to
+        drop the path.
+      - the executor's target-following primitives: _execute_search_mode
+        (735) / _execute_role_preserving_search point a UAV at a target
+        through _direction_toward(agent, target) (4566-4589), a greedy,
+        bounds-checked one-step-toward. A return leg is "_direction_toward
+        (agent, base_cell)" plus a way to say which UAVs are on it.
+      - the managed-side hold contract (agents.py:322-324): a UAV with no
+        committed direction stays put. A charging UAV that is on-grid could
+        simply be given no direction.
+    What has no mechanism today:
+      - a base cell. The only base-like geometry is the spawn cluster,
+        wildfire_model.py:142-160: four cells around (HEIGHT//2, WIDTH//2),
+        centre of the grid, and it is not stored anywhere after placement.
+      - a returning/charging state on the UAV, and its exclusion from the
+        role loop. Roles live in managed_uav_states[uid].role
+        (wildfire_model.py:657-689 _assign_uav_roles, mirrored into the
+        knowledge model's current_role) and are read by
+        resolve_victim_searcher_uav_ids (lanes) and _uav_assignment_role
+        (sectors, 320-338). A UAV that keeps its role while returning keeps
+        its lane/sector; a UAV whose role changes reshuffles everyone's (see
+        (iv)).
+      - taking a UAV OFF the grid, if the base is off-map: feature 1's
+        removal/return pair is the template - _remove_firefighter_for_
+        rescue_absence (2179-2230: grid.remove_agent, status "off_grid",
+        absent_until_step, exit cell, log + counters) and the return at the
+        head of the post-move cycle (2324-2392: place_agent at the exit cell,
+        flags cleared, logged). Feature 1 could rely on every consumer
+        already treating a firefighter's pos None as "not here"; for UAVs
+        that is NOT true (see (iv) and 3.3).
+      - putting it back: role restored (both copies), re-placed, re-entered
+        into the lane/sector lists (automatic, since both are recomputed from
+        the live role list), monitor re-attached if it was detached.
+
+(iv) WHO NEEDS TO KNOW
+    Searcher lanes - local_adaptation_generator.py:276-318 + 332-364.
+      The lane list is the sorted ids of schedule UAVs whose role is a
+      searcher role, rebuilt on every call with no memo
+      (outputs/lane_partitioning_investigation.txt:175-177). Consequences:
+        - a UAV that leaves the searcher role mid-run shrinks n; the survivors'
+          lanes reshuffle immediately (investigation 306-331, measured), the
+          partition stays disjoint/gapless (981-985, verdict (b)), and the
+          per-searcher targeting state that is lane-blind survives the
+          reshuffle and was measured to self-clear (333-358). So a role change
+          is handled, with a coverage discontinuity, not a crash.
+        - a UAV that KEEPS the role while away is still counted: n does not
+          shrink, its lane is assigned to nobody who is there, and nothing
+          detects that. This is the silent case.
+        - the return reshuffles again. Two reshuffles per charging cycle, per
+          UAV.
+    Fire-tracker sectors - wildfire_model.py:428-522, recomputed at the head
+      of EVERY step (5279) from the sorted role list, split n ways along the
+      longer axis of the fire's bounding box. Identical two cases: role change
+      -> flanks reshuffle every cycle; role kept -> one flank unattended.
+    Coverage scoring - _estimate_coverage_ratio (3072-3097) is belief-based
+      (mean fire-confidence), not UAV-count-based, so it does not notice a
+      missing UAV directly. uav_team_summary.total_information_gain
+      (global_monitor.py:232) and the avg_normalized_information_gain gate
+      (classify_events 360-370, information_collapse / low_information_gain
+      events) DO: a UAV that is holding or away contributes ~0 gain, which
+      pushes the fleet toward the search-mode fail-safe path. The same path
+      is already active on most steps (2.4), so the marginal effect is small
+      but real.
+    Dashboard - uav_status_view (dashboard_state_builder.py:207) already shows
+      battery; alerts at 30% (alert_manager.py:236); colours at 50/20 (live
+      panel 269-270, serve_dashboard.py:692). No field says "returning" or
+      "charging". serve_dashboard.py:156 indexes every UAV's pos unguarded.
+    Metrics - _build_evaluation (serve_dashboard.py:286-325) has no UAV term;
+      a charging cycle changes rescue outcomes only through detection and
+      coverage. evaluate_extended_metrics.py:38-92 (tracker smoke/fire
+      exposure) already skips pos None (71-72). MR1/MR2 (wildfire_model.py:
+      2775-2806) index every UAV's pos unguarded and would need to skip or
+      zero an absent UAV; MR1's per-UAV reward list is positional, so
+      skipping changes its shape.
+
+3.3  INTERACTIONS WITH WORK ALREADY DONE (item 8)
+--------------------------------------------------------------------------------
+Feature 1 (off-grid firefighter, pos None).
+  The removal/return pair is the template (above). The break class is the
+  same and it is WIDER for UAVs, because no UAV has ever had pos None: the
+  lane investigation notes (line 22) that UAVs are never removed from the
+  schedule, so no consumer was ever made to cope. Consumers that index a
+  UAV position unguarded today, i.e. the serve_dashboard.py break repeated:
+    serve_dashboard.py:156           int(a.pos[0]) for every UAV in the
+                                     schedule - the exact shape of the
+                                     feature 1 break
+    wildfire_model.py:975            _detect_victims_in_uav_radius:
+                                     px, py = uav.pos
+    wildfire_model.py:2796-2798      MR2 pairwise distances
+    wildfire_model.py:2808-2823      state() -> UAV.surrounding_states (294-
+                                     307) -> grid.get_neighborhood(None)
+    agents.py:328,343-350            move()/advance(): pos_to_move and
+                                     pos_before; collect_observation
+                                     (local_uav_monitor.py:313) int(uav.pos[0])
+    global_monitor.py:58,194         _uav_team_summary iterates self.uavs, the
+                                     list captured at CONSTRUCTION - removing a
+                                     UAV from the schedule does not remove it
+                                     here - and indexes pos unguarded
+    uav_executor.py:369-371 (+3444,  boundary/pocket helpers int(agent.pos[0])
+      3467, 4136, 4155, 4261)
+  Already guarded: dashboard_state_builder (_coords, 38-41), stuck counts
+  (2720), managed-state sync (727), _direction_toward (4569), the extended
+  metrics (71-72), local_adaptation_generator (reads the knowledge
+  current_position, 3349-3366, which would be stale rather than None).
+  A charging UAV that stays ON the grid (charges in place on a base cell)
+  avoids all of this and only needs the role-loop exclusion.
+
+Searcher lane partitioning (outputs/lane_partitioning_investigation.txt).
+  Confirmed against the source at fd743f5: resolve_victim_searcher_uav_ids
+  is still role-based, sorted, recomputed on every call, no memo, no
+  discontinuity handling. Handled: a shrink or grow of the ACTIVE list gives a
+  well-formed partition immediately (the investigation's verdict (b)). Not
+  handled, and new with a recharge mechanic: (1) the role-kept-while-away
+  case, which the partition cannot see; (2) two reshuffles per cycle per UAV,
+  each of which the investigation measured as a coverage discontinuity with
+  stale targeting state that self-clears rather than being reset. Whether
+  that cost matters depends on how often UAVs cycle, which depends on the
+  return threshold and the charge time - numbers the brief does not fix.
+  The tracker-sector split is the same problem with the same properties.
+
+Feature 2 / phantom-rescue release.
+  No interaction: victims and firefighters do not read UAV state. The one
+  shared path is victim DETECTION (_detect_victims_in_uav_radius, run twice
+  per step in both cycles): a UAV away from its lane detects nothing there,
+  so a victim that spawned in that lane is found later or never.
+
+Seed-matched harness discipline.
+  The battery is deterministic (no RNG anywhere in (A)-(H)). A recharge
+  mechanic stays seed-matched as long as it draws nothing from SYSTEM_RANDOM;
+  if a charge duration is ever randomised, the feature 1 pattern
+  (_make_ff_absence_rng, wildfire_model.py:2137-2177, a dedicated RNG seeded
+  from the run seed) is what keeps _ffr_harness-style A/B comparisons valid.
+
+================================================================================
+APPENDIX - FILES, REPRODUCTION, SAMPLE
+================================================================================
+Added (all under outputs/, none imported by the simulation):
+  _bat_probe.py            the probe: hooks + arms (docstring lists every hook)
+  _bat_runall.sh           the three waves exactly as run (13 stock, 13 nodrain,
+                           3 low25 + 3 crit12), one wave at a time
+  _bat_analyze.py          aggregation -> _bat_analysis.txt (every number in
+                           Part 2 is copied from there)
+  _bat_analysis.txt        the aggregate
+  _bat_<arm>_<wind>_<roles>_<seed>.json   32 per-run records (per-step UAV
+                           trace, trigger names, execution result, caller
+                           tables, gate observers, fire digests, evaluation)
+  _bat_logs/<tag>.log      per-run stdout/stderr
+Nothing under src_extension/, agents.py, wildfire_model.py, common_fixed_
+variables.py, serve_dashboard.py or tests/ was modified (git status: only
+untracked files under outputs/).
+
+Reproduce one run:
+  .venv/Scripts/python.exe outputs/_bat_probe.py --repo . --wind east       --roles half --seed 101 --steps 240 --arm stock       --out outputs/_bat_stock_east_half_101.json
+  (arms: stock | nodrain | low25 | crit12; --roles half | default)
+Reproduce everything:  bash outputs/_bat_runall.sh   (~36 min wall, 03:02-03:39)
+Aggregate:             .venv/Scripts/python.exe outputs/_bat_analyze.py
+
+Sample: Scenario D preset (4 UAVs, 4 victims, 2 firefighters), FIRE_SPREAD_
+MULTIPLIER 0.75, BATCH_SIZE 300, PROBABILITY_MAP False; "half" = 2 trackers +
+2 searchers, "default" = the legacy last-UAV-is-searcher split (3 trackers +
+1 searcher); 240 steps; seeds as named. Wall time per run 345-780 s with the
+hooks on; the property hooks add roughly 60-90k attribute-access records per
+run and were verified not to perturb the run: the hooked stock D/east half 101
+run reproduces outputs/_ffr_latbase_east_half_101.json - the UNHOOKED harness
+run of the same seed on dd0a1b9, the code fd743f5 carries unchanged - in every
+evaluation field (rescued 2, dead 1, candidate 1, firefighter_deaths 1,
+burnt_cells 1134, terminal None) and in the final fire digest (1c31b161...).
+
+Test baseline after the round: unchanged, 8 failed / 490 passed (the same
+eight tests as before the round; no source file was touched).
