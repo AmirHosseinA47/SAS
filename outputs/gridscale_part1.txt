@@ -1,0 +1,1041 @@
+GRID SCALE ROUND - PART 1: DIAGNOSIS BEFORE MOVING FROM 50x50 TO 100x100
+=========================================================================
+
+Branch firefighter-mission-features, HEAD a77b71f. Python 3.10.11, mesa 1.2.1
+(E:\Projects\SAS\.venv). Test baseline reproduced: 8 failed / 490 passed (67 min under
+load; the same eight tests the campaign already carries). No source file was modified:
+every override in this round is a runtime monkeypatch or a CLI argument, applied by
+outputs/_gs_probe.py; results are in outputs/_gs_*.json and outputs/_gs_logs/.
+
+0. THE DECISION TABLE
+---------------------
+
+0.1 Before the grid can move at all (these give WRONG answers at 100x100, not slower ones)
+
+  item                                 | today                          | needed for 100x100                              | evidence
+  -------------------------------------+--------------------------------+-------------------------------------------------+---------------------------------------------------------------
+  model never exposes its size (W1)    | getattr(model,"HEIGHT",50)->50 | set self.HEIGHT/self.WIDTH in WildFireModel     | raw100: 5/5 rescues "completed" at interior column 49; both searchers spent 295-297/301 steps in the SW quarter; 3/4 of the grid never targeted
+  the helpers that fix wakes (3.4)     | dead at 50x50 (return False/0) | decide to keep them live; regenerate 50x50 gates | shim50: 0/13 seed-matched 50x50 runs identical after the fix; rescued 35->37, dead 12->11, never-detected 1->2
+  BATCH_SIZE exit guard (W2)           | sys.exit(0) on step 302        | --batch-size >= steps on every call, or derive it | evaluate_scenarios --steps 320 exits 0 with only the header printed
+  _never_seen_proximity_bonus (2.7)    | O(cells) per candidate cell    | cache the never-seen set per step (exact drop-in in _gs_probe.py) | 78-155 s/step stock at 100x100 vs 7-14 s/step; a 960-step run is 12-25 h stock, 2.1 h fixed
+  global_monitor binds HEIGHT at import (W3) | 2500 cells forever under a runtime override | read the size at call time (harmless for a source edit) | coverage fractions would exceed 1.0 under apply_scenario_config(HEIGHT=100)
+
+0.2 Constants (SCALE / UNCLEAR only; ABSOLUTE ones are held - see 1.2 D)
+
+  constant                       | now  | @100x100                     | class   | one line
+  -------------------------------+------+------------------------------+---------+------------------------------------------------------------------
+  UNDETECTED_STREAK_STEPS        | 210  | steps - 30 (derive from the budget) | DERIVED | held at 210 it writes off 17 victims in 13 runs at 100x100 (1 at 50x50) and ENDS the search at step 210 at every budget; with it off, 12 of those 17 are found (steps 220-638) and 11 rescued; 37 vs 26 rescues at 960
+  step budget (with the above)   | 240  | 600 (timeout 570); 800 for >= 97% of achievable rescues | -  | rescues with the timeout derived: 22@240, 31@500, 34@600, 36@800, 37@960 of 52 (50x50/240: 35); detections saturate at step 638; 240 is unusable at 100x100 (20 victims undetected at the horizon even with no timeout)
+  battery 0.1/step + 0.2/move    | empty at 333 | scale the drain to the budget (or a base-station feature) | DERIVED | every UAV reads 0.0 from step 333 to the end of a 500/960 run; inert today but every monitor/analyzer sees it
+  ignition margin (set_fire_agents) | 10 | 10 (hold) or 20 (scale): maintainer's call | UNCLEAR | held, the box is 64% of the grid and the fire starts 2x farther from victims (median 14 -> 27 cells)
+  CORRIDOR_DIVERSITY_X_BAND      | 38   | 76 (or derive x_max - 11)    | SCALE   | grid coordinate; no outcome change in 13 seed-matched runs
+  CORRIDOR_WEST_CAMP_X           | 12   | 24                           | SCALE   | grid coordinate; no outcome change
+  CORRIDOR_WEST_TARGET_X_MAX     | 25   | 50 ((x_min+x_max)//2)        | SCALE   | grid midpoint; no outcome change (the corridor group moves south-wind trajectories from step 114, coverage +-0.07, outcomes identical)
+  COVERAGE_INTERIOR_X_MIN / _MAX | 8/30 | 16/60                        | SCALE   | fallback only when sector bounds are missing; inert in the canonical mix
+  NO_VICTIM_DETECT_BOOST_AFTER   | 40   | 80                           | SCALE   | traverse-time constant; inert in 13 runs (a detection always comes first)
+  POST_RESCUE_COVERAGE_DURATION  | 50   | 100                          | SCALE   | traverse-time constant; byte-identical trajectory over 300 steps when doubled alone
+  literal 25 (escape cadence)    | 25   | 50                           | SCALE   | hardcoded at local_adaptation_generator.py:1337; not testable without a source edit
+  WIND_DOWNWIND_CAP              | 20.0 | 20.0, then a sensitivity run | UNCLEAR | saturates over 80% of a 100-wide grid instead of 60%; doubling re-weights the wind term
+  WIND_SAME_TARGET_FORCE_RETARGET| 10   | 10, then measure             | UNCLEAR | may force retargets before arrival when targets are twice as far
+  WIND_EDGE_MARGIN + COVERAGE_SWEEP_BAND_MARGIN | 2 + 6 | HOLD (sweep goals 8 / 91) | DERIVED from UAV_OBSERVATION_RADIUS | the 8-cell goal offset IS the sensor radius; doubling leaves 8-cell edge strips unswept
+  everything in 1.2 C and D      | -    | HOLD                         | ABSOLUTE| sensor-scale edge offsets and fire/agent physics
+
+0.3 Cost of the new baseline
+  13-run canonical sample at 100x100, 13 concurrent, WITH the hot-spot fix: 960 steps =
+  2.6 h wall (per run 1.3-2.6 h), 500 steps ~1.5 h, 240 steps ~1.0 h. Without the fix:
+  roughly a day per 960-step wave. Every existing gate is 50x50 and must be regenerated
+  (list in 4.4); if the W1 fix is applied the 50x50 gates need regenerating too (~10 min
+  per 240-step wave).
+
+
+PART 1 - THE CONSTANTS AUDIT
+----------------------------
+(file:line references are HEAD a77b71f)
+
+Method. Every module-level constant, every numeric literal used as a margin, radius,
+window or budget, and every getattr(..., 50) default in agents.py, wildfire_model.py,
+common_fixed_variables.py, serve_dashboard.py, main.py, Canvas_Grid_Visualization.py and
+src_extension/** was listed (grep for module constants, for HEIGHT/WIDTH, for the
+literals 50/49/48/25/24, and a read of every hit's call site). Classification uses four
+labels as briefed: SCALE (a fraction of the grid), ABSOLUTE (a physical fact), DERIVED
+(should be computed from another quantity and is not), UNCLEAR (needs a measurement).
+
+1.1 The grid itself and how it propagates
+
+  WIDTH = HEIGHT = 50 (common_fixed_variables.py:23-24) reaches the simulation by THREE
+  different routes, and only the first two follow an edit:
+    (a) star-import copies: wildfire_model.py:18 `from common_fixed_variables import *`
+        (grid construction :132, UAV spawn cluster :143, sectors :350-401, victim ring
+        :537-545, firefighter ring :584-592, boundary pressure :1364, ignition :1984,
+        fire agents :1988) and agents.py:10;
+    (b) import-time name binding: src_extension/monitoring/global_monitor.py:11-13
+        binds HEIGHT, WIDTH once -> _grid_cell_total() :62 is the denominator of
+        coverage_observed_fraction / coverage_unobserved_fraction (:101-115). Correct
+        after a SOURCE edit; silently stays 2500 under a runtime override
+        (apply_scenario_config sets cfv and wf attributes only, :270-273);
+    (c) instance lookups with a literal-50 default: agents.py:888-889,
+        local_adaptation_generator.py:3375-3376 (_grid_bounds), uav_executor.py:1176-1183,
+        1877-1878, 2050-2051, 2320-2321, 3774-3775, local_uav_path_planner.py:503-533.
+        WildFireModel never sets HEIGHT/WIDTH/height/width/grid_height/grid_width on the
+        instance (grep of wildfire_model.py: zero hits), so every one of these returns
+        50 on a 100x100 grid. See Part 3 - this is the item that produces WRONG results.
+        The _grid_dimension helper (uav_executor.py:4613) returns None for the same reason,
+        so _position_at_boundary (:540) is always False and _distance_from_boundary (:552)
+        is always 0.0 TODAY, at 50x50: two boundary helpers are dead inputs at any grid
+        size until the model exposes its dimensions.
+
+1.2 Inventory and classification
+
+  A. Constants that are FRACTIONS of the grid (SCALE) - double them with the grid
+  ------------------------------------------------------------------------------
+  CORRIDOR_DIVERSITY_X_BAND = 38   local_adaptation_generator.py:100; used :249, :739
+     "recent x positions all >= 38" is the east-band camping detector; 38 of 49 is a
+     position, not a distance. Held at 100x100 it fires whenever a searcher works the
+     eastern 62% of the grid. SCALE -> 76 (better: DERIVED, x_max - 11).
+  CORRIDOR_WEST_CAMP_X = 12        :104; used :253, :742
+     west-edge camping detector under west wind (x <= 12). SCALE -> 24.
+  CORRIDOR_WEST_TARGET_X_MAX = 25  :103; used :259
+     cap on west-pull targets at the grid midpoint. SCALE -> 50 (DERIVED: (x_min+x_max)//2).
+  COVERAGE_INTERIOR_X_MIN/MAX = 8 / 30   :106-107; used :1098, :1103
+     fallbacks used only when the sector bounds are None (never, in the canonical mix:
+     every searcher has full-grid bounds, wildfire_model.py:360-366). SCALE but inert ->
+     16 / 60, cosmetic.
+  set_fire_agents margin = 10      wildfire_model.py:1983-1985 (ignition box [10, H-11]^2)
+     Held: the box is 36% of the grid at 50x50 and 64% at 100x100; ignition-to-nearest-
+     victim Manhattan distance (analytic, 4 victims on the spawn ring): median 14 -> 27,
+     P(<= 8 cells) 0.17 -> 0.05, max 19 -> 47. Fire starts, on average, twice as far
+     from the victims and from the firefighter spawns (median 19 -> 37). UNCLEAR: as a
+     fraction it is 20; as a physical "not within 10 cells of the edge" it is 10. What
+     decides it is what the maintainer wants the fire-victim geometry to look like; the
+     measurement that resolves it is the time-to-first-threat distribution (Part 2 data).
+     MATERIAL either way.
+
+  B. Time constants that are really traverse distances (SCALE, with the grid, not the budget)
+  --------------------------------------------------------------------------------------
+  NO_VICTIM_DETECT_BOOST_AFTER = 40 steps   :99; used :758, :1233; import-time copy in
+     uav_executor.py:17. Coverage mode is forced after 40 steps without a detection; at
+     1 cell/step 40 steps is 0.8 grid traverses at 50 and 0.4 at 100. SCALE -> 80.
+  POST_RESCUE_COVERAGE_DURATION = 50 steps  :105; import-time copy wildfire_model.py:58,
+     set at :3287. Post-rescue coverage burst = one traverse. SCALE -> 100.
+  literal 25 (`steps >= 25 and steps % 25 == 0`)   :1337
+     periodic force_coverage_escape while no searcher detection; half a traverse at 50.
+     SCALE-classified but a hardcoded literal: cannot be overridden without a source edit,
+     so arm B below runs with it HELD. Flag for the maintainer.
+
+  C. Edge offsets that are really SENSOR facts (ABSOLUTE / DERIVED from UAV_OBSERVATION_RADIUS) - HOLD
+  --------------------------------------------------------------------------------------------------
+  WIND_EDGE_MARGIN = 2            :52; _coverage_safe_* :119-133, corridor grid :3595-3598
+  COVERAGE_SWEEP_BAND_MARGIN = 6  :108; west_goal/east_goal :1115-1116, strip latches :166/:173
+     west_goal = x_min + 2 + 6 = 8, east_goal = x_max - 8 = 41 at 50x50. The offset is
+     8 = UAV_OBSERVATION_RADIUS: a searcher standing on the goal sees exactly to the grid
+     edge. That is a sensor fact, so HOLD at 100x100 (goals 8 and 91). Doubling it (goals
+     16 / 83) would leave x in 0..7 and 92..99 outside every sweep footprint - scaling is
+     WRONG here. Both should be DERIVED (UAV_OBSERVATION_RADIUS - WIND_EDGE_MARGIN).
+  COVERAGE_Y_COMMIT_TARGET_MARGIN = 4, _PENETRATE_MARGIN = 6, _GRADUAL_STEP = 6  :113-115
+     y-commit targets sit 4 cells from the edge (footprint reaches the edge); penetration
+     test 6; both < 8. ABSOLUTE (sensor). HOLD.
+  WIND_INTERIOR_MARGIN = 6, WIND_EAST_INTERIOR_MARGIN = 6   :77, :73; used :658, :1285,
+     :1417, :1541, :3698, :3836, :4034. Edge-penalty bands in cells. ABSOLUTE. Cosmetic
+     difference: the penalised rim is 43% of the cells at 50x50 and 23% at 100x100.
+  _downwind_edge_blocked literals 2/3/4 cells  :1526-1535 - ABSOLUTE.
+  _uav_near_boundary margin = 2  local_uav_path_planner.py:520 - ABSOLUTE (and pinned to 50, see 1.1c).
+  _boundary_pressure_for_cell margin = 3   wildfire_model.py:1363 - ABSOLUTE.
+  _victim_edge_blocked_direction margin = 3   uav_executor.py:2055 - ABSOLUTE (pinned to 50).
+  _SEARCH_OFFSETS 5 cells  uav_executor.py:798 - ABSOLUTE.
+  sweep STEP = 8  uav_executor.py:1185 - DERIVED from the radius (= R, i.e. 2x overlap).
+     HOLD. Consequence, not a defect: a full lawnmower at pitch 8 is 6 passes x 50 = 300
+     cell-steps at 50x50 and 12 x 100 = 1,200 at 100x100 (4x, area).
+
+  D. Physical facts (ABSOLUTE) - HOLD
+  -----------------------------------
+  Fire: neighbourhood radius 3 (agents.py:29; the firebreak critical width measured at
+     exactly 3 in the #9 round), FIRE_SPREAD_SPEED 3, BURNING_RATE 1, fuel 7-10, MU 0.9,
+     FIRE_SPREAD_MULTIPLIER 0.75, DENSITY_PROB 1, SMOKE_PRE_DISPELLING_COUNTER 2 and the
+     fuel-tied dispelling counter (agents.py:134). All per-cell physics.
+  UAV_OBSERVATION_RADIUS = 8 (cfv:126; detection is Euclidean <= 8 in
+     wildfire_model._detect_victims_in_uav_radius, observation is the 17x17 Moore square),
+     SECURITY_DISTANCE = 10, LAUNCH_GRACE_STEPS = 20 (the four UAVs spawn on adjacent
+     cells at the centre; 20 steps of dispersal is grid-independent).
+  WIND_FIRE_FRONT_MIN_DISTANCE = 12 (:70; :1516, :3706) and WIND_VICTIM_HAZARD_BUFFER = 2
+     (:75): standoff from the front in cells. ABSOLUTE. MATERIAL consequence: the
+     12-cell exclusion zone around a same-sized fire is a much smaller fraction of a
+     100x100 grid, so searchers lose far less searchable area to the fire - one reason a
+     held-constant 100x100 run is not "the same mission, bigger".
+  STANDOFF_MIN/MAX/IDEAL 1/3, STANDOFF_MAX_ESCAPE 10, STANDOFF_ENVELOPE_EXPAND_FIRE 25 /
+     _SMOKE 10 (counts of hazard cells), _min_hazard_distance max_scan 8 (uav_executor.py
+     :53-64, :3991). Fire-size facts. ABSOLUTE.
+  IDLE_RETREAT_SAFETY_BUFFER = 3, IDLE_RETREAT_MAX_CELLS = 6 (agents.py:712-713): buffer
+     equals the spread radius; the retreat leash is a manoeuvre budget. ABSOLUTE. The
+     same two numbers are VICTIM_FLEE_TRIGGER_DISTANCE / _MAX_DISPLACEMENT (cfv:117-118),
+     borrowed deliberately (cfv comment). ABSOLUTE.
+  UNREACHABLE_STREAK_STEPS = 30 (rescue_planner.py:47): one full burn-out of a fuel-10
+     cell. ABSOLUTE.
+  _update_fire_tracker_sector_assignments margin = 10 (wildfire_model.py:452): bounding box
+     around the live fire. ABSOLUTE.
+  FF_RESCUE_ABSENCE_MIN/MAX_STEPS = 3/5 (Feature 1): a hand-over duration. ABSOLUTE.
+  Hysteresis windows measured in the UAV's own steps: WIND_SATURATE_DWELL/COOLDOWN 2/12,
+     WIND_TARGET_BLACKLIST_COOLDOWN 15, WIND_RECENT_TARGET_HISTORY 8, WIND_EDGE_STREAK 6,
+     WIND_HOLD_STREAK 5, WIND_MAX_WIND_AWARE_HOLDS 2, WIND_POCKET_CAMP_THRESHOLD 20,
+     WIND_SWEEP_NO_MOVE_ESCAPE 5, COVERAGE_Y_SWEEP_MIN_STEPS 15, CORRIDOR_DIVERSITY_MIN_STEPS
+     20 with CORRIDOR_NARROW_X_SPAN 18 (a UAV that spans < 18 cells of x in 20 steps is
+     not diversifying - speed-bound, not grid-bound). ABSOLUTE.
+  WIND_CORRIDOR_STRIDE = 3, WIND_CORRIDOR_MAX_WAYPOINTS = 16 (:62-63): waypoint sampling
+     resolution. ABSOLUTE, but the candidate grid grows from 16x16 to 32x32 (cost, Part 2.7).
+  COMMIT_ARRIVAL_DIST / COMMIT_PROGRESS_WINDOW / COMMIT_TIMEOUT_MULTIPLIER: already DERIVED
+     from the target distance (:80-93). Nothing to do.
+  BFS_ESCAPE_MAX_DEPTH = 100 -> max(100, H + W + 5) (uav_executor.py:1873-1879): already
+     DERIVED - once the model exposes H/W (pinned to 105 today, should be 205).
+
+  E. DERIVED from the step budget, not the grid
+  ---------------------------------------------
+  UNDETECTED_STREAK_STEPS = 210 (rescue_planner.py:48-52). Its own comment derives it as
+     "fires inside the 240-step cap (240 - 30)". It is a function of the budget and must
+     be recomputed for every budget change; it has nothing to do with the grid. Part 2.6
+     measures the interaction. Note it is also the kwarg DEFAULT of
+     unreachable_escape_victims (:463-464), bound at function-definition time: rebinding
+     the module constant at run time does nothing unless the default is patched too.
+  Battery: 0.1/step + 0.2/move, gates 30/15 (agents.py:239-242, cfv:88-89). A moving UAV
+     drains 0.3/step -> LOW at step ~233, CRITICAL at ~283, EMPTY at ~333. Tuned (by
+     accident or design) to a 240-step mission: the fleet crosses LOW just before the
+     current horizon. At 500 or 960 steps every UAV sits at 0.0 for the last 170 / 630
+     steps. The battery round (a77b71f) found the level tracked but behaviourally inert,
+     so this is a dashboard/monitoring-truth problem, not an outcome problem, until a
+     return-to-base behaviour exists. DERIVED (endurance should cover the budget).
+
+  F. UNCLEAR
+  ----------
+  WIND_DOWNWIND_CAP = 20.0 (:51; :639, :1271): caps the downwind-distance term of the
+     search score (x3.0). At 50x50 it saturates beyond 20 cells (40% of the width); at
+     100x100 beyond 20% - the wind gradient flattens over most of the grid. Doubling it
+     doubles the term's weight against fixed penalties (WIND_EDGE_PENALTY 7 etc.). Needs
+     a sensitivity run (searcher detection step vs cap 20/40) before choosing. HELD in arm B.
+  WIND_SAME_TARGET_FORCE_RETARGET = 10 (:1628): forces a retarget after 10 steps on the
+     same target. Targets are up to twice as far at 100x100, so this can fire before
+     arrival more often. UNCLEAR (read of :1620-1645 shows it gated by other streaks too).
+  Ignition margin 10 - see A.
+
+1.3 Which choices actually matter (SCALING vs HOLDING give materially different runs)
+
+  MATERIAL:
+    - the never-detected timeout (E): 210 vs budget-30 decides whether victims found late
+      are rescued or written off - Part 2.6;
+    - the SCALE group A/B taken together: corridor camping detectors that fire on the
+      wrong half of the grid, and a coverage mode that starts a traverse too early or
+      too late - Part 2 arm A vs arm B is exactly this comparison;
+    - ignition margin 10 (fraction vs absolute) - changes the fire/victim geometry;
+    - COVERAGE_SWEEP_BAND_MARGIN / WIND_EDGE_MARGIN: material in the WRONG direction if
+      scaled (unswept edge strips); the correct choice is to hold.
+  COSMETIC (hold or scale, no measurable difference expected):
+    - COVERAGE_INTERIOR_X_MIN/MAX (inert fallbacks), WIND_INTERIOR_MARGIN band share,
+      list truncations (global_monitor.py:263 gaps[:50], wildfire_model.py:3639
+      audit[-50:], serve_dashboard.py timeline[-25:]), knowledge_manager % 25 cadence.
+  NOT A CHOICE (physics; changing them changes the simulator, not the grid):
+    - everything in D.
+
+
+
+PART 2 - THE STEP BUDGET, MEASURED
+----------------------------------
+2.0 Method
+  - Probe: outputs/_gs_probe.py, a copy of the evaluate_scenarios._run_seed sequence with
+    read-only observers and runtime monkeypatches (no source edits). The grid is set on
+    common_fixed_variables BEFORE the first simulation import, which is what a WIDTH/
+    HEIGHT source edit does for every star-import and for global_monitor's import-time
+    binding. The model's dimensions are exposed on the class (--expose-dims) in arms A/B/C,
+    because without it the 100x100 managing system is pinned to 50 (Part 3 W1, raw100).
+  - Canonical mix: scenario D, the campaign's 13-run sample (D/east half-roles x5, D/south
+    half-roles x5, D/east default-roles x3; seeds 101..505), BATCH_SIZE = 960 (W2).
+  - Budgets 240/500/960 are in-run checkpoints of ONE 960-step run per seed. The model has
+    no knowledge of the budget (BATCH_SIZE only arms the step-302 exit guard), so its
+    state at step S is the state of a run with budget S. Validated: the probe at 50x50/240
+    reproduces all 13 recorded _ffr_latbase_* runs exactly (evaluation, fire digest at
+    step 240, stdout sha256).
+  - Performance patch: --fast-nsb, an exact re-implementation of _never_seen_proximity_
+    bonus (2.7). It caches, once per (map, step), the dict position of every never-seen /
+    stale cell and accumulates the same terms in the same order, so the float result is
+    bit-identical; --verify-nsb re-runs the original on every 50th call at 50x50 (13 runs)
+    and every 200th call at 100x100: 418,575 verified calls (of 66.7M) across all 71
+    fast-path runs, 0 mismatches.
+  - Coverage definition: a cell counts as covered once it has been inside a UAV's 17x17
+    observation square (UAV_OBSERVATION_RADIUS 8, clipped to the grid; initial position
+    included). "searcher-only" = UAVs whose role is victim_searcher, "all-UAV" = every
+    UAV. The model's own visibility_model.visible_cells fraction is reported alongside.
+    Under this definition the 50x50 reference at step 240 is 0.84 searcher-only (0.60-
+    0.76 with one searcher, 0.77-0.99 with two) and 0.93 all-UAV - higher than the ~56%
+    the brief quotes, which came from a different measure (one searcher's own footprint
+    in an earlier round); both role groups are reported separately below.
+  - Detection is Euclidean distance <= 8 from ANY UAV (wildfire_model._detect_victims_in_
+    uav_radius); "first detection" below means the victim's first confirmed/assigned/
+    rescued status - a write-off (candidate -> unreachable) is not a detection.
+  - Runs per arm: 13 (A held, B scaled, C timeout-off) at 100x100/960 steps; 13 val50
+    and 13 shim50 at 50x50/240; 2 raw100 at 100x100/300 without the shim; 2 single-group
+    attribution runs at 100x100/300. Waves ran 12-13 processes at a time (the box is
+    commit-limited, 3.6).
+
+2.1 Arm A - 100x100, constants HELD at current values (dims exposed), 13 runs, 960 steps
+
+  step   n  cov_searcher cov_all cov_tracker vis   | rescued dead never_det(final) write-offs geo cand | all_terminal med_terminal | burnt  wall_s peakMB
+  240   13     0.463      0.616    0.290    0.512  |   22     10      15             17        0    5   |    8/13        210        | 0.325   3677    923
+  500   13     0.558      0.743    0.470    0.677  |   26     15      11             17        0    0   |   13/13        210        | 0.554   5504    937
+  960   13     0.585      0.827    0.624    0.780  |   26     18       8             17        0    0   |   13/13        210        | 0.733   7522    957
+  50x50 reference (val50, same 13 seeds, step 240):
+  240   13     0.843      0.929    0.681    0.834  |   35     12       1              1        1    3   |   10/13        166        | 0.494    433    864
+
+  Reading the table:
+  - Coverage. Searcher-only coverage at 240 steps is 0.46 (0.30-0.60 per run) against 0.84
+    at 50x50; the two-searcher runs reach 0.43-0.60, the single-searcher runs 0.30-0.38.
+    It rises to only 0.56 by 500 and 0.59 by 960 - not because the sweep is slow but
+    because the search STOPS: by step 210 the timeout has written off every undetected
+    victim, unresolved_victim_count drops to 0, coverage mode switches off and the
+    searchers idle (every run is all-victims-terminal by step 374). The per-step cost
+    curve shows the same thing (2.7). "all-UAV" coverage keeps rising to 0.83 because the
+    fire trackers follow a fire that eventually covers 73% of the grid.
+  - Outcomes. 22 rescued / 10 dead / 15 never-detected / 5 still-candidate at 240 (50x50:
+    35 / 12 / 1 / 3). Between 240 and 500 four more rescues happen (victims detected
+    late, at steps 119-217) and five more victims die; after 500 nothing is rescued and
+    three more written-off victims burn. 17 write-offs in 13 runs (1 in 13 at 50x50).
+  - Terminal state. 8/13 runs are all-terminal at 240 and 13/13 at 500, with median
+    terminal step 210 in both cases: the terminal state is reached by the guillotine, not
+    by rescue. At 50x50 the median terminal step is 166 and it is reached by rescue/death.
+  - Battery. 28.2 mean at 240 (LOW threshold 30 just crossed), 0.0 for every UAV at 500
+    and 960: the 0.3/step drain empties a battery at step 333.
+  - Fire. 33% of cells burnt at 240, 55% at 500, 73% at 960 (49% at 50x50/240). The fire
+    is the same physical object on a grid four times larger, so it needs ~4x the steps to
+    consume the same fraction; at 960 steps it has burnt more of the 100x100 grid than it
+    burns of the 50x50 grid in 240.
+
+2.2 Arm B - 100x100, SCALE-classified constants doubled, everything else as arm A
+
+  Doubled (grid factor 2): CORRIDOR_DIVERSITY_X_BAND 38->76, CORRIDOR_WEST_CAMP_X 12->24,
+  CORRIDOR_WEST_TARGET_X_MAX 25->50, COVERAGE_INTERIOR_X_MIN/MAX 8/30->16/60,
+  NO_VICTIM_DETECT_BOOST_AFTER 40->80, POST_RESCUE_COVERAGE_DURATION 50->100. Held:
+  UNDETECTED_STREAK_STEPS 210 (a budget constant, Part 1 E), the literal 25-step escape
+  cadence (cannot be rebound without a source edit), everything ABSOLUTE.
+
+  step   n  cov_searcher cov_all cov_tracker vis   | rescued dead never_det(final) write-offs geo cand | all_terminal med_terminal | burnt  wall_s peakMB
+  240   13     0.471      0.617    0.289    0.516  |   22     10      15             17        0    5   |    8/13        210        | 0.325   3727    923
+  500   13     0.549      0.743    0.465    0.672  |   26     15      11             17        0    0   |   13/13        210        | 0.554   5748    938
+  960   13     0.579      0.829    0.636    0.780  |   26     18       8             17        0    0   |   13/13        210        | 0.733   7874    955
+  Arm A: 240: 0.463 / 0.616 / 22 / 10 / 15 / 17;  500: 0.558 / 0.743 / 26 / 15 / 11;  960: 0.585 / 0.827 / 26 / 18 / 8 - the outcome
+  columns are identical at every checkpoint; only the coverage means move, by <= 0.01.
+
+2.3 Arm C - 100x100, constants HELD as arm A, never-detected timeout switched off
+
+  step   n  cov_searcher cov_all cov_tracker vis   | rescued dead write-offs cand | all_terminal med_terminal | burnt  wall_s peakMB
+  240   13     0.467      0.620    0.290    0.515  |   22     10       0       20  |    0/13          -        | 0.325   3783    923
+  500   13     0.658      0.808    0.488    0.740  |   31     15       0        6  |    8/13         344       | 0.554   6086    939
+  960   13     0.735      0.881    0.615    0.827  |   37     15       0        0  |   13/13         387       | 0.733   8160    963
+  Arm A on the same seeds:  240: 22 / 10 / 17 write-offs;  500: 26 / 15;  960: 26 / 18.
+
+  - Seed-matched identity with arm A: 3/13 runs byte-identical (east/half 202, 303, 404 -
+    the three runs in which arm A wrote nothing off); the other 10 diverge at steps
+    211-283, i.e. at or just after the step-210 write-offs. The timeout is the only
+    difference between the arms, and it is the only thing that separates 26 rescues from
+    37.
+  - Fate of arm A's 17 write-offs when the timeout is off: 12 are detected later (at
+    steps 220-638, median 356) and 11 of those are rescued (at steps 334-826, median 505;
+    one is detected at 250 and dies before a firefighter reaches it); 5 are never detected
+    in 960 steps and all five burn. So the 210-step timeout at 100x100 removes 12 findable
+    victims for every 5 that are genuinely lost.
+  - Searcher coverage keeps rising when the search is allowed to continue: 0.47 -> 0.66 ->
+    0.74 (arm A flattens at 0.56-0.59 once its searchers have nothing left to look for);
+    all-UAV coverage reaches 0.88.
+  - Per-step cost is higher than arm A after step 240 (8.9 s vs 7.0 s in 241-500) for the
+    same reason - retargeting continues - so a run costs 2.3 h mean, 3.2 h max.
+
+2.4 The 50x50 reference on the same 13 seeds (val50 = stock, identical to _ffr_latbase)
+  step   n  cov_searcher cov_all cov_tracker vis   | rescued dead never_det cand | all_terminal med_terminal | burnt  wall_s
+  120   13     0.732      0.851    0.545    0.698  |   26      8       0      16  |    3/13         109       | 0.251    237
+  240   13     0.843      0.929    0.681    0.834  |   35     12       1       3  |   10/13         166       | 0.494    433
+
+2.5 Scaling vs holding - what the comparison shows (seed-matched, A vs B)
+
+  - East wind (D/east half x5, D/east default x3): every pair is BYTE-IDENTICAL - same
+    UAV cell on every one of 960 steps, same fire digests, same stdout. The doubled
+    constants never influence a decision under east wind at 100x100: the corridor
+    camping detectors and the west-target cap are inert when the searchers' cross-wind
+    lanes are y-lanes, NO_VICTIM_DETECT_BOOST_AFTER is inert because every searcher
+    that matters has a detection before step 40 (median first detection 51 overall, but
+    the first detection of ANY victim in a run is at step 21-66) and coverage mode is
+    driven by unresolved victims and the corridor-diversity test instead.
+  - South wind (D/south half x5): every pair diverges, at steps 114-198, i.e. after the
+    first rescues, with NO change to any outcome: rescued/dead/never-detected identical
+    at 240, 500 and 960 in all 5 of 5 pairs; searcher coverage moves by -0.07 to
+    +0.06 depending on the seed and the checkpoint, with no consistent sign.
+  - Attribution (south/half/101, 300 steps, one group at a time): POST_RESCUE_COVERAGE_
+    DURATION doubled alone is byte-identical to arm A over all 300 steps; the corridor
+    group (CORRIDOR_* x-constants, COVERAGE_INTERIOR_X_*, NO_VICTIM_DETECT_BOOST_AFTER)
+    alone reproduces arm B exactly (diverges from A at step 114). The south-wind
+    difference is the corridor x-geometry, which only engages when the cross-wind lanes
+    are x-lanes.
+  - Verdict: in the canonical mix the SCALE set is cosmetic at 100x100. Scaling them is
+    correct in principle (they are grid coordinates) and costs nothing, but it buys no
+    outcome; the two knobs that decide the 100x100 mission are the step budget together
+    with the never-detected timeout (2.6) and the O(cells^2) retarget cost (2.7).
+
+2.6 UNDETECTED_STREAK_STEPS = 210 - reachable-but-fair or guillotine, per budget
+  Arm A (held) and arm C (off) together answer this exactly:
+  - 240: 21 of 52 victims are still undetected at step 210 (1 of 52 at 50x50). The
+    timeout fires with 30 steps to spare, as designed for 50x50, but at 100x100 the
+    two-searcher sweep is nowhere near complete at 210 (searcher coverage 0.45): 13 of
+    those 21 are detected later when the search is allowed to go on, 12 of them by step
+    638. Guillotine.
+  - 500: the timeout fires at 210, after 42% of the mission, and because the write-offs
+    zero the unresolved count the searchers stop searching (arm A coverage flat from 240
+    on). With the timeout off, 31 victims are rescued by 500 instead of 26 and 42 of 52
+    are detected. Guillotine, with the extra cost that the remaining 58% of the budget
+    buys nothing.
+  - 960: same mechanism; 37 vs 26 rescues, 44 vs 35 detections. Guillotine.
+  - A timeout that is derived from the budget (steps - 30, the rule its own comment
+    states) is fair at every budget tested: with the timeout off nothing is written off
+    that a firefighter could still reach (0 write-offs, 15 deaths in 960 steps versus 18
+    with it held), and the five victims that are never found are found by nobody in 960
+    steps. Keep the constant, derive it.
+
+2.7 Runtime and memory (13 processes concurrent on a 32-core box, commit-limited)
+  - Per-step wall (mean over 13 runs): steps 1-240 15.3 s (worst run 23.6 s), 241-500
+    7.0 s, 501-960 4.4 s. The early phase is expensive because every searcher retarget
+    scores the whole candidate grid while victims are unresolved; once the guillotine
+    idles the searchers the step cost falls to the fire-physics floor (~4 s for 10,000
+    Fire agents plus the dashboard-state poll).
+  - Per run: mean 7,522 s (2.1 h), median 8,000 s, max 9,502 s (2.6 h) for 960 steps.
+    Prorated: a 240-step run is ~1.0 h (3,677 s mean at the 240 checkpoint), a 500-step
+    run ~1.5 h. At 50x50 the same 13 runs take 297-509 s (mean 433 s) for 240 steps.
+  - These numbers are WITH the measurement-time fast path. Without it the stock
+    _never_seen_proximity_bonus makes the early phase 78-155 s/step (measured on seed
+    101: steps 2-5 took 78, 155, 153 and 112 s; the fast path gives 7, 14, 12 and 10 s
+    for the identical state), so a stock 960-step run would take roughly 12-25 h and a
+    240-step run 5-10 h. The function is O(cells) per candidate and is called for every
+    candidate cell of _pick_global_coverage_escape_target (all interior cells), i.e.
+    O(cells^2) per retarget - 16x the 50x50 cost. It must be fixed in source before a
+    100x100 baseline is affordable; the probe's version is an exact, order-preserving
+    drop-in (418,575 verified calls, 0 mismatches, across 71 runs at 50x50 and 100x100).
+  - Memory: 0.85-0.96 GB commit per process (peak 957 MB at step 960), ~230 MB working
+    set; identical to 50x50 within 10% because it is the library footprint. Thirteen
+    concurrent runs need ~12.5 GB of commit; this box has ~14 GB of headroom once other
+    applications are counted, which is why the waves were capped at 13.
+
+2.8 Step budget - the measurement behind the recommendation (arm C, timeout derived)
+  budget  rescues/52  detections/52  wall per run mean/max (13 concurrent, hot spot fixed)
+   240       22           33           1.05 h / 1.59 h
+   300       25           35           1.29 h / 1.94 h
+   400       28           40           1.52 h / 2.15 h
+   500       31           42           1.69 h / 2.42 h
+   600       34           42           1.85 h / 2.70 h
+   700       34           44           1.98 h / 2.94 h
+   800       36           44           2.10 h / 3.09 h
+   960       37           44           2.27 h / 3.18 h
+  (50x50 at 240 steps on the same seeds: 35 rescues, 51 detections, 433 s per run.)
+  - Rescues saturate between 600 and 960 (34 -> 37, +1 per 100-180 steps); detections
+    saturate at 638 (44 of 44 that ever happen). Batteries are empty from step 333 in
+    every case.
+  - Recommended budget: 600 steps with UNDETECTED_STREAK_STEPS = 570. It delivers 92% of
+    the 960-step rescue count and the same absolute count the 50x50 mission reaches at
+    240 (34 vs 35), it covers every detection but two, and a 13-run wave costs 2.7 h
+    (max run) instead of 3.2 h. 800 steps (timeout 770) if the maintainer wants >= 97%
+    of the achievable rescues; 240 is not a usable budget at 100x100 (22 rescues, 20
+    victims still undetected at the horizon even with no timeout).
+  - Any budget above 333 needs the battery model rescaled (0.3/step empties it at 333;
+    for 600 steps a drain of 0.05/step + 0.10/move lasts 667 steps) or the maintainer
+    must accept that every monitor reads 0.0 for the second half of the mission.
+
+
+
+PART 3 - WHAT BREAKS
+--------------------
+(what gives WRONG results, as opposed to what merely performs differently)
+
+3.1 WRONG RESULTS - things that give incorrect answers on a 100x100 grid
+
+  W1. The managing system never learns the grid size: every instance lookup defaults to 50.
+      WildFireModel builds mesa.space.MultiGrid(HEIGHT, WIDTH) (wildfire_model.py:132) but
+      never stores HEIGHT/WIDTH (or height/width/grid_height/grid_width) on itself. Every
+      consumer that asks the MODEL for its size falls back to the literal 50:
+        - agents.py:888-889  Firefighter exit target. The exit cell is the nearest of
+          (0,y), (H-1,y), (x,0), (x,W-1) with H = W = 50. For a victim at x > 49 or y > 49
+          the "distance" to (49,y) is negative, so it always wins: the unit walks INTO the
+          grid to column/row 49, `pos == exit_target` fires there, the rescue is declared
+          complete and the victim is finalised in the middle of the forest
+          (agents.py:924-936), and the Feature 1 hand-over removes the unit from an
+          interior cell. Rescue counts are inflated by rescues that never reached an edge.
+          [raw100 evidence: see 3.3]
+        - local_adaptation_generator.py:3369-3377 _grid_bounds -> (0, 49, 0, 49). Used by
+          _compute_wind_aware_search_target (:3740) - the searchers' target generator
+          scans candidates in range(x_min+1, x_max) x range(y_min+1, y_max) (:3462-3463),
+          i.e. cells 1..48 only, and the cross-wind lanes (:332-362) split the 0..49 span,
+          so both searchers are steered inside the south-west quarter of the grid; and by
+          _resolve_fire_tracker_target_cells / _fire_tracker_path_parameters /
+          _sanitize_fire_tracker_path_parameters (:2892, :2955, :3030), which clamp tracker
+          holds to the same quarter. Three quarters of the grid are never targeted.
+        - uav_executor.py:1877-1878 _bfs_escape_max_depth = max(100, 50+50+5) = 105 on a
+          grid whose diameter is 198; :2050-2051 _victim_edge_blocked_direction treats
+          x_max = 49 as the edge; :3774-3775 fire-tracker flank geometry; :1176-1183 sweep
+          H/W (harmless in the canonical mix because the sector bounds override them);
+          local_uav_path_planner.py:503-533 _grid_height/_grid_width/_uav_near_boundary.
+      A one-line fix (self.HEIGHT = HEIGHT; self.WIDTH = WIDTH in reset()) resolves all of
+      them. Part 2's arms A/B/C run with exactly that shim as a runtime monkeypatch
+      (--expose-dims); the raw100 arm runs without it to show the damage.
+      Side effect of the fix to know about: _grid_dimension (uav_executor.py:4613) starts
+      returning a value, which brings _position_at_boundary (:540) and
+      _distance_from_boundary (:552) to life. They are dead today at 50x50 (always
+      False / 0.0), so the shim is a behaviour change at 50x50 too - see 3.4 shim50.
+
+  W2. Any step budget above 301 silently truncates the run.
+      WildFireModel.step() (wildfire_model.py:5269-5274) calls sys.exit(0) when
+      BATCH_SIZE == evaluation_timesteps_counter - 1, i.e. on the 302nd step of a run
+      configured with BATCH_SIZE=300. evaluate_scenarios.py passes --batch-size (default
+      300) independently of --steps, and _run_seed's `except Exception` does not catch
+      SystemExit. Demonstrated with the maintainer's own tool:
+        python evaluate_scenarios.py --scenario D --wind east --n 1 --steps 320 --seeds 101
+      -> exit code 0, stdout is the header line and the rule, nothing else: no per-seed
+      row, no summary, no REPRODUCE line (the MR1/MR2 prints go into the redirected
+      stdout buffer and are lost). A 500- or 960-step campaign needs --batch-size >=
+      steps on every invocation, or the guard removed / BATCH_SIZE derived from --steps.
+      The probe passes BATCH_SIZE = max(300, steps) for that reason.
+
+  W3. global_monitor.py binds HEIGHT/WIDTH at import (:11-13; _grid_cell_total :62).
+      Correct after a source edit; wrong (2500 cells) under any runtime override such as
+      apply_scenario_config(cfv, wf, HEIGHT=100, WIDTH=100) - coverage_observed_fraction
+      would exceed 1.0 and coverage_unobserved_fraction would be clamped at 0 from the
+      first steps. Relevant to every harness that parametrises the grid without editing
+      the source (the probe patches cfv BEFORE the first import to stay equivalent to an
+      edit).
+
+  W4. The never-detected timeout is a step-budget constant with a 240-step value.
+      UNDETECTED_STREAK_STEPS = 210 (rescue_planner.py:52) is derived in its own comment
+      as 240 - 30. Under a 500- or 960-step budget it writes off every still-undetected
+      victim at step 210 regardless of how much mission remains, and because it is the
+      kwarg default of unreachable_escape_victims (:463-464) it cannot even be changed by
+      rebinding the module constant. Not wrong at 240; wrong by construction at any
+      other budget. Quantified in Part 2.6.
+
+  W5. Rectangular grids are not supported by the code as written (informational).
+      MultiGrid(HEIGHT, WIDTH) uses HEIGHT as the x extent (wildfire_model.py:130-132 says
+      so) while fire_runtime_model/visibility_model.initialize_grid(width=HEIGHT,
+      height=WIDTH) (:183-184) swap the names again, and the harnesses' boundary tests
+      assume x < HEIGHT, y < WIDTH. Square grids hide it; 100x100 is square, so this is
+      a note, not a blocker.
+
+3.2 Tests that pin the 50-grid
+
+  Run with common_fixed_variables.HEIGHT = WIDTH = 100 patched at pytest plugin load
+  (`pytest -p gridpatch`, the plugin sets cfv.HEIGHT/WIDTH before any test imports the
+  simulation - the same effect as the source edit), against a baseline run of the same
+  tree on the same day (8 failed / 490 passed in 67 min under load; the same eight as the
+  campaign's list). The 100x100 session was stopped after 404 of 498 tests (5 h): it had
+  entered test_unresolved_victim_coverage.py::test_seed42_scenario_a_all_victims_
+  accounted_by_300, a 300-step scenario-A simulation that at the stock 78-155 s/step
+  costs 7-13 hours on its own. Failures were mapped to test names from the progress
+  marks against the collection order (method validated: it reproduces the eight baseline
+  failures exactly).
+  Result over the 404 tests reached: 9 failed = the 6 baseline failures in that range
+  (the other two, test_wind_aware_trajectory_regression and test_wind_aware_victim_search
+  ..._when_downwind_exists, lie in the unreached tail) + 3 NEW failures, all three
+  assertions pinned to the 50-grid:
+    - tests/test_executor_routing_and_burnt.py::test_fire_self_limits_does_not_burn_whole_map
+      (:284-343): `assert burnt_count < 1500, "... too high for 50x50 grid"` and
+      grid_cells = getattr(model, "WIDTH", 50) * getattr(model, "HEIGHT", 50) (:336-338) -
+      the test's "whole map" is 2,500 cells on a 10,000-cell grid (the W1 pattern inside a test).
+    - tests/test_unresolved_victim_coverage.py::test_victim_searcher_does_not_stay_in_
+      single_corridor_when_unresolved (:191-211): `east_flags.append(int(agent.pos[0]) >=
+      38)` / `assert not all(east_flags)` and `assert max_streak < 40` - x = 38 is the
+      east band of a 50-grid and the middle of a 100-grid.
+    - tests/test_unresolved_victim_coverage.py::test_remaining_victim_coverage_after_two_
+      rescues (:284-300): `west_after_40` expects the searcher west of a 50-grid line within
+      40 steps of two rescues.
+  Unreached tail (94 tests): test_utility_constraints (5) and test_utility_core (4) are
+  pure unit tests; the rest instantiate WildFireModel (victim_fire_flight 35 - :775
+  asserts spawn_cell == (40,25), which is (80,50) at 100x100; victim_search_seed 2;
+  victim_searcher_scenario_matrix 8 with 50-step runs; wind_aware_corridor_search 12;
+  wind_aware_planning 8; wind_aware_trajectory_regression 4 with 40-step runs x winds;
+  wind_aware_victim_search 11; y_sweep_commit 4 with `return 0, 49`; and the 300-step
+  scenario-A run above). At 100x100 with the stock hot spot the simulation-based part of
+  the suite takes many hours; with the fix it is ~10x the 50x50 time for those tests.
+  Static read of the suite:
+    - tests that build their OWN fake model with HEIGHT=WIDTH=50 keep passing but test
+      50-geometry only: test_unresolved_victim_coverage.py:61-64 (and :230 asserts against
+      _coverage_interior_x_max(49)), test_wind_aware_corridor_search.py:43-46/:102/:181/
+      :201, test_wind_aware_planning.py:29-32/:144/:160, test_wind_aware_victim_search.py
+      :44-47/:88-91/:125/:193 ("sweep_y": 49)/:234-246, test_uav_executor.py:475-507,
+      test_adaptation_mission_goal_integration.py:47-50/:105-108, test_y_sweep_commit.py:33
+      (return 0, 49), test_behavior_regression.py/test_uav_executor_boundary.py (10x10 fakes);
+    - tests that use the real model and hardcode 50-grid cells: test_victim_fire_flight.py
+      :707 (range(50) wall), :725/:748 (start (25,25)), :775 (spawn_cell == (40,25): the
+      victim ring at 100x100 puts victim_0 at (80,50) - FAILS), test_phantom_rescue_release
+      .py:35 FAR_CORNER=(49,49) and :508 exit_target=(49,20) (still in bounds at 100, so the
+      test changes meaning silently rather than failing);
+    - tests that read the grid from cfv and adapt: test_wind_aware_trajectory_regression.py
+      :20 GRID_CENTER = (cfv.HEIGHT//2, cfv.WIDTH//2), tests/victim_searcher_scenario_
+      validation.py:144-145 (getattr(model,"HEIGHT",50) - reads 50 either way, W1).
+
+3.3 Raw 100x100 evidence (no dimension shim) - outputs/_gs_raw100_*.json, 300 steps
+  D/east half seed 101, the grid patched to 100x100 exactly as a WIDTH/HEIGHT edit would:
+    - geometry the managing system saw: model_has_HEIGHT=False, getattr(model,"HEIGHT",50)
+      = 50, LocalAdaptationSpaceGenerator._grid_bounds = (0, 49, 0, 49) on a mesa grid of
+      100x100.
+    - firefighter exits: ff_unit_0 reached victim_0 at (80,50) at step 52 and computed
+      exit_target (49,50) - 31 cells WEST, into the forest; it "completed" the rescue at
+      (49,50) at step 84 and was removed for the Feature 1 hand-over from that interior
+      cell. ff_unit_1 did the same for victim_3 at (50,5): exit_target (49,5), completion
+      at (49,5) at step 235. 2 of 2 exit targets and 2 of 2 completions off the boundary.
+      Both count as rescues in the evaluation.
+    - searcher confinement: victim_searcher 10002 spent 297 of 301 steps and 10003 295 of
+      301 steps inside x <= 49 AND y <= 49 (extents [9..50] x [5..51] and [10..51] x
+      [25..51]); the two fire trackers roamed x 50..93 (they follow the fire, which was
+      east of centre). victim_1 (50,95) and victim_2 (20,50) were never detected and were
+      written off at step 210. Searcher-only coverage 0.27 at step 300 versus 0.94 for
+      the same seed at 50x50/240.
+  D/south half seed 101 (same configuration): 3 of 3 exit targets and completions off
+  the boundary - at (49,50), (49,5) and (20,49) - both searchers confined to x <= 51,
+  y <= 51 (extents [6..50] x [4..51] and [6..51] x [6..51]), victim_1 (50,95) written
+  off at 210, searcher-only coverage 0.30 at step 300 (0.92 at 50x50/240).
+
+3.4 The fix for W1 is NOT behaviour-neutral at 50x50 (shim50 arm)
+  The same 13 seeds at 50x50/240 steps with WildFireModel.HEIGHT/WIDTH exposed (the
+  minimal fix for W1), compared seed-for-seed with the stock runs (val50, themselves
+  identical to _ffr_latbase):
+    - identical runs: 0 of 13 pairs. Fire digests identical (fire is independent of the
+      UAVs); UAV trajectories diverge at step 1-2 in 12 pairs and step 70 in one.
+    - mechanism: with the size exposed, uav_executor._grid_dimension (:4613) stops
+      returning None, so _position_at_boundary (:540) and _distance_from_boundary (:552)
+      come alive. They feed the hold-escape gate (:368, :569), the boundary-aware step
+      choice (:609-618, :2098) and three scoring terms `_distance_from_boundary(...) *
+      10.0 / 14.0 / 10.0` (:1729, :2201-2206, :2220) that are constant 0 today. This is
+      dead code being switched on, not a grid effect: it changes 50x50 as much as 100x100.
+    - outcomes over the 13 seeds at step 240: rescued 35 -> 37, dead 12 -> 11,
+      never-detected 1 -> 2, searcher coverage 0.843 -> 0.847, median terminal step
+      166 -> 182; per seed the rescue count moves by up to two in either direction
+      (east/half/505: 2 -> 4; east/half/303: 3 -> 2 with one victim written off;
+      south/half/303: 3 -> 4).
+  Consequence for the maintainer: exposing the dimensions re-baselines 50x50 as well.
+  Either accept that (it is the correct behaviour - the helpers were meant to run) and
+  regenerate the 50x50 gates with the fix in, or expose the size under a name that
+  _grid_dimension does not probe AND patch the four literal-50 sites individually. The
+  100x100 arms A/B/C in Part 2 all include the live helpers.
+
+3.5 Dashboard and rendering
+  - serve_dashboard.py: the canvas is a fixed 560x560 px (:530) and cs = cv.width / W
+    (:594) -> 5.6 px cells at 100x100; renders, but every frame now carries 10,000 cell
+    colours (:120-124 sends every cell every step), i.e. 4x the JSON per step and 4x the
+    per-step _capture_frame work; trails are capped at 60 points so memory is flat.
+  - main.py --mesa: CanvasGrid(..., 10*WIDTH, 10*HEIGHT) -> a 1000x1000 px canvas; fine.
+  - Canvas_Grid_Visualization.render loops over every cell every frame (O(cells)); fine.
+  - live_dashboard_panel / dashboard_state_builder: no grid literals; batch_size display
+    reads BATCH_SIZE (W2 applies to what it shows).
+
+3.6 Memory and runtime headroom
+  Per-process commit at 100x100: 0.85-0.89 GB at start (the same as at 50x50 - it is the
+  library footprint), 0.95-0.96 GB at step 960 (peak 963 MB); working set 130 -> 230 MB.
+  Thirteen concurrent 960-step runs need ~12.5 GB of commit. This box (16 GB RAM,
+  system-managed pagefile drifting between 34 and 41 GB, ~24 GB of commit held by other
+  applications) sustained 13 probe processes with 1.4-2.8 GB to spare; the attempt to run
+  19 probes plus two pytest sessions produced MemoryError inside visibility_model.get_
+  uncertain_regions within a minute. Memory is not the limiting factor for 100x100 on its
+  own; wall time is (2.7).
+
+
+
+PART 4 - DECISION TABLE (expanded)
+----------------------------------
+
+4.1 Prerequisites (WRONG-results items; the grid move is not meaningful without them)
+
+  item                                  | now                       | for 100x100                          | justification
+  --------------------------------------+---------------------------+--------------------------------------+------------------------------------------------------
+  model exposes its size (W1)           | never set on the instance | self.HEIGHT/self.WIDTH in reset()     | 4 literal-50 fallbacks pin exits, search bounds, BFS depth (raw100: 5/5 rescues completed mid-grid, searchers confined to one quarter)
+  boundary helpers that the fix wakes   | dead (return False/0.0)   | decide: keep live, regenerate 50x50   | shim50: 0/12 runs identical at 50x50 once exposed; outcomes move by <= 2 rescues per seed
+  BATCH_SIZE exit guard (W2)            | sys.exit(0) at step 302   | pass --batch-size >= steps, or derive | evaluate_scenarios --steps 320 exits 0 with no results
+  _never_seen_proximity_bonus (2.7)     | O(cells) per candidate    | cache never-seen cells per step (exact drop-in exists in _gs_probe.py) | 78-155 s/step stock vs 7-14 s/step; 12-25 h per 960-step run otherwise
+  global_monitor import-time HEIGHT (W3)| bound once at import      | read cfv at call time or pass the model | only matters for runtime overrides; harmless for a source edit
+
+4.2 Constants
+
+  constant                              | current | proposed @100x100 | class    | one-line justification
+  --------------------------------------+---------+-------------------+----------+------------------------------------------------------
+  UNDETECTED_STREAK_STEPS               | 210     | steps - 30 (570 at the recommended 600) | DERIVED  | at 210, 21/52 victims undetected at 100x100 (1/52 at 50x50); it ends the search phase at step 210 at every budget; 12 of its 17 write-offs are findable, 11 rescuable (2.3, 2.6)
+  battery drain 0.1/step + 0.2/move     | empty at step 333 | scale to the budget (0.3 * steps <= ~70) or accept 0.0 for the tail | DERIVED | every UAV at 0.0 from step 333; inert today, but every monitor/analyzer reads it (battery round)
+  ignition margin (set_fire_agents)     | 10      | 10 (hold) or 20 (scale) - maintainer's call | UNCLEAR | held: ignition box 64% of the grid, fire starts 2x farther from victims (median 14 -> 27 cells)
+  CORRIDOR_DIVERSITY_X_BAND             | 38      | 76 (or x_max - 11)| SCALE    | grid coordinate; byte-identical outcomes either way in 13 runs (arm B)
+  CORRIDOR_WEST_CAMP_X                  | 12      | 24                | SCALE    | grid coordinate; no outcome effect measured
+  CORRIDOR_WEST_TARGET_X_MAX            | 25      | 50 ((x_min+x_max)//2) | SCALE | grid midpoint; no outcome effect measured
+  COVERAGE_INTERIOR_X_MIN / _MAX        | 8 / 30  | 16 / 60           | SCALE    | fallback only; inert in the canonical mix
+  NO_VICTIM_DETECT_BOOST_AFTER          | 40      | 80                | SCALE    | traverse-time constant; inert in 13 runs (a detection always precedes it)
+  POST_RESCUE_COVERAGE_DURATION         | 50      | 100               | SCALE    | traverse-time constant; byte-identical over 300 steps when doubled alone; no outcome change
+  literal 25 (steps % 25 escape cadence)| 25      | 50                | SCALE    | hardcoded in local_adaptation_generator.py:1337; could not be tested without a source edit
+  WIND_DOWNWIND_CAP                     | 20.0    | 20.0, then measure| UNCLEAR  | saturates at 20% instead of 40% of the width; doubling re-weights the wind term against fixed penalties
+  WIND_SAME_TARGET_FORCE_RETARGET       | 10      | 10, then measure  | UNCLEAR  | may force retargets before arrival at twice the target distance
+  WIND_EDGE_MARGIN + COVERAGE_SWEEP_BAND_MARGIN | 2 + 6 | HOLD (goals 8 / 91) | DERIVED from UAV_OBSERVATION_RADIUS | offset 8 = sensor radius; doubling leaves 8-cell edge strips unswept
+  COVERAGE_Y_COMMIT_* (4/6/6), WIND_INTERIOR_MARGIN 6, edge literals 2-4, STEP 8 | as is | HOLD | ABSOLUTE/DERIVED | sensor-scale edge offsets
+  WIND_FIRE_FRONT_MIN_DISTANCE 12, hazard buffers, standoff, fire radius 3, spread speed 3, fuel, MU | as is | HOLD | ABSOLUTE | physics; the fire is the same object on a bigger map
+  IDLE_RETREAT 3/6, VICTIM_FLEE 3/6, UNREACHABLE_STREAK_STEPS 30, FF absence 3/5, LAUNCH_GRACE 20, SECURITY_DISTANCE 10, UAV_OBSERVATION_RADIUS 8 | as is | HOLD | ABSOLUTE | physical or hand-over facts
+  BFS_ESCAPE_MAX_DEPTH                  | 100     | as is (becomes 205 once W1 is fixed) | DERIVED | already max(100, H+W+5)
+
+4.3 Step budget - recommendation with the measurement behind it
+  With the timeout HELD at 210 (arm A) no budget above 240 buys anything: 22 rescues at
+  240, 26 at 500, 26 at 960; the timeout, not the budget, ends the mission (all 13 runs
+  all-terminal by 374, median 210, by write-off). With the timeout DERIVED (arm C) the
+  rescue count grows with the budget and saturates: 22@240, 25@300, 28@400, 31@500,
+  34@600, 34@700, 36@800, 37@960 of 52; detections stop at step 638 (44 of 52 ever).
+  RECOMMENDATION: 600 steps, UNDETECTED_STREAK_STEPS = 570, BATCH_SIZE >= 600, battery
+  drain rescaled. 600 gives 92% of the 960-step rescues, matches the 50x50/240 absolute
+  count (34 vs 35), keeps all but two detections, and costs 1.85 h per run (2.7 h wave)
+  instead of 2.27 h (3.2 h). Choose 800 (timeout 770) for >= 97% of achievable rescues.
+  240 at 100x100 is not a mission: 20 victims are still undetected at the horizon.
+
+4.4 Cost of the new baseline
+  - 13-run canonical sample at 100x100, 960 steps, 13 concurrent, WITH the fast path:
+    2.6 h wall for the wave (per run 1.3-2.6 h, mean 2.1 h); 240 steps: ~1.0 h; 500: ~1.5 h.
+    WITHOUT the fast path (stock source): ~12-25 h per 960-step run, so a wave is a day+.
+  - Gates to regenerate: the 13-run canonical sample (outputs/_ffr_latbase_* and every
+    arm derived from it), the route_blocked gate shards (_rblatch_camp2_*), the fixNN
+    matrices (all 50x50, all with the boundary helpers dead), the Feature 1/2 numbers
+    (9c3eac6, 5000f70), the lane-matrix baselines (already non-comparable), and the
+    pytest expectations that embed 50-grid cells (3.2).
+  - If the W1 fix is applied, the 50x50 gates need regenerating too (3.4), which is the
+    cheap part: 13 runs x 240 steps = ~10 min per wave.
+
+
+
+APPENDIX
+--------
+A. Files produced (uncommitted; all under outputs/)
+   _gs_probe.py          the measurement probe (runtime monkeypatches + read-only observers)
+   _gs_runall.sh, _gs_runall_dyn.sh   13-run wave launchers (fixed / dynamic concurrency)
+   _gs_analyze.py        tables, seed-matched identity checks, counterfactuals
+   _gs_val50_*.json      50x50 stock, 240 steps (validation + reference)      13 runs
+   _gs_shim50_*.json     50x50 with the dimension shim, 240 steps            13 runs
+   _gs_raw100_*.json     100x100 WITHOUT the shim, 300 steps                  2 runs
+   _gs_A100_*.json       100x100 held, shim, 960 steps, checkpoints 240/500  13 runs
+   _gs_B100_*.json       100x100 SCALE set doubled                            13 runs
+   _gs_C100_*.json       100x100 held, never-detected timeout off             13 runs
+   _gs_attrPR_*, _gs_attrCorr_*   single-group attribution, south/half/101, 300 steps
+   _gs_logs/             per-run stdout/stderr, runall logs, pytest logs, memwatch.log
+B. Reproduce
+   ./.venv/Scripts/python.exe outputs/_gs_probe.py --repo E:/Projects/SAS --grid 100 --expose-dims --fast-nsb --verify-nsb 200 --wind east --roles half --seed 101 --steps 960 --checkpoints 240,500 --out outputs/_gs_A100_east_half_101.json --tag A100
+   bash outputs/_gs_runall.sh A100 13 --grid 100 --expose-dims --fast-nsb --verify-nsb 200 --steps 960 --checkpoints 240,500
+   ./.venv/Scripts/python.exe outputs/_gs_analyze.py --validate val50 --arm A100 --arm B100 --arm C100 --compare A100 B100 --compare A100 C100 --raw raw100
+C. Analyzer output
+=== VALIDATION of val50 (n=13) against _ffr_latbase (n=13) ===
+  east/default/101         eval=True digest240=True stdout=True nsb_calls=46284 verified=925 mismatch=0 wall=363s (ffr 445s)
+  east/default/202         eval=True digest240=True stdout=True nsb_calls=77008 verified=1540 mismatch=0 wall=297s (ffr 421s)
+  east/default/303         eval=True digest240=True stdout=True nsb_calls=56870 verified=1137 mismatch=0 wall=419s (ffr 529s)
+  east/half/101            eval=True digest240=True stdout=True nsb_calls=374870 verified=7497 mismatch=0 wall=489s (ffr 989s)
+  east/half/202            eval=True digest240=True stdout=True nsb_calls=435895 verified=8717 mismatch=0 wall=425s (ffr 998s)
+  east/half/303            eval=True digest240=True stdout=True nsb_calls=418570 verified=8371 mismatch=0 wall=509s (ffr 1048s)
+  east/half/404            eval=True digest240=True stdout=True nsb_calls=270264 verified=5405 mismatch=0 wall=506s (ffr 883s)
+  east/half/505            eval=True digest240=True stdout=True nsb_calls=329528 verified=6590 mismatch=0 wall=484s (ffr 930s)
+  south/half/101           eval=True digest240=True stdout=True nsb_calls=64222 verified=1284 mismatch=0 wall=486s (ffr 618s)
+  south/half/202           eval=True digest240=True stdout=True nsb_calls=66247 verified=1324 mismatch=0 wall=399s (ffr 513s)
+  south/half/303           eval=True digest240=True stdout=True nsb_calls=64303 verified=1286 mismatch=0 wall=399s (ffr 512s)
+  south/half/404           eval=True digest240=True stdout=True nsb_calls=53376 verified=1067 mismatch=0 wall=429s (ffr 539s)
+  south/half/505           eval=True digest240=True stdout=True nsb_calls=41504 verified=830 mismatch=0 wall=424s (ffr 508s)
+  IDENTICAL: 13/13
+
+=== ARM val50 50x50 reference | grid=[50, 50] expose_dims=False consts={} | n=13 runs, steps=240 ===
+  step      n   cov_s cov_all  cov_tr     vis |   resc   dead     nd ndmark    geo  unres |  allterm   med_ts |   burnt   wall_s   peakMB
+  120      13   0.732   0.851   0.545   0.698 |     26      8      0      0      2     16 |     3/13      109 |   0.251      237      856
+  240      13   0.843   0.929   0.681   0.834 |     35     12      1      1      1      3 |    10/13      166 |   0.494      433      864
+  per run:
+    east/default/101     ffd=2 wall=363s @120[s=0.65 a=0.88 r=1 d=1 nd=0 geo=2 cand=0 ts=109] @240[s=0.73 a=0.93 r=1 d=2 nd=0 geo=1 cand=0 ts=109] | first_det=v0:15,v3:18 | nsb_mismatch=0
+    east/default/202     ffd=1 wall=297s @120[s=0.52 a=0.78 r=1 d=1 nd=0 geo=0 cand=2 ts=-] @240[s=0.76 a=0.95 r=3 d=1 nd=0 geo=0 cand=0 ts=171] | first_det=v0:6,v1:151,v2:119,v3:19 | nsb_mismatch=0
+    east/default/303     ffd=0 wall=419s @120[s=0.55 a=0.82 r=1 d=1 nd=0 geo=0 cand=2 ts=-] @240[s=0.60 a=0.88 r=3 d=1 nd=0 geo=0 cand=0 ts=125] | first_det=v0:106,v1:69,v2:7,v3:20 | nsb_mismatch=0
+    east/half/101        ffd=1 wall=489s @120[s=0.80 a=0.88 r=1 d=0 nd=0 geo=0 cand=3 ts=-] @240[s=0.94 a=0.97 r=2 d=1 nd=0 geo=0 cand=1 ts=-] | first_det=v0:16,v2:19,v3:227 | nsb_mismatch=0
+    east/half/202        ffd=1 wall=425s @120[s=0.90 a=0.92 r=2 d=1 nd=0 geo=0 cand=1 ts=-] @240[s=0.94 a=0.96 r=2 d=1 nd=1 geo=0 cand=0 ts=210] | first_det=v0:6,v2:11,v3:43 | nsb_mismatch=0
+    east/half/303        ffd=0 wall=509s @120[s=0.77 a=0.95 r=2 d=1 nd=0 geo=0 cand=1 ts=-] @240[s=0.99 a=0.99 r=3 d=1 nd=0 geo=0 cand=0 ts=240] | first_det=v0:41,v1:202,v2:7,v3:18 | nsb_mismatch=0
+    east/half/404        ffd=1 wall=506s @120[s=0.76 a=0.80 r=2 d=1 nd=0 geo=0 cand=1 ts=-] @240[s=0.86 a=0.87 r=2 d=2 nd=0 geo=0 cand=0 ts=162] | first_det=v2:17,v3:17 | nsb_mismatch=0
+    east/half/505        ffd=0 wall=484s @120[s=0.81 a=0.84 r=2 d=1 nd=0 geo=0 cand=1 ts=-] @240[s=0.85 a=0.87 r=2 d=1 nd=0 geo=0 cand=1 ts=-] | first_det=v1:97,v2:17,v3:18 | nsb_mismatch=0
+    south/half/101       ffd=1 wall=486s @120[s=0.79 a=0.86 r=2 d=0 nd=0 geo=0 cand=2 ts=-] @240[s=0.92 a=0.96 r=3 d=0 nd=0 geo=0 cand=1 ts=-] | first_det=v0:9,v1:113,v2:40,v3:18 | nsb_mismatch=0
+    south/half/202       ffd=0 wall=399s @120[s=0.69 a=0.77 r=2 d=0 nd=0 geo=0 cand=2 ts=-] @240[s=0.90 a=0.93 r=4 d=0 nd=0 geo=0 cand=0 ts=202] | first_det=v0:6,v1:68,v2:159,v3:106 | nsb_mismatch=0
+    south/half/303       ffd=1 wall=399s @120[s=0.83 a=0.85 r=3 d=0 nd=0 geo=0 cand=1 ts=-] @240[s=0.89 a=0.90 r=3 d=1 nd=0 geo=0 cand=0 ts=216] | first_det=v0:7,v1:63,v2:15,v3:86 | nsb_mismatch=0
+    south/half/404       ffd=0 wall=429s @120[s=0.75 a=0.93 r=4 d=0 nd=0 geo=0 cand=0 ts=119] @240[s=0.77 a=0.98 r=4 d=0 nd=0 geo=0 cand=0 ts=119] | first_det=v0:8,v1:54,v2:9,v3:37 | nsb_mismatch=0
+    south/half/505       ffd=0 wall=424s @120[s=0.69 a=0.79 r=3 d=1 nd=0 geo=0 cand=0 ts=108] @240[s=0.80 a=0.88 r=3 d=1 nd=0 geo=0 cand=0 ts=108] | first_det=v0:7,v1:58,v2:7 | nsb_mismatch=0
+  step wall (s) mean over runs, by window:  1-240: 1.8 (max run 2.1)
+  run wall: mean 433s median 425s max 509s (0.1 h max) | peak commit MB max 864.5
+  battery @120: min 64.0 mean 64.6 max 70.6
+  battery @240: min 28.0 mean 28.7 max 34.6
+
+=== ARM A100  | grid=[100, 100] expose_dims=True consts={} | n=13 runs, steps=960 ===
+  step      n   cov_s cov_all  cov_tr     vis |   resc   dead     nd ndmark    geo  unres |  allterm   med_ts |   burnt   wall_s   peakMB
+  240      13   0.463   0.616   0.290   0.512 |     22     10     15     17      0      5 |     8/13      210 |   0.325     3677      923
+  500      13   0.558   0.743   0.470   0.677 |     26     15     11     17      0      0 |    13/13      210 |   0.554     5504      937
+  960      13   0.585   0.827   0.624   0.780 |     26     18      8     17      0      0 |    13/13      210 |   0.733     7522      957
+  per run:
+    east/default/101     ffd=1 wall=4557s @240[s=0.38 a=0.57 r=2 d=0 nd=2 geo=0 cand=0 ts=210] @500[s=0.43 a=0.64 r=2 d=0 nd=2 geo=0 cand=0 ts=210] @960[s=0.44 a=0.88 r=2 d=1 nd=1 geo=0 cand=0 ts=210] | first_det=v0:21,v2:30 | nsb_mismatch=0
+    east/default/202     ffd=1 wall=5667s @240[s=0.30 a=0.54 r=0 d=1 nd=2 geo=0 cand=1 ts=-] @500[s=0.43 a=0.69 r=1 d=1 nd=2 geo=0 cand=0 ts=270] @960[s=0.44 a=0.78 r=1 d=2 nd=1 geo=0 cand=0 ts=270] | first_det=v0:66,v2:208 | nsb_mismatch=0
+    east/default/303     ffd=1 wall=6260s @240[s=0.32 a=0.67 r=1 d=2 nd=1 geo=0 cand=0 ts=210] @500[s=0.33 a=0.82 r=1 d=2 nd=1 geo=0 cand=0 ts=210] @960[s=0.40 a=0.90 r=1 d=2 nd=1 geo=0 cand=0 ts=210] | first_det=v2:28 | nsb_mismatch=0
+    east/half/101        ffd=1 wall=6829s @240[s=0.60 a=0.69 r=2 d=0 nd=2 geo=0 cand=0 ts=210] @500[s=0.61 a=0.77 r=2 d=0 nd=2 geo=0 cand=0 ts=210] @960[s=0.62 a=0.87 r=2 d=1 nd=1 geo=0 cand=0 ts=210] | first_det=v0:21,v2:30 | nsb_mismatch=0
+    east/half/202        ffd=1 wall=9227s @240[s=0.49 a=0.66 r=2 d=1 nd=0 geo=0 cand=1 ts=-] @500[s=0.73 a=0.86 r=3 d=1 nd=0 geo=0 cand=0 ts=374] @960[s=0.73 a=0.88 r=3 d=1 nd=0 geo=0 cand=0 ts=374] | first_det=v0:64,v1:217,v2:31,v3:119 | nsb_mismatch=0
+    east/half/303        ffd=1 wall=9181s @240[s=0.49 a=0.70 r=1 d=2 nd=0 geo=0 cand=1 ts=-] @500[s=0.55 a=0.79 r=2 d=2 nd=0 geo=0 cand=0 ts=294] @960[s=0.56 a=0.81 r=2 d=2 nd=0 geo=0 cand=0 ts=294] | first_det=v0:198,v2:25,v3:121 | nsb_mismatch=0
+    east/half/404        ffd=1 wall=9231s @240[s=0.46 a=0.51 r=1 d=2 nd=0 geo=0 cand=1 ts=-] @500[s=0.55 a=0.74 r=1 d=3 nd=0 geo=0 cand=0 ts=312] @960[s=0.56 a=0.78 r=1 d=3 nd=0 geo=0 cand=0 ts=312] | first_det=v1:124,v2:26,v3:189 | nsb_mismatch=0
+    east/half/505        ffd=1 wall=8458s @240[s=0.50 a=0.61 r=1 d=1 nd=2 geo=0 cand=0 ts=210] @500[s=0.50 a=0.70 r=1 d=2 nd=1 geo=0 cand=0 ts=210] @960[s=0.51 a=0.78 r=1 d=2 nd=1 geo=0 cand=0 ts=210] | first_det=v2:25,v3:119 | nsb_mismatch=0
+    south/half/101       ffd=0 wall=5472s @240[s=0.43 a=0.52 r=3 d=0 nd=1 geo=0 cand=0 ts=210] @500[s=0.55 a=0.68 r=3 d=0 nd=1 geo=0 cand=0 ts=210] @960[s=0.56 a=0.81 r=3 d=0 nd=1 geo=0 cand=0 ts=210] | first_det=v0:24,v1:107,v3:118 | nsb_mismatch=0
+    south/half/202       ffd=0 wall=6045s @240[s=0.56 a=0.61 r=2 d=1 nd=1 geo=0 cand=0 ts=214] @500[s=0.67 a=0.72 r=2 d=1 nd=1 geo=0 cand=0 ts=214] @960[s=0.70 a=0.76 r=2 d=1 nd=1 geo=0 cand=0 ts=214] | first_det=v0:38,v2:158 | nsb_mismatch=0
+    south/half/303       ffd=1 wall=9374s @240[s=0.58 a=0.67 r=3 d=0 nd=1 geo=0 cand=0 ts=210] @500[s=0.70 a=0.77 r=3 d=0 nd=1 geo=0 cand=0 ts=210] @960[s=0.76 a=0.87 r=3 d=0 nd=1 geo=0 cand=0 ts=210] | first_det=v0:24,v1:109,v2:23 | nsb_mismatch=0
+    south/half/404       ffd=0 wall=7986s @240[s=0.45 a=0.61 r=1 d=0 nd=2 geo=0 cand=1 ts=-] @500[s=0.68 a=0.75 r=2 d=2 nd=0 geo=0 cand=0 ts=273] @960[s=0.72 a=0.81 r=2 d=2 nd=0 geo=0 cand=0 ts=273] | first_det=v0:24,v1:163 | nsb_mismatch=0
+    south/half/505       ffd=0 wall=9502s @240[s=0.46 a=0.62 r=3 d=0 nd=1 geo=0 cand=0 ts=210] @500[s=0.53 a=0.73 r=3 d=1 nd=0 geo=0 cand=0 ts=210] @960[s=0.61 a=0.83 r=3 d=1 nd=0 geo=0 cand=0 ts=210] | first_det=v0:24,v1:107,v2:24 | nsb_mismatch=0
+  step wall (s) mean over runs, by window:  1-240: 15.3 (max run 23.6)  241-500: 7.0 (max run 10.6)  501-960: 4.4 (max run 5.8)
+  run wall: mean 7522s median 7986s max 9502s (2.6 h max) | peak commit MB max 956.9
+  battery @240: min 28.0 mean 28.2 max 30.4
+  battery @500: min 0.0 mean 0.0 max 0.0
+  battery @960: min 0.0 mean 0.0 max 0.0
+  never-detected counterfactual (victims still undetected at step T are written off at T under timeout T):
+    T=210  undetected_at_T=21/52  of which detected later in THIS arm: 1 (steps [217])
+    T=470  undetected_at_T=20/52  of which detected later in THIS arm: 0 (steps [])
+    T=930  undetected_at_T=20/52  of which detected later in THIS arm: 0 (steps [])
+    actual never_detected marks in arm: 17 -> [('east', 'default', 101, 210, 'victim_1'), ('east', 'default', 101, 210, 'victim_3'), ('east', 'default', 202, 210, 'victim_1'), ('east', 'default', 202, 210, 'victim_3'), ('east', 'default', 303, 210, 'victim_0'), ('east', 'default', 303, 210, 'victim_1'), ('east', 'half', 101, 210, 'victim_1'), ('east', 'half', 101, 210, 'victim_3'), ('east', 'half', 505, 210, 'victim_0'), ('east', 'half', 505, 210, 'victim_1'), ('south', 'half', 101, 210, 'victim_2'), ('south', 'half', 202, 210, 'victim_1'), ('south', 'half', 202, 210, 'victim_3'), ('south', 'half', 303, 210, 'victim_3'), ('south', 'half', 404, 210, 'victim_2'), ('south', 'half', 404, 210, 'victim_3'), ('south', 'half', 505, 210, 'victim_3')]
+    first-detection steps (all victims, all runs): n=32 median=51 p90=163 max=217
+
+=== ARM B100  | grid=[100, 100] expose_dims=True consts={'CORRIDOR_DIVERSITY_X_BAND': 76, 'CORRIDOR_WEST_CAMP_X': 24, 'CORRIDOR_WEST_TARGET_X_MAX': 50, 'COVERAGE_INTERIOR_X_MIN': 16, 'COVERAGE_INTERIOR_X_MAX': 60, 'NO_VICTIM_DETECT_BOOST_AFTER': 80, 'POST_RESCUE_COVERAGE_DURATION': 100} | n=13 runs, steps=960 ===
+  step      n   cov_s cov_all  cov_tr     vis |   resc   dead     nd ndmark    geo  unres |  allterm   med_ts |   burnt   wall_s   peakMB
+  240      13   0.471   0.617   0.289   0.516 |     22     10     15     17      0      5 |     8/13      210 |   0.325     3727      923
+  500      13   0.549   0.743   0.465   0.672 |     26     15     11     17      0      0 |    13/13      210 |   0.554     5748      938
+  960      13   0.579   0.829   0.636   0.780 |     26     18      8     17      0      0 |    13/13      210 |   0.733     7874      955
+  per run:
+    east/default/101     ffd=1 wall=4783s @240[s=0.38 a=0.57 r=2 d=0 nd=2 geo=0 cand=0 ts=210] @500[s=0.43 a=0.64 r=2 d=0 nd=2 geo=0 cand=0 ts=210] @960[s=0.44 a=0.88 r=2 d=1 nd=1 geo=0 cand=0 ts=210] | first_det=v0:21,v2:30 | nsb_mismatch=0
+    east/default/202     ffd=1 wall=6222s @240[s=0.30 a=0.54 r=0 d=1 nd=2 geo=0 cand=1 ts=-] @500[s=0.43 a=0.69 r=1 d=1 nd=2 geo=0 cand=0 ts=270] @960[s=0.44 a=0.78 r=1 d=2 nd=1 geo=0 cand=0 ts=270] | first_det=v0:66,v2:208 | nsb_mismatch=0
+    east/default/303     ffd=1 wall=6568s @240[s=0.32 a=0.67 r=1 d=2 nd=1 geo=0 cand=0 ts=210] @500[s=0.33 a=0.82 r=1 d=2 nd=1 geo=0 cand=0 ts=210] @960[s=0.40 a=0.90 r=1 d=2 nd=1 geo=0 cand=0 ts=210] | first_det=v2:28 | nsb_mismatch=0
+    east/half/101        ffd=1 wall=7665s @240[s=0.60 a=0.69 r=2 d=0 nd=2 geo=0 cand=0 ts=210] @500[s=0.61 a=0.77 r=2 d=0 nd=2 geo=0 cand=0 ts=210] @960[s=0.62 a=0.87 r=2 d=1 nd=1 geo=0 cand=0 ts=210] | first_det=v0:21,v2:30 | nsb_mismatch=0
+    east/half/202        ffd=1 wall=10188s @240[s=0.49 a=0.66 r=2 d=1 nd=0 geo=0 cand=1 ts=-] @500[s=0.73 a=0.86 r=3 d=1 nd=0 geo=0 cand=0 ts=374] @960[s=0.73 a=0.88 r=3 d=1 nd=0 geo=0 cand=0 ts=374] | first_det=v0:64,v1:217,v2:31,v3:119 | nsb_mismatch=0
+    east/half/303        ffd=1 wall=10290s @240[s=0.49 a=0.70 r=1 d=2 nd=0 geo=0 cand=1 ts=-] @500[s=0.55 a=0.79 r=2 d=2 nd=0 geo=0 cand=0 ts=294] @960[s=0.56 a=0.81 r=2 d=2 nd=0 geo=0 cand=0 ts=294] | first_det=v0:198,v2:25,v3:121 | nsb_mismatch=0
+    east/half/404        ffd=1 wall=10004s @240[s=0.46 a=0.51 r=1 d=2 nd=0 geo=0 cand=1 ts=-] @500[s=0.55 a=0.74 r=1 d=3 nd=0 geo=0 cand=0 ts=312] @960[s=0.56 a=0.78 r=1 d=3 nd=0 geo=0 cand=0 ts=312] | first_det=v1:124,v2:26,v3:189 | nsb_mismatch=0
+    east/half/505        ffd=1 wall=9423s @240[s=0.50 a=0.61 r=1 d=1 nd=2 geo=0 cand=0 ts=210] @500[s=0.50 a=0.70 r=1 d=2 nd=1 geo=0 cand=0 ts=210] @960[s=0.51 a=0.78 r=1 d=2 nd=1 geo=0 cand=0 ts=210] | first_det=v2:25,v3:119 | nsb_mismatch=0
+    south/half/101       ffd=0 wall=6035s @240[s=0.49 a=0.53 r=3 d=0 nd=1 geo=0 cand=0 ts=210] @500[s=0.54 a=0.66 r=3 d=0 nd=1 geo=0 cand=0 ts=210] @960[s=0.55 a=0.80 r=3 d=0 nd=1 geo=0 cand=0 ts=210] | first_det=v0:24,v1:107,v3:118 | nsb_mismatch=0
+    south/half/202       ffd=0 wall=6514s @240[s=0.55 a=0.61 r=2 d=1 nd=1 geo=0 cand=0 ts=214] @500[s=0.65 a=0.76 r=2 d=1 nd=1 geo=0 cand=0 ts=214] @960[s=0.69 a=0.86 r=2 d=1 nd=1 geo=0 cand=0 ts=214] | first_det=v0:38,v2:158 | nsb_mismatch=0
+    south/half/303       ffd=1 wall=7294s @240[s=0.58 a=0.68 r=3 d=0 nd=1 geo=0 cand=0 ts=210] @500[s=0.63 a=0.74 r=3 d=0 nd=1 geo=0 cand=0 ts=210] @960[s=0.64 a=0.81 r=3 d=0 nd=1 geo=0 cand=0 ts=210] | first_det=v0:24,v1:109,v2:23 | nsb_mismatch=0
+    south/half/404       ffd=0 wall=8152s @240[s=0.46 a=0.62 r=1 d=0 nd=2 geo=0 cand=1 ts=-] @500[s=0.62 a=0.73 r=2 d=2 nd=0 geo=0 cand=0 ts=273] @960[s=0.72 a=0.77 r=2 d=2 nd=0 geo=0 cand=0 ts=273] | first_det=v0:24,v1:163 | nsb_mismatch=0
+    south/half/505       ffd=0 wall=9230s @240[s=0.48 a=0.62 r=3 d=0 nd=1 geo=0 cand=0 ts=210] @500[s=0.55 a=0.77 r=3 d=1 nd=0 geo=0 cand=0 ts=210] @960[s=0.67 a=0.87 r=3 d=1 nd=0 geo=0 cand=0 ts=210] | first_det=v0:24,v1:107,v2:24 | nsb_mismatch=0
+  step wall (s) mean over runs, by window:  1-240: 15.5 (max run 25.5)  241-500: 7.8 (max run 12.0)  501-960: 4.6 (max run 6.6)
+  run wall: mean 7874s median 7665s max 10290s (2.9 h max) | peak commit MB max 954.7
+  battery @240: min 28.0 mean 28.2 max 30.4
+  battery @500: min 0.0 mean 0.0 max 0.0
+  battery @960: min 0.0 mean 0.0 max 0.0
+  never-detected counterfactual (victims still undetected at step T are written off at T under timeout T):
+    T=210  undetected_at_T=21/52  of which detected later in THIS arm: 1 (steps [217])
+    T=470  undetected_at_T=20/52  of which detected later in THIS arm: 0 (steps [])
+    T=930  undetected_at_T=20/52  of which detected later in THIS arm: 0 (steps [])
+    actual never_detected marks in arm: 17 -> [('east', 'default', 101, 210, 'victim_1'), ('east', 'default', 101, 210, 'victim_3'), ('east', 'default', 202, 210, 'victim_1'), ('east', 'default', 202, 210, 'victim_3'), ('east', 'default', 303, 210, 'victim_0'), ('east', 'default', 303, 210, 'victim_1'), ('east', 'half', 101, 210, 'victim_1'), ('east', 'half', 101, 210, 'victim_3'), ('east', 'half', 505, 210, 'victim_0'), ('east', 'half', 505, 210, 'victim_1'), ('south', 'half', 101, 210, 'victim_2'), ('south', 'half', 202, 210, 'victim_1'), ('south', 'half', 202, 210, 'victim_3'), ('south', 'half', 303, 210, 'victim_3'), ('south', 'half', 404, 210, 'victim_2'), ('south', 'half', 404, 210, 'victim_3'), ('south', 'half', 505, 210, 'victim_3')]
+    first-detection steps (all victims, all runs): n=32 median=51 p90=163 max=217
+
+=== ARM C100  | grid=[100, 100] expose_dims=True consts={'UNDETECTED_STREAK_STEPS': 1000000} | n=13 runs, steps=960 ===
+  step      n   cov_s cov_all  cov_tr     vis |   resc   dead     nd ndmark    geo  unres |  allterm   med_ts |   burnt   wall_s   peakMB
+  240      13   0.467   0.620   0.290   0.515 |     22     10      0      0      0     20 |     0/13        - |   0.325     3783      923
+  500      13   0.658   0.808   0.488   0.740 |     31     15      0      0      0      6 |     8/13      344 |   0.554     6086      939
+  960      13   0.735   0.881   0.615   0.827 |     37     15      0      0      0      0 |    13/13      387 |   0.733     8160      963
+  per run:
+    east/default/101     ffd=1 wall=4616s @240[s=0.38 a=0.57 r=2 d=0 nd=0 geo=0 cand=2 ts=-] @500[s=0.61 a=0.78 r=3 d=0 nd=0 geo=0 cand=1 ts=-] @960[s=0.82 a=0.97 r=4 d=0 nd=0 geo=0 cand=0 ts=826] | first_det=v0:21,v1:609,v2:30,v3:323 | nsb_mismatch=0
+    east/default/202     ffd=1 wall=5408s @240[s=0.30 a=0.54 r=0 d=1 nd=0 geo=0 cand=3 ts=-] @500[s=0.57 a=0.74 r=1 d=1 nd=0 geo=0 cand=2 ts=-] @960[s=0.74 a=0.88 r=3 d=1 nd=0 geo=0 cand=0 ts=748] | first_det=v0:66,v1:394,v2:208,v3:279 | nsb_mismatch=0
+    east/default/303     ffd=1 wall=5405s @240[s=0.33 a=0.68 r=1 d=2 nd=0 geo=0 cand=1 ts=-] @500[s=0.53 a=0.84 r=2 d=2 nd=0 geo=0 cand=0 ts=334] @960[s=0.55 a=0.90 r=2 d=2 nd=0 geo=0 cand=0 ts=334] | first_det=v0:220,v2:28 | nsb_mismatch=0
+    east/half/101        ffd=0 wall=9953s @240[s=0.63 a=0.72 r=2 d=0 nd=0 geo=0 cand=2 ts=-] @500[s=0.79 a=0.89 r=3 d=0 nd=0 geo=0 cand=1 ts=-] @960[s=0.83 a=0.95 r=4 d=0 nd=0 geo=0 cand=0 ts=579] | first_det=v0:21,v1:422,v2:30,v3:477 | nsb_mismatch=0
+    east/half/202        ffd=1 wall=9701s @240[s=0.49 a=0.66 r=2 d=1 nd=0 geo=0 cand=1 ts=-] @500[s=0.73 a=0.86 r=3 d=1 nd=0 geo=0 cand=0 ts=374] @960[s=0.73 a=0.88 r=3 d=1 nd=0 geo=0 cand=0 ts=374] | first_det=v0:64,v1:217,v2:31,v3:119 | nsb_mismatch=0
+    east/half/303        ffd=1 wall=9661s @240[s=0.49 a=0.70 r=1 d=2 nd=0 geo=0 cand=1 ts=-] @500[s=0.55 a=0.79 r=2 d=2 nd=0 geo=0 cand=0 ts=294] @960[s=0.56 a=0.81 r=2 d=2 nd=0 geo=0 cand=0 ts=294] | first_det=v0:198,v2:25,v3:121 | nsb_mismatch=0
+    east/half/404        ffd=1 wall=9703s @240[s=0.46 a=0.51 r=1 d=2 nd=0 geo=0 cand=1 ts=-] @500[s=0.55 a=0.74 r=1 d=3 nd=0 geo=0 cand=0 ts=312] @960[s=0.56 a=0.78 r=1 d=3 nd=0 geo=0 cand=0 ts=312] | first_det=v1:124,v2:26,v3:189 | nsb_mismatch=0
+    east/half/505        ffd=1 wall=11468s @240[s=0.54 a=0.63 r=1 d=1 nd=0 geo=0 cand=2 ts=-] @500[s=0.71 a=0.87 r=1 d=2 nd=0 geo=0 cand=1 ts=-] @960[s=0.89 a=0.99 r=2 d=2 nd=0 geo=0 cand=0 ts=752] | first_det=v0:638,v2:25,v3:119 | nsb_mismatch=0
+    south/half/101       ffd=0 wall=5651s @240[s=0.40 a=0.50 r=3 d=0 nd=0 geo=0 cand=1 ts=-] @500[s=0.68 a=0.79 r=4 d=0 nd=0 geo=0 cand=0 ts=474] @960[s=0.76 a=0.89 r=4 d=0 nd=0 geo=0 cand=0 ts=474] | first_det=v0:24,v1:107,v2:389,v3:118 | nsb_mismatch=0
+    south/half/202       ffd=0 wall=7582s @240[s=0.54 a=0.62 r=2 d=1 nd=0 geo=0 cand=1 ts=-] @500[s=0.77 a=0.81 r=3 d=1 nd=0 geo=0 cand=0 ts=387] @960[s=0.78 a=0.83 r=3 d=1 nd=0 geo=0 cand=0 ts=387] | first_det=v0:38,v1:306,v2:158 | nsb_mismatch=0
+    south/half/303       ffd=2 wall=9029s @240[s=0.56 a=0.67 r=3 d=0 nd=0 geo=0 cand=1 ts=-] @500[s=0.70 a=0.82 r=3 d=0 nd=0 geo=0 cand=1 ts=-] @960[s=0.85 a=0.92 r=4 d=0 nd=0 geo=0 cand=0 ts=505] | first_det=v0:24,v1:109,v2:23,v3:308 | nsb_mismatch=0
+    south/half/404       ffd=0 wall=8693s @240[s=0.45 a=0.61 r=1 d=0 nd=0 geo=0 cand=3 ts=-] @500[s=0.65 a=0.77 r=2 d=2 nd=0 geo=0 cand=0 ts=351] @960[s=0.76 a=0.84 r=2 d=2 nd=0 geo=0 cand=0 ts=351] | first_det=v0:24,v1:163 | nsb_mismatch=0
+    south/half/505       ffd=0 wall=9209s @240[s=0.49 a=0.64 r=3 d=0 nd=0 geo=0 cand=1 ts=-] @500[s=0.72 a=0.80 r=3 d=1 nd=0 geo=0 cand=0 ts=336] @960[s=0.74 a=0.83 r=3 d=1 nd=0 geo=0 cand=0 ts=336] | first_det=v0:24,v1:107,v2:24,v3:250 | nsb_mismatch=0
+  step wall (s) mean over runs, by window:  1-240: 15.8 (max run 23.9)  241-500: 8.9 (max run 15.1)  501-960: 4.5 (max run 6.8)
+  run wall: mean 8160s median 9029s max 11468s (3.2 h max) | peak commit MB max 962.9
+  battery @240: min 28.0 mean 28.2 max 30.4
+  battery @500: min 0.0 mean 0.0 max 0.0
+  battery @960: min 0.0 mean 0.0 max 0.0
+  never-detected counterfactual (victims still undetected at step T are written off at T under timeout T):
+    T=210  undetected_at_T=21/52  of which detected later in THIS arm: 13 (steps [217, 220, 250, 279, 306, 308, 323, 389, 394, 422, 477, 609, 638])
+    T=470  undetected_at_T=11/52  of which detected later in THIS arm: 3 (steps [477, 609, 638])
+    T=930  undetected_at_T=8/52  of which detected later in THIS arm: 0 (steps [])
+    actual never_detected marks in arm: 0 -> []
+    first-detection steps (all victims, all runs): n=44 median=118 p90=389 max=638
+
+=== ARM shim50  | grid=[50, 50] expose_dims=True consts={} | n=13 runs, steps=240 ===
+  step      n   cov_s cov_all  cov_tr     vis |   resc   dead     nd ndmark    geo  unres |  allterm   med_ts |   burnt   wall_s   peakMB
+  120      13   0.755   0.859   0.541   0.695 |     23      8      0      0      2     19 |     2/13      106 |   0.251      228      856
+  240      13   0.847   0.925   0.672   0.821 |     37     11      2      2      1      1 |    12/13      182 |   0.494      454      864
+  per run:
+    east/default/101     ffd=2 wall=366s @120[s=0.66 a=0.89 r=1 d=1 nd=0 geo=2 cand=0 ts=110] @240[s=0.69 a=0.94 r=1 d=2 nd=0 geo=1 cand=0 ts=110] | first_det=v0:15,v3:19 | nsb_mismatch=0
+    east/default/202     ffd=1 wall=286s @120[s=0.53 a=0.78 r=1 d=1 nd=0 geo=0 cand=2 ts=-] @240[s=0.74 a=0.94 r=3 d=1 nd=0 geo=0 cand=0 ts=168] | first_det=v0:6,v1:149,v2:116,v3:19 | nsb_mismatch=0
+    east/default/303     ffd=0 wall=458s @120[s=0.54 a=0.81 r=1 d=1 nd=0 geo=0 cand=2 ts=-] @240[s=0.72 a=0.88 r=3 d=1 nd=0 geo=0 cand=0 ts=125] | first_det=v0:106,v1:69,v2:7,v3:18 | nsb_mismatch=0
+    east/half/101        ffd=1 wall=496s @120[s=0.85 a=0.87 r=1 d=0 nd=0 geo=0 cand=3 ts=-] @240[s=0.92 a=0.94 r=2 d=1 nd=0 geo=0 cand=1 ts=-] | first_det=v0:16,v2:15,v3:227 | nsb_mismatch=0
+    east/half/202        ffd=0 wall=414s @120[s=0.89 a=0.92 r=1 d=1 nd=0 geo=0 cand=2 ts=-] @240[s=0.93 a=0.96 r=2 d=1 nd=1 geo=0 cand=0 ts=210] | first_det=v0:6,v2:15,v3:43 | nsb_mismatch=0
+    east/half/303        ffd=0 wall=553s @120[s=0.76 a=0.84 r=2 d=1 nd=0 geo=0 cand=1 ts=-] @240[s=0.79 a=0.88 r=2 d=1 nd=1 geo=0 cand=0 ts=210] | first_det=v1:61,v2:7,v3:43 | nsb_mismatch=0
+    east/half/404        ffd=2 wall=548s @120[s=0.73 a=0.77 r=1 d=1 nd=0 geo=0 cand=2 ts=-] @240[s=0.84 a=0.84 r=2 d=2 nd=0 geo=0 cand=0 ts=162] | first_det=v2:16,v3:79 | nsb_mismatch=0
+    east/half/505        ffd=1 wall=458s @120[s=0.87 a=0.92 r=3 d=0 nd=0 geo=0 cand=1 ts=-] @240[s=0.90 a=0.95 r=4 d=0 nd=0 geo=0 cand=0 ts=173] | first_det=v0:24,v1:83,v2:15,v3:45 | nsb_mismatch=0
+    south/half/101       ffd=0 wall=557s @120[s=0.78 a=0.91 r=2 d=1 nd=0 geo=0 cand=1 ts=-] @240[s=0.90 a=0.97 r=3 d=1 nd=0 geo=0 cand=0 ts=215] | first_det=v0:8,v1:117,v2:46 | nsb_mismatch=0
+    south/half/202       ffd=0 wall=404s @120[s=0.70 a=0.79 r=2 d=0 nd=0 geo=0 cand=2 ts=-] @240[s=0.89 a=0.95 r=4 d=0 nd=0 geo=0 cand=0 ts=199] | first_det=v0:6,v1:68,v2:156,v3:106 | nsb_mismatch=0
+    south/half/303       ffd=1 wall=351s @120[s=0.84 a=0.86 r=2 d=0 nd=0 geo=0 cand=2 ts=-] @240[s=0.91 a=0.93 r=4 d=0 nd=0 geo=0 cand=0 ts=210] | first_det=v0:9,v1:166,v2:12,v3:86 | nsb_mismatch=0
+    south/half/404       ffd=0 wall=591s @120[s=0.89 a=0.96 r=3 d=0 nd=0 geo=0 cand=1 ts=-] @240[s=0.95 a=0.96 r=4 d=0 nd=0 geo=0 cand=0 ts=191] | first_det=v0:8,v1:53,v2:9,v3:101 | nsb_mismatch=0
+    south/half/505       ffd=0 wall=422s @120[s=0.77 a=0.83 r=3 d=1 nd=0 geo=0 cand=0 ts=101] @240[s=0.83 a=0.91 r=3 d=1 nd=0 geo=0 cand=0 ts=101] | first_det=v0:9,v1:51,v2:7 | nsb_mismatch=0
+  step wall (s) mean over runs, by window:  1-240: 1.9 (max run 2.5)
+  run wall: mean 454s median 458s max 591s (0.2 h max) | peak commit MB max 864.5
+  battery @120: min 64.0 mean 64.3 max 67.2
+  battery @240: min 28.0 mean 28.4 max 31.2
+  never-detected counterfactual (victims still undetected at step T are written off at T under timeout T):
+    T=210  undetected_at_T=10/52  of which detected later in THIS arm: 1 (steps [227])
+    T=470  undetected_at_T=9/52  of which detected later in THIS arm: 0 (steps [])
+    T=930  undetected_at_T=9/52  of which detected later in THIS arm: 0 (steps [])
+    actual never_detected marks in arm: 2 -> [('east', 'half', 202, 210, 'victim_1'), ('east', 'half', 303, 210, 'victim_0')]
+    first-detection steps (all victims, all runs): n=43 median=24 p90=116 max=227
+
+=== RAW raw100 (no --expose-dims): n=2 ===
+  east/half/101: model_has_HEIGHT=False getattr(model,HEIGHT,50)=50 lag_grid_bounds=[0, 49, 0, 49] mesa_grid=[100, 100]
+    exit_starts=2 off-boundary exit targets=2 [(52, 'ff_unit_0', [80, 50], [49, 50]), (233, 'ff_unit_1', [50, 5], [49, 5])]
+    completions=2 off-boundary completions=2 [(84, 'ff_unit_0', [49, 50]), (235, 'ff_unit_1', [49, 5])]
+    UAV extents [min_x,max_x,min_y,max_y] on 100x100: {'10000(fire_tra)': [50, 86, 21, 50], '10001(fire_tra)': [51, 93, 40, 90], '10002(victim_s)': [9, 50, 5, 51], '10003(victim_s)': [10, 51, 25, 51]}
+    @150 cov_s=0.221 cov_all=0.366 resc=1 dead=0 nd=0 cand=3 burnt=0.038 wall=734s
+    @300 cov_s=0.273 cov_all=0.504 resc=2 dead=0 nd=2 cand=0 burnt=0.141 wall=1598s
+  south/half/101: model_has_HEIGHT=False getattr(model,HEIGHT,50)=50 lag_grid_bounds=[0, 49, 0, 49] mesa_grid=[100, 100]
+    exit_starts=3 off-boundary exit targets=3 [(96, 'ff_unit_0', [80, 50], [49, 50]), (130, 'ff_unit_1', [49, 5], [49, 5]), (179, 'ff_unit_0', [20, 50], [20, 49])]
+    completions=3 off-boundary completions=3 [(128, 'ff_unit_0', [49, 50]), (131, 'ff_unit_1', [49, 5]), (181, 'ff_unit_0', [20, 49])]
+    UAV extents [min_x,max_x,min_y,max_y] on 100x100: {'10000(fire_tra)': [43, 74, 8, 50], '10001(fire_tra)': [49, 86, 37, 56], '10002(victim_s)': [6, 50, 4, 51], '10003(victim_s)': [6, 51, 6, 51]}
+    @150 cov_s=0.250 cov_all=0.409 resc=2 dead=0 nd=0 cand=2 burnt=0.103 wall=840s
+    @300 cov_s=0.301 cov_all=0.485 resc=3 dead=0 nd=1 cand=0 burnt=0.238 wall=1762s
+
+=== COMPARE A100 vs B100 (seed-matched) ===
+  east/default/101     identical=True uav_first_divergence_step=None fire_digests_equal=True stdout_equal=True
+  east/default/202     identical=True uav_first_divergence_step=None fire_digests_equal=True stdout_equal=True
+  east/default/303     identical=True uav_first_divergence_step=None fire_digests_equal=True stdout_equal=True
+  east/half/101        identical=True uav_first_divergence_step=None fire_digests_equal=True stdout_equal=True
+  east/half/202        identical=True uav_first_divergence_step=None fire_digests_equal=True stdout_equal=True
+  east/half/303        identical=True uav_first_divergence_step=None fire_digests_equal=True stdout_equal=True
+  east/half/404        identical=True uav_first_divergence_step=None fire_digests_equal=True stdout_equal=True
+  east/half/505        identical=True uav_first_divergence_step=None fire_digests_equal=True stdout_equal=True
+  south/half/101       identical=False uav_first_divergence_step=114 fire_digests_equal=True stdout_equal=False
+      A100: [(240, 3, 0, 1, 0.4343), (500, 3, 0, 1, 0.5472), (960, 3, 0, 1, 0.5579)]
+      B100: [(240, 3, 0, 1, 0.4939), (500, 3, 0, 1, 0.5402), (960, 3, 0, 1, 0.5509)]
+  south/half/202       identical=False uav_first_divergence_step=198 fire_digests_equal=True stdout_equal=False
+      A100: [(240, 2, 1, 1, 0.555), (500, 2, 1, 1, 0.666), (960, 2, 1, 1, 0.7046)]
+      B100: [(240, 2, 1, 1, 0.552), (500, 2, 1, 1, 0.6542), (960, 2, 1, 1, 0.6906)]
+  south/half/303       identical=False uav_first_divergence_step=115 fire_digests_equal=True stdout_equal=False
+      A100: [(240, 3, 0, 1, 0.5764), (500, 3, 0, 1, 0.7011), (960, 3, 0, 1, 0.7609)]
+      B100: [(240, 3, 0, 1, 0.5825), (500, 3, 0, 1, 0.6318), (960, 3, 0, 1, 0.6431)]
+  south/half/404       identical=False uav_first_divergence_step=184 fire_digests_equal=True stdout_equal=False
+      A100: [(240, 1, 0, 2, 0.4515), (500, 2, 2, 0, 0.6797), (960, 2, 2, 0, 0.7219)]
+      B100: [(240, 1, 0, 2, 0.4639), (500, 2, 2, 0, 0.6211), (960, 2, 2, 0, 0.7152)]
+  south/half/505       identical=False uav_first_divergence_step=114 fire_digests_equal=True stdout_equal=False
+      A100: [(240, 3, 0, 1, 0.4571), (500, 3, 1, 0, 0.5291), (960, 3, 1, 0, 0.6134)]
+      B100: [(240, 3, 0, 1, 0.4842), (500, 3, 1, 0, 0.5512), (960, 3, 1, 0, 0.6727)]
+  identical runs: 8/13
+
+=== COMPARE A100 vs C100 (seed-matched) ===
+  east/default/101     identical=False uav_first_divergence_step=265 fire_digests_equal=True stdout_equal=False
+      A100: [(240, 2, 0, 2, 0.3798), (500, 2, 0, 2, 0.4317), (960, 2, 1, 1, 0.4422)]
+      C100: [(240, 2, 0, 0, 0.3798), (500, 3, 0, 0, 0.6109), (960, 4, 0, 0, 0.816)]
+  east/default/202     identical=False uav_first_divergence_step=283 fire_digests_equal=True stdout_equal=False
+      A100: [(240, 0, 1, 2, 0.2967), (500, 1, 1, 2, 0.4337), (960, 1, 2, 1, 0.4355)]
+      C100: [(240, 0, 1, 0, 0.2967), (500, 1, 1, 0, 0.5659), (960, 3, 1, 0, 0.7353)]
+  east/default/303     identical=False uav_first_divergence_step=212 fire_digests_equal=True stdout_equal=False
+      A100: [(240, 1, 2, 1, 0.3216), (500, 1, 2, 1, 0.3284), (960, 1, 2, 1, 0.3964)]
+      C100: [(240, 1, 2, 0, 0.3292), (500, 2, 2, 0, 0.5343), (960, 2, 2, 0, 0.5499)]
+  east/half/101        identical=False uav_first_divergence_step=211 fire_digests_equal=True stdout_equal=False
+      A100: [(240, 2, 0, 2, 0.5993), (500, 2, 0, 2, 0.6133), (960, 2, 1, 1, 0.6161)]
+      C100: [(240, 2, 0, 0, 0.6298), (500, 3, 0, 0, 0.7909), (960, 4, 0, 0, 0.8345)]
+  east/half/202        identical=True uav_first_divergence_step=None fire_digests_equal=True stdout_equal=True
+  east/half/303        identical=True uav_first_divergence_step=None fire_digests_equal=True stdout_equal=True
+  east/half/404        identical=True uav_first_divergence_step=None fire_digests_equal=True stdout_equal=True
+  east/half/505        identical=False uav_first_divergence_step=211 fire_digests_equal=True stdout_equal=False
+      A100: [(240, 1, 1, 2, 0.4954), (500, 1, 2, 1, 0.4981), (960, 1, 2, 1, 0.5117)]
+      C100: [(240, 1, 1, 0, 0.5445), (500, 1, 2, 0, 0.7088), (960, 2, 2, 0, 0.888)]
+  south/half/101       identical=False uav_first_divergence_step=224 fire_digests_equal=True stdout_equal=False
+      A100: [(240, 3, 0, 1, 0.4343), (500, 3, 0, 1, 0.5472), (960, 3, 0, 1, 0.5579)]
+      C100: [(240, 3, 0, 0, 0.4045), (500, 4, 0, 0, 0.6764), (960, 4, 0, 0, 0.7577)]
+  south/half/202       identical=False uav_first_divergence_step=216 fire_digests_equal=True stdout_equal=False
+      A100: [(240, 2, 1, 1, 0.555), (500, 2, 1, 1, 0.666), (960, 2, 1, 1, 0.7046)]
+      C100: [(240, 2, 1, 0, 0.539), (500, 3, 1, 0, 0.7656), (960, 3, 1, 0, 0.7799)]
+  south/half/303       identical=False uav_first_divergence_step=211 fire_digests_equal=True stdout_equal=False
+      A100: [(240, 3, 0, 1, 0.5764), (500, 3, 0, 1, 0.7011), (960, 3, 0, 1, 0.7609)]
+      C100: [(240, 3, 0, 0, 0.559), (500, 3, 0, 0, 0.7011), (960, 4, 0, 0, 0.8511)]
+  south/half/404       identical=False uav_first_divergence_step=277 fire_digests_equal=True stdout_equal=False
+      A100: [(240, 1, 0, 2, 0.4515), (500, 2, 2, 0, 0.6797), (960, 2, 2, 0, 0.7219)]
+      C100: [(240, 1, 0, 0, 0.4515), (500, 2, 2, 0, 0.6496), (960, 2, 2, 0, 0.7597)]
+  south/half/505       identical=False uav_first_divergence_step=211 fire_digests_equal=True stdout_equal=False
+      A100: [(240, 3, 0, 1, 0.4571), (500, 3, 1, 0, 0.5291), (960, 3, 1, 0, 0.6134)]
+      C100: [(240, 3, 0, 0, 0.4943), (500, 3, 1, 0, 0.72), (960, 3, 1, 0, 0.736)]
+  identical runs: 3/13
+
+=== COMPARE val50 vs shim50 (seed-matched) ===
+  east/default/101     identical=False uav_first_divergence_step=2 fire_digests_equal=True stdout_equal=False
+      val50: [(120, 1, 1, 0, 0.6508), (240, 1, 2, 0, 0.7264)]
+      shim50: [(120, 1, 1, 0, 0.6588), (240, 1, 2, 0, 0.6912)]
+  east/default/202     identical=False uav_first_divergence_step=70 fire_digests_equal=True stdout_equal=False
+      val50: [(120, 1, 1, 0, 0.5224), (240, 3, 1, 0, 0.7576)]
+      shim50: [(120, 1, 1, 0, 0.5304), (240, 3, 1, 0, 0.7376)]
+  east/default/303     identical=False uav_first_divergence_step=2 fire_digests_equal=True stdout_equal=False
+      val50: [(120, 1, 1, 0, 0.5484), (240, 3, 1, 0, 0.6028)]
+      shim50: [(120, 1, 1, 0, 0.5444), (240, 3, 1, 0, 0.7196)]
+  east/half/101        identical=False uav_first_divergence_step=2 fire_digests_equal=True stdout_equal=False
+      val50: [(120, 1, 0, 0, 0.7956), (240, 2, 1, 0, 0.9392)]
+      shim50: [(120, 1, 0, 0, 0.8496), (240, 2, 1, 0, 0.9244)]
+  east/half/202        identical=False uav_first_divergence_step=2 fire_digests_equal=True stdout_equal=False
+      val50: [(120, 2, 1, 0, 0.896), (240, 2, 1, 1, 0.938)]
+      shim50: [(120, 1, 1, 0, 0.892), (240, 2, 1, 1, 0.932)]
+  east/half/303        identical=False uav_first_divergence_step=2 fire_digests_equal=True stdout_equal=False
+      val50: [(120, 2, 1, 0, 0.774), (240, 3, 1, 0, 0.994)]
+      shim50: [(120, 2, 1, 0, 0.7596), (240, 2, 1, 1, 0.7908)]
+  east/half/404        identical=False uav_first_divergence_step=2 fire_digests_equal=True stdout_equal=False
+      val50: [(120, 2, 1, 0, 0.7616), (240, 2, 2, 0, 0.862)]
+      shim50: [(120, 1, 1, 0, 0.732), (240, 2, 2, 0, 0.836)]
+  east/half/505        identical=False uav_first_divergence_step=2 fire_digests_equal=True stdout_equal=False
+      val50: [(120, 2, 1, 0, 0.8136), (240, 2, 1, 0, 0.8452)]
+      shim50: [(120, 3, 0, 0, 0.8696), (240, 4, 0, 0, 0.9008)]
+  south/half/101       identical=False uav_first_divergence_step=1 fire_digests_equal=True stdout_equal=False
+      val50: [(120, 2, 0, 0, 0.7936), (240, 3, 0, 0, 0.9204)]
+      shim50: [(120, 2, 1, 0, 0.7788), (240, 3, 1, 0, 0.9004)]
+  south/half/202       identical=False uav_first_divergence_step=1 fire_digests_equal=True stdout_equal=False
+      val50: [(120, 2, 0, 0, 0.6876), (240, 4, 0, 0, 0.9008)]
+      shim50: [(120, 2, 0, 0, 0.7044), (240, 4, 0, 0, 0.8868)]
+  south/half/303       identical=False uav_first_divergence_step=1 fire_digests_equal=True stdout_equal=False
+      val50: [(120, 3, 0, 0, 0.8292), (240, 3, 1, 0, 0.8948)]
+      shim50: [(120, 2, 0, 0, 0.8416), (240, 4, 0, 0, 0.9108)]
+  south/half/404       identical=False uav_first_divergence_step=1 fire_digests_equal=True stdout_equal=False
+      val50: [(120, 4, 0, 0, 0.754), (240, 4, 0, 0, 0.7724)]
+      shim50: [(120, 3, 0, 0, 0.888), (240, 4, 0, 0, 0.9464)]
+  south/half/505       identical=False uav_first_divergence_step=1 fire_digests_equal=True stdout_equal=False
+      val50: [(120, 3, 1, 0, 0.6852), (240, 3, 1, 0, 0.8016)]
+      shim50: [(120, 3, 1, 0, 0.772), (240, 3, 1, 0, 0.834)]
+  identical runs: 0/13
+
+=== COMPARE A100 vs attrPR (seed-matched) ===
+  south/half/101       identical=True uav_first_divergence_step=None fire_digests_equal=True stdout_equal=False
+  identical runs: 1/1
+
+=== COMPARE A100 vs attrCorr (seed-matched) ===
+  south/half/101       identical=False uav_first_divergence_step=114 fire_digests_equal=True stdout_equal=False
+      A100: [(240, 3, 0, 1, 0.4343), (500, 3, 0, 1, 0.5472), (960, 3, 0, 1, 0.5579)]
+      attrCorr: [(150, 1, 0, 0, 0.3711), (240, 3, 0, 1, 0.4939), (300, 3, 0, 1, 0.5329)]
+  identical runs: 0/1
+
+=== COMPARE B100 vs attrCorr (seed-matched) ===
+  south/half/101       identical=True uav_first_divergence_step=None fire_digests_equal=True stdout_equal=False
+  identical runs: 1/1
+=== victims written off in A100 (never_detected) -> fate in C100 (timeout off) ===
+  east/default/101       victim_1  -> rescued@826
+  east/default/101       victim_3  -> rescued@425
+  east/default/202       victim_1  -> rescued@576
+  east/default/202       victim_3  -> rescued@748
+  east/default/303       victim_0  -> rescued@334
+  east/default/303       victim_1  -> never detected
+  east/half/101          victim_1  -> rescued@480
+  east/half/101          victim_3  -> rescued@579
+  east/half/505          victim_0  -> rescued@752
+  east/half/505          victim_1  -> never detected
+  south/half/101         victim_2  -> rescued@474
+  south/half/202         victim_1  -> rescued@387
+  south/half/202         victim_3  -> never detected
+  south/half/303         victim_3  -> rescued@505
+  south/half/404         victim_2  -> never detected
+  south/half/404         victim_3  -> never detected
+  south/half/505         victim_3  -> detected@250 then dead
+  write-offs: 17 | detected later when the timeout is off: 12 (rescued 11, died after detection 1) | never detected in 960 steps: 5 (of which died 5)
+  detection steps of the rescued-or-detected write-offs: [220, 250, 279, 306, 308, 323, 389, 394, 422, 477, 609, 638] | median 356, p90 477, max 638
+  rescue steps: [334, 387, 425, 474, 480, 505, 576, 579, 748, 752, 826] | median 505, max 826
+  C100: 44/52 victims ever detected; detection steps median 118.5 p90 389 max 638; budget needed to see 90% / 100% of detections: 389 / 638
+  C100: 37 rescues; rescue steps median 207 p90 576 max 826
+    rescues completed by step 240: 22 ; detections by 240: 33
+    rescues completed by step 300: 25 ; detections by 300: 35
+    rescues completed by step 400: 28 ; detections by 400: 40
+    rescues completed by step 500: 31 ; detections by 500: 42
+    rescues completed by step 600: 34 ; detections by 600: 42
+    rescues completed by step 700: 34 ; detections by 700: 44
+    rescues completed by step 800: 36 ; detections by 800: 44
+    rescues completed by step 960: 37 ; detections by 960: 44
+
