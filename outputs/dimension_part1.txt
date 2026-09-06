@@ -1,0 +1,505 @@
+GRID-DIMENSION PLUMBING DEFECT - PART 1: SCOPE AND DESIGN (NO SOURCE CHANGED)
+=============================================================================
+
+Branch firefighter-mission-features, HEAD 8520706 (confirmed: `git branch --show-current`,
+`git log --oneline -1`; working tree clean). Python 3.10.11, mesa 1.2.1
+(E:\Projects\SAS\.venv\Scripts\python.exe, confirmed by sys.version / mesa.__version__).
+Nothing in the source tree was modified in this part. Every claim below was re-verified
+against the tree at 8520706 rather than taken from outputs/gridscale_part1.txt; where the
+diagnosis is confirmed it says so, and the two places it was incomplete are marked NEW.
+
+0. THE SHORT VERSION
+--------------------
+  * WildFireModel never stores its size. Verified three ways on this tree: no
+    `self.HEIGHT/WIDTH/height/width/grid_height/grid_width` assignment anywhere in
+    wildfire_model.py (grep); none of the six names exists on mesa.Model, on the
+    WildFireModel class, or on a freshly built instance (hasattr, run under the .venv);
+    `git log -S'self.HEIGHT' -- wildfire_model.py` is empty over all 50 commits. The
+    attribute has never existed.
+  * 13 source sites (plus 2 in tests) ask the MODEL for its size through a defaulting
+    read. 10 of the 13 default to the literal 50, which is numerically right at 50x50, so
+    the fix changes NOTHING at those sites on this grid. The other 3 go through
+    UAVExecutor._grid_dimension, which returns None instead of a default, and the code
+    behind those three has never run in a real simulation:
+      - _position_at_boundary  (uav_executor.py:540)  always False today
+      - _distance_from_boundary (uav_executor.py:552) always 0.0 today
+      - the search-offset clamp in _execute_search_mode (:803-807)  NEW - a third wake
+        site the diagnosis did not list; it skips the clamp when the size is unknown.
+  * Between them the two helpers feed NINE consumers (the diagnosis listed five). All are
+    movement decisions: hold-escape, hazard-escape scoring, the victim-searcher edge
+    retarget, the interior retreat, and the searcher hazard gate.
+  * Re-verified effect, recorded shim50 arm against the recorded baseline, seed for seed
+    (section 4): 0/13 runs identical; rescued 35 -> 37, dead 12 -> 11, ff_deaths 8 -> 8
+    but moving on four seeds (two down, two up), never_detected 1 -> 2. The +2 is
+    E/half 505 (+2), S/half 303 (+1) and E/half 303 (-1, with one victim written off).
+    Concentrated, single-sample, not yet a clean win.
+  * Proposed fix: two lines in WildFireModel.reset(), immediately after the grid is built:
+    `self.HEIGHT = HEIGHT` / `self.WIDTH = WIDTH`. Nothing else. No site needs more than
+    the raw dimension (section 5.2). Control for the byte-identity proof: a harness-side
+    hook that makes the two attributes raise AttributeError on read, so every defaulting
+    read resolves exactly as it does at 8520706 - no debugging flag added to the source
+    (section 5.3; a source-level switch is offered as the alternative).
+  * Validation (section 6): fresh baseline at 8520706, fix arm, control arm (must be
+    byte-identical to baseline), instrumented arm (must be byte-identical to fix; gives
+    the per-helper firing tables with a decision-level counterfactual), three one-site-live
+    ablation arms so the +2 can be attributed to a helper rather than to "the fix", the 10
+    fresh seeds base+fix, full pytest, route_blocked gate.
+
+
+1. THE COMPLETE INVENTORY OF DIMENSION READS
+--------------------------------------------
+Method: ripgrep over every .py outside .venv and outputs/ for getattr reads of the names
+HEIGHT/WIDTH/height/width/grid_height/grid_width/grid_size/rows/cols, for hasattr of the
+same, for `_grid_dimension`, for tuple-of-names probes, for `.grid.width/.height`, and for
+bare HEIGHT/WIDTH uses in src_extension/; then every hit read in context.
+
+1.1  Reads that ask the MODEL and DEFAULT (the defect class) - 13 source sites, 2 test sites
+
+  #  site                                              read shape                      today  x-extent / y-extent
+  -- ------------------------------------------------- ------------------------------- ------ -------------------
+  1  agents.py:888-889  Firefighter.advance exit cell   getattr(self.model,"HEIGHT",50)   50    H -> x, W -> y
+  2  local_adaptation_generator.py:3375-3376            getattr(sim,"HEIGHT",
+        _grid_bounds -> (0,H-1,0,W-1)                     getattr(sim,"height",50))       50    H -> x, W -> y
+        callers :2892 _resolve_fire_tracker_target_cells, :2955 _fire_tracker_path_
+        parameters, :3030 _sanitize_fire_tracker_path_parameters, :3740 _compute_wind_
+        aware_search_target (scan range(x_min+1,x_max) x range(y_min+1,y_max) at :3462)
+  3  local_uav_path_planner.py:503  _grid_height        same shape, `or 50`             50    x
+  4  local_uav_path_planner.py:515  _grid_width         same shape, `or 50`             50    y
+  5  local_uav_path_planner.py:532-533 _uav_near_boundary (margin 2)                    50    H -> x, W -> y
+        callers :162/:166-167 (wind-aware directional-edge test), :236 (hold -> retarget)
+  6  uav_executor.py:1176-1183  wind sweep H/W          getattr(model,"HEIGHT",
+                                                           getattr(model,"height",50))  50    (sector bounds override in the canonical mix)
+  7  uav_executor.py:1877-1878  _bfs_escape_max_depth   `or 50`; max(100, H+W+5)=105    50    sum only
+  8  uav_executor.py:2050-2051  _victim_edge_blocked_direction  x_max=H-1, y_max=W-1    50    H -> x, W -> y
+  9  uav_executor.py:2320-2321  _sync_wind_search_execution_state  x_max=H-1,y_max=W-1  50    H -> x, W -> y
+ 10  uav_executor.py:3774-3775  fire-tracker flank fallback  x in [0,H-1], y in [0,W-1] 50    H -> x, W -> y
+ 11  uav_executor.py:4613  _grid_dimension(model, names) -> int | None                 None  probes "grid_height","HEIGHT","height" for x and "grid_width","WIDTH","width" for y
+        callers:
+        11a :546-547  _position_at_boundary          -> returns False when None   DEAD
+        11b :560-561  _distance_from_boundary        -> returns 0.0 when None     DEAD
+        11c :803-804  _execute_search_mode offset clamp -> clamp skipped when None DEAD (NEW)
+        11d :1656-1657 _cell_in_bounds               pre-empted: grid.out_of_bounds is callable on the real model, so the read is never reached
+        11e :4608-4609 _can_check_bounds             pre-empted, same reason
+        11f :4654-4655 _direction_in_bounds          pre-empted, same reason
+ 12  tests/victim_searcher_scenario_validation.py:144-145  getattr(model,"HEIGHT",50)  50    test helper on the real model
+ 13  tests/test_executor_routing_and_burnt.py:336-337  getattr(model,"width",0) or getattr(model,"WIDTH",50)  50  grid_cells bound in a fire test
+
+  Unit-test fakes that SET the attribute (so their reads resolve and the helpers run
+  there): test_uav_executor_boundary.py, test_behavior_regression.py (10x10 fakes with
+  WIDTH/HEIGHT and a grid), test_adaptation_mission_goal_integration.py,
+  test_unresolved_victim_coverage.py, test_wind_aware_corridor_search.py,
+  test_wind_aware_planning.py, test_wind_aware_victim_search.py (HEIGHT=WIDTH=50 fakes).
+  These are the only places the two helpers have ever returned a non-dead value, and no
+  test names either helper (grep of tests/ for their names: nothing).
+
+1.2  Reads that resolve to a REAL value today (not the defect; listed so the inventory is complete)
+
+  serve_dashboard.py:363-364      getattr(cfv,"WIDTH",50)/getattr(cfv,"HEIGHT",50)   reads the constants module, which always defines them; defaulting form, never defaults
+  global_monitor.py:12-13, :63    from common_fixed_variables import HEIGHT, WIDTH    bound at import (W3 of the diagnosis: wrong only under a RUNTIME grid override; not this round)
+  main.py:115                     CanvasGrid(..., WIDTH, HEIGHT, 10*WIDTH, 10*HEIGHT)  constants
+  wildfire_model.py               `from common_fixed_variables import *`, ~25 uses     constants; :132 MultiGrid(HEIGHT, WIDTH, False)
+  environment_bridge.py:85-86     getattr(grid,"width"/"height",None)                 the mesa grid; real
+  wildfire_model.py:2281-2282     int(self.grid.width) / int(self.grid.height)        the mesa grid; real
+  Canvas_Grid_Visualization.py:99-100  range(model.grid.width/height)                 the mesa grid; real
+  fire_runtime_model / visibility_model  initialize_grid(width=HEIGHT, height=WIDTH)   constants via the model
+
+  No hasattr probes of the names anywhere. No GRID_SIZE-style constant exists. No reader
+  of the environment_bridge snapshot's "grid_width"/"grid_height" keys exists outside
+  the bridge itself (the fire/visibility models keep their own _grid_width from
+  initialize_grid).
+
+1.3  Axis convention, verified, because it decides which name goes where
+  mesa 1.2.1: MultiGrid.__init__(self, width, height, torus). wildfire_model.py:132 calls
+  MultiGrid(HEIGHT, WIDTH, False), so grid.width == HEIGHT == the x extent and
+  grid.height == WIDTH == the y extent (the comment at :130 says the order is inverted on
+  purpose). Every site in 1.1 that maps an axis uses HEIGHT for x and WIDTH for y,
+  consistent with that - with ONE exception: the unreachable fallback in
+  _direction_in_bounds (:4657 `0 <= nx < width and 0 <= ny < height`) has them swapped.
+  It is unreachable on the real model (grid path first) and harmless on any square grid;
+  it belongs to the rectangular-grid note (W5) and is NOT touched this round.
+
+
+2. PER-SITE: WHAT THE VALUE DOES, IS 50 RIGHT TODAY, WHAT THE FIX CHANGES AT 50x50
+-----------------------------------------------------------------------------------
+  Group V (value-identical): sites 1-10, 12, 13. Today they read the literal 50; after
+  the fix they read the instance attribute, which is 50 on this grid. Same integer, same
+  arithmetic, same branches. Correct today "by accident" in the exact sense the brief
+  means: the number is right, the read path is wrong, and any other grid size breaks
+  them (the 100x100 evidence in gridscale_part1.txt 3.3). At 50x50 the fix cannot change
+  their behaviour and Part 3's byte-identity arguments do not depend on them.
+
+  Group N (None today -> live after the fix): sites 11a, 11b, 11c. These are the whole
+  50x50 behaviour change. Section 3.
+
+  Group P (pre-empted): 11d-11f. The real model's grid has out_of_bounds, so
+  _grid_dimension is never consulted there. Unchanged by the fix.
+
+  Group R (real already): 1.2. Unchanged by the fix.
+
+  So the fix is a pure "wake three dead sites" change on this grid, and every one of
+  the three is a UAV movement decision. That is why 12 of 13 runs diverge at step 1-2.
+
+
+3. THE TWO BOUNDARY HELPERS (AND THE THIRD SITE)
+------------------------------------------------
+3.1  Quoted in full (src_extension/execution/uav_executor.py at 8520706)
+
+    :4612  @staticmethod
+    :4613  def _grid_dimension(model: Any, attribute_names: tuple[str, ...]) -> int | None:
+    :4614      for name in attribute_names:
+    :4615          value = getattr(model, name, None)
+    :4616          if value is not None:
+    :4617              return int(value)
+    :4618      return None
+
+    :540   def _position_at_boundary(self, agent: Any) -> bool:
+    :541       pos = getattr(agent, "pos", None)
+    :542       model = self._resolve_model(agent)
+    :543       if pos is None or model is None:
+    :544           return False
+    :545       x, y = int(pos[0]), int(pos[1])
+    :546       x_max = self._grid_dimension(model, ("grid_height", "HEIGHT", "height"))
+    :547       y_max = self._grid_dimension(model, ("grid_width", "WIDTH", "width"))
+    :548       if x_max is None or y_max is None:
+    :549           return False
+    :550       return x <= 0 or y <= 0 or x >= x_max - 1 or y >= y_max - 1
+
+    :552   def _distance_from_boundary(
+    :553       self,
+    :554       x: int,
+    :555       y: int,
+    :556       model: Any | None,
+    :557   ) -> float:
+    :558       if model is None:
+    :559           return 0.0
+    :560       x_max = self._grid_dimension(model, ("grid_height", "HEIGHT", "height"))
+    :561       y_max = self._grid_dimension(model, ("grid_width", "WIDTH", "width"))
+    :562       if x_max is None or y_max is None:
+    :563           return 0.0
+    :564       return float(min(x, y, x_max - 1 - x, y_max - 1 - y))
+
+  The third site, in _execute_search_mode (the sector-less search fallback; sector
+  filtering is never active for fire trackers and is inactive for everyone before
+  LAUNCH_GRACE_STEPS):
+
+    :797       _SEARCH_OFFSETS = ((0, 0), (5, 0), (0, 5), (-5, 0))
+    :798       ox, oy = _SEARCH_OFFSETS[uav_index]
+    :799       tx = float(target[0]) + ox
+    :800       ty = float(target[1]) + oy
+    :801       if model is not None:
+    :802           width = self._grid_dimension(model, ("grid_width", "WIDTH", "width"))
+    :803           height = self._grid_dimension(model, ("grid_height", "HEIGHT", "height"))
+    :804           if width is not None and height is not None:
+    :805               tx = min(max(tx, 0.0), float(width - 1))
+    :806               ty = min(max(ty, 0.0), float(height - 1))
+    :807       offset_target = self._safe_search_target(agent, (tx, ty))
+
+  (Note the clamp uses width-1 for x and height-1 for y - the same swap as
+  _direction_in_bounds. Square grid, no effect; W5 territory, not touched.)
+
+3.2  What they are supposed to do
+  _position_at_boundary: "is this UAV standing on an edge cell" (x or y at 0 or max-1).
+  _distance_from_boundary: the cell's distance to the nearest edge, 0 on the edge.
+  Together they implement the executor's edge awareness: keep UAVs off the border, push
+  a UAV that is holding or escaping on the border back into the interior, and prefer
+  interior cells when several escape/retreat directions are otherwise equal.
+
+3.3  Why they never execute (the defaults are reached by a path that cannot resolve)
+  _grid_dimension probes three names per axis on the model. The model has none of the
+  six (section 0), so getattr(model, name, None) is None three times and the function
+  returns None; both helpers then take their `is None` early return. For the literal-50
+  sites the shape is getattr(model, "HEIGHT", getattr(model, "height", 50)): Python
+  evaluates the inner default first, which is also missing, so the 50 is produced before
+  the outer lookup even runs. Nothing on the real model has ever satisfied either probe:
+  the helpers, _grid_dimension and the agents.py read all arrived in the initial import
+  a4a01b4 (2026-07-27) and wildfire_model.py has never carried the attribute since.
+
+3.4  What they would do once woken - every consumer, with the dead-vs-live difference
+  Consumers of _position_at_boundary (P) and _distance_from_boundary (D):
+
+  C1  _hold_needs_escape :566-577 (via _execute_hold :523, from the "hold" action at :397
+      for every role except the wind-aware victim-searcher branch). Dead: escape only if
+      stuck>=3, next step out of bounds, or (fire tracker) on/near hazard. Live: ALSO
+      escape whenever the UAV stands on an edge cell (P True). A holding UAV on the
+      border stops holding.
+  C2  _hold_escape_direction :599-648. Dead: score = 0*10 + separation terms
+      (-6*(1-d/R) if another UAV within R, else +0.05*min(d,R)). Live: score =
+      (D(next) - D(here))*10 + separation, so the escape step is chosen by "which
+      neighbour is further from the edge" (+10 per cell) and separation is the tie-break
+      rather than the whole score.
+  C3  near_boundary at :368-372, used at :385 inside the victim-searcher hold branch that
+      is NOT the wind-aware-retarget branch: `P or D < 2.0`. Dead: False. Live: a
+      searcher holding within 2 cells of the edge is sent through
+      _resolve_direction_intent("victim_search_wind_aware") instead of _execute_hold.
+      Only reachable when role_kind == "victim" and the selected option is
+      wind_aware_victim_search; the instrumented arm will report how often, if ever.
+  C4  _direction_escape_score :1719-1757, via _safe_direction_or_escape :1758 and
+      _apply_final_direction_safety :1779, called at :416, :485, :757, :811 - the final
+      hazard check on EVERY executed direction of every role. Only consulted when the
+      proposed direction is dangerous (level > 0). Dead: score = -100*level +
+      separation. Live: + D(cell)*10. Among equal-danger escapes the interior cell wins
+      by 10 per cell of margin, overriding the separation term (magnitude <= 6).
+  C5  _victim_near_edge_escape_required :2092-2098: victim searcher and D(pos) <= 5.
+      Dead: False. Live: at :354-358 a holding searcher within 5 cells of the edge gets
+      force_interior_retarget (and force_coverage_escape if pocket_streak >= threshold/2);
+      at :1275 the same predicate forces the wind-aware target to the interior. This is
+      the one that can move a searcher AWAY from an edge victim - the victim ring is at
+      radius 0.4*50 = 20 cells from centre, i.e. 5 cells from the edge.
+  C6  _retreat_to_safe_interior_direction :2178-2224 (the retreat used by the searcher
+      hazard gate at :2232, :2238, :2254, :2289). Dead: score = 8*hazard_dist (+18 never,
+      since next_dist > curr_dist is 0 > 0), fallback 6*hazard_dist. Live: + 14*D(cell)
+      +18 if the step increases D; fallback + 10*D. Retreats are steered inward.
+  C7  _apply_victim_searcher_hazard_gate :2253-2258: D(pos) <= 2.0 -> take C6's retreat
+      even when the chosen direction is safe. Dead: never. Live: a searcher within 2
+      cells of the edge is pushed inward on every step it is there.
+  C8  hazard-gate fallback scoring :2276: + 10*D(cell) when the chosen direction fails
+      the strict lookahead. Dead: 0. Live: interior preference.
+  C9  (third site) _execute_search_mode clamp :805-806. Dead: the offset target may lie
+      outside the grid (target + 5), and _safe_search_target/_choose_best_direction see
+      an out-of-range target. Live: the target is clamped to [0,49].
+
+  Dead-value summary: P always False, D always 0.0, the clamp never applied. Every
+  consumer degrades to "no edge awareness". Once live: C1, C3, C5, C7 are GATES that
+  add new triggers (new escapes/retargets/retreats that did not happen before); C2, C4,
+  C6, C8 are SCORING terms that re-rank existing choices; C9 is a target clamp.
+
+3.5  Has their behaviour ever been measured?  No - and the negative is checkable.
+  - No report in outputs/ mentions either helper except gridscale_part1.txt (grep of all
+    outputs/*.txt). No test references them by name. test_uav_executor_boundary.py, the
+    one test whose name suggests it, exercises _direction_toward/_direction_in_bounds on
+    a 10x10 fake, not these two.
+  - The unit-test fakes give the helpers a value, so they have RUN in tests, but no test
+    asserts on anything they gate; and they have never returned a non-dead value in any
+    real simulation run in this repository's history.
+  - The only measurement of them live is the diagnosis's shim50 arm, re-read in
+    section 4. That arm is an outcome table, not a behaviour report: nobody has yet
+    counted how often each consumer fires or which consumer produces the first
+    divergence. Part 3 does exactly that.
+  The three cautionary precedents in the brief (#9-A1, last_cell arm A,
+  _reset_idle_retreat_state) all woke dormant MOVEMENT logic; this wakes nine movement
+  consumers at once, four of them new gates. I am treating the +2 as unproven.
+
+
+4. THE MEASURED EFFECT, RE-VERIFIED FROM THE RECORDED ARMS
+----------------------------------------------------------
+Recomputed from outputs/_gs_shim50_*.json (class-attribute shim, 13 runs, 240 steps)
+against outputs/_ffr_latbase_*.json, per seed. First, provenance of the baseline: the
+source at 8520706 differs from dd0a1b9 (the last implementation commit, whose behaviour
+latbase recorded) by six comment lines in agents.py only (`git diff --stat dd0a1b9..HEAD
+-- '*.py' ':(exclude)outputs'`), and the diagnosis's val50 arm equals latbase on eval for
+all 13 (asserted while recomputing). So latbase is 8520706 behaviour.
+
+  combo                base r/d/ff/nd/term    shim50 r/d/ff/nd/term
+  D/east/half 101      2/1/1/0/-              2/1/1/0/-
+  D/east/half 202      2/1/1/1/210            2/1/0/1/210            ff -1
+  D/east/half 303      3/1/0/0/240            2/1/0/1/210            rescued -1, one victim written off
+  D/east/half 404      2/2/1/0/162            2/2/2/0/162            ff +1
+  D/east/half 505      2/1/0/0/-              4/0/1/0/173            rescued +2, dead -1, ff +1
+  D/south/half 101     3/0/1/0/-              3/1/0/0/215            dead +1, ff -1
+  D/south/half 202     4/0/0/0/202            4/0/0/0/199
+  D/south/half 303     3/1/1/0/216            4/0/1/0/210            rescued +1, dead -1
+  D/south/half 404     4/0/0/0/119            4/0/0/0/191
+  D/south/half 505     3/1/0/0/108            3/1/0/0/101
+  D/east/default 101   1/2/2/0/109            1/2/2/0/110
+  D/east/default 202   3/1/1/0/171            3/1/1/0/168
+  D/east/default 303   3/1/0/0/125            3/1/0/0/125
+  TOTAL                35/12/8/1              37/11/8/2
+
+  Diagnosis figures CONFIRMED (35->37, 12->11, nd 1->2, 0/13 identical: eval differs in
+  11, and the diagnosis reports trajectory divergence in the other two). Two things the
+  diagnosis's totals hide: ff_deaths is 8 -> 8 only as a sum (four seeds move, two each
+  way), and the whole +2 is three seeds' worth of movement in a chaotic model - E/505
+  alone is +2. This is the shape the brief warns about; the fresh seeds decide it.
+
+  Also to know before Part 3: the shim was a CLASS attribute set by the probe. The
+  proposed fix is an INSTANCE attribute set in reset(). For every read in section 1 the
+  two are indistinguishable (getattr resolves both), so Part 3's fix arm should equal
+  shim50 seed for seed; that equality is a free cross-check I will report.
+
+
+5. THE FIX
+----------
+5.1  Shape
+  wildfire_model.py, WildFireModel.reset(), immediately after :132
+  `self.grid = mesa.space.MultiGrid(HEIGHT, WIDTH, False)`:
+
+        # Expose the grid extent on the instance. Every dimension read in
+        # agents.py and src_extension/ asks the MODEL for HEIGHT/WIDTH and
+        # silently falls back to a literal 50 (or to None, which disables the
+        # executor's boundary helpers) when the attribute is missing - and it
+        # always was. Same globals the grid was just built from, assigned in
+        # the same call, so the two cannot disagree. mesa's MultiGrid takes
+        # (width, height): grid.width is HEIGHT (the x extent), grid.height is
+        # WIDTH (the y extent), which is why these are not derived from it.
+        self.HEIGHT = HEIGHT
+        self.WIDTH = WIDTH
+
+  Two assignments plus a comment. reset() (not __init__) because reset() rebuilds the
+  grid and is the entry point the dashboard's reset button uses; __init__ calls reset().
+  Placed before set_fire_agents(), UAV placement and _init_managed_* so nothing can read
+  the model before the attribute exists. Uppercase names only: they are the names every
+  site probes first (after "grid_height"/"grid_width", which nothing sets) and they match
+  the existing `self.NUM_AGENTS = NUM_AGENTS` convention in __init__. Lowercase
+  height/width are NOT added: nothing needs them once HEIGHT/WIDTH exist, and they are the
+  mesa grid's own attribute names with the opposite axis meaning. CRLF preserved
+  (wildfire_model.py: 5312 CRLF, 0 bare LF).
+
+5.2  Sufficiency - does any site need more than a value?
+  No. Every consumer derives its own bound (H-1, W-1, H+W+5) from the raw extent; none
+  expects a pre-computed bound, a tuple, or a callable. _grid_dimension applies int()
+  itself. apply_scenario_config(cfv, wf, HEIGHT=..) sets the wf module global that both
+  the grid and the new lines read, so a runtime override stays consistent (global_monitor's
+  import-time binding, W3, is a separate defect and stays out of scope). The only sites
+  that would still be wrong on a NON-square grid are the two swapped fallbacks noted in
+  1.3 and 3.1, which are W5 and unreachable/harmless here.
+
+  Explicitly NOT done this round: no change to _grid_dimension or to any literal default
+  (they become unreachable-by-construction on the real model, and the fakes in tests
+  still rely on the getattr shape); no change to the swapped fallbacks; no test edits; no
+  dashboard change; nothing in global_monitor.
+
+5.3  Kill switch / control
+  Recommended: NO source-level switch. Features 1 and 2 carried --set switches because
+  their parameters are legitimately tunable; a flag whose only use is to re-enable a
+  defect would be a permanent debugging knob in common_fixed_variables. The brief allows
+  "or equivalent control", and an exact one exists without touching the source:
+
+    In the harness, replace WildFireModel.HEIGHT / .WIDTH on the CLASS with a property
+    whose setter stores the value in instance.__dict__ (so reset()'s assignment succeeds)
+    and whose getter RAISES AttributeError. getattr(model, "HEIGHT", 50) then returns 50
+    and _grid_dimension's getattr(model, name, None) returns None - the reads are forced
+    back to the hardcoded default by the same mechanism that produced it at 8520706.
+
+  This is the battery round's validated class-property hook with a denying getter. The
+  control arm must be byte-identical to the 8520706 baseline on every recorded field
+  (fire digests, ff_steps, victim_steps, eval, planner, assigns, stdout sha256). If the
+  maintainer prefers a source-level switch for symmetry with Features 1 and 2, the
+  alternative is one constant (e.g. EXPOSE_GRID_DIMENSIONS = True in
+  common_fixed_variables) guarding the two lines; say so at confirmation and Part 2 adds
+  it. I would rather not ship a flag that exists only to break the model.
+
+
+6. VALIDATION PLAN (PART 3)
+---------------------------
+All arms use outputs/_ffr_harness.py (statement-for-statement mirror of
+evaluate_scenarios._run_seed, validated byte-identical to it), 240 steps, one process per
+seed, ONE wave at a time (commit-charge ceiling ~13-15 processes). Harness additions are
+read-only observers behind new CLI options, so arms that do not use them are unchanged.
+
+6.1  Arms on the canonical 13 (D/east half 101-505, D/south half 101-505, D/east default 101/202/303)
+  dimbase   8520706 in a detached worktree (`git worktree add --detach`), stock harness.
+            Cross-check: must equal _ffr_latbase on every field (reproducibility on this
+            box today).
+  dimfix    patched working tree, stock harness. Cross-check: eval per seed vs shim50.
+  dimctrl   patched tree + denying property hook. GATE: byte-identical to dimbase.
+  diminst   patched tree + recording property hook + helper observers. GATE: byte-
+            identical to dimfix (the observers are pure: call the original, return it
+            unchanged, draw nothing from any RNG, mutate nothing). Records:
+              - every read of HEIGHT/WIDTH by caller (file:function:line) and step;
+              - every call of P and D with (step, uav, role, pos, result);
+              - for each of the nine consumers, the real result AND a counterfactual
+                result computed by calling the same consumer again with the reads
+                denied (a per-call toggle on the hook), so "decision changed by the live
+                value" is measured at the decision, not inferred from trajectories.
+                The consumers are pure reads except two idempotent memo/state
+                initialisations (_get_tracker_hazard_cache, _wind_search_state, the
+                hazard_buffer_level/force_coverage_escape writes in the hazard gate);
+                double evaluation leaves identical state - and the byte-identity gate
+                against dimfix is the empirical proof of that, not this sentence;
+              - per-step UAV positions and executed (direction, action) per UAV, so the
+                first divergent UAV step per run can be matched to the first changed
+                decision.
+  Ablation arms, run only if the fix survives 6.2 (each wakes exactly ONE of the three
+  sites, the other two pinned to their dead value by wrapping the function):
+  dimA      only _position_at_boundary live   (D pinned 0.0, clamp pinned off)
+  dimB      only _distance_from_boundary live (P pinned False, clamp pinned off)
+  dimC      only the search-offset clamp live (P False, D 0.0)
+  These answer "does the +2 come from one helper while the other is inert" at the
+  outcome level. Guard 1 of Feature 2 was that shape; nine consumers make it likely
+  again. Prediction recorded now, before any run: dimC changes few or no runs (fire
+  trackers only, and the clamp only matters when a search target sits within 5 cells of
+  an edge); dimB carries most of the divergence because D enters the final hazard check
+  of every executed direction (C4); dimA alone changes runs only where a UAV holds on an
+  edge cell (C1).
+
+6.2  Fresh seeds - mandatory
+  606/707/808/909/1010 x D/east half and D/south half = 10 runs, base (8520706 worktree)
+  and fix. The same set the last_cell and _reset_idle_retreat_state rounds used and no
+  prior round in this chain has touched. Reported as canonical first, fresh second,
+  pooled third, per seed, with the same five metrics. Gate reading, stated in advance:
+  if fresh rescued < base rescued, or fresh is flat while the canonical +2 stands, the
+  report says the gain is sample-specific and recommends against shipping the behaviour
+  change as a "win" (the read-path fix would still be correct; the recommendation would
+  then be to ship it as a correctness fix with a re-baselined 50x50, or to hold it -
+  the maintainer's call, stated with the numbers).
+
+6.3  Helper behaviour, reported directly
+  From diminst (and dimA/B/C if run): per helper - calls, calls returning a non-dead
+  value, per consumer the count of decisions whose result differed from the
+  counterfactual, first changed decision per run (step, uav, consumer) against the first
+  UAV trajectory divergence per run (they must coincide; if a run diverges BEFORE any
+  changed decision, the fix has a side channel I have not modelled and I will say so).
+  Then, on the seeds whose outcome moved (E/505, S/303, E/303, and the four ff_deaths
+  seeds), a trace read of the changed victim/unit: which consumer's changed decision is
+  first on the causal chain, how far the chain can honestly be followed (as in
+  lastcell_report section 4: to the decision, not through 100 steps of chaos).
+
+6.4  Tests
+  Full suite on the patched tree. Baseline for this source: outputs/_ph_pytest_fix3.log,
+  8 failed / 490 passed, the eight names listed there (identical to the campaign list).
+  Gate: failure set identical name for name; any NEW failure is reported as a fail even
+  if it is a trajectory assertion. The three tests the diagnosis found failing at
+  grid-100 will be run individually before and after at 50x50:
+  test_executor_routing_and_burnt.py::test_fire_self_limits_does_not_burn_whole_map
+  (fire only; the fix cannot touch it), test_unresolved_victim_coverage.py::test_victim_
+  searcher_does_not_stay_in_single_corridor_when_unresolved and ::test_remaining_victim_
+  coverage_after_two_rescues (real-model searcher trajectories; these CAN flip at 50x50
+  because searcher movement changes from step 1-2 - if either does, it is reported as
+  touched, and as a new failure if it fails).
+
+6.5  route_blocked gate
+  `bash outputs/_ffr_rbgate.sh dimfix` (new prefix; the script skips existing shards) then
+  `_ir_rbmerge.py --prefix dimfix`: the 18-run campaign against the 70e1b33 baseline as
+  the gate defines it (rescued does not decrease on any seed; recovery pass still
+  recovers; no unit left latched). Additionally seed-matched against phfix3 (the same
+  gate on this exact source, outputs/_rblatch_camp2_phfix3*_D_*.json) for this round's
+  own delta, as lastcell_report 5.2 did.
+
+6.6  Gate (restated from the brief, with the measurement that decides each)
+  - dimctrl byte-identical to dimbase on every recorded field         (6.1)
+  - rescued does not decrease: canonical 35 -> >=35, fresh base -> >=base (6.1, 6.2)
+  - fresh result does not contradict canonical; if the gain is canonical-only, say so
+    and recommend against shipping as an improvement                  (6.2)
+  - no NEW test failure                                                (6.4)
+  - route_blocked gate passes                                          (6.5)
+  Plus the cross-checks: dimbase == latbase, diminst == dimfix, dimfix eval == shim50.
+
+6.7  Cost
+  Canonical waves: dimbase, dimfix, dimctrl, diminst = 4 x ~10-13 min. Fresh: 2 waves
+  of 10 x ~10 min. Ablations: 3 x ~10-13 min (conditional). Gate 45-60 min and pytest
+  ~55-65 min, run concurrently with each other after the waves (4 + 1 processes). Total
+  wall time ~3-4 h. Artefacts: outputs/_ffr_dim*_*.json + .stdout.txt, outputs/_dim_*.py
+  (hook/observer installer and analyzer), outputs/_dim_rbgate*, outputs/_dim_pytest*.txt,
+  report outputs/dimension_report.txt.
+
+
+7. RISKS STATED BEFORE RUNNING
+------------------------------
+  - Trajectory-based tests on the real model may flip either way; two of the eight
+    baseline failures are trajectory tests. A newly-passing test is reported but is not
+    a gate item; a newly-failing one fails the gate.
+  - The instrumented arm's double evaluation touches two memo/state initialisers; the
+    byte-identity check against dimfix is the proof it is inert. If it is not identical
+    the instrumented numbers are discarded and the observers reduced to pure reads.
+  - The +2 is E/505 +2, S/303 +1, E/303 -1. One seed carries the headline. The fresh
+    seeds and the ablations are the only things that can turn that into a claim.
+  - This re-baselines 50x50 for every future round (0/13 identical). If shipped, the
+    canonical gates recorded before it (latbase/phfix3 numbers) stop being the
+    comparison point and the report will say which files become the new baseline.
+
+STOPPING HERE FOR CONFIRMATION. Nothing implemented. Points needing a decision:
+  (a) fix shape as in 5.1 (two instance attributes in reset(), uppercase only);
+  (b) control as in 5.3 (harness-side denying hook, no source flag) - or a source-level
+      EXPOSE_GRID_DIMENSIONS constant instead;
+  (c) the three ablation arms in 6.1 (extra ~35 min) - run them, or only if the fresh
+      seeds hold.

@@ -130,6 +130,16 @@ class WildFireModel(mesa.Model):
         #   https://snyk.io/advisor/python/Mesa/functions/mesa.space.MultiGrid
         # set some Mesa framework management
         self.grid = mesa.space.MultiGrid(HEIGHT, WIDTH, False)
+        # Expose the grid extent on the instance. Every dimension read in
+        # agents.py and src_extension/ asks the MODEL for HEIGHT/WIDTH and
+        # silently falls back to a literal 50 (or to None, which disables the
+        # executor's boundary helpers) when the attribute is missing - and it
+        # always was. Same globals the grid was just built from, assigned in
+        # the same call, so the two cannot disagree. mesa's MultiGrid takes
+        # (width, height): grid.width is HEIGHT (the x extent), grid.height is
+        # WIDTH (the y extent), which is why these are not derived from it.
+        self.HEIGHT = HEIGHT
+        self.WIDTH = WIDTH
         self.schedule = mesa.time.SimultaneousActivation(self)
         # set Fire and wind agents (Smoke are created inside Fire agents as well)
         self.set_fire_agents()

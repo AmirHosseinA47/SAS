@@ -76,6 +76,15 @@ def main() -> int:
     ap.add_argument("--out", required=True)
     ap.add_argument("--tag", default="")
     ap.add_argument("--set", action="append", default=[], metavar="KEY=VALUE")
+    ap.add_argument("--dim-hook", default="none", choices=["none", "deny", "record"],
+                    help="dimension round: deny = HEIGHT/WIDTH reads raise (control arm); "
+                         "record = every read attributed to its caller")
+    ap.add_argument("--dim-observe", action="store_true",
+                    help="dimension round: wrap the boundary helpers and their consumers "
+                         "with a per-call counterfactual (needs --dim-hook record)")
+    ap.add_argument("--dim-pin", default="",
+                    help="dimension round: comma-separated callers of _grid_dimension "
+                         "forced back to None (one-site-live ablation arms)")
     args = ap.parse_args()
 
     repo = os.path.abspath(args.repo)
@@ -137,6 +146,17 @@ def main() -> int:
 
     def _step_of(model) -> int:
         return int(getattr(model, "evaluation_timesteps_counter", 0) or 0)
+
+    # ---- dimension round: attribute hook / pins / observers, all read-only ----
+    # Installed on the classes before the model is built. A bare invocation
+    # (no --dim-* option) imports nothing and changes nothing.
+    dim = None
+    dim_pins = [p.strip() for p in str(args.dim_pin or "").split(",") if p.strip()]
+    if args.dim_hook != "none" or args.dim_observe or dim_pins:
+        import _dim_hooks  # noqa: E402  (outputs/ is the script directory, on sys.path)
+        from src_extension.execution.uav_executor import UAVExecutor  # noqa: E402
+        dim = _dim_hooks.install(WildFireModel, UAVExecutor, hook=args.dim_hook,
+                                 observe=args.dim_observe, pins=dim_pins, step_of=_step_of)
 
     def _vid(model, agent) -> str:
         if agent is None:
@@ -379,6 +399,9 @@ def main() -> int:
     ff_steps: list[list] = []
     ff_bind_steps: list[list] = []
     victim_steps: list[list] = []
+    # dimension round: per-step UAV rows (id, cell, role, selected_dir) so the
+    # first diverging UAV step of a seed-matched pair can be located exactly.
+    uav_steps: list[list] = []
     # feature 2: first step at which each cell was observed burning. Small
     # (<= one entry per grid cell) and it is what answers "did the victim step
     # into a cell that burned LATER".
@@ -399,6 +422,8 @@ def main() -> int:
     with contextlib.redirect_stdout(buf):
         model = WildFireModel()
         model.debug_log = False
+        if dim is not None:
+            _dim_hooks.bind_model(model)
         for _ in range(args.steps):
             model.step()
             step += 1
@@ -460,6 +485,18 @@ def main() -> int:
                     str(getattr(m, "status", "") or ""),
                 ])
             victim_steps.append(vrow)
+            urow = []
+            for a in model.schedule.agents:
+                if type(a).__name__ != "UAV":
+                    continue
+                sd = getattr(a, "selected_dir", None)
+                urow.append([
+                    str(a.unique_id),
+                    _cell(getattr(a, "pos", None)),
+                    str(getattr(a, "current_role", "") or ""),
+                    (int(sd) if sd is not None else None),
+                ])
+            uav_steps.append(urow)
         evaluation = _build_evaluation(model, terminal_step, step, params)
     wall = time.perf_counter() - t0
     for key, start in sorted(burn_open.items()):
@@ -515,6 +552,8 @@ def main() -> int:
         "ff_steps": ff_steps,
         "ff_bind_steps": ff_bind_steps,
         "victim_steps": victim_steps,
+        "uav_steps": uav_steps,
+        "dim": (_dim_hooks.export() if dim is not None else None),
         "victim_spawns": {
             str(vid): _cell(getattr(m, "spawn_cell", None))
             for vid, m in (getattr(model, "victim_marker_agents", {}) or {}).items()

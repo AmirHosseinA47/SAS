@@ -1,0 +1,623 @@
+GRID-DIMENSION PLUMBING DEFECT - PART 2 (IMPLEMENTATION) AND PART 3 (VALIDATION)
+Branch firefighter-mission-features, from HEAD 8520706. Design: outputs/dimension_part1.txt
+Python 3.10.11, mesa 1.2.1 (E:\Projects\SAS\.venv). All three Part 1 decisions approved as
+designed: instance attributes in reset(), harness-side control, ablations unconditional.
+================================================================================
+
+0. VERDICT
+================================================================================
+THE PLUMBING FIX IS CORRECT AND THE CONTROL PROVES IT IS THE CAUSE. THE OUTCOME
+NUMBERS DO NOT JUSTIFY IT AND ARE NOT OFFERED AS JUSTIFICATION.
+
+  13-RUN CANONICAL SAMPLE     rescued          35 -> 37   (+2)
+                              victims dead     12 -> 11   (-1)
+                              ff_deaths         8 ->  8   (+0 as a sum; moves on 4 seeds, 2 up, 2 down)
+                              never_detected    1 ->  2   (+1)
+     The +2 is three seeds moving in opposite directions: D/east/half 505 +2,
+     D/south/half 303 +1, D/east/half 303 -1 WITH A VICTIM WRITTEN OFF as never
+     detected. Not a clean +2.
+
+  10 FRESH SEEDS              rescued          27 -> 27   (+0)
+     (load-bearing sample)    victims dead      3 ->  8   (+5)
+                              ff_deaths         8 ->  7   (-1)
+                              written off       6 ->  2   (-4: 3 geographically isolated, 1 never detected)
+     The gain is ABSENT on fresh seeds, and victim deaths rise. Four of the five
+     extra deaths are victims the baseline had written off as unreachable and
+     left alive at the horizon; one is an unresolved candidate. This is the
+     _reset_idle_retreat_state shape: a gain concentrated in the characterisation
+     sample that does not survive fresh seeds.
+
+  POOLED, 23 RUNS             rescued 62 -> 64, victims dead 15 -> 19, ff_deaths 16 -> 15.
+
+  CONTROL (reads forced back to the hardcoded default): byte-identical to 8520706
+  on 13/13 runs, all 47 recorded fields, with 31,334-43,806 denied reads per run.
+  The baseline itself reproduces the recorded latbase runs 13/13. The fix arm's
+  evaluation equals the diagnosis's shim50 arm 13/13. Byte-identity of the
+  instrumented arm to the fix arm 13/13.
+
+  WHAT THE FIX DOES AT 50x50, MEASURED AT THE DECISION (section 6): it does not
+  add edge behaviour to the victim searchers, it REMOVES three always-on
+  overrides. With the helpers dead, `distance <= 5`, `distance <= 2` and
+  `distance < 2` were true everywhere, so every searcher step went through the
+  "near edge" gates. Live, they fire only near an edge. 951 of the 973 changed
+  hazard-gate decisions and all 1,635 changed near-edge flags happened six or
+  more cells from any edge. The only new edge behaviour is 204 fire-tracker holds
+  on an edge cell turned into escapes. One helper consumer never flipped a
+  choice (the hold-escape direction, 0 of 592) and the third wake site (the
+  search-offset clamp) was never reached.
+
+  ONE COST THE OUTCOME TABLES DO NOT SHOW: the always-on override the fix
+  removes was also an extra hazard-avoidance layer for searchers. Searcher
+  steps spent on a burning cell rise 2.12% -> 3.22% (canonical) and 2.98% ->
+  3.71% (fresh), up in 16 of 23 runs, and test_no_crash_zero_victims fails
+  deterministically on the patched tree (4 steps in strict fire/smoke, limit
+  2; 0/5 on the baseline tree, 5/5 on the patched tree). Section 9.
+
+  GATE: THREE OF FIVE ITEMS PASS. control byte-identity PASS; rescued does not
+  decrease on either sample PASS (35 -> 37, 27 -> 27); fresh seeds do not
+  contradict canonical FAIL (reported, as the brief asked); no NEW test
+  failures FAIL (test_no_crash_zero_victims; one baseline failure repaired -
+  test_victim_search_wind_aware_action_when_downwind_exists was failing
+  BECAUSE of this defect); route_blocked gate FAIL on one of three items (a
+  unit left flagged at the end of D/east 909, alive and free, through the
+  pre-existing gap beside the phantom round's D6 fix; nothing in this round
+  touched route_blocked). Sections 9-11.
+
+  RECOMMENDATION: ship the two lines as a correctness fix (the model's size was
+  unreadable; a 100x100 grid is impossible without it, gridscale_part1.txt 3.3;
+  one campaign test failure was this defect), re-baseline the 50x50 gates on
+  the dimfix arm, and record that the behaviour it wakes is outcome-neutral on
+  23 seeds (rescued +2/+0, dead -1/+5, ff 0/-1) and raises searcher hazard
+  exposure. Do not quote the +2. The two failed gate items are the
+  maintainer's call, not mine: they are stated in sections 9-11 with their
+  mechanisms and are not reinterpreted. Section 12 says what I would do.
+
+  Three grid-100-sensitive tests at 50x50: 3 passed before, 3 passed after.
+  ONE SOURCE FILE CHANGED: wildfire_model.py, +10 / -0 (2 code lines, 8 comment).
+
+
+1. WHAT WAS IMPLEMENTED (Part 2)
+================================================================================
+wildfire_model.py, WildFireModel.reset(), the line after the grid is built
+(:132), applied by outputs/_dim_patch.py (--check / --apply / --revert, binary
+mode, idempotent, reversible):
+
+        self.grid = mesa.space.MultiGrid(HEIGHT, WIDTH, False)
+        # Expose the grid extent on the instance. Every dimension read in
+        # agents.py and src_extension/ asks the MODEL for HEIGHT/WIDTH and
+        # silently falls back to a literal 50 (or to None, which disables the
+        # executor's boundary helpers) when the attribute is missing - and it
+        # always was. Same globals the grid was just built from, assigned in
+        # the same call, so the two cannot disagree. mesa's MultiGrid takes
+        # (width, height): grid.width is HEIGHT (the x extent), grid.height is
+        # WIDTH (the y extent), which is why these are not derived from it.
+        self.HEIGHT = HEIGHT
+        self.WIDTH = WIDTH
+        self.schedule = mesa.time.SimultaneousActivation(self)
+
+  Verified on a built model: HEIGHT/WIDTH present in the instance dict, both 50,
+  again after a second reset(); UAVExecutor._grid_dimension returns 50 for both
+  axes instead of None. Nothing else touched: _grid_dimension, the literal-50
+  defaults, the two swapped fallbacks noted in Part 1 (1.3, 3.1), global_monitor,
+  tests, dashboard - all as they were.
+
+  A CORRECTION TO PART 1: it said wildfire_model.py was CRLF (5312 CRLF). That
+  came from a shell test that does not work under this tool's shell. The file is
+  LF in the working tree AND in the index (`git ls-files --eol`: i/lf w/lf);
+  agents.py and uav_executor.py happen to be CRLF in the working tree (i/lf,
+  w/crlf) under core.autocrlf=true. The patch preserves whatever the file uses:
+  236,927 -> 237,596 bytes, 0 CRLF before and after, 5,312 -> 5,322 LF.
+
+  No source-level switch (decision 2): the control is the harness-side denying
+  hook in section 3.
+
+
+2. METHOD
+================================================================================
+Same outputs/_ffr_harness.py for every arm (verified byte-identical to
+evaluate_scenarios in the Feature 1 round; this round re-verified its baseline
+against the recorded latbase runs, 13/13). 240 steps, scenario D, one process per
+seed. Harness additions (outputs/_dim_harness_patch.py, 39 lines, all behind new
+options, plus one unconditional read-only per-step UAV row so the first
+diverging UAV step of a pair can be located exactly):
+
+  --dim-hook deny     WildFireModel.HEIGHT/.WIDTH become class-level properties
+                      whose setter stores the value and whose getter RAISES
+                      AttributeError: every getattr(model, "HEIGHT", 50) returns
+                      50 and _grid_dimension returns None - the 8520706 read
+                      path, reproduced by the same mechanism.       (control)
+  --dim-hook record   same properties, getter returns the value and attributes
+                      every read to file:function:line.
+  --dim-observe       wraps the two helpers (calls / non-dead results per
+                      caller) and six consumers; each consumer call is evaluated
+                      twice - the real call, returned, and a counterfactual with
+                      the reads denied, compared and discarded. Nested wrapped
+                      calls inside a counterfactual pass straight through.
+  --dim-pin a,b,c     _grid_dimension returns None when called from the named
+                      functions (the one-site-live ablation arms).
+  Implementation outputs/_dim_hooks.py (the battery round's class-property
+  pattern). Read-only by construction; PROVEN inert by byte-identity: the
+  instrumented arm equals the plain fix arm 13/13 on all 47 fields (section 6).
+
+Arms (124 runs, outputs/_ffr_dim*_*.json + .stdout.txt; pool log
+outputs/_dim_pool.log):
+  dimbase        8520706 detached worktree, stock harness         13 canonical
+  dimfix         patched tree, stock harness                      13
+  dimctrl        patched tree, --dim-hook deny                    13
+  diminst        patched tree, --dim-hook record --dim-observe    13
+  dimfreshbase / dimfreshfix   the 10 fresh seeds 606/707/808/909/1010 x east,south half
+  dimpinall      all three wake sites pinned dead                 13
+  dimA / dimB / dimC   only P / only D / only the clamp live      13 each
+The box had ~8.5 GB of free commit at launch (other applications hold the
+rest), so the runs went through a memory-aware pool (outputs/_dim_pool.sh: one
+queue, a run launched only while free commit > 3 GB; settled at 7-8 concurrent,
+mean 408 s per run) instead of 13-process waves. Runs are independent
+processes, so the pool changes nothing about the results.
+
+Identity standard: every recorded field except tag/repo/wall_s/dim - fire
+digests per step, firefighter rows per step, victim rows per step, UAV rows per
+step, eval, planner decisions, assigns, completions, stdout sha256, 47 fields.
+
+
+3. GATE ITEM 1 - THE CONTROL: byte-identical to 8520706
+================================================================================
+  dimbase vs _ffr_latbase (the recorded 8520706-behaviour runs): 13/13 identical
+    on the 46 fields both record. The harness on this box today reproduces the
+    baseline.
+  dimctrl vs dimbase: 13/13 byte-identical on all 47 fields. Denied reads per
+    run 31,334-43,806 (the reads ARE happening on the patched source; denying
+    them gives back 8520706 exactly). writes = 2 per run (the two reset
+    assignments).
+  dimfix vs dimbase: 0/13 byte-identical, 2/13 identical on eval, fire digests
+    identical on 13/13 (the fire is untouched), UAV rows diverge at step 1 (all
+    five south runs) or 2 (seven east runs) and at step 70 in D/east/default 202.
+  dimfix eval vs _gs_shim50 (the diagnosis's class-attribute shim): 13/13
+    identical, stdout sha identical. Instance attribute and class attribute are
+    the same fix.
+  [PASS]
+
+
+4. THE CANONICAL 13, SEED-MATCHED (dimbase -> dimfix)
+================================================================================
+  combo                 base r/d/ff/nd/term   fix r/d/ff/nd/term    uav-div  ff-div  change
+  D/east/half 101       2/1/1/0/-             2/1/1/0/-             2        15      none
+  D/east/half 202       2/1/1/1/210           2/1/0/1/210           2        11      ff -1
+  D/east/half 303       3/1/0/0/240           2/1/0/1/210           2        18      rescued -1, never_detected +1
+  D/east/half 404       2/2/1/0/162           2/2/2/0/162           2        16      ff +1
+  D/east/half 505       2/1/0/0/-             4/0/1/0/173           2        15      rescued +2, dead -1, ff +1
+  D/south/half 101      3/0/1/0/-             3/1/0/0/215           1         8      dead +1, ff -1
+  D/south/half 202      4/0/0/0/202           4/0/0/0/199           1       156      terminal only
+  D/south/half 303      3/1/1/0/216           4/0/1/0/210           1         7      rescued +1, dead -1
+  D/south/half 404      4/0/0/0/119           4/0/0/0/191           1        37      terminal only
+  D/south/half 505      3/1/0/0/108           3/1/0/0/101           1         7      terminal only
+  D/east/default 101    1/2/2/0/109           1/2/2/0/110           2        18      terminal only
+  D/east/default 202    3/1/1/0/171           3/1/1/0/168          70       116      terminal only
+  D/east/default 303    3/1/0/0/125           3/1/0/0/125           2        18      none
+  TOTAL                 35/12/8/1             37/11/8/2
+  Categories (52 victims): rescued 35->37, dead 12->11, unreachable 2->3 (never
+  detected 1->2, geographically isolated 1->1), runs reaching a terminal step
+  10->12. The diagnosis's shim50 figures are CONFIRMED number for number.
+
+  READ IT AS THE BRIEF ASKED: three seeds move, in opposite directions, and the
+  firefighter total holds only as a sum (E/202 1->0, E/404 1->2, E/505 0->1,
+  S/101 1->0). E/505 alone is the whole +2.
+
+
+5. THE 10 FRESH SEEDS (dimfreshbase -> dimfreshfix) - the load-bearing sample
+================================================================================
+  combo                 base r/d/ff/nd/term   fix r/d/ff/nd/term    uav-div  ff-div  change
+  D/east/half 606       1/1/2/0/125           1/1/1/0/123           2        15      ff -1
+  D/east/half 707       4/0/0/0/186           4/0/0/0/175           2        18      terminal only
+  D/east/half 808       3/1/0/0/173           3/1/0/0/173           2        17      none
+  D/east/half 909       3/0/2/0/190           3/1/1/0/189           2        18      dead +1, ff -1
+  D/east/half 1010      1/1/1/0/112           1/2/1/0/-             2        15      dead +1
+  D/south/half 606      2/0/0/1/-             3/1/1/0/165           1        18      rescued +1, dead +1, ff +1, nd -1
+  D/south/half 707      4/0/0/0/163           3/1/0/0/198           1         7      rescued -1, dead +1
+  D/south/half 808      4/0/1/0/134           3/0/1/0/-             1         7      rescued -1
+  D/south/half 909      3/0/1/0/-             3/0/1/0/-             1         7      none
+  D/south/half 1010     2/0/1/0/-             3/1/1/0/158           1        17      rescued +1, dead +1
+  TOTAL                 27/3/8/1              27/8/7/0
+  Categories (40 victims): rescued 27->27, dead 3->8, unreachable 6->2
+  (geographically isolated 5->2, never detected 1->0), unresolved candidates at
+  the horizon 4->3, ff_deaths 8->7. 0/10 byte-identical, 2/10 same eval, fire
+  identical 10/10, UAV divergence at step 1-2 in all ten.
+
+  Rescued is flat. Five more victims die; four of them are victims the baseline
+  had written off (fire-enclosed or never detected) and left alive at step 240,
+  one is a candidate the baseline never resolved. Whether "written off, alive at
+  the horizon" beats "dead" is a metric question, but by the campaign's metric
+  the fresh sample is worse on victims and better by one firefighter.
+
+  POOLED 23: rescued 62 -> 64 (+2), dead 15 -> 19 (+4), ff_deaths 16 -> 15 (-1),
+  written off 8 -> 5, never detected 2 -> 2. The canonical +2 is the entire
+  pooled +2, and it is bought with +4 dead across the two samples.
+
+
+6. THE TWO HELPERS' BEHAVIOUR, MEASURED AT THE DECISION (diminst)
+================================================================================
+6.1  A correction to Part 1 first. Part 1 (3.4) called C3, C5 and C7 dormant
+  gates that the fix would switch ON. The instrumented smoke run showed the
+  opposite and the full arm confirms it: with _distance_from_boundary dead
+  (0.0), `0.0 <= 5.0` (C5 _victim_near_edge_escape_required), `0.0 <= 2.0` (C7,
+  the searcher hazard gate's interior retreat) and `0.0 < 2.0` (C3, the hold
+  branch's near_boundary) are all TRUE, everywhere, on every step. The baseline
+  victim searcher therefore ran with force_interior_retarget always set, with
+  its chosen direction replaced by the "retreat to safe interior" direction
+  whenever one existed, and with every wind-aware hold converted to a retarget.
+  The live helpers make those three gates edge-only. The fix is a removal of
+  always-on behaviour for searchers, plus a genuinely new edge test for
+  fire-tracker holds (C1).
+
+6.2  Reads of HEIGHT/WIDTH, by reader, summed over the 13 runs (each axis):
+    local_adaptation_generator._grid_bounds:3375                 148,891
+    uav_executor._victim_edge_blocked_direction:2050              34,829
+    local_uav_path_planner._uav_near_boundary:532                 17,755
+    uav_executor._distance_from_boundary (via _grid_dimension)     6,344
+    uav_executor._resolve_direction_intent:1176 (sweep H/W)        5,533
+    uav_executor._sync_wind_search_execution_state:2320            5,520
+    local_uav_path_planner._grid_height/_grid_width:503/515        5,327
+    uav_executor._position_at_boundary (via _grid_dimension)       4,853
+    uav_executor._bfs_escape_max_depth:1877                        1,360
+    uav_executor._wind_aware_victim_search_target_legacy:3774        162
+    agents.Firefighter.advance:888 (exit cell)                        38
+  Every site in Part 1's inventory reads; none is unreachable. No reader from
+  _execute_search_mode: the clamp site (C9) was never reached in 13 runs.
+  reset assignments: 2 per run.
+
+6.3  The helpers themselves (calls / calls returning a non-dead value):
+    P _position_at_boundary  from _hold_needs_escape  2,426 /   345 (14.2%)
+                             from execute (C3)        2,427 /   345
+    D _distance_from_boundary from _apply_victim_searcher_hazard_gate 1,522 / 1,481
+                             from _victim_near_edge_escape_required  1,824 / 1,810
+                             from execute (C3)                       2,082 / 2,082
+                             from _direction_escape_score              585 /   433
+                             from _retreat_to_safe_interior_direction  331 /   331
+  P is true (a UAV on an edge cell while holding) 345 times across 12 of 13
+  runs, never in D/south/half 505; first occurrence between step 51 (S/101)
+  and 226 (S/202). Every P-true is a fire tracker.
+
+6.4  Consumer decisions: calls / changed by the live value (real != counterfactual)
+    C7 _apply_victim_searcher_hazard_gate   1,796 /  973  (54.2%)
+    C5 _victim_near_edge_escape_required    1,824 /1,635  (89.6%)
+    C1 _hold_needs_escape                   2,427 /  204  ( 8.4%)
+    C4 _safe_direction_or_escape            7,640 /   52  ( 0.7%)
+    C6 _retreat_to_safe_interior_direction    637 /   20  ( 3.1%)
+    C2 _hold_escape_direction                 592 /    0  ( 0.0%)   INERT
+    C9 search-offset clamp                      0 calls               INERT (unreached)
+    C3 near_boundary read in execute: live-true 530 of 2,427 (dead: 2,427 of 2,427)
+  Where the deciding UAV stood (distance to the nearest edge, 0-2 / 3-5 / 6+):
+    C7      0 /  22 / 951        C5   0 / 0 / 1,635       C6  0 / 0 / 20
+    C1    204 /   0 /   0        C4  42 / 7 /     3
+  By role: C5, C6, C7 changes are all victim searchers; C1, C4 all fire trackers.
+  C7 kind (chosen direction vs real/counterfactual): override REMOVED 927,
+  override added 5, a different override 41.
+
+  So: of 2,884 changed decisions, 2,628 (91%) are searcher decisions six or more
+  cells from any edge where the live code stopped overriding the searcher; 204
+  are fire trackers holding on an edge cell that now escape it; 52 are
+  fire-tracker hazard escapes re-ranked, mostly on the edge; 20 are retreat
+  directions re-ranked in the interior.
+
+6.5  First changed decision vs first UAV divergence, per run: in all 13 runs the
+  first changed decision is at step 1, C5 for a victim searcher (real False,
+  counterfactual True), and the UAV rows diverge at step 1 or 2 (step 70 in
+  D/east/default 202, where the flag change did not alter movement for 69
+  steps). No run diverges before its first changed decision. The instrumented
+  arm is byte-identical to the fix arm 13/13, so the counterfactual evaluation
+  perturbed nothing.
+
+6.6  Which helper carries the outcomes - from the decision data, before the
+  ablation arms (section 8): every searcher-side change is D (C5, C7, C6); the
+  fire-tracker changes are P (C1) and D (C4). P's first true value comes at step
+  51-226, long after the searcher divergence at step 1-2, so D must carry the
+  early divergence in every run. Prediction recorded before the ablation arms
+  were read: dimC (clamp only) byte-identical to base 13/13; dimA (P only)
+  identical to base until each run's first edge hold, and identical throughout
+  in D/south/half 505; dimB (D only) diverges at step 1-2 in all 13 and carries
+  most of the outcome movement.
+
+
+7. ATTRIBUTION TO RESCUES GAINED AND DEATHS CAUSED
+================================================================================
+Every outcome change, on both samples, is downstream of searcher trajectories
+that diverge at step 1-2. Detection timing barely moves; DISPATCH ORDER does.
+  - First sighting of each victim's spawn cell by any UAV (within the
+    observation radius 8): unchanged within a few steps for almost every
+    victim on both samples (victim_3 at (25,3) is sighted at step 17 in 21 of
+    23 base runs and 20 of 23 fix runs). First ASSIGNMENT of victim_3 is more
+    than 5 steps later in the fix on 5 of 13 canonical and 6 of 10 fresh seeds
+    (e.g. S/606 18 -> 97, S/707 38 -> 109, S/1010 17 -> 99, E/1010 17 -> 105),
+    and on the fresh seeds that victim then dies four times where the base had
+    rescued it at step 44-90. The planner's greedy nearest-first dispatch is
+    handed a different confirmation order and different unit positions, and
+    reshuffles who goes where.
+  - Searcher edge-band occupancy does NOT move the way an "edge repulsion"
+    story would need: share of searcher steps within 5 cells of an edge 9.4%
+    -> 7.9% (canonical), 18.0% -> 19.4% (fresh); within 2 cells 1.8% -> 2.8%,
+    1.1% -> 1.9%. The change is the interior wander, not the edges.
+  - Searcher-only coverage at 240 (cells within radius 8 of a searcher): mean
+    0.843 -> 0.847 (reproducing the diagnosis), per seed from -0.203 (E/303)
+    to +0.174 (S/404).
+
+  The changed canonical seeds, read to the first decision and no further:
+  E/505 (+2 rescued, -1 dead, +1 ff): searchers diverge at step 2; victim_2 is
+    assigned at 15 instead of 17; ff_unit_0 is then assigned victim_0 at 24 and
+    rescues it at 49 - in base victim_0 was never dispatched to and died at 66;
+    victim_1 is rescued at 173 by ff_unit_1 - in base assigned at 97 and never
+    completed; ff_unit_0 dies at 114 at (47,38) en route to victim_1.
+  S/303 (+1 rescued, -1 dead): victim_3 is assigned at 86 in both arms but to
+    different units (ff_unit_0 in fix, ff_unit_1 in base); the fix's unit
+    reaches it at 127; the base's victim fled to the (49,0) corner and died at
+    216. ff_unit_0 dies at 216 at (48,2) in fix; ff_unit_1 at 156 in base.
+  E/303 (-1 rescued, +1 never_detected): victim_0 at (40,25) is never within 8
+    cells of ANY UAV in 240 steps in the fix (base: a fire tracker at step 21,
+    searchers at 149/152); the searchers' extents shrink to x <= 32 for one of
+    them; searcher coverage 0.994 -> 0.791. Written off at 210.
+  E/202 (ff -1): base ff_unit_0 dies at 231 at (33,46); fix no death; victim_3
+    rescued by a different unit at 143 instead of 95.
+  E/404 (ff +1): base ff_unit_0 dies at 33; fix ff_unit_0 dies at 69 at (49,47)
+    and ff_unit_1 at 240 at (27,0).
+  S/101 (dead +1, ff -1): victim_3 rescued at 44 in base; in fix never assigned,
+    dies at 57 at (24,0); victim_2 rescued at 73 in fix, unresolved in base;
+    ff_unit_1 dies at 147 in base only.
+  None of these turns on a decision made at an edge. They are re-rolls of a
+  chaotic dispatch sequence after the searchers' step-1 change.
+
+
+8. ABLATION - one wake site live at a time
+================================================================================
+8.1  dimpinall - all three probe-based sites pinned dead (_grid_dimension returns
+  None when called from _position_at_boundary, _distance_from_boundary or
+  _execute_search_mode), every other site reading the live attribute:
+  BYTE-IDENTICAL TO dimbase 13/13 on all 47 fields, with 476-3,542 pinned
+  _distance_from_boundary calls and 304-1,188 pinned _position_at_boundary calls
+  per run, and zero pinned calls from _execute_search_mode (never reached).
+  This is the empirical form of Part 1's claim: at 50x50 the ten literal-50
+  sites are value-identical and the WHOLE behaviour change is the two boundary
+  helpers. [PASS]
+
+8.2  One site live at a time (outputs/_dim_ablation_{A,B,C}.txt):
+
+  dimA - only _position_at_boundary live (D and the clamp pinned dead):
+    eval identical to dimbase 13/13; byte-identical to dimbase 5/13 (E/101,
+    E/303, E/505, S/505, def/303 - no fire tracker ever held on an edge cell in
+    those baseline runs); in the other 8 the UAV rows diverge at step 78-192
+    (a fire tracker escaping an edge hold, C1) and the FIREFIGHTER rows never
+    diverge. rescued 35 -> 35, dead 12 -> 12, ff 8 -> 8.
+    P IS OUTCOME-INERT on this sample: it moves fire-tracker paths late in the
+    run and nothing downstream of them.
+
+  dimB - only _distance_from_boundary live (P and the clamp pinned dead):
+    eval identical to dimFIX 13/13 - the same 37/11/8/2, the same per-seed
+    changes (E/505 +2, S/303 +1, E/303 -1 with the write-off, the four ff
+    moves), UAV divergence from dimbase at step 1-2 (70 in def/202) exactly as
+    the fix. Byte-identical to dimfix 3/13 (E/101, S/505, def/303); the other
+    10 differ from the fix only from step 78-226 on, in UAV rows and the stdout
+    hash (the fire-tracker edge escapes that P adds), and in E/404 also in
+    firefighter rows and dispatch (the tracker's path changed what the
+    firefighters did) without changing that run's evaluation.
+    D CARRIES 100% OF THE OUTCOME MOVEMENT, on its own.
+
+  dimC - only the _execute_search_mode clamp live (P and D pinned dead):
+    BYTE-IDENTICAL TO dimbase 13/13, and the pin counter for
+    _execute_search_mode is 0 in every run: the sector-less search fallback
+    that contains the clamp is never executed in the canonical mix (sector
+    filtering is active for searchers after the launch grace, and the fire
+    trackers never enter that branch). The clamp is unreached, not merely
+    inert. Prediction recorded in 6.6 before the arm was read: confirmed.
+
+  Verdict of the ablation, in the Feature 2 guard-1/guard-2 shape the
+  confirmation message asked for: of the two helpers, _distance_from_boundary
+  does all the work (through the searcher gates C5/C7 that it switches from
+  always-on to edge-only) and _position_at_boundary is inert at the outcome
+  level (fire-tracker edge escapes, late, downstream of nothing on 13 seeds).
+  The third site is unreached. And "all the work" is the outcome-neutral
+  re-roll of sections 4-5, not a gain.
+
+
+9. TESTS
+================================================================================
+  The three tests the grid-scale diagnosis found failing at 100x100, run at
+  50x50 in isolation (outputs/_dim_pytest_grid3_before.txt on the 8520706
+  worktree, outputs/_dim_pytest_grid3_after_fix.txt on the patched tree):
+    test_executor_routing_and_burnt.py::test_fire_self_limits_does_not_burn_whole_map
+    test_unresolved_victim_coverage.py::test_victim_searcher_does_not_stay_in_single_corridor_when_unresolved
+    test_unresolved_victim_coverage.py::test_remaining_victim_coverage_after_two_rescues
+  before: 3 passed (338.8 s)    after: 3 passed (311.0 s). None is touched at 50x50.
+  (The first cannot be: it is fire-only. The other two are real-model searcher
+  trajectory tests and could have flipped; they did not.)
+
+  Full suite on the patched tree (outputs/_dim_pytest_fix.log): 8 failed / 490
+  passed in 42:35. Baseline on this exact source (outputs/_ph_pytest_fix3.log):
+  8 failed / 490 passed. THE COUNTS MATCH BY COINCIDENCE; THE SETS DO NOT. Two
+  tests left the failure set and two entered it:
+    newly PASSING  test_wind_aware_victim_search.py::test_victim_search_wind_aware_action_when_downwind_exists
+                   test_wind_aware_trajectory_regression.py::test_north_vs_south_trajectories_diverge_over_40_steps
+    NEW FAILURES   test_victim_searcher_scenario_matrix.py::test_no_crash_zero_victims
+                   test_wind_aware_trajectory_regression.py::test_east_vs_west_trajectories_diverge_over_40_steps
+  All four were re-run in isolation on both trees (outputs/_dim_flips.sh ->
+  outputs/_dim_flips.txt). The scenario helper seeds SYSTEM_RANDOM and the
+  trajectory file seeds DEFAULT_SEED, so these are deterministic, and the
+  repeats agree with themselves every time.
+
+  test_no_crash_zero_victims - A NEW FAILURE CAUSED BY THE FIX.
+    baseline tree 5/5 pass; patched tree 5/5 fail with the same `assert 4 <= 2`.
+    In the zero-victim "edge" scenario, north wind, 50 steps, the victim
+    searcher's cell is inside strict fire/smoke on 4 steps against a limit of
+    2. Not a crash - a hazard-exposure bound. It is the test-suite face of a
+    measured effect: over the 23 seed pairs the share of searcher steps spent
+    ON A BURNING CELL rises 2.12% -> 3.22% on the canonical 13 (117 -> 178
+    steps) and 2.98% -> 3.71% on the fresh 10 (143 -> 178), up in 16 of 23
+    runs (outputs/_dim_fire_exposure.txt; fire trackers 0.92% -> 1.38% and
+    0.71% -> 0.52%). Mechanism: the always-on C7 override replaced the
+    searcher's chosen direction with the neighbour of maximum hazard distance
+    on every step it fired - an extra hazard-avoidance layer the code never
+    meant to apply in the interior - and the fix removes it there. The hazard
+    gate's own strict checks (current cell, buffer, lookahead) still run; they
+    are weaker than the override was.
+  test_victim_search_wind_aware_action_when_downwind_exists - NEWLY PASSING,
+    AND IT WAS FAILING BECAUSE OF THIS DEFECT. It builds a real WildFireModel,
+    puts the searcher in the interior and asserts the plain
+    "victim_search_wind_aware" label; baseline tree 2/2 fail with the label
+    "..._retarget_to_interior" (C5 true everywhere while the helper was dead) -
+    7/7 across the two repeat sets; patched tree passes 11 of 12, the one
+    failure being a "victim_search_hazard_retreat" label: the fixture is a
+    bare WildFireModel() with UNSEEDED ignition, and once in twelve runs the
+    fire spawned beside the searcher. One of the eight campaign failures was
+    this defect; what remains of it is fixture noise.
+  test_east_vs_west / test_north_vs_south - ORDER-DEPENDENT ON BOTH TREES, not
+    a property of the fix. In isolation on the BASELINE tree east_vs_west FAILS
+    2/2 (`assert (24.0, 45.0) != (24.0, 45.0)`: both winds end on the same
+    interior retarget cell) and north_vs_south PASSES 2/2 - the opposite of the
+    baseline's full-suite result; the patched tree gives the same isolated
+    results (east_vs_west fails 2/2, north_vs_south passes). Their full-suite
+    verdict depends on what ran before them, on either tree.
+
+  Failure set after the fix, name for name: the six shared with the baseline
+  (behavior_regression, dashboard_panel, dispatch_replacement,
+  planner_authority, the two sector_assignment) + test_no_crash_zero_victims
+  + east_vs_west. GATE ITEM "no NEW test failures": FAIL - one deterministic
+  new failure caused by the fix, plus one order-dependent flip that is not
+  attributable to it; one baseline failure repaired.
+
+
+10. ROUTE_BLOCKED GATE
+================================================================================
+  `bash outputs/_ffr_rbgate.sh dimfix` (new prefix; 4 shards, 13 east + 5 south;
+  the merge verifies the shard union equals the baseline seed set exactly, no
+  duplicates) then `_ir_rbmerge.py --prefix dimfix` -> outputs/_dim_rbgate_dimfix.txt,
+  against the 70e1b33 baseline as the gate defines it:
+    D/east 13   rescued 30 -> 37   dead 19 ->  9   ff 12 -> 8   recoveries 3 -> 7
+    D/south 5   rescued 13 -> 18   dead  6 ->  2   ff  3 -> 1   recoveries 0 -> 3
+    ALL 18      rescued 43 -> 55   dead 25 -> 11   ff 15 -> 9
+    [PASS] rescued does not decrease on any seed (vs 70e1b33)
+    [PASS] recovery pass still recovers units: recoveries 3 -> 10, firings 15 -> 20
+    [FAIL] no unit left latched as route_blocked at end of run:
+           D/east 909, ff_unit_1 at (24,37).
+
+  The failing unit, read from the seed-matched harness run of the same world
+  (outputs/_ffr_dimfreshfix_east_half_909.json; eval identical, 3/1/1, terminal
+  189): assigned victim_0 at step 171, flagged route_blocked at 186 at (18,34)
+  and unassigned by the incident pathway on the same step; victim_0 died at
+  189 and the mission went terminal (3 rescued, 1 dead). From 186 to 240 the
+  unit stood on unburnt cells with zero burning neighbours and 2,341-2,420
+  reachable unburnt cells including edges - NOT fire-enclosed - and the flag
+  stood to the horizon because no live victim remained for the revalidation
+  pass to test a path against. This is the gap beside the phantom round's D6
+  case: D6 clears the flag when a unit is RELEASED from a dying victim while
+  blocked; this unit had already been unassigned by the incident pathway three
+  steps before its victim died, so the release helper never ran. A pre-existing
+  mechanism, reached through a re-rolled dispatch; nothing in this round touched
+  route_blocked. Alive, free and idle after the mission ended, so no outcome
+  hangs on it - and the gate counts it. Reported as the FAIL it is.
+
+  This round's own delta (phfix3 = the same gate on this exact source before
+  the fix -> dimfix; outputs/_dim_rbcompare_phfix3_dimfix.txt): ALL 18 rescued
+  52 -> 55, dead 11 -> 11, ff 11 -> 9; 9/18 seeds identical on all three;
+  rescued decreased on D/east 303 only (3 -> 2, the canonical E/303 write-off
+  seen through the second instrument); ff up on E/404 and E/505, down on E/202,
+  E/606, E/909 and S/101; firings 24 -> 20, recoveries 10 -> 10, end-of-run
+  units still blocked 0 -> 1 (the unit above).
+
+
+11. GATE SUMMARY
+================================================================================
+  [PASS] the control proves byte-identity when the fix is disabled
+         -> 13/13, 47 fields, section 3.
+  [PASS] rescued does not decrease on either sample
+         -> canonical 35 -> 37, fresh 27 -> 27. Passes as written; see the next item.
+  [FAIL, REPORTED AS THE BRIEF ASKED] the fresh-seed result does not contradict
+         the canonical one
+         -> it does. The canonical +2 is absent on fresh seeds (27 -> 27) and
+            victims dead go 3 -> 8 there (12 -> 11 on canonical). The gain is
+            concentrated in the characterisation sample. Per the brief and the
+            confirmation message: the plumbing fix is still correct and worth
+            shipping as a defect fix; the outcome numbers are not the reason.
+  [FAIL] no NEW test failures
+         -> one deterministic new failure caused by the fix,
+            test_no_crash_zero_victims (searcher 4 steps in strict fire/smoke,
+            limit 2; 5/5 on the patched tree, 0/5 on the baseline tree) - the
+            suite's face of the +50% searcher burning-cell exposure in section
+            9; plus one order-dependent trajectory flip that is not
+            attributable to the fix. One baseline failure is repaired by it.
+  [FAIL] route_blocked gate passes
+         -> two of three items pass against 70e1b33 (no seed's rescued
+            decreases, recoveries 3 -> 10); one unit left flagged at the end
+            of D/east 909, alive, free and idle after the mission went
+            terminal, through the pre-existing gap beside D6. Section 10.
+  Three of five gate items pass. The two that fail are stated above as they
+  are, with the mechanism, and not reinterpreted.
+
+
+12. RECOMMENDATION
+================================================================================
+  Ship the two lines as a correctness fix, on the following record:
+  - the model's size is now readable; every consumer in Part 1's inventory
+    reads it (6.2); the 100x100 blocker W1 is removed;
+  - the control arm proves the change is the cause of every 50x50 difference;
+  - what changes at 50x50 is the removal of three always-on searcher overrides
+    and the addition of an edge test for fire-tracker holds; the woken
+    behaviour is what the code always said it did;
+  - its effect on outcomes over 23 seeds is neutral-to-negative on victims
+    (rescued +2 / +0, dead -1 / +5) and neutral on firefighters (0 / -1), and
+    the only gain is one seed's worth. It is not an improvement and must not
+    be recorded as one.
+  - the 50x50 gates recorded before it (latbase, phfix3, the val50 numbers in
+    gridscale_part1.txt) stop being the comparison point; outputs/_ffr_dimfix_*
+    is the new baseline for the canonical 13 and outputs/_ffr_dimfreshfix_* for
+    the fresh 10, and the route_blocked gate needs a fresh baseline prefix on
+    the fixed source before it is used as a comparison again.
+
+  The two failed gate items, and what I would do about each:
+  - test_no_crash_zero_victims / searcher hazard exposure. This is not the
+    plumbing; it is the searcher hazard gate being, for the first time, what
+    its code says: edge-only. The interior hazard avoidance the searchers had
+    was an accident of the dead helper. I would NOT loosen the test - it
+    encodes a bound the maintainer chose - and I would not re-add the override.
+    The honest options are (a) ship the fix and open a follow-up round on
+    searcher hazard avoidance in the interior, with this test and the 23-pair
+    burning-cell exposure as its gate, accepting one red test until then; or
+    (b) hold the fix until that round lands. I recommend (a): the defect blocks
+    the 100x100 move the maintainer has already decided on, and the exposure
+    cost is measured, bounded (+1.1 and +0.7 points of searcher steps) and
+    attributable to one gate (C7).
+  - route_blocked D/east 909. A unit unassigned by the incident pathway while
+    flagged, whose victim then dies, is not covered by D6 (which handles a unit
+    still bound to the dying victim). One helper-level clearing in the same
+    place D6 clears, for a flagged-and-unassigned unit when the last live
+    victim goes terminal and the unit is not fire-enclosed, would close it. Out
+    of this round's scope by the brief; reachable by any re-rolled dispatch,
+    not only this one.
+
+  A separate question this round exposes but does not answer: the three
+  searcher gates were always-on for the whole history of the repository, and
+  the searcher tuning of every prior round (wind-aware search, corridor,
+  sweep, pocket escape) was done against searchers whose chosen direction was
+  being overridden on more than half of their hazard-gate calls. Whether that
+  tuning still fits searchers that now follow their own plans is a round of
+  its own - and the hazard-exposure follow-up above is its first item.
+
+
+13. FILES
+================================================================================
+  source           wildfire_model.py (+10)
+  patch scripts    outputs/_dim_patch.py, outputs/_dim_harness_patch.py
+  harness          outputs/_ffr_harness.py (+39), outputs/_dim_hooks.py
+  runners          outputs/_dim_queue.py, outputs/_dim_queue.txt, outputs/_dim_pool.sh,
+                   outputs/_dim_launch.sh, outputs/_dim_post.sh, outputs/_dim_grid3.sh,
+                   outputs/_dim_grid3_after.sh, outputs/_dim_kill_pool.ps1
+  analysis         outputs/_dim_analyze.py, outputs/_dim_rbcompare.py
+  arms             outputs/_ffr_dim{base,fix,ctrl,inst,pinall,A,B,C}_*.json (+ .stdout.txt),
+                   outputs/_ffr_dimfresh{base,fix}_*.json, outputs/_ffr_logs/
+  tables           outputs/_dim_helpers.txt, _dim_helpers_detail.txt, _dim_fresh.txt,
+                   _dim_categories.txt, _dim_edgeband.txt, _dim_fire_exposure.txt,
+                   _dim_ablation_{A,B}.txt, _dim_traces.txt, _dim_traces_fresh.txt,
+                   _dim_smoke/
+  logs             outputs/_dim_pool.log, outputs/_dim_post.log
+  tests            outputs/_dim_pytest_grid3_{before,after_fix}.txt, outputs/_dim_pytest_fix.log,
+                   outputs/_dim_flips.sh, outputs/_dim_flips.txt (the four flipped tests,
+                   repeated in isolation on both trees)
+  gate             outputs/_dim_rbgate_dimfix.txt (vs 70e1b33), outputs/_dim_rbcompare_phfix3_dimfix.txt
+                   (this round's own delta), outputs/_rblatch_camp2_dimfix*_D_*.json
+  baseline tree    detached worktree at 8520706 under the session scratchpad
+                   (git worktree list); remove with `git worktree remove` when done
