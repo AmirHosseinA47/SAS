@@ -524,6 +524,12 @@ class Victim(mesa.Agent):
         # still has somewhere to go next step. This is a preference, not a filter:
         # when every reachable cell is a dead end, the victim still takes the best
         # of them rather than freezing in the open.
+        #
+        # MEASURED INERT AT 50x50 (guard-1 attribution, Feature 2): fired 3 times
+        # in 13 runs, zero outcome changes, and every firing was the one case its
+        # geometry can reach here - a victim standing IN fire choosing among escape
+        # cells tied at distance 1. KEPT DELIBERATELY pending evaluation on a
+        # larger grid, where the pockets it was designed for can form.
         with_exit = [item for item in candidates if item[4]]
         pool = with_exit if with_exit else candidates
 

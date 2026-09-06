@@ -1,0 +1,828 @@
+================================================================================
+LATERAL-WHEN-PINNED  -  PART 1: DESIGN, MEASUREMENT, VERDICT
+================================================================================
+branch firefighter-mission-features   HEAD dd0a1b9   2026-09-06
+baseline arm: latbase = dd0a1b9 in a detached worktree, canonical 13-run
+scenario-D sample, 240 steps, run through outputs/_ffr_harness.py extended
+with two READ-ONLY observers (section 2). No source edit was made for this
+round apart from the Item A comment.
+
+================================================================================
+0. VERDICT UP FRONT: STOP - THE CEILING IS TOO LOW AND THE SIGN IS NEGATIVE
+================================================================================
+The 231 / 175 / 17 figures are real and reproduce exactly from a hook placed
+at the hold decision itself. The exact anchor-independent count is 172, not
+158: only 3 of the 17 leash-involved holds also had a lateral step available.
+
+But the 172 do not point at deaths a lateral rule would prevent:
+
+  - 111 of the 172 (65%) belong to victims that SURVIVED anyway
+    (70 rescued, 35 alive-assigned at the horizon, 6 unreachable-alive).
+    61 belong to 9 dead victims, which are 7 distinct fire episodes
+    (east/half and east/default share the fire and the victims of a seed).
+  - Where a lateral step was available, the lateral cell ignited LATER than
+    the held cell in 53 holds and at the SAME step or EARLIER in 101. Sliding
+    along a front is a coin flip that lands against the victim more often
+    than for it, because the front is not straight.
+  - An omniscient walker could still have escaped from 8 of the 12 deaths at
+    the time of a hold. A GREEDY lateral rule cannot: replayed against the
+    recorded fire history (validated to reproduce every recorded position of
+    all 52 victims and all 11 non-custody deaths exactly), the best variant
+    converts 2 of 11 deaths into survival (both victims were never assigned,
+    so neither would become a rescue), delays 2 more by 3 steps, and KILLS 4
+    victims that survived under the strict rule, 3 of which were RESCUED in
+    the baseline. Net on the dead count: +2 (12 -> 14). The shape-aware
+    variant is nearly inert (7 lateral moves in 13 runs, 0 saves, 1 caused).
+
+This is the "ceiling too low" outcome the brief anticipated, with a worse
+sign than "inert": every variant that moves enough victims to save one also
+walks others into cells that burn. The recommendation is NOT to implement.
+Sections 4-6 still state the rule, the anti-oscillation mechanism and the
+kill switch that WOULD be built if the maintainer overrides this verdict and
+wants the counterfactual confirmed by real seed-matched runs.
+
+================================================================================
+1. THE CURRENT VICTIM MOVEMENT RULE, QUOTED IN FULL AS IT EXISTS AT dd0a1b9
+================================================================================
+agents.py has no commit between 5000f70 (Feature 2) and dd0a1b9, so the rule
+below is exactly the Feature 2 rule. Constants (common_fixed_variables.py):
+
+
+# Victim fire flight (feature 2). A victim holds its cell until the nearest
+# ACTIVELY BURNING cell is within VICTIM_FLEE_TRIGGER_DISTANCE (manhattan), then
+# steps to the orthogonal neighbour that maximises distance from fire - never
+# onto a burning cell, and never further than VICTIM_FLEE_MAX_DISPLACEMENT from
+# the cell it spawned on. The leash is what keeps a fleeing victim inside the
+# searcher coverage its spawn sat in, and what stops a victim outrunning the
+# front for the whole run only to die somewhere else.
+#
+# The two defaults are borrowed, not invented: 3 is IDLE_RETREAT_SAFETY_BUFFER
+# and 6 is IDLE_RETREAT_MAX_CELLS (agents.py), already this codebase's notions
+# of "fire is too close to stand here" and "how far a unit may wander during
+# this kind of manoeuvre", so a victim's sense of danger matches a
+# firefighter's.
+#
+# TRIGGER <= 0 is the kill switch: Victim.advance goes back to a no-op, the
+# firefighter's live re-target is skipped so the approach path is the
+# pre-feature code literally, and last_known_position stops being updated.
+# Overridable per run through apply_scenario_config like every other scenario
+# parameter, and read at call time so an override applies. The rule is fully
+# deterministic - it draws from no RNG at all.
+VICTIM_FLEE_TRIGGER_DISTANCE = 3
+VICTIM_FLEE_MAX_DISPLACEMENT = 6
+
+agents.py lines 359-392 (trigger, leash, offsets) at dd0a1b9:
+
+def victim_flee_trigger_distance() -> int:
+    """Feature 2 trigger radius; <= 0 disables the feature entirely.
+
+    Read from the `cfv` module rather than the star-imported copy, and read at
+    call time. `apply_scenario_config` sets attributes on common_fixed_variables
+    and wildfire_model but NOT on this module, so a per-run override - the
+    kill-switch arm included - is only visible through `cfv`.
+    """
+    try:
+        return int(getattr(cfv, "VICTIM_FLEE_TRIGGER_DISTANCE", 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def victim_flee_max_displacement() -> int:
+    """Feature 2 leash from the spawn cell, in manhattan cells."""
+    try:
+        return max(0, int(getattr(cfv, "VICTIM_FLEE_MAX_DISPLACEMENT", 0)))
+    except (TypeError, ValueError):
+        return 0
+
+
+# Orthogonal offsets in a FIXED order for the victim's flee scan. The same four
+# offsets in the same order are hardcoded in `Firefighter._neighbor_cells`; that
+# copy is deliberately left alone so the firefighter's approach path stays
+# byte-identical with the feature off. Movement here is 4-connected for the same
+# reason firefighter movement is: every distance and reachability computation in
+# the rescue subsystem is manhattan / 4-connected, and a victim that could cut a
+# corner a firefighter cannot would be inconsistent with all of them. The order
+# is also the flee rule's last tie-break, which is what makes it deterministic.
+ORTHOGONAL_OFFSETS = ((1, 0), (-1, 0), (0, 1), (0, -1))
+
+VICTIM_TERMINAL_STATUSES = ("dead", "rescued")
+
+
+agents.py lines 442-647 (the rule, guard 2, the hold counter, guard 1) at dd0a1b9:
+
+    def _flee_approaching_fire(self) -> None:
+        """One deterministic step away from fire, or hold. Draws from no RNG.
+
+        Ordering makes this work and is not incidental: mesa's
+        SimultaneousActivation advances agents in insertion order - Fire, UAV,
+        Victim, Firefighter - so by the time this runs the fire has already
+        committed THIS step's burning state, and `_check_fire_casualties` has
+        not yet run (it is in the post-move cycle). A victim whose own cell
+        ignites this step can therefore still step off it and be alive when the
+        casualty sweep looks.
+        """
+        trigger = victim_flee_trigger_distance()
+        if trigger <= 0:
+            return  # G1 kill switch: advance() is a no-op, as it always was
+        if self.pos is None:
+            return  # G2
+        if str(getattr(self, "status", "") or "").strip().lower() in (
+            VICTIM_TERMINAL_STATUSES
+        ):
+            # G3. `_check_fire_casualties` does NOT remove a dead victim from
+            # the grid or the scheduler, so advance() keeps being called for
+            # corpses; this guard is mandatory, not defensive. The skip set is
+            # deliberately identical to that sweep's, so the set of victims that
+            # can MOVE is exactly the set that can DIE - an "unreachable" or
+            # "cancelled" victim is still alive and still flees.
+            return
+        if self._in_firefighter_custody():
+            return  # G4
+        fire_cells = self._burning_cells()
+        if not fire_cells:
+            # Nothing is burning anywhere: the safest state there is, so the
+            # leash re-centres here (guard 2).
+            self._reanchor_leash()
+            return  # G5
+
+        cell = (int(self.pos[0]), int(self.pos[1]))
+        dist_before = self._min_fire_distance(cell, fire_cells)
+        if dist_before > trigger:
+            # R2: fire is not close enough to be worth moving for. This is the
+            # victim's "safe standoff", and reaching it RE-ANCHORS THE LEASH
+            # (guard 2) exactly as the firefighter's does. Same threshold as the
+            # trigger, so no new constant enters the model, and the number
+            # matches the firefighter's ideal standoff of BUFFER + 1 = 4.
+            self._reanchor_leash()
+            return
+
+        leash = victim_flee_max_displacement()
+        anchor = (
+            getattr(self, "leash_anchor", None)
+            or getattr(self, "spawn_cell", None)
+            or cell
+        )
+        grid = self.model.grid
+        candidates: list[tuple[int, int, int, tuple[int, int], bool]] = []
+        leash_blocked = 0
+        for order, (off_x, off_y) in enumerate(ORTHOGONAL_OFFSETS):
+            ncell = (cell[0] + off_x, cell[1] + off_y)
+            if grid.out_of_bounds(ncell):
+                continue
+            if ncell in fire_cells:
+                continue
+            from_anchor = abs(ncell[0] - anchor[0]) + abs(ncell[1] - anchor[1])
+            if from_anchor > leash:
+                leash_blocked += 1
+                continue
+            candidates.append(
+                (
+                    self._min_fire_distance(ncell, fire_cells),
+                    from_anchor,
+                    order,
+                    ncell,
+                    self._cell_has_onward_exit(ncell, cell, fire_cells),
+                )
+            )
+        if not candidates:
+            # R4: boxed in - surrounded, at the grid edge, or out of leash.
+            self._note_flee_hold("no_candidate", leash_removed=leash_blocked > 0)
+            return
+
+        # R4b DEAD-END AVOIDANCE. Greedy distance-maximising is exactly what walks
+        # an agent into a pocket: a cell can be locally further from the nearest
+        # flame while the front closes around it. So PREFER a destination that
+        # still has somewhere to go next step. This is a preference, not a filter:
+        # when every reachable cell is a dead end, the victim still takes the best
+        # of them rather than freezing in the open.
+        with_exit = [item for item in candidates if item[4]]
+        pool = with_exit if with_exit else candidates
+
+        # R5: furthest from fire wins; ties go to the cell nearer the anchor,
+        # then to the fixed offset order. A total order, so no RNG and no
+        # arbitrary choice.
+        dist_after, _from_anchor, _order, target, _has_exit = min(
+            pool, key=lambda c: (-c[0], c[1], c[2])
+        )
+
+        # R6: a step must genuinely buy distance. The "standing in fire" case
+        # needs no separate branch: candidates exclude burning cells, so every
+        # candidate is at distance >= 1, which already beats dist_before == 0.
+        if dist_after <= dist_before:
+            # Instrumented, because whether a LATERAL step should be allowed
+            # here is an open question and deserves a measurement rather than an
+            # assertion. `lateral_available` marks the holds a lateral rule
+            # would actually change; `leash_removed` marks the ones where the
+            # leash had already discarded a candidate.
+            self._note_flee_hold(
+                "no_improvement",
+                lateral_available=any(item[0] == dist_before for item in pool),
+                leash_removed=leash_blocked > 0,
+            )
+            return
+
+        self.model.grid.move_agent(self, target)
+        recorder = getattr(self.model, "_record_victim_flee", None)
+        if callable(recorder):
+            recorder(self, cell, target, dist_before, dist_after, anchor)
+
+    def _reanchor_leash(self) -> None:
+        """Guard 2: re-centre the leash on the current cell once the victim is safe.
+
+        The victim's leash was measured against `spawn_cell`, which has exactly
+        one writer in the whole tree and is never reassigned - so a victim was
+        confined to a permanent diamond around where it spawned, while the fire
+        front, which has no leash, kept coming. When the front arrives FROM the
+        spawn side the leash therefore stops the victim escaping rather than
+        bounding a manoeuvre. The firefighter's `_idle_retreat_origin` never had
+        that problem: it re-anchors whenever the unit reaches safety, which makes
+        its budget renewable. This gives the victim the same property.
+
+        SCOPE: THIS TOUCHES EXACTLY ONE FIELD, AND THAT IS DELIBERATE. The
+        firefighter's two re-anchor sites also null `_idle_retreat_last_cell`,
+        its anti-oscillation memory - the reset hole diagnosed in 93f23b7
+        (verdict B, real but inert, left documented because the obvious fix is a
+        provable no-op given both sites clear it). A leash re-anchor has no
+        business discarding oscillation history, so the INTENDED behaviour is
+        mirrored here and the hole is not inherited. The victim rule keeps no
+        such memory today; this method is written so that if one is ever added,
+        re-anchoring will still not wipe it.
+
+        `spawn_cell` stays immutable so that every report continues to mean the
+        true spawn by "displacement from spawn".
+        """
+        if self.pos is None:
+            return
+        cell = (int(self.pos[0]), int(self.pos[1]))
+        if getattr(self, "leash_anchor", None) == cell:
+            return
+        self.leash_anchor = cell
+        self.leash_reanchors = int(getattr(self, "leash_reanchors", 0) or 0) + 1
+
+    def _note_flee_hold(self, reason: str, **flags: bool) -> None:
+        """Count why a triggered victim held instead of moving. Observation only.
+
+        Cheap counters on the model, read by the validation harness. Nothing in
+        the simulation reads them back.
+        """
+        model = getattr(self, "model", None)
+        if model is None:
+            return
+        counts = getattr(model, "victim_flee_hold_counts", None)
+        if not isinstance(counts, dict):
+            counts = {}
+            try:
+                model.victim_flee_hold_counts = counts
+            except Exception:
+                return
+        counts[reason] = int(counts.get(reason, 0) or 0) + 1
+        for name, flag in flags.items():
+            if not flag:
+                continue
+            key = "%s.%s" % (reason, name)
+            counts[key] = int(counts.get(key, 0) or 0) + 1
+
+    def _cell_has_onward_exit(
+        self,
+        ncell: tuple[int, int],
+        from_cell: tuple[int, int],
+        fire_cells: set[tuple[int, int]],
+    ) -> bool:
+        """One-step lookahead: would the victim still have somewhere to go?
+
+        True when `ncell` has at least one orthogonal neighbour that is in
+        bounds and not burning, NOT COUNTING the cell being vacated.
+
+        Excluding `from_cell` is what gives the test any content. Counting it
+        would make the answer True for every candidate whenever the victim is
+        not already standing in fire, since the cell it is leaving is by
+        definition non-burning then - the guard would be vacuous exactly in the
+        common case it exists to cover.
+
+        Deliberately NOT leash-aware: it asks whether the cell is a physical
+        pocket, which is what "dead end" means here. A cell whose only onward
+        exits sit outside the leash is a pocket for this victim specifically,
+        and folding that in would couple this guard to the anchor rule; that is
+        left open pending the second guard.
+        """
+        grid = self.model.grid
+        for off_x, off_y in ORTHOGONAL_OFFSETS:
+            onward = (ncell[0] + off_x, ncell[1] + off_y)
+            if onward == from_cell:
+                continue
+            if grid.out_of_bounds(onward):
+                continue
+            if onward in fire_cells:
+                continue
+            return True
+        return False
+
+================================================================================
+2. RE-MEASUREMENT OF 231 / 175 / 17 - HOOKED AT THE DECISION
+================================================================================
+2.1 How. outputs/_ffr_harness.py now wraps `Victim._note_flee_hold`, the
+method `_flee_approaching_fire` calls at the exact point it decides to hold,
+with the reason and the source's own flags. Each call is recorded with the
+step, victim, cell, and the geometry the decision was made on: the fire
+distance, the anchor and leash, every in-bounds non-burning neighbour with its
+fire distance, anchor distance, fixed order and guard-1 verdict, and the cell
+the source's own R5 tie-break would pick if R6 admitted equal-distance moves
+(`best_lateral`). The geometry is recomputed inside the same call through the
+victim's own pure helpers (`_burning_cells`, `_min_fire_distance`,
+`_cell_has_onward_exit`), which draw from no RNG and mutate nothing, and the
+recomputed lateral verdict is cross-checked against the flag the source
+passed. The harness also now records `burn_intervals`, the complete burning
+history of every cell as [start, end) step intervals (the old first_burn_step
+cannot say when a cell became safe again).
+
+Not per-step snapshots: nothing here is inferred from positions. The record
+is the source's decision, taken as it is made.
+
+2.2 Non-perturbation. Smoke runs (D/east/half 101 to step 70, D/east/default
+202 to step 45) reproduce the phantom-round arm's fire digests and victim
+positions step for step. The full 13-run latbase wave is identical to the
+phfix3 arm on eval, captured-stdout sha256, every fire digest and every victim
+position in 13 of 13 runs - which also establishes that phfix3 WAS run on
+dd0a1b9-equivalent source, so its route_blocked gate (_ph_rbgate_phfix3.txt)
+is the dd0a1b9 baseline for that gate if this round ever reaches Part 3.
+
+2.3 Result (outputs/_lat_measure_base.txt, section A).
+
+  counter                                 source counters   per-hold records
+  no_candidate                                       37             37
+  no_candidate.leash_removed                          6              6
+  no_improvement                                    231            231
+  no_improvement.lateral_available                  175            175
+  no_improvement.leash_removed                       17             17
+  recomputed-vs-source lateral flag mismatches                       0
+
+  ANCHOR-INDEPENDENT (no_improvement & lateral_available & NOT leash_removed)
+                                                                    172
+
+The brief's "roughly 158" subtracted all 17 leash-involved holds from 175; in
+fact only 3 of the 17 had a lateral available, so the exact figure is 172.
+They occur in 11 of 13 runs: D/east/half 101: 34, 202: 6, 303: 29, 404: 18,
+505: 2; D/south/half 101: 33, 202: 2, 303: 5, 505: 10; D/east/default 101: 4,
+303: 29. (D/south/half 404 and D/east/default 202 have none.)
+
+================================================================================
+3. CLASSIFICATION OF THE 172 HOLDS BEFORE ANY RULE
+================================================================================
+3.1 Was the victim in danger at that moment?
+
+  fire distance at the hold          d0=1: 106    d0=2: 38    d0=3: 28
+  steps until the HELD cell ignited  <=3: 78   4-10: 31   >10: 29   never: 34
+
+Mostly yes: 106 holds had fire on an adjacent cell and 78 held cells ignited
+within three steps. 34 held cells never ignited at all - those holds cost
+nothing. Geometry: 99 of the 172 holds are on a grid edge (an out-of-bounds
+neighbour), 106 have a burning neighbour, 132 have exactly one lateral
+candidate and 74 have exactly one candidate of any kind. The dominant picture
+is a victim pinned against the map edge by a front running parallel to it,
+where the only equal-distance step is a slide along the edge.
+
+3.2 Would the lateral step have improved anything, fire-only?
+For each hold, the cell `best_lateral` (what the rule would take) against the
+held cell, using the recorded ignition times:
+
+  lateral ignites LATER by 1-3 steps                      27
+  lateral ignites LATER by >3 steps                       24
+  lateral never ignites, held cell does (better)           2   -> better  53
+  same step                                               56
+  neither cell ever ignites                               18   -> neutral 74
+  lateral ignites EARLIER                                 29
+  held cell never ignites, lateral does (worse)           16   -> worse   45
+
+Better in 53, neutral in 74, worse in 45. A one-step slide along a front buys
+time about as often as it walks into the next lobe of the front.
+
+3.3 Could ANY movement rule have survived from there? Time-expanded backward
+reachability over the recorded fire history (a cell is survivable at step t if
+it is not burning at t and it or a neighbour is survivable at t+1, down from
+the horizon). This bounds every possible victim rule from above, leash and
+rescue ignored:
+
+  held cell doomed      / lateral cell doomed          17   nothing could help
+  held cell survivable  / lateral cell doomed          29   lateral walks INTO doom
+  held cell survivable  / lateral cell survivable     126
+
+3.4 Fate of the victims that held - the ceiling.
+
+  anchor-independent holds by victims that ended   rescued      70
+                                                   dead         61
+                                                   assigned     35
+                                                   unreachable   6
+  distinct victims with >= 1 such hold: rescued 4, assigned 2, unreachable 1,
+  dead 9 (= 7 distinct fire episodes; two seeds appear under both role sets)
+  victims dead in the arm: 12
+
+  DEAD victims with anchor-independent holds
+  combo                  victim   holds  death  last hold  S_held  S_lateral  hold steps (d0)
+  D/east/half 101        victim_1     4    165     164      yes      yes      161(3) 162(1) 163(1) 164(1)
+  D/east/half 303        victim_3     9     75      74      yes      yes      60(3) 61(3) 62(3) 67(2) 68(2) 70(1) 71(1) 73(1) 74(1)
+  D/east/half 404        victim_0     7    162     161      yes      yes      151(3) 152(3) 153(2) 154(2) 155(2) 160(1) 161(1)
+  D/east/half 404        victim_1    11     48      47      yes      yes      36(2) 37(2) 38(2) 40(2) 41(2) 42(1) ... 47(1)
+  D/east/half 505        victim_0     2     66      65       no       no      64(1) 65(1)
+  D/south/half 303       victim_3     5    216     212      yes      yes      198(1) 199(1) 200(1) 211(2) 212(2)
+  D/south/half 505       victim_3    10     90      89      yes      yes      69(1) 70(1) 71(1) 78(1) 79(1) 80(1) 82(1) 83(1) 88(1) 89(1)
+  D/east/default 101     victim_1     4    165     164      yes      yes      (same episode as east/half 101)
+  D/east/default 303     victim_3     9     75      74      yes      yes      (same episode as east/half 303)
+
+  OMNISCIENT CEILING: 8 of 12 deaths had at least one hold whose lateral cell
+  was still survivable by a perfect walker. That is the upper bound for the
+  whole design space, and it is not what a greedy rule achieves (3.5).
+
+The holds of the dead cluster in the last 2-15 steps before death, at d0=1:
+the victim is already inside a closing pocket. Escaping a closing pocket
+generally means moving TOWARD the nearer flame through the gap, which no
+distance-greedy rule does, lateral or otherwise. That is the whole gap
+between the omniscient 8 and the greedy 2 below.
+
+3.5 The counterfactual that settles it: offline replay against the recorded
+fire. Victims are inert to fire, so the fire history of a run is the same
+under any victim rule. outputs/_lat_analyze.py re-implements the flee rule
+and replays each victim from its spawn against the recorded burning sets.
+
+  VALIDATION FIRST. The CURRENT rule replayed reproduces the recorded position
+  of every victim at every step up to custody/rescue/death: 52 victims, 5290
+  position-steps, 0 mismatches; the 11 deaths that happened outside custody
+  are reproduced at the same step (the 12th victim died while a firefighter
+  stood on its cell, where the rule is suppressed by G4).
+
+  Then the variants, fire-only, on the 11 non-custody dead victims, with the
+  40 other victims replayed inside their pre-custody window to count deaths a
+  variant would CAUSE:
+
+  variant                    survive  die later  same  lateral  reversals  ping-pong  longest alt  caused
+  base (strict, dd0a1b9)          0        0      11       0        8         10           0          0
+  a  lateral always, no memory    2        2       7      81       57         52           7          4
+  a  + lateral-only last cell     2        2       7      59       27         21           2          4
+  a  + any-move last cell         1        4       6      54       21         20           2          4
+  a  + lateral memory, budget 6   2        2       7      59       27         21           2          4
+  b  only when d0 <= 1, memory    1        3       7      40       21         17           2          4
+  b  only when d0 <= 2, memory    2        2       7      53       23         18           2          4
+  c  shape-aware, memory          0        1      10       7       11         14           0          1
+  c  shape-aware, no memory       0        1      10       7       11         14           0          1
+
+  (reversals = a move into a cell the victim occupied within the previous 6
+  steps; ping-pong = immediate return to the cell just left; longest alt = the
+  longest run of consecutive moves alternating between two cells; caused =
+  victims alive under the strict rule that die in the replay before the step
+  a firefighter reached them in the baseline.)
+
+  The two SAVES (every variant that saves anything saves these two):
+    D/east/half 404 victim_1  died step 48; replay survives with 12 lateral +
+      18 strict moves, ends on burnt-out ground 25 cells from fire. Never
+      assigned in the baseline. Survival, not rescue.
+    D/south/half 505 victim_3  died step 90; replay survives with 21 lateral +
+      22 strict moves inside a leash-6 diamond (4 re-anchors), ends on
+      scorched ground 20 from fire. Never assigned. Survival, not rescue.
+
+  The four CAUSED deaths under the best variants (a/memory, b P=2):
+    D/east/half 101 victim_0  RESCUED at step 222 in the baseline. Replay:
+      3 lateral slides along the y=0 edge from (42,0) to (45,0); (45,0)
+      ignites at step 171 while (42,0) does not. Dead 51 steps before the
+      firefighter that rescued it arrived.
+    D/east/half 303 victim_0 and D/east/default 303 victim_0 (one fire
+      episode) RESCUED at 101 / 122, custody from 90 / 111. Replay: 4 lateral
+      moves carry it 7 cells north along the x=40 front to (40,32), which
+      ignites at step 87; the baseline cell (40,25) survives to custody.
+    D/east/half 202 victim_1  alive-unreachable at the horizon. Replay: 5
+      lateral moves, dies at step 240 at (23,48).
+  Under the shape-aware variant only the first of these happens (1 lateral
+  move, dies at 171 at (44,0)).
+
+  Net dead count under the best variants: 12 - 2 + 4 = 14. Under (c): 13.
+
+3.6 Caveats on the counterfactual, stated so they can be weighed.
+  - Fire-only: rescue is not modelled. A caused death is counted only if it
+    happens before the step a firefighter reached that victim in the baseline;
+    a victim standing 7 cells away would shift that arrival by a few steps
+    either way, and D/east/half 303 victim_0 dies 3 steps before its baseline
+    custody step, so that one is a near thing. The other three are not.
+  - The two saves end alive but unassigned in a run where they were never
+    assigned; whether a searcher would find them is not modelled either.
+  - The leash IS modelled, including guard 2 re-anchoring; guard 1 is
+    modelled; custody is modelled as a stop, not as carrying.
+  - The engine is validated to reproduce the baseline exactly, so any error is
+    in what a variant does, not in the fire or the base rule. The variant
+    branches are 15 lines; they are the same lines Part 2 would add.
+
+================================================================================
+4. THE RULE THAT WOULD BE BUILT IF THE VERDICT IS OVERRIDDEN
+================================================================================
+Options evaluated (numbers in 3.5):
+
+  (a) equal-distance step whenever no strictly better neighbour exists.
+      Saves 2, causes 4. Without memory it ping-pongs (52 immediate returns,
+      alternation runs of 7 moves) - unacceptable on its own.
+  (b) equal-distance step only when pressed, d0 <= P. P=2 is
+      indistinguishable from (a) on outcomes with fewer moves (53 vs 59);
+      P=1 loses one of the two saves. Gains nothing over (a) except fewer
+      moves at d0=3, where the hold costs nothing anyway.
+  (c) equal-distance step only into a cell with more free neighbours than the
+      current one. Inherently non-oscillating (free-neighbour count is a
+      potential that must strictly increase along a lateral chain under a
+      static front). Nearly inert: 7 moves, 0 saves, 1 delay, 1 caused.
+
+If a rule is wanted regardless, (b) with P = 2 and the lateral-only memory of
+section 5 is the least-bad choice: it is the smallest change that reaches the
+variant ceiling of 2, and its wandering is bounded three ways (leash, memory,
+budget). Exact rule, as a pure addition inside the existing R6 hold branch:
+
+  R6' when best.dist == d0 (a tie exists) and VICTIM_FLEE_LATERAL_DISTANCE > 0
+      and d0 <= VICTIM_FLEE_LATERAL_DISTANCE:
+        lateral = [c in pool with dist == d0 and c.cell != self._lateral_last_cell]
+        if lateral and consecutive_lateral_moves < VICTIM_FLEE_LATERAL_BUDGET:
+            move to min(lateral, key=(from_anchor, order))   # the R5 order
+            self._lateral_last_cell = the cell just left
+            consecutive_lateral_moves += 1
+            record the move with kind="lateral" (own log + counter)
+        else: hold as today (counted no_improvement, plus a new flag
+              lateral_refused = memory/budget refused the only tie)
+      a STRICT move resets consecutive_lateral_moves to 0 and does NOT touch
+      the memory; re-anchoring (guard 2) touches neither, as its docstring
+      already promises.
+
+  Everything before R6 (guards, candidates, leash, guard 1, R5) is untouched;
+  with the switch at 0 the new branch is never entered and the hold path is
+  the dd0a1b9 code literally.
+
+What "consider explicitly" asks: yes, a lateral rule lets a victim drift
+within the leash diamond with no benefit - 3.5 measures 53-81 extra moves per
+13 runs for 2 survivals, and the leash bounds displacement (max 6 from the
+anchor) but not the wandering inside it; the budget (section 5) is what
+bounds that.
+
+================================================================================
+5. ANTI-OSCILLATION - THE MECHANISM, AND ITS MEASUREMENT
+================================================================================
+The risk is the tie itself: under a static front, if B is the best lateral
+from A then A is usually the best lateral from B (it is nearer the anchor), so
+A -> B -> A -> B forever. Measured: variant (a) with no memory produced 52
+immediate ping-pongs and an alternation run of 7 consecutive moves in the
+replay of 11 victims.
+
+Mechanism: a LATERAL-ONLY memory. `_lateral_last_cell` holds the cell the
+victim last left by a lateral move and is excluded from the lateral candidate
+set only. It is never consulted for a strictly improving move, and a victim
+standing in fire always has strictly improving candidates (every non-burning
+neighbour is at distance >= 1 > 0), so this memory can never refuse the exit
+off a burning cell - the failure the firefighter's last_cell guard had. Its
+worst case is a hold, which is today's behaviour. Measured: ping-pongs 52 ->
+21 and the longest alternation 7 -> 2 moves (A -> B, a hold or a fire change,
+then back - the memory's floor, since it remembers one cell). A budget of 6
+consecutive lateral moves, reset only by a strict move, bounds any longer
+cycle (a 2x2 block of tied cells can cycle through 3 distinct cells and evade
+a one-cell memory); in the replay the budget never bound, so it changes no
+number above.
+
+Reference point: the STRICT rule at dd0a1b9 already reverses. Over all 52
+victims' own moves (409 pre-custody) there are 32 reversals within 6 steps
+and 43 immediate returns, all from strictly improving steps under a pulsing
+front (cells burn out and re-ignite, so the distance field breathes). Any
+Part 3 oscillation gate has to be read against that baseline, not against
+zero. Stated bound for a Part 3 gate: no alternation run longer than 2 moves,
+immediate returns not above the baseline 43 plus the lateral count, and
+lateral moves per victim episode <= the budget.
+
+================================================================================
+6. KILL SWITCH
+================================================================================
+VICTIM_FLEE_LATERAL_DISTANCE in common_fixed_variables.py, read at call time
+through `cfv` like the two Feature 2 constants (apply_scenario_config sets
+attributes on cfv and wf, not on agents, so a per-run --set override is only
+visible that way). 0 = off = the dd0a1b9 hold path literally; P > 0 enables
+the rule for d0 <= P. VICTIM_FLEE_LATERAL_BUDGET = 6, the same borrowed
+IDLE_RETREAT_MAX_CELLS. Byte identity with the switch at 0 would be proven
+exactly as Features 1 and 2 proved theirs: a 13-run control wave through the
+same harness, identical on eval, stdout sha256, every fire digest, every
+victim position, every firefighter state and the hold counters (the analyzer
+already has this check: _lat_analyze.py --base latbase --ctrl <tag>).
+
+================================================================================
+7. WHAT PART 3 WOULD MEASURE, IF IT RUNS
+================================================================================
+The analyzer is written for it (outputs/_lat_analyze.py --base latbase
+--feat <tag>): fire-map identity every step, seed-matched rescued / dead /
+ff_deaths / never_detected / terminal_step, the deaths split as prevented /
+relocated / unchanged / caused against latbase (a relocation = dead in both
+arms at a different step or cell), lateral move counts from the source's own
+log, reversals / ping-pongs / longest alternation from the trajectories of
+both arms, displacement and leash hits, plus the route_blocked gate against
+the phfix3 shards and the full test suite against 8 failed / 490 passed.
+
+Expected from 3.5, so that the real runs can be judged against a prediction
+rather than after the fact: dead 12 -> 14 (2 prevented, 4 caused, among them
+2-3 baseline rescues lost), rescued down by 2-3, lateral moves ~50-60, no
+alternation run above 2.
+
+================================================================================
+8. RECOMMENDATION
+================================================================================
+Do not implement. Record this round as: the strict-improvement hold is not a
+defect; it is a conservative behaviour that waits for the front to reveal an
+away direction, and relaxing it to equal-distance steps trades a coin flip on
+every slide for a bounded gain of 2 survivals that are not rescues. The
+remaining deaths are closing-pocket deaths that only a look-ahead planner
+moving through the gap could avoid, which is a different feature and not a
+one-line rule.
+
+If the maintainer wants the counterfactual confirmed by real seed-matched
+runs anyway, Part 2 is the R6' branch above (about 25 lines plus tests), and
+Part 3 is two 13-run waves (~20 min) plus the route_blocked gate (~1 h) and
+the test suite (~35 min).
+
+================================================================================
+9. FILES THIS ROUND (uncommitted, in the working tree)
+================================================================================
+  agents.py                          Item A comment at the R4b guard; no behaviour change
+  outputs/_ffr_harness.py            hold-decision observer, burn_intervals, lateral log fields
+  outputs/_lat_analyze.py            measurement, classification, survivability, replay, Part 3 comparisons
+  outputs/_lat_launch_base.sh        the baseline wave launcher
+  outputs/_ffr_latbase_*.json/.stdout.txt, outputs/_ffr_runall_latbase.log   the arm (13 runs)
+  outputs/_lat_measure_base.txt      section A-D output (appendix A below)
+  outputs/_lat_measure_detail.txt    caused/saved detail, geometry, phfix3 identity (appendix B)
+  outputs/lateral_part1.txt          this document
+  worktree: <scratchpad>/basedd0a1b9 (detached dd0a1b9), removable with git worktree remove
+
+================================================================================
+APPENDIX A - outputs/_lat_measure_base.txt (verbatim)
+================================================================================
+baseline arm latbase: 13 runs
+
+====================================================================================
+A. HOLD COUNTERS - reproduced from the per-hold records taken AT the decision
+====================================================================================
+  counter                                    source  records
+  no_candidate                                   37       37 
+  no_candidate.leash_removed                      6        6 
+  no_improvement                                231      231 
+  no_improvement.lateral_available              175      175 
+  no_improvement.leash_removed                   17       17 
+  recomputed-vs-source lateral flag mismatches: 0
+  Feature 2 report section 11 figures: 231 / 175 / 17
+  ANCHOR-INDEPENDENT holds (no_improvement & lateral_available & NOT leash_removed): 172
+  runs with anchor-independent holds: 11 of 13
+    D/east/half 101          34
+    D/east/half 202          6
+    D/east/half 303          29
+    D/east/half 404          18
+    D/east/half 505          2
+    D/south/half 101         33
+    D/south/half 202         2
+    D/south/half 303         5
+    D/south/half 505         10
+    D/east/default 101       4
+    D/east/default 303       29
+
+====================================================================================
+B. CLASSIFICATION of every lateral-available hold (anchor-independent unless marked)
+====================================================================================
+  fire distance at the hold (d0):        d=1: 106  d=2: 38  d=3: 28
+  steps until the HELD cell ignited:     4-10: 31  <=3: 78  >10: 29  never: 34
+  the lateral cell the rule would take, relative to the held cell:
+    same step                                              56
+    lateral ignites EARLIER                                29
+    lateral ignites LATER by 1-3                           27
+    lateral ignites LATER by >3                            24
+    neither cell ever ignites                              18
+    held cell never ignites, lateral does (worse)          16
+    lateral never ignites, held does (better)               2
+  omniscient survivability at the hold (upper bound on ANY movement rule):
+    held cell doomed             / lateral cell doomed            17
+    held cell survivable         / lateral cell doomed            29
+    held cell survivable         / lateral cell survivable       126
+
+====================================================================================
+C. FATE of the victims that held - the ceiling
+====================================================================================
+  anchor-independent holds by victims that ended rescued        70
+  anchor-independent holds by victims that ended dead           61
+  anchor-independent holds by victims that ended assigned       35
+  anchor-independent holds by victims that ended unreachable     6
+  distinct victims with >= 1 anchor-independent hold, by fate: {'rescued': 4, 'dead': 9, 'assigned': 2, 'unreachable': 1}
+  victims dead in this arm: 12
+
+  DEAD victims with anchor-independent holds (one line each):
+  combo                  victim    holds death   last    S_c   S_l custody        hold steps (d0)
+  D/east/half 101        victim_1      4   165    164    yes   yes None           161(3) 162(1) 163(1) 164(1)
+  D/east/half 303        victim_3      9    75     74    yes   yes None           60(3) 61(3) 62(3) 67(2) 68(2) 70(1) 71(1) 73(1) 74(1)
+  D/east/half 404        victim_0      7   162    161    yes   yes None           151(3) 152(3) 153(2) 154(2) 155(2) 160(1) 161(1)
+  D/east/half 404        victim_1     11    48     47    yes   yes None           36(2) 37(2) 38(2) 40(2) 41(2) 42(1) 43(1) 44(1) 45(1) 46(1) 47(1)
+  D/east/half 505        victim_0      2    66     65     no    no None           64(1) 65(1)
+  D/south/half 303       victim_3      5   216    212    yes   yes None           198(1) 199(1) 200(1) 211(2) 212(2)
+  D/south/half 505       victim_3     10    90     89    yes   yes None           69(1) 70(1) 71(1) 78(1) 79(1) 80(1) 82(1) 83(1) 88(1) 89(1)
+  D/east/default 101     victim_1      4   165    164    yes   yes None           161(3) 162(1) 163(1) 164(1)
+  D/east/default 303     victim_3      9    75     74    yes   yes None           60(3) 61(3) 62(3) 67(2) 68(2) 70(1) 71(1) 73(1) 74(1)
+
+  CEILING: dead victims with at least one anchor-independent hold whose lateral cell was
+  still omnisciently survivable: 8 of 12 deaths (9 dead victims held at all)
+
+====================================================================================
+OSCILLATION, measured from trajectories: baseline latbase
+====================================================================================
+  victim moves (own power, pre-custody) 409 | reversals within 6 steps 32 | immediate ping-pongs 43
+  longest run of consecutive alternation between two cells: 2 moves ('D/south/half 101', 'victim_2')
+  lateral moves logged by the source: 0  counters: {}
+  max displacement from spawn per victim: n=52 median 0.0 max 34; victims reaching >= 6: 17
+  hold decisions where the leash removed a candidate: 23
+
+====================================================================================
+D. OFFLINE REPLAY of the victim rule against the recorded fire history
+====================================================================================
+  D.1 validation: the CURRENT rule replayed must reproduce every recorded position
+      up to custody / rescue / death (positions after that belong to the carrier).
+      victims replayed 52, position-steps matched 5290, first-mismatch victims 0
+      deaths outside custody reproduced at the same step: 11 of 11
+
+  D.2 variants, fire-only, for the victims that DIED outside custody in this arm
+      (a = lateral always, b = lateral only when d0 <= P, c = shape-aware; antiosc = none | lastlat | lastcell;
+       K = consecutive-lateral budget). survive = alive at the horizon in the replay.
+      dead-outside-custody victims: 11; other victims: 40
+  variant                      survive diedlate    same latmoves   revers   pingp longest  maxdisp   caused
+  base                               0        0      11        0        8      10       0       34        0
+  a  none                            2        2       7       81       57      52       7       34        4
+  a  lastlat                         2        2       7       59       27      21       2       34        4
+  a  lastcell                        1        4       6       54       21      20       2       34        4
+  a  lastlat  K=6                    2        2       7       59       27      21       2       34        4
+  b  P=1 lastlat                     1        3       7       40       21      17       2       34        4
+  b  P=2 lastlat                     2        2       7       53       23      18       2       34        4
+  c  lastlat                         0        1      10        7       11      14       0       34        1
+  c  none                            0        1      10        7       11      14       0       34        1
+
+  per-victim outcome under the variants that change anything:
+  -- a  none
+     D/east/half 101        victim_1  dies later baseline death 165 -> replay death 168  lateral moves 2  max displacement 5
+     D/east/half 404        victim_1  SURVIVES   baseline death 48 -> replay death None  lateral moves 22  max displacement 10
+     D/south/half 505       victim_3  SURVIVES   baseline death 90 -> replay death None  lateral moves 21  max displacement 32
+     D/east/default 101     victim_1  dies later baseline death 165 -> replay death 168  lateral moves 2  max displacement 5
+  -- a  lastlat
+     D/east/half 101        victim_1  dies later baseline death 165 -> replay death 168  lateral moves 2  max displacement 5
+     D/east/half 404        victim_1  SURVIVES   baseline death 48 -> replay death None  lateral moves 12  max displacement 10
+     D/south/half 505       victim_3  SURVIVES   baseline death 90 -> replay death None  lateral moves 21  max displacement 6
+     D/east/default 101     victim_1  dies later baseline death 165 -> replay death 168  lateral moves 2  max displacement 5
+  -- a  lastcell
+     D/east/half 101        victim_1  dies later baseline death 165 -> replay death 168  lateral moves 2  max displacement 5
+     D/east/half 404        victim_0  dies later baseline death 162 -> replay death 183  lateral moves 9  max displacement 34
+     D/east/half 404        victim_1  dies later baseline death 48 -> replay death 57  lateral moves 4  max displacement 11
+     D/south/half 505       victim_3  SURVIVES   baseline death 90 -> replay death None  lateral moves 20  max displacement 6
+     D/east/default 101     victim_1  dies later baseline death 165 -> replay death 168  lateral moves 2  max displacement 5
+  -- a  lastlat  K=6
+     D/east/half 101        victim_1  dies later baseline death 165 -> replay death 168  lateral moves 2  max displacement 5
+     D/east/half 404        victim_1  SURVIVES   baseline death 48 -> replay death None  lateral moves 12  max displacement 10
+     D/south/half 505       victim_3  SURVIVES   baseline death 90 -> replay death None  lateral moves 21  max displacement 6
+     D/east/default 101     victim_1  dies later baseline death 165 -> replay death 168  lateral moves 2  max displacement 5
+  -- b  P=1 lastlat
+     D/east/half 101        victim_1  dies later baseline death 165 -> replay death 168  lateral moves 1  max displacement 5
+     D/east/half 404        victim_0  dies later baseline death 162 -> replay death 183  lateral moves 8  max displacement 34
+     D/east/half 404        victim_1  SURVIVES   baseline death 48 -> replay death None  lateral moves 9  max displacement 8
+     D/east/default 101     victim_1  dies later baseline death 165 -> replay death 168  lateral moves 1  max displacement 5
+  -- b  P=2 lastlat
+     D/east/half 101        victim_1  dies later baseline death 165 -> replay death 168  lateral moves 1  max displacement 5
+     D/east/half 404        victim_1  SURVIVES   baseline death 48 -> replay death None  lateral moves 11  max displacement 10
+     D/south/half 505       victim_3  SURVIVES   baseline death 90 -> replay death None  lateral moves 21  max displacement 6
+     D/east/default 101     victim_1  dies later baseline death 165 -> replay death 168  lateral moves 1  max displacement 5
+  -- c  lastlat
+     D/east/half 404        victim_1  dies later baseline death 48 -> replay death 72  lateral moves 3  max displacement 7
+  -- c  none
+     D/east/half 404        victim_1  dies later baseline death 48 -> replay death 72  lateral moves 3  max displacement 7
+
+================================================================================
+APPENDIX B - outputs/_lat_measure_detail.txt (verbatim)
+================================================================================
+=== CAUSED / SAVED DETAIL under the fire-only replay ===
+-- variant a lastlat
+   CAUSED D/east/half 101        victim_0  baseline final=rescued     custody=217  rescue=222  window=[1,217]  replay death step 171 at (45, 0) | first divergence step 159 | lateral moves before death 3 | base pos at death step (42, 0) (fire dist 1)
+   CAUSED D/east/half 202        victim_1  baseline final=unreachable custody=None rescue=None window=[1,240]  replay death step 240 at (23, 48) | first divergence step 214 | lateral moves before death 5 | base pos at death step (22, 49) (fire dist 1)
+   CAUSED D/east/half 303        victim_0  baseline final=rescued     custody=90   rescue=101  window=[1,90]  replay death step 87 at (40, 32) | first divergence step 58 | lateral moves before death 4 | base pos at death step (40, 25) (fire dist 1)
+   CAUSED D/east/default 303     victim_0  baseline final=rescued     custody=111  rescue=122  window=[1,111]  replay death step 87 at (40, 32) | first divergence step 58 | lateral moves before death 4 | base pos at death step (40, 25) (fire dist 1)
+-- variant b P=2 lastlat
+   CAUSED D/east/half 101        victim_0  baseline final=rescued     custody=217  rescue=222  window=[1,217]  replay death step 171 at (45, 0) | first divergence step 169 | lateral moves before death 2 | base pos at death step (42, 0) (fire dist 1)
+   CAUSED D/east/half 202        victim_1  baseline final=unreachable custody=None rescue=None window=[1,240]  replay death step 240 at (23, 48) | first divergence step 237 | lateral moves before death 2 | base pos at death step (22, 49) (fire dist 1)
+   CAUSED D/east/half 303        victim_0  baseline final=rescued     custody=90   rescue=101  window=[1,90]  replay death step 87 at (40, 32) | first divergence step 58 | lateral moves before death 4 | base pos at death step (40, 25) (fire dist 1)
+   CAUSED D/east/default 303     victim_0  baseline final=rescued     custody=111  rescue=122  window=[1,111]  replay death step 87 at (40, 32) | first divergence step 58 | lateral moves before death 4 | base pos at death step (40, 25) (fire dist 1)
+-- variant c lastlat
+   CAUSED D/east/half 101        victim_0  baseline final=rescued     custody=217  rescue=222  window=[1,217]  replay death step 171 at (44, 0) | first divergence step 169 | lateral moves before death 1 | base pos at death step (42, 0) (fire dist 1)
+-- variant a none
+   CAUSED D/east/half 101        victim_0  baseline final=rescued     custody=217  rescue=222  window=[1,217]  replay death step 195 at (40, 0) | first divergence step 159 | lateral moves before death 10 | base pos at death step (44, 0) (fire dist 1)
+   CAUSED D/east/half 303        victim_0  baseline final=rescued     custody=90   rescue=101  window=[1,90]  replay death step 81 at (39, 33) | first divergence step 58 | lateral moves before death 5 | base pos at death step (39, 25) (fire dist 1)
+   CAUSED D/south/half 101       victim_2  baseline final=assigned    custody=None rescue=None window=[1,240]  replay death step 234 at (1, 41) | first divergence step 133 | lateral moves before death 18 | base pos at death step (0, 24) (fire dist 5)
+   CAUSED D/east/default 303     victim_0  baseline final=rescued     custody=111  rescue=122  window=[1,111]  replay death step 81 at (39, 33) | first divergence step 58 | lateral moves before death 5 | base pos at death step (39, 25) (fire dist 1)
+
+=== the two SAVES under a/lastlat: baseline status history and replay end state ===
+   D/east/half 404        victim_1  spawn (25, 48) death 48; status history [(1, 'candidate'), (48, 'dead')]
+      replay: lateral 12 strict 18, final pos (28, 45) (has_burned,burnt,burning=[1, 1, 0]), max disp 10, reanchors 4, dist to fire at T 25
+      baseline assigns for this victim: []
+   D/south/half 505       victim_3  spawn (25, 3) death 90; status history [(1, 'candidate'), (90, 'dead')]
+      replay: lateral 21 strict 22, final pos (24, 1) (has_burned,burnt,burning=[1, 0, 0]), max disp 6, reanchors 4, dist to fire at T 20
+      baseline assigns for this victim: []
+
+=== GEOMETRY of the 172 anchor-independent holds ===
+   holds 172 | on a grid edge (an out-of-bounds neighbour) 99 | with a burning neighbour 106
+   lateral candidates per hold: {1: 132, 2: 32, 3: 8} | candidates per hold: {1: 74, 2: 26, 3: 47, 4: 25}
+   distinct (seed, victim) episodes with anchor-independent holds: 12
+   distinct (seed, wind, victim) death episodes in the arm: 9 (12 deaths; east/half and east/default share a seed's fire and victims)
+
+=== phfix3 (phantom round final arm) vs latbase (dd0a1b9): identity ===
+   identical (eval, stdout sha, fire digests, victim steps): 13 / 13

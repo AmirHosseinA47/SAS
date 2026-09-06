@@ -156,7 +156,94 @@ def main() -> int:
         # feature 2 observers
         "exit_starts": [],
         "retargets": [],
+        # lateral round: every hold decision, recorded at the decision itself
+        "victim_holds": [],
+        "victim_hold_flag_mismatch": 0,
     }
+
+    # ---- lateral round: DIRECT hook on the victim's hold decision -------------
+    # `Victim._note_flee_hold` is called by `_flee_approaching_fire` at the exact
+    # point it decides to hold, with the reason and the source's own flags. The
+    # wrap records each call together with the geometry the decision was made on,
+    # recomputed from the same grid and fire state through the victim's own pure
+    # helpers (no RNG, no mutation), and cross-checks the recomputed lateral
+    # verdict against the flag the source passed. `best_lateral` is the cell the
+    # source's own R5 tie-break would pick if R6 admitted equal-distance moves.
+    # Absent on checkouts before feature 2, in which case nothing is wrapped.
+    if hasattr(am.Victim, "_note_flee_hold"):
+        _orig_hold = am.Victim._note_flee_hold
+        _offsets = tuple(getattr(am, "ORTHOGONAL_OFFSETS", ((1, 0), (-1, 0), (0, 1), (0, -1))))
+
+        def _obs_hold(self, reason, **flags):
+            result = _orig_hold(self, reason, **flags)
+            try:
+                rec = {
+                    "step": _step_of(self.model),
+                    "victim": _vid(self.model, self),
+                    "reason": str(reason),
+                    "flags": {str(k): bool(v) for k, v in flags.items()},
+                }
+                pos = getattr(self, "pos", None)
+                if pos is not None:
+                    cell = (int(pos[0]), int(pos[1]))
+                    fire_cells = self._burning_cells()
+                    d0 = int(self._min_fire_distance(cell, fire_cells))
+                    anchor = (
+                        getattr(self, "leash_anchor", None)
+                        or getattr(self, "spawn_cell", None)
+                        or cell
+                    )
+                    leash = int(am.victim_flee_max_displacement())
+                    grid = self.model.grid
+                    cands = []
+                    n_oob = n_burning = n_leash_blocked = 0
+                    for order, (ox, oy) in enumerate(_offsets):
+                        n = (cell[0] + ox, cell[1] + oy)
+                        if grid.out_of_bounds(n):
+                            n_oob += 1
+                            continue
+                        if n in fire_cells:
+                            n_burning += 1
+                            continue
+                        fa = abs(n[0] - anchor[0]) + abs(n[1] - anchor[1])
+                        if fa > leash:
+                            n_leash_blocked += 1
+                            continue
+                        cands.append({
+                            "cell": [n[0], n[1]],
+                            "dist": int(self._min_fire_distance(n, fire_cells)),
+                            "from_anchor": int(fa),
+                            "order": order,
+                            "has_exit": bool(self._cell_has_onward_exit(n, cell, fire_cells)),
+                        })
+                    with_exit = [c for c in cands if c["has_exit"]]
+                    pool = with_exit if with_exit else cands
+                    lateral = [c for c in pool if c["dist"] == d0]
+                    best_lat = min(lateral, key=lambda c: (c["from_anchor"], c["order"])) if lateral else None
+                    rec.update({
+                        "cell": [cell[0], cell[1]],
+                        "dist_before": d0,
+                        "anchor": [int(anchor[0]), int(anchor[1])],
+                        "leash": leash,
+                        "spawn": _cell(getattr(self, "spawn_cell", None)),
+                        "last_lateral_from": _cell(getattr(self, "_lateral_last_cell", None)),
+                        "n_fire_cells": len(fire_cells),
+                        "n_oob": n_oob,
+                        "n_burning_nb": n_burning,
+                        "n_leash_blocked": n_leash_blocked,
+                        "candidates": cands,
+                        "n_lateral": len(lateral),
+                        "best_lateral": None if best_lat is None else best_lat["cell"],
+                        "recomputed_lateral_available": bool(lateral),
+                    })
+                    if str(reason) == "no_improvement" and bool(lateral) != bool(flags.get("lateral_available", False)):
+                        REC["victim_hold_flag_mismatch"] += 1
+                REC["victim_holds"].append(rec)
+            except Exception as exc:  # an observer must never take the run down
+                REC["victim_holds"].append({"step": _step_of(self.model), "reason": str(reason), "error": repr(exc)})
+            return result
+
+        am.Victim._note_flee_hold = _obs_hold
 
     # ---- observers (call original, return unchanged) --------------------------
     _orig_recycle = WildFireModel._recycle_firefighter_after_exit
@@ -296,6 +383,15 @@ def main() -> int:
     # (<= one entry per grid cell) and it is what answers "did the victim step
     # into a cell that burned LATER".
     first_burn_step: dict = {}
+    # lateral round: full burning history per cell as half-open step intervals
+    # [start, end) - burning in the post-step observation of every step in the
+    # range, `end` None if still burning at the horizon. A cell can hold several
+    # intervals (scorched ground re-ignites). This is what a time-expanded
+    # survivability computation needs; first_burn_step alone cannot say when a
+    # cell became safe again.
+    burn_intervals: dict = {}
+    burn_open: dict = {}
+    prev_burning: set = set()
     terminal_step = None
     step = 0
     t0 = time.perf_counter()
@@ -313,6 +409,7 @@ def main() -> int:
                     terminal_step = step
             # --- observers only below this line
             parts = []
+            burning_now: set = set()
             for a in model.schedule.agents:
                 if type(a).__name__ == "Fire":
                     parts.append("%s:%d%d%s" % (a.unique_id, int(bool(a.burning)), int(bool(a.burnt)), a.fuel))
@@ -320,8 +417,14 @@ def main() -> int:
                         pos = getattr(a, "pos", None)
                         if pos is not None:
                             key = "%d,%d" % (int(pos[0]), int(pos[1]))
+                            burning_now.add(key)
                             if key not in first_burn_step:
                                 first_burn_step[key] = step
+            for key in burning_now - prev_burning:
+                burn_open[key] = step
+            for key in prev_burning - burning_now:
+                burn_intervals.setdefault(key, []).append([burn_open.pop(key), step])
+            prev_burning = burning_now
             fire_digests.append(hashlib.sha256("|".join(parts).encode()).hexdigest())
             row = []
             for ff_id, m in (getattr(model, "firefighter_marker_agents", {}) or {}).items():
@@ -359,6 +462,8 @@ def main() -> int:
             victim_steps.append(vrow)
         evaluation = _build_evaluation(model, terminal_step, step, params)
     wall = time.perf_counter() - t0
+    for key, start in sorted(burn_open.items()):
+        burn_intervals.setdefault(key, []).append([start, None])
     stdout_text = buf.getvalue()
 
     # ---- derived: idle-on-edge, absence windows from ff_steps ------------------
@@ -431,6 +536,12 @@ def main() -> int:
         },
         "victim_flee_moves_total": int(getattr(model, "victim_flee_moves_total", 0) or 0),
         "victim_flee_hold_counts": dict(getattr(model, "victim_flee_hold_counts", {}) or {}),
+        # lateral round
+        "victim_holds": REC["victim_holds"],
+        "victim_hold_flag_mismatch": int(REC["victim_hold_flag_mismatch"]),
+        "burn_intervals": burn_intervals,
+        "victim_lateral_log": list(getattr(model, "_victim_lateral_log", []) or []),
+        "victim_lateral_counts": dict(getattr(model, "victim_lateral_counts", {}) or {}),
         "victim_leash_anchors": {
             str(vid): _cell(getattr(m, "leash_anchor", None))
             for vid, m in (getattr(model, "victim_marker_agents", {}) or {}).items()
