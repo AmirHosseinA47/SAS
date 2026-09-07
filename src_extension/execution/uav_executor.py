@@ -13,6 +13,7 @@ from common_fixed_variables import (
     normalize_wind_direction,
     wind_vector_from_direction,
 )
+import common_fixed_variables as _cfv  # module handle: constants read at call time
 from ..adaptation.local_adaptation_generator import (
     LocalAdaptationSpaceGenerator,
     NO_VICTIM_DETECT_BOOST_AFTER,
@@ -2042,6 +2043,21 @@ class UAVExecutor:
             return 1
         return _VICTIM_HAZARD_BUFFER
 
+    def _hazard_retreat_range(self) -> int:
+        """VICTIM_SEARCHER_HAZARD_RETREAT_RANGE, read at call time from the
+        common_fixed_variables MODULE (not the import-time names above) so a
+        per-run override through apply_scenario_config is visible.
+          0      the searcher hazard gate retreats only within 2 cells of a
+                 grid edge, and the retreat is scored toward the interior
+          1..98  it retreats when the nearest strict fire/smoke cell is
+                 within that many cells, scored by hazard distance only
+          >= 99  it retreats on every gated step, scored by hazard only
+        """
+        try:
+            return max(0, int(getattr(_cfv, "VICTIM_SEARCHER_HAZARD_RETREAT_RANGE", 0)))
+        except (TypeError, ValueError):
+            return 0
+
     def _victim_edge_blocked_direction(self, agent: Any, direction: int) -> bool:
         model = self._resolve_model(agent)
         pos = getattr(agent, "pos", None)
@@ -2182,6 +2198,10 @@ class UAVExecutor:
             return None
         fire_cells = self._collect_strict_active_fire_cells(model)
         smoke_cells = self._collect_strict_smoke_cells(model)
+        # Range 0 scores the retreat toward the grid interior (edge handling);
+        # any other range scores by hazard distance only and leaves the edge
+        # to the edge-blocked filter below. See _hazard_retreat_range.
+        edge_scored = self._hazard_retreat_range() == 0
         best_dir: int | None = None
         best_score = -float("inf")
         pos = getattr(agent, "pos", None)
@@ -2198,10 +2218,14 @@ class UAVExecutor:
                 continue
             if not self._strict_path_lookahead_safe(agent, direction):
                 continue
-            score = self._distance_from_boundary(cell[0], cell[1], model) * 14.0
+            score = (
+                self._distance_from_boundary(cell[0], cell[1], model) * 14.0
+                if edge_scored
+                else 0.0
+            )
             hazard_dist = self._min_strict_hazard_distance(cell, fire_cells, smoke_cells)
             score += hazard_dist * 8.0
-            if pos is not None:
+            if edge_scored and pos is not None:
                 curr_dist = self._distance_from_boundary(int(pos[0]), int(pos[1]), model)
                 next_dist = self._distance_from_boundary(cell[0], cell[1], model)
                 if next_dist > curr_dist:
@@ -2217,7 +2241,11 @@ class UAVExecutor:
             cell = self._next_cell_for_direction(agent, direction)
             if cell is None or self._strict_victim_hazard_level(cell) > 0:
                 continue
-            score = self._distance_from_boundary(cell[0], cell[1], model) * 10.0
+            score = (
+                self._distance_from_boundary(cell[0], cell[1], model) * 10.0
+                if edge_scored
+                else 0.0
+            )
             score += self._min_strict_hazard_distance(cell, fire_cells, smoke_cells) * 6.0
             if score > best_score:
                 best_score = score
@@ -2227,6 +2255,12 @@ class UAVExecutor:
     def _apply_victim_searcher_hazard_gate(
         self, agent: Any, chosen_dir: int, action: str,
     ) -> tuple[int, str]:
+        """Final safety pass on a victim searcher's chosen direction, in order:
+        strict hazard on the current cell -> retreat; edge-blocked direction ->
+        retreat; the hazard retreat rule (VICTIM_SEARCHER_HAZARD_RETREAT_RANGE,
+        see _hazard_retreat_range); the 3-cell strict lookahead, passing the
+        chosen direction through or re-ranking the safe ones. Returns
+        (direction, action label)."""
         pos = getattr(agent, "pos", None)
         if pos is not None and self._strict_victim_hazard_level((int(pos[0]), int(pos[1]))) > 0:
             retreat = self._retreat_to_safe_interior_direction(agent)
@@ -2249,8 +2283,28 @@ class UAVExecutor:
 
         model = self._resolve_model(agent)
         pos = getattr(agent, "pos", None)
+        retreat_range = self._hazard_retreat_range()
         if pos is not None and model is not None:
-            if self._distance_from_boundary(int(pos[0]), int(pos[1]), model) <= 2.0:
+            cell = (int(pos[0]), int(pos[1]))
+            if retreat_range > 0:
+                # Interior hazard retreat: on every gated step (range >= 99), or
+                # when the nearest strict fire/smoke cell is within `retreat_range`
+                # cells, the chosen direction is replaced by the retreat - the
+                # strictly safe neighbour furthest from any hazard. Edge handling
+                # is the edge-blocked filter (margin 3) inside the retreat and the
+                # candidate filters; no edge test is needed here. Until the grid
+                # size became readable (2026-09-06) the edge test below read 0.0
+                # everywhere and this fired on every gated step by accident; the
+                # constant makes that behaviour deliberate and switchable.
+                retreat_now = (
+                    retreat_range >= 99
+                    or self._min_strict_hazard_distance(cell) <= float(retreat_range)
+                )
+            else:
+                # Range 0: the edge-only gate - a searcher within 2 cells of a grid
+                # edge steps back toward the interior.
+                retreat_now = self._distance_from_boundary(cell[0], cell[1], model) <= 2.0
+            if retreat_now:
                 retreat = self._retreat_to_safe_interior_direction(agent)
                 if retreat is not None:
                     if "retarget_to_interior" in action or "retarget" in action:
@@ -2273,7 +2327,11 @@ class UAVExecutor:
             cell = self._next_cell_for_direction(agent, direction)
             if cell is None:
                 continue
-            score = self._distance_from_boundary(cell[0], cell[1], model) * 10.0
+            score = (
+                self._distance_from_boundary(cell[0], cell[1], model) * 10.0
+                if retreat_range == 0
+                else 0.0
+            )
             score += self._min_strict_hazard_distance(cell, fire_cells, smoke_cells) * 5.0
             if direction == chosen_dir:
                 score += 0.5

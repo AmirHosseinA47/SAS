@@ -1,0 +1,851 @@
+INTERIOR HAZARD AVOIDANCE FOR VICTIM SEARCHERS - PART 1 (WHAT THE ACCIDENT DID) AND PART 2 (DESIGN)
+NO SOURCE CHANGED. Everything below is measured on the recorded dimension-round arms, on
+harness-side replays of the accident's components, and on the two hazard-bound scenario tests.
+================================================================================================
+
+Branch firefighter-mission-features, HEAD e76c806 (confirmed: `git branch --show-current`,
+`git log --oneline -1`; working tree clean at start). Python 3.10.11, mesa 1.2.1
+(E:\Projects\SAS\.venv, confirmed by sys.version / mesa.__version__). Held-round report
+outputs/dimension_report.txt re-read in full; its measurements are re-derived below where they
+are load-bearing (the 2.12% -> 3.22% and 2.98% -> 3.71% exposure figures reproduce to the step).
+
+0. THE SHORT VERSION
+--------------------
+  * The three "near edge" gates are all comparisons against _distance_from_boundary (D), which
+    returned 0.0 on every real run before e76c806. Two of them (C5 <= 5, C3 < 2) change a LABEL
+    and a MODE; one of them (C7 <= 2, inside the searcher hazard gate) replaces the searcher's
+    chosen direction with the output of _retreat_to_safe_interior_direction. That replacement is
+    a RETREAT (a direction substitution), not a filter, a retarget or a scoring penalty - and
+    with D dead its scoring collapsed to "the strictly-safe neighbour furthest from the nearest
+    fire/smoke cell, ties by direction index". Section 1.
+  * Of the 2,628 interior decisions the fix removes, 1,635 are the C5 flag (a label/mode change
+    on the executor-target path), 973 are C7 gate rows - which are 498 UNIQUE searcher steps,
+    because the gate runs twice per step - and 20 are C6 re-rankings. At the decision, the
+    override moved the searcher AWAY from the nearest fire on 73.5% of those 498 steps (the
+    searcher's own choice: 43.6%), reversed the live choice outright on 22%, and made no
+    difference to whether the cell it arrived on was burning (2.8% vs 3.0%). 61% of its interior
+    firings happened with the nearest fire NINE OR MORE cells away. Section 2.
+  * So the accident was not "do not step into fire" - the gate's strict checks still do that,
+    identically, on both trees. It was a constant, target-blind repulsion from the fire that kept
+    searchers on average 1.7 cells further from it (mean fire distance 12.5 vs 10.8 canonical)
+    and out of its 3-cell neighbourhood 30% less often (23.2% vs 30.0% of steps). The exposure
+    cost of the fix is that far-field drift disappearing, not a near-field decision going wrong.
+    USEFUL BY ACCIDENT, AND FOR A DIFFERENT REASON THAN IT WAS WRITTEN FOR. Section 2.6.
+  * Original intent, from the code (there is no history - every line arrived in the import commit
+    a4a01b4): the three gates are EDGE handling, and edge-only is what they were written to be.
+    Hazard safety for searchers was designed as strict filtering (no fire/smoke on the next cell,
+    a 2-cell buffer, a 3-cell lookahead), and that filtering is measured insufficient on its own
+    because the searcher is sent DOWNWIND of the fire front - to where the fire is going - so the
+    front walks into a searcher that only checks the current fire. Section 3.
+  * Replaying the accident's components one at a time on the fixed tree (harness-side dead reads
+    per consumer, no source change) against the failing test: the C7 override alone brings
+    test_no_crash_zero_victims from 4 strict steps back to the baseline's 1, with the baseline's
+    trajectory metrics exactly; the C5 flag and the C3 hold read change nothing (4 -> 4). And the
+    override with the LIVE retreat scoring passes the bound but collapses coverage (22 unique
+    cells in 50 steps vs 40) - it walks the searcher to the grid centre and parks it. Section 2.5.
+  * DESIGN (section 4): one constant, VICTIM_SEARCHER_HAZARD_RETREAT_RANGE (cells; 0 = off = the
+    e76c806 edge-only gate; 1..98 = retreat when the nearest fire/smoke is within that range;
+    >= 99 = always), read at call time so --set overrides it. When it is on, the retreat scores
+    by hazard distance only (the accident's scoring), and edge handling stays with the
+    edge-blocked filter and the planner's margins, which are live and already do that job.
+    RECOMMENDED: 99 - the accidental behaviour made intentional - as the primary arm, because it
+    is the only variant with evidence behind it, and 6 as a measured secondary. Reasons in 4.2.
+    Decision rule for Part 3 stated in advance in 4.6.
+  * ATTRIBUTION, 78 runs on the canonical 13 (section 4.7): replaying the C7 override with the
+    accident's hazard-only retreat scoring on the fixed tree gives 8520706's rescued / dead /
+    firefighter deaths on 13 of 13 seeds (35/12/8; the fix's 37/11/8 with its E/505 +2 and E/303
+    write-off all revert) and its burning-cell exposure (2.08% vs 2.12%; fix 3.22%), and is
+    byte-identical to the held round's P-only ablation on 4 seeds. The gate with LIVE retreat
+    scoring recovers only half the exposure (2.54%), loses 4% of covered cells and pulls
+    planner-path searchers 5 cells nearer the fire. The always-on flag (C5) re-rolls four seeds
+    with exposure 3.39% - no hazard benefit. The hold read (C3) is byte-identical to the fix on
+    13/13 - inert. Both re-recordings of base and fix are byte-identical to the held round's
+    arms 13/13 (the new per-step label recording is read-only). All three trees spend ~80% of
+    searcher steps in the forced-retarget pathfinding mode; the accident's benefit is where the
+    searcher stands when each mode runs, not which mode runs.
+
+1. THE THREE GATES, THE OVERRIDE, AND EVERY CONSUMER
+----------------------------------------------------
+All quotes are src_extension/execution/uav_executor.py at e76c806 (line numbers of that tree).
+
+1.1  The helper every gate reads (:552-564), dead before e76c806 because _grid_dimension returned
+     None (WildFireModel never carried HEIGHT/WIDTH), live now:
+
+    def _distance_from_boundary(self, x: int, y: int, model: Any | None) -> float:
+        if model is None:
+            return 0.0
+        x_max = self._grid_dimension(model, ("grid_height", "HEIGHT", "height"))
+        y_max = self._grid_dimension(model, ("grid_width", "WIDTH", "width"))
+        if x_max is None or y_max is None:
+            return 0.0
+        return float(min(x, y, x_max - 1 - x, y_max - 1 - y))
+
+1.2  GATE C5 - _victim_near_edge_escape_required (:2092-2098), "0.0 <= 5.0":
+
+    def _victim_near_edge_escape_required(self, agent: Any, model: Any | None) -> bool:
+        if model is None or not self._role_is_victim_searcher(self._read_uav_role()):
+            return False
+        pos = getattr(agent, "pos", None)
+        if pos is None:
+            return False
+        return self._distance_from_boundary(int(pos[0]), int(pos[1]), model) <= 5.0
+
+     Two call sites. In execute(), the victim-searcher HOLD branch (:352-358):
+
+                if model is not None:
+                    ws = _wind_search_state(model, self.uav_id)
+                    if self._victim_near_edge_escape_required(agent, model):
+                        ws["force_interior_retarget"] = True
+                        if int(ws.get("pocket_streak", 0) or 0) >= WIND_POCKET_CAMP_THRESHOLD // 2:
+                            ws["force_coverage_escape"] = True
+
+     and in _resolve_direction_intent(), the executor-target path of the wind-aware branch
+     (:1271-1290), where it is one of four disjuncts of a LOCAL flag:
+
+                    force_interior = bool(
+                        wind_state.get("force_interior_retarget")
+                        or ctx.get("force_wind_retarget")
+                        or force_coverage
+                        or self._victim_near_edge_escape_required(agent, model)
+                    )
+                    ...
+                    wind_target = self._wind_aware_victim_search_target(agent, model)
+                    if wind_target is not None:
+                        if force_coverage or force_interior:
+                            action_label = "victim_search_wind_aware_retarget_to_interior"
+                        elif needs_retarget:
+                            action_label = "victim_search_wind_aware_retarget"
+                        else:
+                            action_label = "victim_search_wind_aware"
+                        if force_coverage or force_interior:
+                            return self._apply_retarget_with_pathfinding_fallback(
+                                agent, wind_target, action_label,
+                            )
+                        chosen_dir, action_label = self._apply_victim_searcher_hazard_gate(
+                            agent,
+                            self._choose_best_direction(agent, wind_target, target_kind="victim"),
+                            action_label,
+                        )
+                        return chosen_dir, action_label
+
+     What C5 does: it does not touch the direction. It (i) relabels the step
+     "..._retarget_to_interior" and (ii) switches the movement from
+     _choose_best_direction + hazard gate to _apply_retarget_with_pathfinding_fallback -
+     _forced_progress_direction (greedy progress toward the wind target through strictly
+     hazard-free cells, lookahead depth 1) then BFS (smoke-avoiding, then fire-only), and
+     only if neither routes, _choose_best_direction + hazard gate. When the pathfinder routes,
+     execute() SKIPS the final hazard gate (:404-411, `pathfinding_routed`). Dead-D effect: every
+     executor-target step was labelled retarget_to_interior and pathfound; the flag written in
+     the hold branch lives only until _sync_wind_search_streaks recomputes it at the end of the
+     same execute() (:1625-1631 of local_adaptation_generator.py, from edge/hold/same-target
+     streaks and force_coverage_escape), so C5 is a per-step effect, not a latch.
+
+1.3  GATE C7 - inside _apply_victim_searcher_hazard_gate (:2250-2258), "0.0 <= 2.0":
+
+        model = self._resolve_model(agent)
+        pos = getattr(agent, "pos", None)
+        if pos is not None and model is not None:
+            if self._distance_from_boundary(int(pos[0]), int(pos[1]), model) <= 2.0:
+                retreat = self._retreat_to_safe_interior_direction(agent)
+                if retreat is not None:
+                    if "retarget_to_interior" in action or "retarget" in action:
+                        return retreat, "victim_search_wind_aware_retarget_to_interior"
+                    return retreat, action
+
+     Its place in the gate (:2227-2292), which is the whole of the searcher's hazard safety:
+       (1) :2231-2235  current cell has strict hazard (burning = 2, active/obscuring smoke = 1,
+                       out of bounds = 3) -> retreat, label "victim_search_hazard_retreat"
+       (2) :2237-2242  chosen direction is edge-blocked (_victim_edge_blocked_direction, margin
+                       3, reads HEIGHT/WIDTH with a literal-50 default - LIVE on both trees)
+                       -> retreat
+       (3) :2244-2248  pocket camping >= 20 steps -> hazard buffer level 2, coverage escape
+       (4) :2250-2258  C7 above
+       (5) :2260-2261  _strict_path_lookahead_safe(chosen): the next WIND_PATH_LOOKAHEAD_DEPTH
+                       = 3 cells in that direction are in bounds, not hazard, and not within the
+                       hazard buffer (_VICTIM_HAZARD_BUFFER = 2 cells of any fire/smoke; 1 at
+                       buffer level 1; 0 at level 2) -> pass the chosen direction through
+       (6) :2263-2283  otherwise rank the lookahead-safe directions by
+                       score = D(cell) * 10.0 (C8) + min_strict_hazard_distance(cell) * 5.0
+                       (+0.5 for the chosen one) -> "victim_search_hazard_retreat" if changed
+       (7) :2289-2292  otherwise retreat, or the best of (6), labelled hazard_retreat
+     Items (1), (2), (5), (6), (7) are identical on both trees except the C8 term. C7 is the only
+     proactive move: it fires when the chosen direction is perfectly safe.
+
+     THE GATE RUNS TWICE PER SEARCHER STEP. _resolve_direction_intent applies it at :1224/:1244/
+     :1294/:1421 and execute() applies it again at :409 on the result. The recorded diminst rows
+     carry both calls (the duplicate pairs in dim.consumers_changed); the second call given an
+     already-substituted direction recomputes the same retreat, so the effect is idempotent, but
+     every count in the held round's 6.4 (1,796 calls, 973 changed) is a ROW count, and the step
+     counts are half of that: ~898 gated searcher steps of 5,520 (16%), 498 changed in the
+     interior. Section 2.2.
+
+1.4  GATE C3 - the near_boundary read in execute() (:368-372), "P or 0.0 < 2.0":
+
+                near_boundary = self._position_at_boundary(agent) or self._distance_from_boundary(
+                    int(agent.pos[0]),
+                    int(agent.pos[1]),
+                    model,
+                ) < 2.0
+
+     used at :385 as one of nine disjuncts that send a holding wind-aware victim searcher through
+     _resolve_direction_intent("victim_search_wind_aware") instead of _execute_hold. Dead-D
+     effect: no wind-aware searcher hold was ever executed as a hold. (P, _position_at_boundary,
+     is the other woken helper; it is outcome-inert on 13 seeds - held round 8.2 - and is not
+     part of this round.)
+
+1.5  THE OVERRIDE - _retreat_to_safe_interior_direction (:2178-2225), quoted in full:
+
+    def _retreat_to_safe_interior_direction(self, agent: Any) -> int | None:
+        model = self._resolve_model(agent)
+        pos = getattr(agent, "pos", None)
+        if pos is None:
+            return None
+        fire_cells = self._collect_strict_active_fire_cells(model)
+        smoke_cells = self._collect_strict_smoke_cells(model)
+        best_dir: int | None = None
+        best_score = -float("inf")
+        pos = getattr(agent, "pos", None)
+        for direction in range(4):
+            if self._victim_wind_blocked_direction(agent, direction):
+                continue
+            cell = self._next_cell_for_direction(agent, direction)
+            if cell is None or self._strict_victim_hazard_level(cell) > 0:
+                continue
+            buffer = self._hazard_buffer_for_agent(agent)
+            if self._cell_within_victim_hazard_buffer(
+                cell, fire_cells=fire_cells, smoke_cells=smoke_cells, buffer=buffer,
+            ):
+                continue
+            if not self._strict_path_lookahead_safe(agent, direction):
+                continue
+            score = self._distance_from_boundary(cell[0], cell[1], model) * 14.0
+            hazard_dist = self._min_strict_hazard_distance(cell, fire_cells, smoke_cells)
+            score += hazard_dist * 8.0
+            if pos is not None:
+                curr_dist = self._distance_from_boundary(int(pos[0]), int(pos[1]), model)
+                next_dist = self._distance_from_boundary(cell[0], cell[1], model)
+                if next_dist > curr_dist:
+                    score += 18.0
+            if score > best_score:
+                best_score = score
+                best_dir = direction
+        if best_dir is not None:
+            return best_dir
+        for direction in range(4):
+            if self._victim_wind_blocked_direction(agent, direction):
+                continue
+            cell = self._next_cell_for_direction(agent, direction)
+            if cell is None or self._strict_victim_hazard_level(cell) > 0:
+                continue
+            score = self._distance_from_boundary(cell[0], cell[1], model) * 10.0
+            score += self._min_strict_hazard_distance(cell, fire_cells, smoke_cells) * 6.0
+            if score > best_score:
+                best_score = score
+                best_dir = direction
+        return best_dir
+
+     What it is: a one-step RETREAT. Candidates are the four neighbours, filtered by the same hard
+     rules the gate uses (not edge-blocked, no strict hazard, outside the buffer, 3-cell lookahead
+     clean); the survivor with the highest score wins, first-max on ties in order E(0) N(1) W(2)
+     S(3); if nothing survives, the same without buffer/lookahead. It never reads the target.
+       LIVE scoring   14*D(next) + 8*hazard_dist(next) + 18 if the step increases D;
+                      fallback 10*D + 6*hazard_dist.
+       DEAD scoring   8*hazard_dist(next); fallback 6*hazard_dist. The +18 never fires (0 > 0).
+     Two facts follow. (i) With D dead, the function was a pure fire/smoke repulsion step - the
+     "safe interior" half of its name had fallen off. (ii) With D live and the function called on
+     EVERY step, the boundary terms dominate (a step changes D by at most 1 = 14 points, the
+     inward bonus is 18, a step changes hazard distance by at most 1 = 8 points), so the searcher
+     would walk to the grid centre and stay. Both are measured in 2.5.
+
+     hazard_dist is _min_strict_hazard_distance (:2140-2157): manhattan distance to the nearest
+     cell of (strict active fire cells U strict smoke cells) - the REAL fire from the schedule's
+     Fire agents (is_burning) and the visibility model's smoke_obscured cells - 99 when there is
+     none. The searcher has perfect current-fire knowledge; it has no knowledge of where the
+     front will be next step.
+
+1.6  Consumers of the override's OUTPUT (the (direction, label) the gate returns):
+       - execute() :409-411 -> _commit_execution_direction (:140-146): agent.selected_dir and
+         agent.execution_action. This is the movement. UAV.advance moves one cell in
+         selected_dir.
+       - _sync_wind_search_execution_state (:2294-2357): the label feeds
+         _sync_wind_search_streaks (hold_streak/wind_aware_hold_streak reset on any non-hold),
+         last_action; "hazard_retreat" in the label sets force_interior_retarget, clears the
+         corridor and blacklists the current target's 5x5 neighbourhood for 15 steps. The
+         C7 override does NOT produce a hazard_retreat label (it keeps the input label or
+         relabels retarget_to_interior), so it does not trigger this; the strict branches (1),
+         (6), (7) do.
+       - the execution log (ExecutionResult.action / feedback_event) and the dashboard's
+         movement explainability (_movement_category_for_action :148-171: "hazard"/"escape" in
+         the label -> searcher_hazard_retreat, "wind_aware" -> searcher_coverage;
+         movement_explainability.py:18). Display only.
+       - the scenario-validation helper (tests/victim_searcher_scenario_validation.py:180-189)
+         reads the label per step for its streak/target metrics; the two tests that bound
+         strict fire/smoke steps read the POSITION, i.e. the movement.
+     Consumers of the two flags C5 sets (force_interior_retarget / force_coverage_escape):
+       the label and mode switch of 1.2, the planner's target selection
+       (local_adaptation_generator.py :3813-3839, :4066-4086: interior/coverage candidate
+       ranking, and the flag is cleared at :4086 once a target is produced), and the streak
+       recomputation at :1625 which overwrites the flag every step.
+
+1.7  Where the edge is ALREADY handled, live on both trees (the reason edge-only is defensible):
+       - _victim_edge_blocked_direction (:2045-2059, margin 3): within 3 cells of an edge, any
+         direction that does not increase the edge distance is a hard-blocked candidate in
+         _choose_best_direction, _strict_path_lookahead_safe and the retreat itself.
+       - the planner's _uav_near_boundary (local_uav_path_planner.py:519-537, margin 2): a hold
+         near the edge becomes a forced wind retarget (:236-241); WIND_INTERIOR_MARGIN = 6 keeps
+         directional wind targets off the edge band (:160-175).
+       - _sync_wind_search_streaks: edge_streak > 6 forces an interior retarget, > 11 a sweep.
+     All read HEIGHT/WIDTH with a literal-50 default and were correct at 50x50 throughout.
+
+2. WHAT THE 2,628 INTERIOR DECISIONS WERE
+-----------------------------------------
+Data: outputs/_ffr_diminst_*.json (13 canonical runs, per-call counterfactual rows: real result
+vs the same call with the reads denied), fire history from burn_intervals (identical across arms
+of a seed - fire never depends on UAVs, digests identical 13/13 and 10/10 in the held round),
+trajectories from outputs/_ffr_dimbase_* (8520706) and _ffr_dimfix_* (e76c806) uav_steps.
+Script: outputs/_ih_characterise.py (decisions | trajectory). Fire at a decision = the burning
+set after the previous step, which is the state the executor read.
+
+2.1  Composition of the 2,628 (held round 6.4, 6+ cells from any edge):
+       C5 _victim_near_edge_escape_required   1,635 rows = 1,635 steps (called once per step per
+                                              path). Flag flips True -> False. Label/mode only.
+       C7 _apply_victim_searcher_hazard_gate    951 interior + 22 in the 3-5 band = 973 ROWS
+                                              = 498 unique interior (step, uav) decisions + 13
+                                              in the band (gate rows -> unique per run: 24->16,
+                                              51->26, 40->23, 115->60, 140->71, 48->26, 31->17,
+                                              53->30, 98->51, 190->98, 90->45, 35->19, 58->29).
+       C6 _retreat_to_safe_interior_direction    20 rows: the retreat called by the strict
+                                              branches picking a different direction under the
+                                              live boundary terms (3.1% of 637 retreat calls).
+     Total C7 gate calls 1,796 = ~898 gated searcher steps out of 5,520 searcher steps (16%).
+     The other 84% of searcher steps did not pass through the hazard gate at all: pathfinding-
+     routed retargets (gate skipped, 1.2), fail-safe role-preserving search (which applies the
+     tracker-style _apply_final_direction_safety instead, :324-332), and holds. The per-step
+     mode mix is being recorded by the attribution arms (4.7).
+
+2.2  THE C7 OVERRIDE, PER UNIQUE INTERIOR DECISION (n = 498)
+     What the searcher was doing (the label the gate received, live tree):
+       victim_search_wind_aware (planner-target path)      379   76%
+       ..._wind_aware_retarget_to_interior (forced path)     72   14%
+       ..._wind_aware_sweep                                  47    9%
+     Kind: override REMOVED by the live D 455 (the dead world substituted a direction, the live
+     world passes the chosen one), override ADDED 5, a DIFFERENT override 38.
+     What the override did instead, relative to the nearest burning cell:
+                                        live choice     dead-world override
+       step toward the fire                200  40.2%        53  10.6%
+       lateral (same distance)              81  16.3%        79  15.9%
+       step away from the fire             217  43.6%       366  73.5%
+       (no fire on the grid yet: 14)
+       override is the exact reverse of the live choice:                 110  22.1%
+       next cell within 2 of fire         84  16.9%        66  13.3%
+       next cell within 4 of fire        108  21.7%        96  19.3%
+       next cell BURNING on arrival        14   2.8%        15   3.0%
+     Fire distance of the override's next cell minus the live choice's next cell:
+       +2: 167 (33.5%)   +1: 39 (7.8%)   0: 246 (49.4%)   -1: 15 (3.0%)   -2: 31 (6.2%)
+       -> the override was safer on 41%, neutral on 49%, closer to the fire on 9%.
+     By how close the fire was when it fired (nearest burning cell, manhattan):
+       0-2 cells    75  (15%)   distance delta: 62 neutral, 12 safer, 1 closer
+       3-4 cells    33   (7%)
+       5-8 cells    72  (14%)
+       9-15 cells  124  (25%)
+       16+ cells   180  (36%)
+       no fire      14   (3%)
+       -> 304 of 498 (61%) fired with the nearest fire NINE OR MORE cells away; 108 (22%)
+          within 4. In the 0-2 band, where a near-field avoidance would matter, it changed the
+          fire distance of the next cell in 13 of 75 cases.
+     Per run (interior unique changed / override safer / override closer / neutral):
+       E/101 16 5/0/11    E/202 26 8/0/18    E/303 23 4/3/16    E/404 60 22/9/29
+       E/505 70 31/1/38   S/101 25 18/0/7    S/202 17 12/0/5    S/303 30 3/8/19
+       S/404 40 10/12/18  S/505 98 49/6/43   def/101 45 22/4/19 def/202 19 3/0/16
+       def/303 29 19/3/7
+     Worked example (E/202, searcher 2502, steps 219-240, the fire 15-25 cells away the whole
+     time): the live searcher walks west along y=9 toward its target; the dead world would have
+     turned it north (direction 1) on every one of those 22 steps, because north is the
+     first-indexed of the two directions that increase distance from a fire 20 cells away. That
+     is the override in its typical form: not a reaction to danger, a bias applied wherever a
+     fire exists at all.
+
+2.3  THE C5 FLAG (1,635 decisions): what it changed and what it did not
+     The flag turns the executor-target path from _choose_best_direction + gate into pathfinding
+     with the label retarget_to_interior (1.2). Movement consequence measured directly (2.5):
+     none on the failing test (4 strict steps with C5 replayed, 4 without). Its visible
+     consequence in the dead world was the LABEL - the downwind wind-aware test asserts the plain
+     label in the interior and failed 7/7 for the whole campaign because of C5 (held round 9).
+     A second-order consequence worth stating: in the dead world C5 and C7 competed. Every
+     executor-target step was pathfound, and a pathfound step skips the gate, so the C7 override
+     could only reach the planner-target path (76% of its firings above), the sweep path and
+     the pathfinding fallback. With C5 live, more searcher steps reach the gate - which is why
+     the always-on replay of C7 on the fixed tree is not the same as 8520706, only its C7
+     component (4.7 measures the difference).
+
+2.4  TRAJECTORY LEVEL - what the drift cost when it went away (base = 8520706, fix = e76c806;
+     searcher position after each step vs the burning set after the same step)
+     CANONICAL 13 (5,520 searcher steps)              base            fix
+       on a burning cell                            117  2.12%    178  3.22%
+       within 1 of a burning cell                   634 11.49%    815 14.76%
+       within 2                                   1,032 18.70%  1,344 24.35%
+       within 3                                   1,282 23.22%  1,657 30.02%
+       mean distance to the nearest fire (cap 30)       12.52         10.84
+       steps within 5 of an edge                          9.4%          7.9%
+       unique cells visited (sum over searchers)        4,372         4,409
+       direction reversals / holds                    285 / 49      319 / 29
+     FRESH 10 (4,800 searcher steps)
+       on a burning cell                            143  2.98%    178  3.71%
+       within 1                                     603 12.56%    687 14.31%
+       within 2                                     960 20.00%  1,047 21.81%
+       within 3                                   1,188 24.75%  1,290 26.88%
+       mean fire distance                               10.98         10.75
+       edge <= 5 / unique cells                 18.0% / 3,532   19.4% / 3,594
+       reversals / holds                             708 / 76      242 / 390
+     Per run, steps on a burning cell base -> fix, canonical: E/101 3->12, E/202 3->3, E/303
+     7->18, E/404 12->7, E/505 1->24, S/101 19->32, S/202 12->20, S/303 9->15, S/404 41->29,
+     S/505 7->10, def/101 1->2, def/202 0->3, def/303 2->3 (up in 10, down in 2, flat in 1).
+     Fresh: E/606 0->5, E/707 0->0, E/808 13->3, E/909 11->14, E/1010 8->6, S/606 18->53,
+     S/707 31->15, S/808 16->26, S/909 26->30, S/1010 20->26 (up in 6, down in 3, flat 1).
+     Reading: coverage in cells is unchanged (4,372 vs 4,409; 3,532 vs 3,594); the fix's
+     searchers cover the same amount of ground but spend it nearer the fire. The 2.12 -> 3.22
+     is the fire's 3-cell neighbourhood being entered 30% more often, not a handful of bad steps.
+     (E/707 fresh is a searcher pinned on an edge in BOTH worlds - 89% / 82% of its steps within
+     5 of an edge, 421 reversals in base, 355 holds in fix, 56 / 100 unique cells - a pre-existing
+     edge pathology that neither the dead nor the live gates resolve. Noted, not this round's.)
+
+2.5  THE ACCIDENT'S COMPONENTS REPLAYED ONE AT A TIME ON THE FIXED TREE
+     Mechanism: outputs/_dim_hooks.py gained `dead=<consumers>` (harness-side, installed on the
+     class before the model is built): _distance_from_boundary returns 0.0 and
+     _position_at_boundary False when called DIRECTLY from a named consumer, and stay live for
+     every other caller. outputs/_ih_testprobe.py runs the two scenario-matrix tests that bound
+     strict fire/smoke steps (<= 2 in 50 steps) with a given dead set, same seeding as pytest
+     (run_scenario seeds SYSTEM_RANDOM from SEED = 42, deterministic per configuration):
+                                                  edge/zero_victims north 50     A/east 50
+       tree / dead set                        strict  camping  unique   strict
+       8520706                                   1       8       40        0     PASS
+       e76c806 (no replay)                       4      10       38        0     FAIL (= held round)
+       e76c806 + C7 gate + C6 retreat dead       1       8       40        0     PASS - the
+            baseline's three metrics reproduced exactly
+       e76c806 + C7 gate dead only (live retreat scoring)
+                                                 1      11       22        0     PASS the bound,
+            but the searcher visits 22 cells in 50 steps: it walks inward and parks (1.5 ii)
+       e76c806 + C5 dead                         4      10       38        0     FAIL, = e76c806
+       e76c806 + C3 (execute) dead               4      10       38        0     FAIL, = e76c806
+     So the test failure is the C7 override and nothing else, and the override needs the
+     hazard-only scoring to be the accident rather than a new pathology.
+
+2.6  VERDICT ON "USEFUL BY ACCIDENT, OR USEFUL FOR A DIFFERENT REASON"
+     Both, in this precise sense:
+       - The trigger was written for EDGE proximity (D <= 2) and the action was written as a
+         retreat to the safe interior (14*D + 18 inward + 8*hazard). The dead read made the
+         trigger unconditional and stripped the action to its hazard half. Neither the author's
+         trigger nor the author's action ran; what ran was "on every gated step, if a strictly
+         safe neighbour exists, step to the one furthest from any fire or smoke".
+       - That behaviour reduced exposure by keeping searchers away from the fire IN GENERAL
+         (61% of firings at 9+ cells; mean distance +1.7 cells; the 3-cell neighbourhood entered
+         30% less), not by preventing steps into fire at the moment of danger (2.8% vs 3.0% of
+         override firings landed on a burning cell either way; within 2 cells of fire it changed
+         the next cell's fire distance in 13 of 75 firings). The near-field protection the code
+         was designed to give - the strict checks (1), (5), (6), (7) - is the same on both trees.
+       - It was target-blind: the searcher's own choice at the gate is a step toward its target
+         (that is what _choose_best_direction returns), and on 55% of the ~898 gated steps the
+         override substituted a different direction (the 498 interior + 13 band changed steps),
+         reversing the choice outright on 22% of those. Coverage in cells did not suffer (2.4),
+         because the wind-aware target
+         machinery re-targets on same-target streaks (10 steps) and the searcher alternates
+         between pathfinding toward a target (flag set, gate skipped) and being repelled from
+         the fire (flag clear, gate on). What suffered is time-to-target - the held round's
+         attribution in section 7: first sightings barely move, dispatch ORDER moves.
+     For the design this means: the thing to restore is a far-field bias away from the fire on
+     the gated steps, and the honest name for it is hazard repulsion, not hazard avoidance.
+
+3. WAS EDGE-ONLY THE ORIGINAL INTENT?
+-------------------------------------
+3.1  History: `git log -S` for each of the seven names (the three gates, the retreat, the helper,
+     _grid_dimension, the retarget_to_interior label) returns exactly one commit, a4a01b4
+     2026-07-27 "Add core project files and update README". There is no design note, no docs/
+     entry (docs/ covers the system boundary and the managing/managed split; grep for
+     boundary/near-edge/interior/hazard gate/retreat finds nothing), no README mention, and no
+     comment in the executor near any of the seven. The intent has to be read from the code.
+3.2  From the code: the three gates test distance-to-edge and nothing else, and their outputs
+     are named for the edge: _victim_near_edge_escape_required, near_boundary,
+     retarget_to_interior, _retreat_to_safe_INTERIOR_direction with a 14*D + 18-inward scoring.
+     The hazard concern has its own, separate machinery in the same gate - strict level, buffer,
+     lookahead - and its own label (hazard_retreat). The two concerns are woven into one
+     function but the author kept them distinguishable at every line. EDGE SAFETY was the intent
+     of the three gates; HAZARD SAFETY was intended as strict filtering. Edge-only is therefore
+     exactly what the gates were written to be, and e76c806 gives the author's design its first
+     real run.
+3.3  From the tests (the only specification that exists), all written against the dead helper
+     and passing with it:
+       - test_wind_aware_victim_search.py::test_victim_search_wind_aware_action_when_downwind_
+         exists: a searcher in the interior with a wind target is labelled the PLAIN
+         "victim_search_wind_aware". Interior = no interior retarget. It failed for the whole
+         campaign because C5 was always-on and passes now (held round 9). Edge-only for C5 is
+         specified.
+       - test_victim_searcher_scenario_matrix.py::test_no_crash_zero_victims and
+         ::test_scenario_a_no_5x5_camping_east: strict fire/smoke steps <= 2 in 50 steps, plus
+         camping/coverage bounds. A HAZARD-EXPOSURE bound on the searcher, with no mechanism
+         named. It is the maintainer's only stated requirement on interior hazard safety, and
+         its number was calibrated on the accident (it passes at 1 with the override, fails at 4
+         without).
+       - test_wind_aware_corridor_search.py:289-292 and test_executor_routing_and_burnt.py:89
+         accept hazard_retreat and retarget_to_interior as legitimate labels of forced retargets
+         and route-around-smoke cases - the strict machinery, not the override.
+3.4  Is edge distance a proxy for fire? No, and the geometry says why the strict checks are not
+     enough on their own. Ignition is SYSTEM_RANDOM.randint(margin, HEIGHT - margin - 1) per axis
+     with margin = 10 (wildfire_model.py:1992-1995) - the interior, never within 10 of an edge.
+     Scenario D's victims spawn at (40,25), (25,48), (10,25) and (25,3) on every seed - 9, 1, 10
+     and 3 cells from the nearest edge (outputs/_dim_edgeband.txt) - and the firefighters on a
+     ring of radius 0.4 x 50 (:590-604). The searcher's wind-aware target is "a safe cell downwind of the
+     active fire front" (_compute_wind_aware_search_target, the fire centroid plus the wind
+     vector): the searcher is sent to where the fire is GOING, and the fire follows it there. A
+     3-cell lookahead against the CURRENT fire cannot see the front arrive, and the front is
+     fast: measured on the 13 canonical seeds (burn_intervals, manhattan reach of the burn scar
+     from the ignition cell), it is 6-9 cells out by step 10, 22-30 by step 30 and 27-48 by step
+     60 - about a cell per step early on, the searcher's own speed - so a searcher that stops
+     moving away is overtaken. The accidental bias was a crude, target-blind stand-in for "keep a
+     margin from a front that moves", and edge distance never had anything to do with it.
+3.5  Answer: the original intent of the three gates was edge safety, and edge-only is correct for
+     THAT intent. The original intent for hazard safety was strict avoidance of the current
+     fire, which is preserved and measured insufficient. Nothing in the code or tests ever
+     specified a far-field margin from the fire; the maintainer's test bound is the closest thing
+     to a specification and it encodes the accident's outcome.
+
+4. DESIGN
+---------
+4.1  Options evaluated
+  (a) keep the override always-on, intentionally: remove the D <= 2.0 gate and document the
+      retreat as hazard repulsion. TWO readings, only one of which is the accident:
+      (a-literal) always-on with the LIVE retreat scoring - measured in 2.5: the +18 inward
+        bonus and 14*D dominate 8*hazard, the searcher walks to the centre and parks (22 unique
+        cells in 50 steps). REJECTED by measurement; it is also the "constrain movement, lose the
+        unit's own good ground" shape of #9-A1.
+      (a-replica) always-on with the accident's HAZARD-ONLY scoring (boundary terms dropped, C8
+        dropped): reproduces the baseline's test metrics exactly (2.5) and is the only variant
+        with full-run evidence (4.7, the C7+C6 arm). The brief's objection - "keeps a gate that
+        does nothing" - does not apply to this shape: the edge gate is REMOVED (replaced by the
+        unconditional retreat, or by a parameter-dependent branch, 4.3), the retreat's dead
+        boundary terms are removed with it, and edge handling is left to the filters that already
+        do it live (1.7). No dead code remains; what remains is a documented behaviour with a
+        documented switch.
+  (b) restore it in the interior via a hazard condition: retreat when the nearest fire/smoke is
+      within K cells (or a risk score). The firefighters' _firefighter_cell_risk (agents.py:1052)
+      is not reusable here - it is a per-cell score (1e6 on fire, +100 adjacent, +10 smoke) that
+      the scorched round found is consulted only in a tier-4 fallback, and the searcher already
+      has richer helpers (_min_strict_hazard_distance, buffer, lookahead). The honest form of (b)
+      is a range trigger on _min_strict_hazard_distance. Its parameters are unmeasured, and 2.2
+      predicts it will under-deliver: 61% of the accident's benefit-carrying firings were at 9+
+      cells, and inside 2 cells the override barely changed the next cell. A K of 6 (buffer 2 +
+      lookahead 3 + 1) keeps 36% of the accident's firings. It is more defensible as a rule - it
+      says why it fires - but it is a different behaviour, and every prior round in this family
+      that added a hazard-triggered constraint lost on fresh seeds.
+  (c) two behaviours, different parameters: the e76c806 edge gate as it is (D <= 2, live
+      scoring) plus an interior hazard rule. This is (b) with the edge gate kept; the edge gate
+      is nearly redundant with _victim_edge_blocked_direction (within margin 3 only inward
+      directions survive the filter, so the gate can only re-rank inward moves), and at
+      D 3-5 the live retreat's inward bias is what the a-literal probe shows to be harmful when
+      called often. (c) adds a second parameter set to measure for a component that does almost
+      nothing. Folded into (b) as "the D <= 2 branch stays reachable when the range is finite".
+  (d) something else: a front-aware term (the fire probability map, already penalised two cells
+      ahead in _choose_best_direction at fire_prob >= 0.5) or a larger lookahead. Both change the
+      searcher's target-seeking itself rather than restoring what was lost, are untuned, and
+      belong to the follow-up the held round named (whether the searcher tuning still fits
+      searchers that follow their own plans). Not this round.
+
+4.2  RECOMMENDATION: (a-replica) as the shipped default, (b) at K = 6 as a measured secondary
+     arm in the same wave, under ONE constant. Why (a-replica) and not (b):
+       - it is the behaviour every outcome in the campaign's record was produced under, and the
+         behaviour every prior searcher round tuned against; shipping it with the dimension fix
+         changes nothing the maintainer has already accepted, while making it visible, named
+         and switchable;
+       - it has evidence: the test reproduces the baseline number exactly, and the full-run
+         C7+C6 replay (4.7) shows its 23-seed outcomes and exposure before a line of source is
+         written. (b) has a prediction and a precedent against it;
+       - the brief's requirement is that the burning-cell exposure return to the 8520706 level
+         on BOTH samples and the test pass 5/5. (a-replica) is the only candidate for which that
+         is expected rather than hoped;
+       - the objection that (a) is "the pattern this project spent 25 rounds removing" is
+         answered by what those rounds removed: gates that could never fire and inputs that were
+         never read. (a-replica) removes exactly such a gate (D <= 2 in C7) and such an input
+         (the retreat's dead boundary terms) and replaces them with a stated rule and a switch.
+     If the fresh seeds contradict (a-replica) and not (b), the round ships (b); the rule is in
+     4.6. The constant makes both the same code path, so the choice is a default, not a rewrite.
+
+4.3  THE SOURCE CHANGE (Part 2, not yet made)
+     common_fixed_variables.py, next to the feature-2 constants (:142-143), with a comment in the
+     same style:
+        VICTIM_SEARCHER_HAZARD_RETREAT_RANGE = 99
+     Meaning: 0 = off - the searcher hazard gate is edge-only, exactly e76c806; 1..98 = on when
+     the nearest strict fire/smoke cell is within that many cells of the searcher; >= 99 = always
+     on (the retreat direction replaces the chosen direction on every gated step where one
+     exists, the behaviour the model ran with until e76c806). Overridable per run through
+     apply_scenario_config like every other scenario parameter.
+     uav_executor.py:
+       - a module import `import common_fixed_variables as _cfv` and a helper
+            def _hazard_retreat_range(self) -> int:  read at CALL time from _cfv (the agents.py
+            victim_flee_trigger_distance pattern :359-371), clamped to >= 0. Read from the module
+            because apply_scenario_config sets attributes on that module and the executor's
+            existing `from common_fixed_variables import ...` names are import-time copies that
+            an override cannot reach.
+       - _apply_victim_searcher_hazard_gate, item (4): replace the D <= 2.0 block with
+            rng = self._hazard_retreat_range()
+            if pos is not None and model is not None:
+                if rng > 0 and (rng >= 99 or self._min_strict_hazard_distance((x, y)) <= rng):
+                    hazard-driven retreat (same relabel rule as today)
+                elif rng == 0 and self._distance_from_boundary(x, y, model) <= 2.0:
+                    the e76c806 edge retreat, unchanged
+         With rng >= 99 the edge branch is unreachable by construction and says so in a comment;
+         with rng finite it is reachable; with rng 0 it is the current code. A parameter-dependent
+         branch, not a dead gate.
+       - item (6) C8 scoring: `D(cell) * 10.0` only when rng == 0 (the accident had it at 0).
+       - _retreat_to_safe_interior_direction: the boundary terms (14*D, +18 inward, fallback
+         10*D) only when rng == 0; otherwise hazard-only scoring (8*hazard, fallback 6*hazard) -
+         the accident's scoring, applied to every caller of the retreat (the strict branches
+         included), because that is what the measured replay does and because a searcher standing
+         in smoke should step away from the fire, not toward the centre.
+       - no other site touched: C5, C3, C1, C2, C4 stay as e76c806 left them; the twice-per-step
+         gate call stays (idempotent on the substituted direction).
+     Expected size: ~35 lines in uav_executor.py, 8 in common_fixed_variables.py, and the
+     evaluate_scenarios/serve_dashboard CLI does not need a flag (--set reaches it through the
+     harness; the dashboard reads cfv).
+     Documentation: README "Simulation parameters" gets the constant with the three meanings and
+     the sentence "this is the searchers' interior hazard repulsion; before e76c806 it existed
+     only because the grid size was unreadable".
+
+4.4  KILL SWITCH / CONTROL
+     VICTIM_SEARCHER_HAZARD_RETREAT_RANGE = 0 is the control: the fixed tree with the restoration
+     source present but off. GATE: --set VICTIM_SEARCHER_HAZARD_RETREAT_RANGE=0 on the patched
+     tree must be byte-identical to e76c806 (ihfix/dimfix) on every recorded field, 13/13 and
+     10/10. Second identity proof, of the implementation rather than the switch: the patched tree
+     at 99 must be byte-identical to the harness-side C7+C6 replay arm (ihdeadC7C6) 13/13 - the
+     replay is the accident's C7 component by construction (D = 0.0 inside the gate and the
+     retreat, live everywhere else), so equality proves the source does exactly and only that.
+     The three arms the brief requires are then: 8520706 (ihbase, no dimension fix), e76c806
+     (ihfix, dimension fix alone = patched tree at 0), and the patched tree at 99; plus the
+     patched tree at 6 as the (b) arm.
+
+4.5  WHAT (a-replica) CHANGES AGAINST 8520706, stated before the numbers
+     Not byte-identical to 8520706 and not meant to be: C5 (label + pathfinding mode on the
+     executor-target path) and C3 (holds executed as holds within 2 of an edge) stay edge-only,
+     and the tracker-side helpers (C1, C2, C4) stay live. So the shipped tree = the dimension
+     fix + the accident's C7 component. Prediction, recorded now: burning-cell exposure returns
+     to within a few steps of the 8520706 level on both samples (the probe reproduces the
+     baseline exactly and C5/C3 carry no exposure, 2.5); outcomes re-roll in the dispatch-order
+     way the held round described, in either direction, with the fresh seeds deciding; the
+     downwind wind-aware test stays green (it fails on C5, which stays live); the route_blocked
+     D/east 909 item is a dispatch re-roll and may appear on a different seed or vanish - it is
+     pre-existing either way (held round 10).
+
+4.6  PART 3 PLAN AND DECISION RULE (stated in advance)
+     Arms, seed-matched, canonical 13 + fresh 10, one process per seed through the pool:
+       ihbase     8520706 worktree                   (running now, with --uav-actions)
+       ihfix      e76c806 = patched tree at 0        (running now; identity vs dimfix required)
+       ihoff      patched tree, --set RANGE=0        13 + 10: byte-identical to ihfix (kill switch)
+       ihrest99   patched tree, RANGE=99             13 + 10: byte-identical to ihdeadC7C6 on the
+                                                     13 (implementation), then the outcome arm
+       ihrest6    patched tree, --set RANGE=6        13 + 10: the (b) arm
+     Then the full pytest on the patched tree (baseline for this source: 8 failed / 490 passed at
+     8520706; the held round's set at e76c806 is the same count with test_no_crash_zero_victims
+     and east_vs_west in, downwind and north_vs_south out), the two hazard-bound tests 5x in
+     isolation, and the route_blocked gate with a new prefix.
+     Gate (the brief's six items), per arm:
+       1 burning-cell exposure <= 8520706 on both samples (2.12% canonical, 2.98% fresh)
+       2 test_no_crash_zero_victims 5/5
+       3 fresh victims dead <= 3
+       4 downwind wind-aware test passes
+       5 rescued >= 8520706 on both samples (35 canonical, 27 fresh)
+       6 route_blocked no worse than the held round's, D/east 909 confirmed pre-existing
+     Decision rule: ship the arm that passes all six with the dimension fix as one merge. If
+     both pass, ship 99 (the evidence-backed equivalence to the behaviour the record was built
+     on) and record 6 as the measured alternative in the report. If only one passes, ship it. If
+     neither passes, report which is closest item by item and whether holding both changes
+     (e76c806 + restoration) is better than shipping either alone; the recommendation in that
+     case is to hold, because the dimension fix without the restoration is the measured
+     regression this round exists to remove.
+     Item 3 is the one to watch: the held round's fresh 3 -> 8 is dispatch re-roll, and a
+     restoration that changes searcher paths re-rolls again; 8520706's 3 is the target, not a
+     guarantee. Item 1 is decided by the mechanism, not by luck, for the 99 arm.
+
+4.7  ATTRIBUTION ARMS (harness-side replays on the fixed tree, canonical 13, per-step labels
+     recorded; outputs/_ih_queue.txt through outputs/_dim_pool.sh, log outputs/_ih_pool.log)
+       ihdeadC7C6   D dead inside the gate AND the retreat  = (a-replica), the source's 99 arm
+       ihdeadC7     D dead inside the gate only             = (a-literal)
+       ihdeadC5     D dead inside _victim_near_edge_escape_required
+       ihdeadC3     D and P dead inside execute (the hold read)
+       ihfix / ihbase  e76c806 / 8520706 re-recorded with --uav-actions (mode mix, strict steps)
+
+     4.7 RESULTS (outputs/_ih_arms.py summary|identity|seeds; 78 runs, 0 failures, all fire
+     digests identical to the recorded arms of the same seed)
+
+     AT A GLANCE - canonical 13, 5,520 searcher steps per arm
+       arm          what is dead            r/d/ff/nd    burning   <=3 fire  fire dist  = base   = fix
+       ihbase       8520706 (everything)    35/12/8/1    2.12%     23.2%     12.52      13/13    0/13
+       ihfix        e76c806 (nothing)       37/11/8/2    3.22%     30.0%     10.84       0/13   13/13
+       ihdeadC7C6   C7 gate + C6 retreat    35/12/8/0    2.08%     25.1%     12.08       2/13    0/13  <- (a-replica)
+       ihdeadC7     C7 gate only            35/12/7/1    2.54%     26.1%     11.30       0/13    0/13  <- (a-literal)
+       ihdeadC5     C5 flag only            36/12/7/2    3.39%     28.2%     11.00       0/13    5/13
+       ihdeadC3     C3 hold read only       37/11/8/2    3.22%     30.0%     10.84       0/13   13/13  <- INERT
+       "= base / = fix": runs byte-identical on every recorded field. The replay's 2/13 to base
+       becomes 6/13 when the fire-tracker rows P moves late are set aside (4.7 detail); on
+       rescued, dead and firefighter deaths it is 13/13 with 8520706.
+
+     ihdeadC7C6 - the (a-replica) preview, 13/13 canonical runs:
+       outcomes r/d/ff/nd          35/12/8/0     (8520706: 35/12/8/1;  e76c806: 37/11/8/2)
+       per seed vs 8520706: IDENTICAL on rescued, dead and firefighter deaths on 13/13 seeds;
+         the single difference is E/202 never_detected 1 -> 0 (the victim the baseline never
+         saw is detected, and still not rescued). Not one rescue, death or firefighter death
+         moves. The fix's +2 / -1 / four firefighter moves all revert.
+       searcher exposure (5,520 steps)   on burning cell 115 = 2.08%   (base 2.12%, fix 3.22%)
+                                          within 3 of fire 25.1%         (base 23.2%, fix 30.0%)
+                                          mean fire distance 12.08       (base 12.52, fix 10.84)
+         per seed on a burning cell, replay vs base: E/101 5 vs 3, E/202 0 vs 3, E/303 7 vs 7,
+         E/404 11 vs 12, E/505 1 vs 1, S/101 19 vs 19, S/202 25 vs 12, S/303 10 vs 9, S/404 23
+         vs 41, S/505 7 vs 7, def/101 3 vs 1, def/202 2 vs 0, def/303 2 vs 2.
+       strict hazard steps (the test's definition, burning or visibility smoke) 115 = 2.08%;
+         executor level > 0 (agent smoke included) 154 = 2.79%.
+       byte identity: to 8520706 2/13 (E/303, E/505); to the held round's P-only arm dimA 4/13
+         (+ E/404, S/101); on E/404, S/101, S/505 and def/303 the ONLY differing field is
+         uav_steps (the fire-tracker edge escapes P adds, late, outcome-inert, held round 8.2);
+         on the other 7 seeds the UAV rows diverge at step 1 - C5 live - and the firefighter
+         and victim rows follow, without changing a single outcome count. Fire digests identical
+         13/13 (the replay perturbs nothing but UAV decisions).
+       mode mix (share of searcher steps by executed label) and exposure BY MODE:
+                                   steps    on burning    within 3   mean fire dist
+         retarget_to_interior      82.8%   1.09%          21.7%      12.8
+         escape_bfs                 8.6%   2.53%          49.7%       7.3
+         wind_aware (planner path)  4.7%   0.00%           1.5%      15.4
+         hazard_retreat             2.3%   41.7%         100.0%       0.7   (the on-hazard label)
+         sweep                      1.6%   0.00%          30.7%       9.1
+     ihfix - e76c806 re-recorded with --uav-actions, 13/13: BYTE-IDENTICAL to dimfix 13/13 on
+       every field but the new one (the recording is read-only; outcomes 37/11/8/2, exposure
+       3.22%, exactly the held round). Its mode mix and exposure by mode:
+                                   steps    on burning    within 3   mean fire dist
+         retarget_to_interior      76.7%   1.65%          25.7%      11.6
+         escape_bfs                 8.9%   3.24%          55.5%       6.4
+         wind_aware (planner path)  8.4%   0.43%           9.4%      14.0
+         hazard_retreat             4.3%   38.1%         100.0%       0.7
+         sweep                      1.6%   0.00%          16.5%      10.3
+       READ THE TWO TABLES TOGETHER. The live tree spends its searcher steps in the SAME modes
+       as the replay (77% vs 83% in the forced-retarget pathfinding mode, where the gate is
+       skipped), so the override's effect is not the mode it induces. It is within every mode:
+       in the pathfinding mode the replay's searcher is 1.2 cells further from the fire and
+       burns on 1.09% of steps against 1.65%; in escape_bfs 2.53% against 3.24%; on the
+       planner path 0 against 0.43%; and the on-hazard steps (the hazard_retreat label is
+       assigned when the searcher is STANDING in fire or smoke) halve, 127 against 236. The
+       override, executed on the ~15% of steps that reach the gate, changes where the searcher
+       IS when the other 85% of steps are decided - a position-history effect, which is the
+       far-field drift of 2.6 seen from the other side.
+
+     ihbase - 8520706 re-recorded with --uav-actions, 13/13: BYTE-IDENTICAL to dimbase 13/13
+       (outcomes 35/12/8/1, exposure 2.12%). Mode mix and exposure by mode:
+                                   steps    on burning    within 3   mean fire dist
+         retarget_to_interior      82.4%   1.01%          19.8%      13.2
+         escape_bfs                 8.8%   2.07%          46.6%       8.3
+         wind_aware (planner path)  5.2%   0.00%           1.7%      15.8
+         hazard_retreat             2.6%   43.3%         100.0%       0.7    (141 steps)
+         sweep                      1.1%   0.00%          19.7%       9.4
+       The replay (82.8 / 8.6 / 4.7 / 2.3 / 1.6; 1.09% / 2.53% / 0 / 127 on-hazard steps) has
+       8520706's shape mode for mode, and e76c806 does not (76.7 / 8.9 / 8.4 / 4.3 / 1.6; 1.65%
+       / 3.24% / 0.43% / 236). The three trees agree that the pathfinding mode is where
+       searchers live; they differ in how far from the fire they live there.
+
+     ihdeadC7 - the (a-literal) preview: gate always on, retreat with the LIVE boundary scoring
+       (14*D + 18 inward + 8*hazard), 13/13:
+       outcomes r/d/ff/nd          35/12/7/1     (base 35/12/8/1: ff -1 on S/303; E/202 +1
+                                                  rescued, def/202 -1 rescued)
+       exposure                    on burning 140 = 2.54%  within 3 26.1%  mean fire dist 11.30
+                                   - half-way between base (2.12%) and fix (3.22%)
+       coverage                    unique cells 4,195 (base 4,372, -4%), reversals 349 (285),
+                                   holds 40 (49)
+       by mode: the planner path (wind_aware, 8.8% of steps) runs at mean fire distance 10.1
+       with 17.0% of its steps within 3 of fire, against 15.8 / 1.7% on 8520706 and 15.4 / 1.5%
+       in the replay. That is the inward bias at work: "toward the safe interior" is toward the
+       grid centre, and the fire ignites in the interior. The 1-UAV probe's parking (22 unique
+       cells) is the same effect without a second searcher and the coverage machinery to pull
+       the unit off it. (a-literal) is measured worse than the replay on exposure, coverage and
+       planner-path fire distance, and confirms that the scoring must be hazard-only.
+
+     ihdeadC5 - the near-edge flag always on (force_interior on every executor-target step,
+       the retarget_to_interior label and pathfinding mode of 8520706), 13/13:
+       byte identity to e76c806    5/13 identical (E/101, E/202, E/303, E/505, def/202); on
+                                   E/404, S/404, def/101 and def/303 ONLY uav_steps differs
+                                   (a searcher step, no firefighter or victim consequence);
+                                   S/101, S/202, S/303, S/505 re-roll from step 1.
+       outcomes r/d/ff/nd          36/12/7/2     (fix 37/11/8/2: S/303 alone, -1 rescued,
+                                                  +1 dead, -1 ff)
+       exposure                    on burning 187 = 3.39%  (fix 3.22%, base 2.12%)
+                                   within 3 28.2%, mean fire dist 11.00 - the fix's level or
+                                   slightly worse, nowhere near the base
+       mode mix                    77.5 / 9.1 / 7.5 / 4.2 / 1.7 - the fix's shape
+       So the flag that was always on for the whole record - and that failed the downwind test
+       - carried no hazard benefit at all: forcing it back on changes almost nothing (the
+       executor-target path is already in that mode 77% of the time from the streak logic) and
+       what it changes is a re-roll. C5 stays edge-only, as e76c806 left it.
+
+     ihdeadC3 - the hold-branch near_boundary read always true (every wind-aware searcher hold
+       that reaches that branch becomes a retarget), 13/13: BYTE-IDENTICAL to e76c806 13/13 on
+       every recorded field. The read sits in the else-branch of the hold handling (:360-397),
+       which victim searchers only reach for fail-safe hold decisions, and there it is one of
+       nine disjuncts; on 13 seeds it never decided anything. C3 is inert on this sample - the
+       "0.0 < 2.0" that was always true for the whole record changed no step. Nothing to
+       restore, nothing to design; it stays as e76c806 left it.
+
+     WHAT THE ATTRIBUTION SETTLES
+       - The accident's outcome content is the C7 override with hazard-only retreat scoring,
+         and nothing else: that replay gives 8520706's rescued / dead / firefighter deaths on
+         13/13 seeds and its exposure (2.08% vs 2.12%); C3 is inert; C5 re-rolls without a
+         hazard benefit; the tracker-side helper P is outcome-inert (held round).
+       - (a-literal) is measured worse than (a-replica) on every axis it differs on (exposure
+         2.54% vs 2.08%, unique cells -4%, planner-path fire distance 10.1 vs 15.4): the retreat
+         must score by hazard only.
+       - The live tree and the accident spend their steps in the same modes; the difference is
+         position, not mode. A hazard-TRIGGERED rule (option b) would fire on the 15% of gated
+         steps only when fire is near, and the measured benefit comes from where those steps
+         put the searcher for the other 85%. The prediction that (b) under-delivers stands;
+         it remains the secondary arm in Part 3 so that it is measured rather than assumed.
+
+5. RISKS, AND THE THREE PRECEDENTS
+----------------------------------
+  - This is a movement constraint near fire, so it is in the #9-A1 / last_cell arm A /
+    _reset_idle_retreat_state family, and the fresh seeds decide it, not the canonical 13. The
+    difference from those three: they ADDED a constraint to a unit that did not have it and lost
+    ground the unit was using well; this restores a constraint the searchers ran with for the
+    whole record. The A/B is still required and is planned (4.6).
+  - #9-A1 specifically: the scorched penalty evicted units from the safest ground in the model.
+    The hazard-only retreat cannot do that to a searcher - its candidates are already filtered by
+    the strict rules, and it scores by distance from fire, so it prefers burnt-out ground behind
+    a front (far from any burning cell) over unburnt ground ahead of it. That is the right
+    preference for a UAV.
+  - Outcome re-roll: every outcome change in the held round was a dispatch-order consequence of
+    searcher paths diverging at step 1-2. Restoring the C7 component moves the paths again;
+    the +2 / -1 / 0 / +5 pattern will be re-rolled and must be reported per seed, as the brief
+    asks (Part 3 item 4).
+  - Coverage: the override is target-blind on the gated steps; cells covered were unaffected
+    in 23 runs (2.4) but dispatch timing was. The mode-mix recording (4.7) will show how many
+    steps the rule actually takes over on the live tree, where C5 no longer diverts steps into
+    pathfinding.
+  - The two trajectory tests (east_vs_west, north_vs_south) are order-dependent on both trees
+    (held round 9) and are not attributable to any arm; they will be run in isolation as before.
+  - E/707 (fresh): a searcher pinned on an edge in both worlds; nothing here touches it, and it
+    should not be counted for or against the restoration.
+
+6. FILES (this part)
+--------------------
+  outputs/interiorhazard_part1.txt   this document
+  outputs/_ih_characterise.py        decisions | trajectory (sections 2.2, 2.4)
+  outputs/_ih_testprobe.py           the two hazard-bound tests against any checkout + dead set
+  outputs/_dim_hooks.py              + _install_dead / dead= (per-consumer dead reads)
+  outputs/_ffr_harness.py            + --dim-dead, --uav-actions (per-step action label, strict
+                                     hazard state, fire distance per UAV; read-only, off by
+                                     default; a bare invocation is unchanged)
+  outputs/_ih_arms.py                summary | identity | seeds over the arms
+  outputs/_ih_queue.txt, _ih_launch.sh, _ih_pool.log   the attribution pool (78 runs, 0 failures,
+                                     22:41 - 00:18, 6 concurrent at ~2.8 GB free commit)
+  outputs/_ffr_ih{base,fix,deadC7C6,deadC7,deadC5,deadC3}_*.json (+ .stdout.txt)   the arms;
+                                     ihbase / ihfix double as the Part 3 8520706 / e76c806 arms
+  outputs/_ffr_ihsmoke_east_half_101.json   20-step smoke test of the new flags
+  worktree: <scratchpad>/base8520706 (git worktree list) - keep for Part 3, then
+            `git worktree remove`
+
+STOPPING HERE FOR CONFIRMATION. Nothing in the source tree is changed. Decisions needed:
+  (i)   the shape in 4.3 - one range constant covering off / range / always, hazard-only retreat
+        scoring whenever it is on, edge handling left to the live filters;
+  (ii)  the default 99 (a-replica) with 6 as the measured secondary, and the decision rule in 4.6;
+  (iii) whether to run the (b) arm at all (adds 23 runs, ~25 min of pool time), or 99 only.

@@ -142,6 +142,28 @@ FF_RESCUE_ABSENCE_MAX_STEPS = 5
 VICTIM_FLEE_TRIGGER_DISTANCE = 3
 VICTIM_FLEE_MAX_DISPLACEMENT = 6
 
+# Victim-searcher interior hazard retreat. The searcher hazard gate in
+# src_extension/execution/uav_executor.py replaces the searcher's chosen
+# direction with a one-step RETREAT - the strictly safe neighbour furthest from
+# any burning or smoke cell - when this rule fires:
+#   0       off: the retreat fires only within 2 cells of a grid edge (the
+#           edge-only gate, with the retreat scored toward the interior)
+#   1..98   on when the nearest strict fire/smoke cell is within this many
+#           cells of the searcher (manhattan)
+#   >= 99   on at every gated step
+# When on, the retreat and the gate's fallback ranking score by hazard distance
+# only; keeping off the grid edge is left to the edge-blocked filter (margin 3)
+# and the planner's boundary margins, which are live regardless.
+# History: until the grid size became readable (dimension fix, 2026-09-06) the
+# gate's edge test read 0.0 everywhere and the retreat's boundary terms were 0,
+# so the model ran with this rule ALWAYS ON and hazard-only for its whole record
+# - by accident. 99 is that behaviour made intentional; 0 is what the edge-only
+# code did once the read worked, measured at +1.1 points of searcher steps on a
+# burning cell (2.1% -> 3.2%). Overridable per run through apply_scenario_config
+# like every other scenario parameter, and read at call time so an override
+# applies. Deterministic - it draws from no RNG.
+VICTIM_SEARCHER_HAZARD_RETREAT_RANGE = 99
+
 N_ACTIONS = 4
 UAV_OBSERVATION_RADIUS = 8
 side = ((UAV_OBSERVATION_RADIUS * 2) + 1)

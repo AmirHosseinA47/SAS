@@ -1,0 +1,513 @@
+INTERIOR HAZARD AVOIDANCE FOR VICTIM SEARCHERS - PART 2 (IMPLEMENTATION) AND PART 3 (VALIDATION)
+Branch firefighter-mission-features, from HEAD e76c806 (the HELD dimension fix). Design:
+outputs/interiorhazard_part1.txt, approved as written: one constant read at call time, 0 = edge-only
+control, finite = retreat within range, 99 = always on; default 99; the range-6 arm run.
+Python 3.10.11, mesa 1.2.1 (E:\Projects\SAS\.venv).
+================================================================================================
+
+0. VERDICT
+================================================================================================
+THE GATE, AS WRITTEN, DOES NOT PASS: THREE OF SIX ITEMS PASS FOR THE RESTORATION AT ITS DEFAULT,
+AND THE THREE THAT FAIL, FAIL BY ONE SEED EACH. IT IS THE CLOSEST ARM ON EVERY ITEM, IT IS
+BETTER THAN e76c806 ALONE ON EVERY ITEM, AND IT IS RECOMMENDED TO SHIP WITH THE DIMENSION FIX
+AS ONE CORRECTNESS MERGE - THE MAINTAINER'S CALL, NOTHING COMMITTED BY THIS SESSION.
+
+  item                                            range 99 (default)              range 6
+  1 burning-cell exposure <= 8520706, both        FAIL  canonical 2.08% vs 2.12%   FAIL 2.90% / 3.33%
+    samples (2.12% canonical / 2.98% fresh)             fresh 3.17% vs 2.98%
+                                                        (+9 steps in 4,800; E/606 +10, the seed
+                                                        where the same re-roll rescues +2)
+  2 test_no_crash_zero_victims 5/5                PASS  5/5 (e76c806 0/5)          untested in the
+                                                                                    post; probe 2 <= 2
+  3 fresh victims dead <= 3                       FAIL  4 (E/1010 +1; e76c806 8)   FAIL 8
+  4 downwind wind-aware test passes               PASS  5/5 in isolation, in the suite   (unchanged: C5)
+  5 rescued >= 8520706 on both samples            PASS  35 = 35, 29 >= 27          PASS 37, 27
+  6 route_blocked gate no worse than the held     FAIL  1 of 3 items vs 2 of 3: D/east 222 rescued
+    round's, 909 confirmed pre-existing                 3 -> 2 vs 70e1b33 (4 -> 2 vs both reference
+                                                        trees, section 6.3); the latch moved from
+                                                        909 (clean now) to 202, confirmed the same
+                                                        pre-existing gap (5.1)
+
+  WHAT THE NUMBERS ARE, WITHOUT THE JUSTIFICATION THAT MUST NOT BE READ INTO THEM:
+  CANONICAL 13    rescued / dead / ff     8520706 35/12/8   e76c806 37/11/8   restoration 35/12/8
+                  exposure                        2.12%             3.22%                 2.08%
+                  The restoration reproduces 8520706's rescued, dead and firefighter counts on
+                  13 of 13 seeds. The held round's +2 (E/505 +2, S/303 +1, E/303 -1 with a
+                  write-off) is given back, with its four firefighter moves.
+  FRESH 10        rescued / dead / ff     8520706 27/3/8    e76c806 27/8/7    restoration 29/4/7
+                  exposure                        2.98%             3.71%                 3.17%
+                  Eight of ten seeds identical in every count to 8520706; E/606 rescues two more
+                  with ten more steps near fire; E/1010 rescues a different victim and loses the
+                  one the base rescued. Four of the five extra deaths the fix caused are undone.
+  RANGE 6         gives the fix's outcomes on both samples (37/11/8, 27/8/8) and recovers 29% /
+                  69% of the exposure reduction: the mechanism is NOT local (section 7). The
+                  default 99 preserves an accident deliberately and knowingly.
+  CONTROL         the constant at 0 is byte-identical to e76c806 on 23/23 runs; at 99 the source
+                  is byte-identical to Part 1's harness-side replay on 13/13.
+  TESTS           8 failed / 500 passed: the deterministic failure the fix caused is gone, the
+                  downwind test stays green, and the one test that entered the set is the
+                  order-dependent trajectory test that passes 2/2 in isolation on every tree.
+
+  WHICH IS CLOSEST, AND IS HOLDING BETTER THAN SHIPPING EITHER (the brief's question on a
+  failed gate): range 99 is closest on all six items. Against e76c806 alone it is better on every
+  item - exposure 2.08/3.17 vs 3.22/3.71, fresh deaths 4 vs 8, the test that fails 5/5 on the fix
+  passes 5/5, rescued 35/29 vs 37/27 - and against holding both (staying at 8520706) it is the
+  same behaviour with the grid size readable, the three gates evaluating real distances, one
+  campaign-long test failure explained and fixed, and the 100x100 blocker gone. The three failing
+  items are one seed each: +9 burning-cell steps of 4,800 on a seed that also rescues two more
+  victims; one victim on one seed swapped for another and lost; one seed of 18 in the
+  route_blocked campaign down by two rescues through a coverage change and a pre-existing
+  transit behaviour, plus a latch through a pre-existing gap. My recommendation is to ship both
+  together as the correctness merge the held round recommended, with this gate result on the
+  record exactly as it stands. Holding both keeps a model that cannot read its own size to
+  avoid three one-seed movements in a sample where the same restoration returns twenty-two of
+  twenty-four seeds to the pre-fix outcomes.
+
+FRAMING, STATED UP FRONT AS THE MAINTAINER ASKED: the dimension fix (e76c806) is a CORRECTNESS
+fix - the model's size was unreadable and three searcher gates were evaluating against 0.0 - and
+the restoration in this round exists to ship it WITHOUT the exposure regression the held round
+measured. The outcome numbers below are reported because the gate requires them; they are not
+the justification for either change and must not be read as one. Where an arm reproduces
+8520706's rescues, that is the absence of a regression, not a gain.
+
+
+1. WHAT WAS IMPLEMENTED (Part 2)
+================================================================================================
+Applied by outputs/_ih_patch.py (--check / --apply / --revert; every snippet asserted to occur
+exactly once; each file's own line ending preserved - uav_executor.py is CRLF in the working tree
+under core.autocrlf=true, the other two LF; verified 4,716 CRLF / 0 bare LF after the patch).
+
+1.1  common_fixed_variables.py (+22 lines, all but one comment), after the feature-2 constants:
+
+        VICTIM_SEARCHER_HAZARD_RETREAT_RANGE = 99
+
+     with the comment block giving the three meanings (0 = the retreat fires only within 2 cells
+     of a grid edge and is scored toward the interior; 1..98 = it fires when the nearest strict
+     fire/smoke cell is within that many cells; >= 99 = it fires on every gated step), the
+     scoring rule when on (hazard distance only; the edge is left to the edge-blocked filter and
+     the planner margins, which are live regardless), and the history (the rule ran always-on and
+     hazard-only for the whole record because the grid size was unreadable; 99 is that behaviour
+     made intentional, 0 is what the edge-only code did once the read worked, measured at +1.1
+     points of searcher steps on a burning cell). Overridable per run through
+     apply_scenario_config; deterministic.
+
+1.2  src_extension/execution/uav_executor.py (+63 / -5 lines):
+     - `import common_fixed_variables as _cfv`: the module handle, so the constant is read at
+       CALL time. The file's existing `from common_fixed_variables import ...` names are
+       import-time copies that a per-run override cannot reach (the W3 pattern); the new read
+       follows agents.py's victim_flee_trigger_distance() instead.
+     - `_hazard_retreat_range()` (new, before _victim_edge_blocked_direction): the call-time read,
+       clamped to >= 0, 0 on a bad value.
+     - `_apply_victim_searcher_hazard_gate`, item (4) of the gate: the `D(pos) <= 2.0` block
+       becomes
+
+            retreat_range = self._hazard_retreat_range()
+            if pos is not None and model is not None:
+                cell = (int(pos[0]), int(pos[1]))
+                if retreat_range > 0:
+                    retreat_now = (retreat_range >= 99
+                                   or self._min_strict_hazard_distance(cell) <= float(retreat_range))
+                else:
+                    retreat_now = self._distance_from_boundary(cell[0], cell[1], model) <= 2.0
+                if retreat_now:
+                    retreat = self._retreat_to_safe_interior_direction(agent)
+                    ... (the relabel rule and return, unchanged)
+
+       plus a docstring naming the gate's order (strict hazard on the current cell -> retreat;
+       edge-blocked direction -> retreat; this rule; the 3-cell lookahead with re-ranking) and a
+       comment giving the history. Item (6), the fallback ranking's `D(cell) * 10.0` term, is
+       0.0 unless the range is 0.
+     - `_retreat_to_safe_interior_direction`: `edge_scored = self._hazard_retreat_range() == 0`;
+       the 14*D term, the +18 inward bonus and the fallback 10*D term apply only when
+       edge_scored; the 8*hazard and 6*hazard terms always. With the range on, the function is
+       the accident's retreat exactly: the strictly safe neighbour furthest from any fire or
+       smoke, ties by direction index.
+     - Nothing else touched: C5 (_victim_near_edge_escape_required), C3 (the hold-branch
+       near_boundary read), the tracker-side helpers, the twice-per-step gate call, and the
+       dimension fix itself are as e76c806 left them.
+
+1.3  README.md (+2 lines): the constant under the UAV parameters, with its three meanings and
+     the sentence that the searchers ran with the always-on form for the whole history of the
+     model because the grid size was unreadable.
+
+1.4  tests/test_victim_searcher_hazard_retreat.py (new, 10 tests, 0.8 s): the constant is read
+     at call time (0 / 6 / 99 / -4 -> 0 / "bad" -> 0); the default is >= 99; range 0 passes a
+     safe interior direction through and still retreats inward at the edge; range 99 retreats
+     away from the fire on a safe interior step and keeps the retarget label; range 6 fires
+     within range and not beyond it; range 99 keeps edge handling through the edge-blocked
+     filter; and the scoring difference in isolation - a searcher 5 cells from an edge with the
+     fire 7 cells INWARD: edge-scored, the retreat steps south toward the fire (14*D + 18 wins);
+     hazard-only, it steps east (8 cells from the fire). That last test is the (a-literal)
+     pathology of the design's section 2.5 pinned in eleven lines.
+
+1.5  Smoke identity, before any wave was spent (20-step runs, seed 101 D/east/half, all 48
+     recorded fields but tag/dim):
+       patched tree at 99  == the harness-side gate+retreat replay (outputs/_ffr_ihsmoke_*)
+                              IDENTICAL on 48/48 fields
+       patched tree at 0   == e76c806 (the ihfix run's first 20 steps): fire digests, UAV rows,
+                              firefighter rows, victim rows, bindings, action labels all IDENTICAL
+     The two hazard-bound scenario tests through outputs/_ih_testprobe.py on the patched tree:
+       range 0    edge/zero_victims strict steps 4 (limit 2)  = e76c806, FAIL      A/east 0
+       range 6    strict steps 2                              PASS at the limit    A/east 0
+       range 99   strict steps 1, camping 8, unique cells 40   = 8520706 exactly    A/east 0
+
+     Source diff at the end of Part 2: 3 files, +87 / -5, plus one new test file.
+
+
+2. METHOD (Part 3)
+================================================================================================
+Same outputs/_ffr_harness.py for every arm (its --uav-actions recording was proven read-only in
+Part 1: ihbase == dimbase and ihfix == dimfix 13/13). 240 steps, scenario D, one process per
+seed through outputs/_dim_pool.sh (queue outputs/_ih_queue3.txt, 79 runs, log
+outputs/_ih_pool3.log). Arms:
+  8520706          ihbase (canonical 13, Part 1) / dimfreshbase (fresh 10, held round) - no
+                   dimension fix, the reference the brief names
+  e76c806          ihfix (canonical 13, Part 1) / dimfreshfix (fresh 10, held round) - the
+                   dimension fix alone; == the patched tree at 0 (proof below)
+  ihoff            patched tree, --set VICTIM_SEARCHER_HAZARD_RETREAT_RANGE=0, 13 + 10:
+                   the kill switch - must be byte-identical to e76c806
+  ihrest99         patched tree at its default, 13 + 10: the restoration arm
+  ihrest6          patched tree, --set ...=6, 13 + 10: the range arm the maintainer asked for
+  ihbasefresh      8520706 on the fresh 10 with labels (mode mix only; outcomes are dimfreshbase)
+Post (outputs/_ih_post.sh): full pytest on the patched tree at default -> outputs/_ih_pytest_
+rest99.log; route_blocked gate with the new prefix ihrest (4 shards) -> outputs/_ih_rbgate_
+ihrest.txt; the hazard-bound and flipped tests in isolation (5 / 2 repeats) -> outputs/_ih_flips.txt.
+Gate table: outputs/_ih_gate.py.
+
+3. IDENTITY PROOFS
+================================================================================================
+Identity standard: every recorded field except tag/repo/wall_s/dim/uav_actions and the two
+configuration fields (params/extra_params, which carry the --set override by construction and are
+compared separately) - fire digests per step, UAV rows, firefighter rows and bindings, victim
+rows, eval, planner decisions, assigns, completions, stdout sha256; 46 fields.
+  KILL SWITCH   patched tree, --set VICTIM_SEARCHER_HAZARD_RETREAT_RANGE=0 (ihoff)
+                == e76c806 (dimfix, the held round's arm)        13/13 canonical
+                == e76c806 (ihfix, Part 1's re-recording)        13/13 canonical
+                == e76c806 fresh (dimfreshfix)                   10/10 fresh
+                The constant at 0 IS the dimension fix alone. Every difference between the
+                restoration and e76c806 below is the constant's doing.
+  IMPLEMENTATION  patched tree at its default 99 (ihrest99)
+                == the harness-side replay of the accident's C7 gate + C6 retreat on the fixed
+                   tree (ihdeadC7C6, Part 1)                     13/13 canonical
+                The source does exactly and only what the measured replay did: the gate always
+                on and the retreat scored by hazard only, with everything else - C5, C3, the
+                tracker helpers, the fix - live.
+  Fire digests identical to the recorded arms of the same seed on every run of every arm (the
+  restoration touches UAV decisions only).
+
+
+4. TESTS
+================================================================================================
+4.1  Full suite on the patched tree at its default (outputs/_ih_pytest_rest99.log):
+       8 failed, 500 passed, 5 warnings in 36:49   (490 + the 10 new tests; baseline for this
+       source lineage 8 failed / 490 passed at 8520706 and at e76c806)
+     Set difference against the held round's e76c806 run (outputs/_dim_pytest_fix.log):
+       LEFT the failure set    test_victim_searcher_scenario_matrix.py::test_no_crash_zero_victims
+                               - the deterministic failure the dimension fix caused, gone
+       ENTERED the failure set test_wind_aware_trajectory_regression.py::test_north_vs_south_
+                               trajectories_diverge_over_40_steps
+       unchanged               the six shared with every tree in the campaign (behavior_regression,
+                               dashboard_panel, dispatch_replacement, planner_authority, the two
+                               sector_assignment) + east_vs_west
+4.2  In isolation on the patched tree (outputs/_ih_flips.txt, one process at a time):
+       test_no_crash_zero_victims                       5/5 PASS  (e76c806: 5/5 FAIL, 8520706: 5/5 PASS)
+       test_scenario_a_no_5x5_camping_east              5/5 PASS
+       test_victim_search_wind_aware_action_when_
+         downwind_exists                                5/5 PASS  (the campaign-long failure the
+                                                        dimension fix repaired; its fixture is an
+                                                        unseeded model, ~1 in 12 flaky per the held
+                                                        round; 0 of 5 here)
+       test_north_vs_south_trajectories_diverge         2/2 PASS
+       test_east_vs_west_trajectories_diverge           2/2 FAIL  (assert (24.0, 45.0) != (24.0, 45.0))
+       tests/test_victim_searcher_hazard_retreat.py    10/10 PASS
+     The two trajectory tests give exactly the isolated results the held round recorded on BOTH
+     the 8520706 and e76c806 trees (east_vs_west fails 2/2, north_vs_south passes 2/2 in
+     isolation; their full-suite verdicts depend on what ran before them). north_vs_south
+     entering the full-suite failure set is that order dependence flipping again, not an effect
+     of the restoration - the same test passes in isolation on this tree, twice, as it did on
+     the other two.
+     GATE ITEM 2 (test_no_crash_zero_victims 5/5)  PASS.   GATE ITEM 4 (downwind test)  PASS - the
+     restoration does not re-break it; the two changes are not in conflict (the test failed on C5,
+     which stays edge-only; the restoration is C7).
+
+
+5. ROUTE_BLOCKED GATE
+================================================================================================
+`bash outputs/_ffr_rbgate.sh ihrest` (new prefix; 4 shards, 13 east + 5 south; the merge
+verifies the shard union equals the baseline seed set exactly) then `_ir_rbmerge.py --prefix
+ihrest` -> outputs/_ih_rbgate_ihrest.txt, against the 70e1b33 baseline as the gate defines it:
+    D/east 13   rescued 30 -> 36   dead 19 ->  9   ff 12 -> 7   recoveries 3 -> 9
+    D/south 5   rescued 13 -> 17   dead  6 ->  2   ff  3 -> 2   recoveries 0 -> 3
+    ALL 18      rescued 43 -> 53   dead 25 -> 11   ff 15 -> 9
+    [FAIL] rescued does not decrease on any seed: D/east 222, 3 -> 2
+    [PASS] recovery pass still recovers units: recoveries 3 -> 12, firings 15 -> 26
+    [FAIL] no unit left latched at end of run: D/east 202, ff_unit_1 at (24, 21)
+  ONE OF THREE ITEMS PASSES, against two of three in the held round. Reported as the worse
+  result it is; the two failing items are characterised below and in section 6.
+
+5.1  The still-blocked unit (D/east 202). From the shard (outputs/_rblatch_camp2_ihresta_D_east.
+     json): ff_unit_1 fired route_blocked at step 237 at (25, 22) from en_route; the mission went
+     terminal on the SAME step (victim_1 marked unreachable, "unspecified"; ff_unit_0 died at 237
+     after being blocked at 214 and recovered at 234); the unit stood flagged at (24, 21) for the
+     three remaining steps. Same gap as the held round's D/east 909: a flag raised when no live
+     victim remains for the revalidation pass to test a path against - here raised on the terminal
+     step itself, there three steps before the victim died. Pre-existing mechanism (the gap beside
+     the phantom round's D6), reached through a different seed after the searcher paths moved. The
+     held round's 909 is clean on this tree (rescued 3, dead 0, ff 2, no latch).
+     CONFIRMED from the seed-matched harness run of the same world (outputs/_ffr_ihrest99_east_
+     half_202.json; eval identical to the shard: 2 rescued, 1 dead, 1 unreachable, ff 1, terminal
+     237): ff_unit_1 was en route to victim_1 (assigned at 214 as the replacement for ff_unit_0,
+     itself blocked at 214) and at step 237 was flagged route_blocked and UNASSIGNED by the
+     replacement pathway ("replacement_after_blocked"); ff_unit_0 was re-assigned victim_1 on
+     that same step and died on it ("firefighter_fire_casualty"), and victim_1 was marked
+     unreachable ("replacement_after_casualty") - terminal. From 237 to 240 ff_unit_1 stood
+     unbound, alive and free at (25,22) -> (24,21) with zero burning neighbours and the nearest
+     fire 4 cells away - not fire-enclosed - and the flag stood because no live victim remained
+     for the revalidation pass, and the unit was no longer bound to the dying victim, so the
+     release helper that D6 added never ran. Word for word the held round's 909 mechanism; the
+     helper-level clearing that report proposed (a flagged-and-unassigned unit when the last live
+     victim goes terminal and the unit is not enclosed) would close this one too. Not touched
+     this round, by the brief.
+5.2  This round's own deltas (outputs/_dim_rbcompare.py):
+     phfix3 (the 8520706 source) -> ihrest: ALL 18 rescued 52 -> 53, dead 11 -> 11, ff 11 -> 9;
+       15/18 seeds identical on all three metrics; rescued decreased on D/east 222 only (4 -> 2,
+       with ff 1 -> 0); +2 on 606, +1 on 333; ff down on 222 and 606.
+     dimfix (e76c806) -> ihrest: ALL 18 rescued 55 -> 53, dead 11 -> 11, ff 9 -> 9; 7/18
+       identical; rescued down on E/222 (4 -> 2), E/444 (4 -> 3), E/505 (4 -> 2), S/303 (4 -> 3),
+       up on E/303, E/333, E/606; ff up on E/202, E/909, S/101 and down on E/222, E/404, E/505.
+       E/505 and S/303 are the held round's canonical +2 and +1 reverting through the second
+       instrument; E/909's unit is no longer latched and its ff count is back to 2, as at 8520706.
+     So against the tree the campaign actually ran on (8520706) the gate is +1 rescued, +0 dead,
+     -2 ff, with ONE seed down: D/east 222, which is neither a canonical nor a fresh seed. Its
+     seed-matched harness runs on all three trees were queued (section 6.3).
+
+
+6. THE ARMS
+================================================================================================
+Read the tables as the brief asked: canonical first, then fresh; per seed, never as a clean sum.
+"burning" = searcher steps on a burning cell (position after the step vs the burning set after
+the same step), the metric of gate item 1; 5,520 canonical / 4,800 fresh searcher steps per arm.
+
+6.1  CANONICAL 13  (r/d/ff/nd = rescued / victims dead / firefighter deaths / never detected)
+  combo                 8520706     e76c806     range 99    range 6    | burning: 8520706 e76c806 r99 r6
+  D/east/half 101       2/1/1/0     2/1/1/0     2/1/1/0     2/1/1/0    |            3      12    5   10
+  D/east/half 202       2/1/1/1     2/1/0/1     2/1/1/0     2/1/0/1    |            3       3    0    3
+  D/east/half 303       3/1/0/0     2/1/0/1     3/1/0/0     2/1/0/1    |            7      18    7   12
+  D/east/half 404       2/2/1/0     2/2/2/0     2/2/1/0     2/2/2/0    |           12       7   11   10
+  D/east/half 505       2/1/0/0     4/0/1/0     2/1/0/0     4/0/1/0    |            1      24    1   24
+  D/south/half 101      3/0/1/0     3/1/0/0     3/0/1/0     3/1/0/0    |           19      32   19   32
+  D/south/half 202      4/0/0/0     4/0/0/0     4/0/0/0     4/0/0/0    |           12      20   25   20
+  D/south/half 303      3/1/1/0     4/0/1/0     3/1/1/0     4/0/1/0    |            9      15   10   15
+  D/south/half 404      4/0/0/0     4/0/0/0     4/0/0/0     4/0/0/0    |           41      29   23   24
+  D/south/half 505      3/1/0/0     3/1/0/0     3/1/0/0     3/1/0/0    |            7      10    7    6
+  D/east/default 101    1/2/2/0     1/2/2/0     1/2/2/0     1/2/2/0    |            1       2    3    1
+  D/east/default 202    3/1/1/0     3/1/1/0     3/1/1/0     3/1/1/0    |            0       3    2    0
+  D/east/default 303    3/1/0/0     3/1/0/0     3/1/0/0     3/1/0/0    |            2       3    2    3
+  TOTAL                 35/12/8/1   37/11/8/2   35/12/8/0   37/11/8/2  |          117     178  115  160
+  exposure              2.12%       3.22%       2.08%       2.90%
+  within 3 of fire      23.2%       30.0%       25.1%       28.0%
+  mean fire distance    12.52       10.84       12.08       11.08
+  unique cells / holds  4,372 / 49  4,409 / 29  4,385 / 57  4,331 / 31
+
+  RANGE 99 vs 8520706: rescued, dead and firefighter deaths IDENTICAL on 13/13 seeds; the one
+    difference is E/202 never_detected 1 -> 0. Byte-identical on 2/13 (E/303, E/505); on E/404,
+    S/101, S/505 and def/303 only the UAV rows differ (the tracker edge escapes the live P adds,
+    late, outcome-inert); on the other 7 the searchers diverge at step 1 (C5 live) and the
+    firefighter and victim rows follow without moving a count. THE HELD ROUND'S +2 IS GONE: E/505
+    4 -> 2, S/303 4 -> 3, E/303 2 -> 3 (its write-off undone), and the four firefighter moves
+    revert. Exposure 2.08% vs 2.12%: on a burning cell 115 vs 117 steps, per seed within +-2 on
+    ten seeds, S/202 +13 and S/404 -18 (the two south seeds with the most fire contact) and
+    def/101 +2.
+  RANGE 6 vs e76c806: outcomes IDENTICAL, 37/11/8/2, the same six seeds moving the same way as
+    the fix moves against 8520706 (byte-identical to the fix on 2/13, to range 99 on 0/13).
+    Exposure 2.90%: the retreats it adds within 6 cells of fire perturb trajectories on 11 seeds
+    and change no outcome; they recover 29% of the fix -> 99 reduction (3.22 -> 2.90 of
+    3.22 -> 2.08).
+
+6.2  FRESH 10 - the load-bearing sample
+  combo                 8520706     e76c806     range 99    range 6    | burning: 8520706 e76c806 r99 r6
+  D/east/half 606       1/1/2/0     1/1/1/0     3/1/1/0     1/1/1/0    |            0       5   10    6
+  D/east/half 707       4/0/0/0     4/0/0/0     4/0/0/0     4/0/0/0    |            0       0    0    0
+  D/east/half 808       3/1/0/0     3/1/0/0     3/1/0/0     3/1/0/0    |           13       3   10    6
+  D/east/half 909       3/0/2/0     3/1/1/0     3/0/2/0     3/1/1/0    |           11      14   11   14
+  D/east/half 1010      1/1/1/0     1/2/1/0     1/2/1/0     1/2/1/0    |            8       6    9    4
+  D/south/half 606      2/0/0/1     3/1/1/0     2/0/0/1     3/1/1/0    |           18      53   18   41
+  D/south/half 707      4/0/0/0     3/1/0/0     4/0/0/0     3/1/0/0    |           31      15   31   17
+  D/south/half 808      4/0/1/0     3/0/1/0     4/0/1/0     4/0/1/0    |           16      26   20   14
+  D/south/half 909      3/0/1/0     3/0/1/0     3/0/1/0     3/0/1/0    |           26      30   23   31
+  D/south/half 1010     2/0/1/0     3/1/1/0     2/0/1/0     2/1/2/0    |           20      26   20   27
+  TOTAL                 27/3/8/1    27/8/7/0    29/4/7/1    27/8/8/0   |          143     178  152  160
+  exposure              2.98%       3.71%       3.17%       3.33%
+  within 3 of fire      24.8%       26.9%       27.2%       25.5%
+  mean fire distance    10.98       10.75       10.55       10.80
+  unique cells / holds  3,532 / 76  3,594 / 390 3,594 / 108 -
+
+  RANGE 99 vs 8520706: byte-identical on 2/10 (E/707, S/1010), identical in every outcome count
+    on 8/10, and the two seeds that move are E/606 (rescued 1 -> 3, ff 2 -> 1) and E/1010
+    (dead 1 -> 2). Exposure 3.17% vs 2.98% = 152 vs 143 steps: E/606 +10, S/808 +4, E/1010 +1,
+    E/808 -3, S/909 -3, five seeds unchanged. THE EXCESS IS ONE SEED, and it is the seed where
+    the same re-roll rescued two more victims: the searchers went where the victims were.
+    - E/606 (outputs/_dim_analyze.py trace): searchers diverge at step 1 (C5's flag is False in
+      the interior on the live tree; the dead tree pathfound), dispatch differs from step 18 (base
+      assigns victim_0 and victim_2 at 18; the restoration victim_2 at 24 and victim_3 at 30);
+      the restoration rescues victim_2 (51), victim_1 (147) and victim_3 (212) with one
+      firefighter death at 162; the base rescued victim_2 only, lost both firefighters (33, 210)
+      and wrote off the other three victims as geographically isolated at 125.
+    - E/1010: same first divergence; ff_unit_1 takes victim_2 at 11 (rescued 38) instead of
+      victim_3 at 17 (base rescued it at 44); victim_3 is assigned at 105 and dies at 228;
+      victim_0 dies in both. Rescued 1 = 1, dead 2 vs 1, written off 0 vs 2 (the base marked
+      victim_1 and victim_2 geographically isolated at 112 and left them alive at the horizon;
+      the restoration rescues victim_2 and leaves victim_1 an unresolved candidate). By the
+      campaign's metric one more death; by victims resolved, one written-off victim rescued and
+      one rescued victim lost. Reported as the +1 it is.
+    Against e76c806 the fresh sample is: rescued 27 -> 29, dead 8 -> 4, ff 7 -> 7; written off
+    2 -> 2 (different victims: the fix's are E/606's two, the restoration's are E/909's one and
+    S/606's never-detected one), victims left unresolved at the horizon 3 -> 5. Four of the five
+    extra deaths the fix caused are undone.
+  RANGE 6 vs 8520706: dead 3 -> 8, the fix's fresh number exactly (byte-identical to the fix on
+    1/10; the same seeds move: E/909, E/1010, S/606, S/707, S/1010 dead +1 each; E/606 ff -1);
+    rescued 27 = 27; ff 8 = 8. Exposure 3.33%: recovers 69% of the fix -> 99 reduction on this
+    sample (3.71 -> 3.33 of 3.71 -> 3.17) and none of the outcome reversion.
+
+6.3  THE SEED-222 QUESTION (route_blocked gate item "rescued does not decrease on any seed")
+  Seed-matched harness runs of D/east/half 222 on all three trees (outputs/_ffr_ihrbx222{base,off,
+  }_east_half_222.json; the rb campaign's world - evals match the shards):
+    8520706      4 rescued / 0 dead / 1 ff, terminal 186
+    e76c806      4 / 0 / 1, terminal 186 - IDENTICAL to 8520706 in every recorded field: the
+                 dimension fix alone changed nothing on this seed
+    restoration  2 / 0 / 0, no terminal step; victim_1 never detected (written off at 210),
+                 victim_3 assigned at 42 and still "assigned" at 240
+  So this is a seed the restoration moves and the fix did not, and it moves it down. Two
+  mechanisms, both read to the decision:
+  (a) COVERAGE. The searchers diverge at step 1 (the gate override). Over 240 steps the
+      restoration's two searchers visit 334 distinct cells against 416 / 425 (-20%) and spend
+      18 steps in the south band (y >= 40) against 48; no UAV of any role ever comes within the
+      8-cell observation radius of victim_1 at (25, 48) (closest: a searcher at 9 cells, step
+      210; in the other two worlds a searcher passes within 5 at step 131 and the victim is
+      rescued at 186). The far-field bias that keeps the searchers out of the fire's
+      neighbourhood kept them out of that band on this seed. This is the held round's E/303
+      write-off in the other direction: a searcher-coverage consequence of the restored bias,
+      real, one seed in 24.
+  (b) A TRANSIT THAT NEVER ARRIVES. ff_unit_0 is dispatched to victim_3 at step 42 (43 in the
+      other two worlds - the one-step dispatch shift) from (49, 25), 46 cells away, and walks
+      into the front: from step 48 to ~130 it stays 1-2 cells from burning ground around
+      (36-46, 24), never route_blocked (the tier chain always finds a free neighbour), then
+      closes to 10 cells at step 217 while victim_3 flees west along the y = 0 edge (feature 2:
+      (25, 3) -> (11, 0)) faster than the unit gains; at 240 the unit is at (20, 4), the victim
+      at (11, 0), reachable through 2,253 unburnt cells. In the other two worlds the unit was
+      flagged route_blocked at 70 at (46, 26), replaced by ff_unit_1 at 70, which rescued
+      victim_3 at 118; here ff_unit_1 idles from 36 to 240 with no known victim and nothing to
+      replace, because the flag never fired. "Alive but dithering on a long transit" is the
+      last_cell round's description of exactly this firefighter behaviour, which has no
+      oscillation guard and is outside this round; it is reached here through the re-rolled
+      dispatch and the fleeing victim.
+  Verdict on the gate item: a real decrease on one seed, 4 -> 2 against both reference trees
+  and 3 -> 2 against 70e1b33, half of it a searcher-side consequence of the restoration and half a
+  pre-existing firefighter transit behaviour. Not reinterpreted: the item fails.
+  For scale: across the 24 seeds on which all three trees were run (13 canonical, 10 fresh, 222)
+  the restoration equals 8520706's rescued count on 22, is higher on one (E/606, +2) and lower on
+  one (222, -2); pooled rescued 66 vs 66, dead 16 vs 15, firefighter deaths 15 vs 17.
+
+
+7. RANGE 6 vs RANGE 99 - IS THE MECHANISM LOCAL?
+================================================================================================
+The maintainer's test, stated before the runs: if 6 recovers most of 99's benefit the mechanism
+is genuinely local; if it does not, 99 is preserving an accident deliberately.
+  IT DOES NOT.
+  - Exposure: range 6 recovers 29% of the fix -> 99 reduction on the canonical 13 and 69% on the
+    fresh 10. Pooled over 10,320 searcher steps: fix 356 burning-cell steps, range 6 320, range
+    99 267, 8520706 260 - range 6 recovers 40%.
+  - Outcomes: range 6's rescued / dead / firefighter counts are e76c806's on BOTH samples
+    (37/11/8 canonical, 27/8/8 fresh), including the fresh 3 -> 8 deaths the held round flagged;
+    range 99's are 8520706's on the canonical 13 (13/13 seeds) and on 8/10 fresh seeds.
+  - Mechanism: the retreats that range 6 adds fire only near fire, and they change trajectories
+    on 11 of 13 canonical seeds without changing a count; the retreats range 99 adds beyond 6
+    cells - 61% of the accidental override's interior firings had the fire nine or more cells
+    away (Part 1, 2.2) - are what puts the searchers on 8520706's paths and keeps them out of the
+    fire's 3-cell neighbourhood. The benefit is the far-field, target-blind bias away from the
+    fire, i.e. an open-space bias, not hazard avoidance at the moment of danger.
+  So the default 99 is a deliberate choice to preserve an accident, made knowingly: it is the
+  behaviour every outcome in the campaign's record was produced under, it is now named,
+  documented, tested and switchable, and range 6 is the measured alternative that gives back the
+  fix's regression on victims (dead 8 on fresh) for a partial exposure recovery. Range 6 is not
+  recommended; it is on record.
+
+
+8. THE LIVE-SCORED GATE (Part 1's ihdeadC7) - A TRADEOFF ON RECORD, NOT THE RECOMMENDATION
+================================================================================================
+The gate always on with the retreat scored toward the interior (14*D + 18 inward + 8*hazard),
+i.e. the always-on rule WITHOUT dropping the boundary terms; canonical 13 only (harness-side
+replay, outputs/_ffr_ihdeadC7_*):
+  outcomes 35/12/7/1 - one FEWER firefighter death than 8520706 (S/303 1 -> 0), rescued 35 = 35,
+    dead 12 = 12; per seed E/202 +1 rescued, def/202 -1 rescued (with a write-off)
+  exposure 2.54% (8520706 2.12%, range 99 2.08%), within 3 26.1%, mean fire distance 11.30
+  coverage: unique cells 4,195 (8520706 4,372, -4%), reversals 349 (285), holds 40 (49)
+  planner-path searchers sit at mean fire distance 10.1 with 17% of their steps within 3 of fire
+    (8520706: 15.8 / 1.7%) - the inward bias walks them toward the interior, where the fire is
+  in the 1-UAV zero-victim test it parks the searcher (22 unique cells in 50 steps vs 40)
+Someone wanting one fewer firefighter death on this sample at the price of 4% coverage and a
+searcher that drifts to the centre has this arm's numbers; it was not run on the fresh seeds
+and is not what the constant implements (with the range on, the scoring is hazard-only).
+
+
+9. GATE SUMMARY
+================================================================================================
+  [FAIL] burning-cell exposure at or below the 8520706 level on both samples
+         -> canonical 2.08% vs 2.12% (115 vs 117 steps) PASSES; fresh 3.17% vs 2.98% (152 vs 143)
+            does not. Five fresh seeds unchanged, E/606 +10 (with +2 rescued and -1 firefighter
+            death), S/808 +4, E/1010 +1, E/808 -3, S/909 -3. The restoration is the replay
+            (13/13 byte-identical), so every fresh difference from 8520706 is the residual of the
+            dimension fix that the restoration deliberately leaves live: the edge-only flag (C5,
+            the downwind test's fix), the hold read and the tracker helper. Section 6.2.
+  [PASS] test_no_crash_zero_victims 5 of 5
+         -> 5/5 in isolation (1 strict step, the 8520706 figure; e76c806 4). Section 4.
+  [FAIL] victims dead on fresh seeds <= 3
+         -> 4. E/1010: ff_unit_1 takes victim_2 (rescued 38, written off in the base) instead
+            of victim_3 (rescued 44 in the base); victim_3 is assigned at 105 and dies at 228.
+            Rescued equal, dead +1, written off -2. e76c806: 8. Section 6.2.
+  [PASS] the downwind wind-aware test still passes
+         -> 5/5 in isolation and in the full suite; the restoration is C7, the test failed on
+            C5, no conflict. Section 4.
+  [PASS] rescued does not decrease against 8520706 on either sample
+         -> canonical 35 -> 35 (13/13 seeds identical), fresh 27 -> 29 (E/606 +2).
+  [FAIL] route_blocked gate no worse than the held round's, D/east 909 confirmed pre-existing
+         -> 1 of 3 items vs 2 of 3. D/east 222 rescued 3 -> 2 vs 70e1b33 (4 -> 2 vs 8520706 and
+            e76c806, which are identical on that seed): a coverage narrowing on the restored
+            bias plus a never-flagged, never-arriving transit behind a fleeing victim (6.3).
+            The latch moved: 909 is clean, 202 carries one through the same pre-existing gap
+            beside D6, confirmed from the seed-matched world (5.1). Against the 8520706-source
+            gate the campaign is +1 rescued, +0 dead, -2 ff with 15/18 seeds identical (5.2).
+  Three of six items pass. Range 6 passes fewer (items 1 and 3 fail with the fix's fresh
+  deaths, item 6 was not run for it) and is the measured alternative on record, not the
+  recommendation. The two new failures in the held round - the searcher exposure and the test -
+  are resolved by the restoration; the two that remain on the fresh sample and the one in the
+  route_blocked campaign are each one seed, stated with their mechanisms in sections 5 and 6.
+
+
+10. FILES
+================================================================================================
+  source           src_extension/execution/uav_executor.py (+63/-5), common_fixed_variables.py
+                   (+22), README.md (+2); tests/test_victim_searcher_hazard_retreat.py (new, 10)
+  patch            outputs/_ih_patch.py (--check / --apply / --revert)
+  design           outputs/interiorhazard_part1.txt (Part 1 + design, approved)
+  harness          outputs/_ffr_harness.py (+ --dim-dead, --uav-actions), outputs/_dim_hooks.py
+                   (+ per-consumer dead reads)
+  tools            outputs/_ih_characterise.py (decision- and trajectory-level, Part 1),
+                   outputs/_ih_testprobe.py (the two hazard-bound tests per checkout / dead set /
+                   --set), outputs/_ih_arms.py (summary | identity | seeds), outputs/_ih_gate.py
+                   (the gate table -> outputs/_ih_gate.txt), outputs/_ih_queue3.py
+  runners          outputs/_ih_queue.txt + _ih_launch.sh + _ih_pool.log (Part 1 attribution, 78
+                   runs), outputs/_ih_queue3.txt + _ih_launch3.sh + _ih_pool3.log (Part 3, 82
+                   runs), outputs/_ih_post.sh + _ih_post.log, outputs/_ih_flips.sh
+  arms (Part 1)    outputs/_ffr_ih{base,fix,deadC7C6,deadC7,deadC5,deadC3}_*.json (+ .stdout.txt)
+  arms (Part 3)    outputs/_ffr_ih{off,rest99,rest6}_*.json (canonical),
+                   outputs/_ffr_ih{off,rest99,rest6,base}fresh_*.json (fresh),
+                   outputs/_ffr_ihrbx222{,off,base}_east_half_222.json (the gate's seed),
+                   outputs/_ffr_ihsmoke_*, _ffr_ihsrc99_*, _ffr_ihsrc0_* (20-step smoke identity)
+  tests            outputs/_ih_pytest_rest99.log (full suite), outputs/_ih_flips.txt (isolated)
+  gate             outputs/_ih_rbgate_ihrest.txt (vs 70e1b33), outputs/_rblatch_camp2_ihrest*_D_*.json,
+                   deltas via outputs/_dim_rbcompare.py --a phfix3|dimfix --b ihrest
+  baseline tree    detached worktree at 8520706 under the session scratchpad (git worktree list);
+                   remove with `git worktree remove` when no longer needed
+  memory           interior-hazard-round (state, mechanism, tooling), ffr-seed-matched-harness
+                   (the new flags)

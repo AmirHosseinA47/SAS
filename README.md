@@ -140,6 +140,8 @@ percentage of the grid covered by vegetation.
 
 `SECURITY_DISTANCE`: It establishes the minimum distance that UAVs should be separated from each other for avoiding collisions.
 
+`VICTIM_SEARCHER_HAZARD_RETREAT_RANGE`: The victim searchers' interior hazard retreat. When it fires, the searcher's chosen step is replaced by a retreat to the strictly safe neighbouring cell furthest from any burning or smoke cell. `0` fires it only within 2 cells of a grid edge (edge handling only); a value from `1` to `98` fires it whenever the nearest fire or smoke cell is within that many cells; `99` (the default) fires it on every step the searcher's hazard gate evaluates. The searchers ran with the always-on form for the whole history of the model, because the grid size was unreadable and the edge test was always true; the constant makes that behaviour deliberate and switchable. Can be overridden per run through `apply_scenario_config`.
+
 ### Firefighters
 
 `NUM_FIREFIGHTERS`: It establishes the number of ground firefighter units available for victim rescue.

@@ -132,6 +132,38 @@ def _install_pins(UAVExecutor, pins: set) -> None:
 
 
 # ---------------------------------------------------------------------------
+# 2b. dead reads per CONSUMER (interior-hazard round)
+# ---------------------------------------------------------------------------
+def _install_dead(UAVExecutor, consumers: set) -> None:
+    """Force the two boundary helpers back to their 8520706 dead values (D = 0.0,
+    P = False) when called DIRECTLY from any of the named consumer functions,
+    and leave every other caller live. Replays one component of the accidental
+    always-on behaviour at a time on top of the fixed tree:
+      _apply_victim_searcher_hazard_gate     C7 gate always on + C8 scoring dead
+      _retreat_to_safe_interior_direction    C6 retreat scored by hazard only
+      _victim_near_edge_escape_required      C5 force_interior_retarget always
+      execute                                C3 near_boundary always (holds -> retarget)
+    Not combined with observe=True (both wrap the helpers)."""
+    orig_P = UAVExecutor._position_at_boundary
+    orig_D = UAVExecutor._distance_from_boundary
+
+    def dead_P(self, agent):
+        if sys._getframe(1).f_code.co_name in consumers:
+            REC["pin_hits"]["P<-" + sys._getframe(1).f_code.co_name] += 1
+            return False
+        return orig_P(self, agent)
+
+    def dead_D(self, x, y, model):
+        if sys._getframe(1).f_code.co_name in consumers:
+            REC["pin_hits"]["D<-" + sys._getframe(1).f_code.co_name] += 1
+            return 0.0
+        return orig_D(self, x, y, model)
+
+    UAVExecutor._position_at_boundary = dead_P
+    UAVExecutor._distance_from_boundary = dead_D
+
+
+# ---------------------------------------------------------------------------
 # 3. observers
 # ---------------------------------------------------------------------------
 def _install_observers(UAVExecutor) -> None:
@@ -234,7 +266,7 @@ def _install_observers(UAVExecutor) -> None:
 
 # ---------------------------------------------------------------------------
 def install(WildFireModel, UAVExecutor, *, hook: str = "none", observe: bool = False,
-            pins=(), step_of=None) -> dict:
+            pins=(), step_of=None, dead=()) -> dict:
     STATE["mode"] = hook
     STATE["step_of"] = step_of
     if hook in ("deny", "record"):
@@ -242,11 +274,17 @@ def install(WildFireModel, UAVExecutor, *, hook: str = "none", observe: bool = F
     pins = set(p for p in pins if p)
     if pins:
         _install_pins(UAVExecutor, pins)
+    dead = set(d for d in dead if d)
+    if dead:
+        if observe:
+            raise SystemExit("--dim-dead cannot be combined with --dim-observe (both wrap the helpers)")
+        _install_dead(UAVExecutor, dead)
     if observe:
         if hook != "record":
             raise SystemExit("--dim-observe requires --dim-hook record (the counterfactual needs the deny toggle)")
         _install_observers(UAVExecutor)
     STATE["pins"] = sorted(pins)
+    STATE["dead"] = sorted(dead)
     STATE["observe"] = bool(observe)
     return STATE
 
@@ -262,6 +300,7 @@ def export() -> dict:
         "mode": STATE.get("mode"),
         "observe": STATE.get("observe", False),
         "pins": STATE.get("pins", []),
+        "dead": STATE.get("dead", []),
         "writes": REC["writes"],
         "deny_raises": REC["deny_raises"],
         "reads": kv(REC["reads"], lambda k: list(k)),

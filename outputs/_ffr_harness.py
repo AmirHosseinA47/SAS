@@ -85,6 +85,13 @@ def main() -> int:
     ap.add_argument("--dim-pin", default="",
                     help="dimension round: comma-separated callers of _grid_dimension "
                          "forced back to None (one-site-live ablation arms)")
+    ap.add_argument("--dim-dead", default="",
+                    help="interior-hazard round: comma-separated CONSUMER functions inside "
+                         "which _distance_from_boundary returns 0.0 and _position_at_boundary "
+                         "False (one accidental component replayed at a time)")
+    ap.add_argument("--uav-actions", action="store_true",
+                    help="interior-hazard round: record per step, per UAV, the executed action "
+                         "label and the strict hazard state of its cell (read-only)")
     args = ap.parse_args()
 
     repo = os.path.abspath(args.repo)
@@ -152,11 +159,13 @@ def main() -> int:
     # (no --dim-* option) imports nothing and changes nothing.
     dim = None
     dim_pins = [p.strip() for p in str(args.dim_pin or "").split(",") if p.strip()]
-    if args.dim_hook != "none" or args.dim_observe or dim_pins:
+    dim_dead = [p.strip() for p in str(args.dim_dead or "").split(",") if p.strip()]
+    if args.dim_hook != "none" or args.dim_observe or dim_pins or dim_dead:
         import _dim_hooks  # noqa: E402  (outputs/ is the script directory, on sys.path)
         from src_extension.execution.uav_executor import UAVExecutor  # noqa: E402
         dim = _dim_hooks.install(WildFireModel, UAVExecutor, hook=args.dim_hook,
-                                 observe=args.dim_observe, pins=dim_pins, step_of=_step_of)
+                                 observe=args.dim_observe, pins=dim_pins, step_of=_step_of,
+                                 dead=dim_dead)
 
     def _vid(model, agent) -> str:
         if agent is None:
@@ -402,6 +411,7 @@ def main() -> int:
     # dimension round: per-step UAV rows (id, cell, role, selected_dir) so the
     # first diverging UAV step of a seed-matched pair can be located exactly.
     uav_steps: list[list] = []
+    uav_actions: list[list] = []
     # feature 2: first step at which each cell was observed burning. Small
     # (<= one entry per grid cell) and it is what answers "did the victim step
     # into a cell that burned LATER".
@@ -497,6 +507,46 @@ def main() -> int:
                     (int(sd) if sd is not None else None),
                 ])
             uav_steps.append(urow)
+            # interior-hazard round: the executed action label per UAV (from the
+            # dispatcher's result of this step) and the strict hazard state of the
+            # cell the UAV now stands on - burning (the executor's level 2), smoke
+            # (visibility smoke_obscured_cells, the scenario helper's definition,
+            # and the Fire agent's own active smoke, the executor's level 1) and
+            # the manhattan distance to the nearest burning cell. Pure reads.
+            if args.uav_actions:
+                exec_r = getattr(model, "latest_execution_result", None) or {}
+                local = exec_r.get("local", {}) if isinstance(exec_r, dict) else {}
+                ures = (local.get("uav_results") or {}) if isinstance(local, dict) else {}
+                vis = getattr(model, "visibility_model", None)
+                vis_smoke = getattr(vis, "smoke_obscured_cells", None) if vis is not None else None
+                vis_smoke = set(tuple(int(v) for v in c[:2]) for c in vis_smoke) if isinstance(vis_smoke, (set, list, tuple)) else set()
+                burning_cells = set(tuple(int(v) for v in k.split(",")) for k in burning_now)
+                arow = []
+                for a in model.schedule.agents:
+                    if type(a).__name__ != "UAV":
+                        continue
+                    uid = str(a.unique_id)
+                    r = ures.get(uid) if isinstance(ures, dict) else None
+                    act = str(r.get("action") or "") if isinstance(r, dict) else ""
+                    pos = getattr(a, "pos", None)
+                    cell = (int(pos[0]), int(pos[1])) if pos is not None else None
+                    burning = int(cell in burning_cells) if cell else 0
+                    vsm = int(cell in vis_smoke) if cell else 0
+                    asm = 0
+                    if cell is not None:
+                        for occ in model.grid.get_cell_list_contents([cell]):
+                            if type(occ).__name__ != "Fire":
+                                continue
+                            smoke = getattr(occ, "smoke", None)
+                            is_active = getattr(smoke, "is_smoke_active", None) if smoke is not None else None
+                            if (callable(is_active) and is_active()) or bool(getattr(smoke, "smoke", False)):
+                                asm = 1
+                                break
+                    fdist = 99
+                    if cell is not None and burning_cells:
+                        fdist = min(abs(cell[0] - fx) + abs(cell[1] - fy) for fx, fy in burning_cells)
+                    arow.append([uid, act, burning, vsm, asm, int(fdist)])
+                uav_actions.append(arow)
         evaluation = _build_evaluation(model, terminal_step, step, params)
     wall = time.perf_counter() - t0
     for key, start in sorted(burn_open.items()):
@@ -553,6 +603,7 @@ def main() -> int:
         "ff_bind_steps": ff_bind_steps,
         "victim_steps": victim_steps,
         "uav_steps": uav_steps,
+        "uav_actions": (uav_actions if args.uav_actions else None),
         "dim": (_dim_hooks.export() if dim is not None else None),
         "victim_spawns": {
             str(vid): _cell(getattr(m, "spawn_cell", None))
