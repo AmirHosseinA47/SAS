@@ -1,0 +1,640 @@
+================================================================================
+BASE STATION (FEATURE 3) - PARTS 2 AND 3: IMPLEMENTATION AND VALIDATION
+depot, spawn, return-to-base, recharge, and a rendered frame
+================================================================================
+Repo      : E:\Projects\SAS
+Branch    : basestation-feature (branched from main at 16b2da8)
+Baseline  : 16b2da8, in a worktree, measured by the SAME frozen harness so every
+            recorded field is comparable field for field.
+Runtime   : E:\Projects\SAS\.venv\Scripts\python.exe
+            sys.version 3.10.11, mesa.__version__ 1.2.1 (confirmed)
+Sample    : 144 runs, 0 failures. 8 arms x 13 canonical (scenario D, winds east
+            and south, roles half and default, seeds 101/202/303/404/505) plus
+            4 arms x 10 fresh (seeds 606/707/808/909/1010), all at 240 steps.
+Design    : outputs/basestation_part1.txt. All four maintainer rulings were
+            received before implementation and are recorded in its section 9.
+
+================================================================================
+0. EXECUTIVE SUMMARY
+================================================================================
+The feature is built and fully measured. It does NOT pass its gates at the
+shipped default; the verdict and the reason are at the end of this section.
+
+  KILL SWITCH        13/13 canonical and 10/10 fresh runs byte-identical to
+                     16b2da8 on all 27 recorded fields, including stdout_sha256,
+                     all 240 per-step fire digests, the per-step UAV, victim and
+                     firefighter traces, and the whole planner decision log.
+
+  RESCUED            DOES NOT HOLD UP. +3 on the canonical 13, 0 on the fresh 10,
+                     but -5 on the route_blocked gate's independent 18-seed
+                     sample (53 -> 48, eight seeds regressing). Across all 41
+                     seed-runs measured this round, 117 -> 115. Rescued is FLAT
+                     to slightly NEGATIVE, and the canonical +3 was sample luck.
+                     I reported the +3 as a result before the 18-seed sample
+                     existed; this line supersedes it.
+
+  NEVER_DETECTED     0 -> 4 canonical, 1 -> 4 fresh; 1 -> 8 combined, i.e. 1.1%
+                     -> 8.7% of victims never found. Section 3.6 attributes all
+                     of it to the RETURN LEG and none of it to recharging.
+
+  FIREFIGHTER DEATHS 8 -> 4 canonical, 7 -> 1 fresh. Halved, then cut by six.
+
+  BURNT_CELLS        16053 on every canonical arm and 10996 on every fresh arm,
+                     identical to the baseline. The fire model is provably
+                     untouched, which is what makes every other delta
+                     attributable to spawn, return or recharge alone.
+
+  NO UAV STRANDED    Zero UAVs at zero battery outside the depot in any arm.
+
+  LANE RESHUFFLES    Zero, in every arm, exactly as the design argued. So is the
+                     searcher roster. Measured, not assumed.
+
+THE KEY QUESTION - does recharging cost more coverage than it saves?
+NEITHER. Recharging is outcome-neutral: the bsfull arm is identical to bsret on
+every one of the nine outcome metrics across all 13 canonical runs. The entire
+coverage cost belongs to the return leg. Section 3.6.
+
+VERDICT: THE GATE DOES NOT PASS AT THE SHIPPED DEFAULT (BASE_STATION_MODE=3).
+Three items fail, and none of them is a measurement artefact:
+
+  never_detected   1 -> 8 over the 23 canonical+fresh runs (1.1% -> 8.7% of
+                   victims). The gate says "does not increase materially". It
+                   does. Section 3.6.
+  rescued          -5 on the route_blocked gate's 18-seed sample, 8 seeds
+                   regressing against 3 improving. Section 3.9.
+  route_blocked    TWO firefighters left permanently latched as route_blocked at
+                   the end of seed 808, against one for 16b2da8 against the same
+                   reference. That is the latch category commit 70e1b33 closed.
+                   Section 3.9.
+
+DECISION, TAKEN BY THE MAINTAINER: SHIP WITH BASE_STATION_MODE = 0 (option (a) in
+4.3). The feature is complete, correct, killable, unit-tested and fully measured,
+and it stays in the tree; what fails is the DEFAULT, so the default is off. With
+the mode at 0 the model's default behaviour is provably identical to 16b2da8 -
+that is exactly the bsoff arm, byte-identical on all 27 recorded fields across 13
+canonical and 10 fresh runs.
+
+The reasoning for not overriding: overriding two gate items is a judgement call
+a round could legitimately make, but reopening a CLOSED defect category (the
+70e1b33 route_blocked latch) with an UNDIAGNOSED mechanism is not something to do
+on any single round's judgement. The next round is that diagnosis.
+
+================================================================================
+1. WHAT WAS BUILT
+================================================================================
+
+1.1  The depot
+--------------------------------------------------------------------------------
+A model-level region, `WildFireModel.base_station`, built in reset() from
+configuration constants before any agent is placed. It holds the origin, the
+size, the frozen cell set, the ranked berth list and the per-unit assignment.
+
+It adds no agent, consumes no RNG, shifts no unique_agents_id and does not touch
+the fire model - set_fire_agents, new_fire_agent and the Fire class are
+untouched. That choice is vindicated by the measurement: burnt_cells is identical
+across every arm (1.0 above).
+
+Fire spreads into the depot exactly as into any other cell and nothing models the
+depot being destroyed. UAVs are fire-immune - _check_fire_casualties
+(wildfire_model.py:4679-4851) kills victims and firefighters and contains no UAV
+branch at all - so a hardened pad would buy no behaviour while inserting a 5x5
+firebreak straight into burnt_cells.
+
+Corner: NW, x in [0,4] and y in [WIDTH-5, WIDTH-1], origin (0,45) at 50x50.
+
+1.2  Spawn
+--------------------------------------------------------------------------------
+Berths are ranked by DESCENDING distance from the nearest grid edge - deliberately
+the same key the executor's own margin-3 edge filter uses - so the units handed
+berths first have the most legal moves out of the block. UAVs take the front of
+the ranking and firefighters the next slice: a contiguous prefix, so the two sets
+cannot collide and neither is pushed onto the outer ring, where a firefighter's
+4-connected retreat options would be halved by two walls.
+
+At 4 UAVs and 2 firefighters:
+  UAV berths          (4,45) (3,45) (3,46) (4,46)
+  firefighter berths  (2,45) (2,46)
+A pure function of (HEIGHT, WIDTH, origin, size, NUM_AGENTS, NUM_FIREFIGHTERS),
+drawing from no RNG. Overflow raises rather than wrapping, because wrapping would
+stack two UAVs on one cell and cost them a blocked first move.
+
+1.3  Return-to-base, both mechanisms
+--------------------------------------------------------------------------------
+The trigger, the docking, the recharge and the re-launch are shared, so the two
+arms differ ONLY in the outbound routing and the comparison is clean.
+
+  TRIGGER   battery <= max(RESERVE, 0.3 * manhattan_to_berth + MARGIN)
+  DOCKING   at the assigned berth, or on any depot cell already reached if some
+            other UAV is standing on that berth
+  HOLD      UAV.move() returns False for a docked UAV, above the pipeline check,
+            because there is no "stay" action anywhere in the model
+  RECHARGE  applied in _update_battery_after_step before the existing clamp
+  RELAUNCH  at full charge
+
+  MECHANISM 2, hardcoded (the shipped default). _apply_return_to_base runs as the
+  first statement of advance(), the last-writer-wins slot for selected_dir, and
+  sets all three fields the executor would set. Setting only selected_dir would
+  produce a silent permanent hold. FIRE-BLIND by construction.
+
+  MECHANISM 1, planner. A per-UAV local option carries the berth as a waypoint
+  through PathDecision to the executor. Retains the hard-safety filter and the
+  fire, smoke and fire-probability penalties, so it is FIRE-AWARE.
+
+Mutually exclusive by selector: mechanism 2's override is the last writer of
+selected_dir before move(), so a "both" arm would measure only one of them while
+appearing to measure both.
+
+1.4  The charging state
+--------------------------------------------------------------------------------
+On the grid, parked on a berth, KEEPING ITS ROLE, with no filter added to any
+roster builder. Measured consequence in 3.5: zero reshuffles.
+
+At mode 2 a returned UAV parks and nothing recharges it, so it is labelled
+"docked", not "charging" - calling it charging would hide the cost the
+return-only increment exists to measure.
+
+1.5  Rendering
+--------------------------------------------------------------------------------
+The depot is an OVERLAY on both surfaces, never a cell colour: all 2500 cells
+carry a Fire agent and both colour deciders test smoke/burning/burnt/scorched
+first, so a depot painted into the cell colours would vanish exactly when the
+corner burns.
+
+  dashboard  one rect descriptor in the frame payload, stroked in drawMap between
+             the gridline stroke and the trails loop - immediate-mode canvas, so
+             statement position is z-order: above the ground, below every marker.
+  mesa       perimeter bars at LAYER 2 in CanvasGrid.render, the same mechanism as
+             the existing UAV observation frame. Verified: 20 portrayals, Layer
+             exactly int 2 (a fractional layer would draw OVER the victims,
+             because CanvasModule.js enumerates non-index keys last), interior
+             cells unpainted so the ground stays readable, nothing emitted when
+             the feature is off.
+
+Colour #770099, an inline literal in both renderers exactly as #2b2b2b, #895e00
+and #2f4a1a already are. A CIEDE2000 sweep over the 39 co-occurring map colours
+puts it at a minimum separation of 28.76 dE against 27.34 for the already-shipped
+scorched #895e00 on the identical set.
+
+Also added, display only: battery_status (computed every step on the agent since
+before this round and never published) and base_state ("" / returning / docked /
+charging), with the serve_dashboard._slim_panel whitelist updated - that
+whitelist is a silent-break site where a forgotten key is dropped with no error
+and no test failure. The legend gains a base-station swatch and LOSES the
+"spared veg" swatch, which advertised a colour the canvas has never painted
+(0 of 102,500 emitted cells, re-measured at HEAD).
+
+The observation-radius frame is NOT in this round, per the maintainer.
+
+1.6  The kill switch
+--------------------------------------------------------------------------------
+BASE_STATION_MODE, an ordinal ladder 0/1/2/3, read at CALL TIME through the
+common_fixed_variables MODULE by accessors in agents.py - never through the
+star-imported names and never at import time. Five entry points each carry a
+top-of-function guard: depot construction, spawn placement, return trigger,
+docked hold, recharge tick.
+
+================================================================================
+2. WHAT THE IMPLEMENTATION FOUND - the mechanism (a) diagnosis
+================================================================================
+The largest finding of Part 2. The design predicted mechanism (a) was feasible
+through the per-UAV local path channel. It is - and the chain up to the planner
+worked first time: the option was generated on 26 of 26 eligible steps and
+SELECTED on 26 of 26. The UAVs nonetheless flew AWAY from the depot on every
+step. Three further gates sat downstream, and each refuted a different
+assumption.
+
+  GATE 1 - the action token is rewritten.
+  local_uav_path_planner.py:149-157 replaces next_action with a CARDINAL word
+  whenever the option carries a target_position and is not the wind-aware search.
+  "return_to_base" reached the executor as "west", so any guard keyed on the
+  action alone is dead. FIX: key the executor guard on the option id as well,
+  which survives the rewrite and is the same marker the dispatcher's own
+  _path_consistent_with_return_to_base test uses.
+
+  GATE 2 - two geometry filters override the chosen direction.
+  For searchers the interior-hazard gate (shipped at 16b2da8, always on at range
+  99) replaces the direction with a hazard-scored retreat; for trackers
+  _apply_final_direction_safety pushes a UAV near a boundary back toward the
+  interior. A depot berth is by construction near a boundary. Measured: searchers
+  oscillated one cell short of the berth indefinitely, trackers walked away from
+  it. FIX: exempt a return leg from both, exactly as the executor already exempts
+  its own deliberately pathfinding-routed escapes. Both are GEOMETRY filters, not
+  fire filters - leaving them in place does not make the return safer, it makes
+  it impossible.
+
+  GATE 3 - the direction chooser is a DISPERSION function.
+  _choose_best_direction subtracts 6.0 * (1 - d/8) for every OTHER UAV within the
+  observation radius, plus a visit penalty, against a distance term of 0.1 per
+  cell. With four UAVs converging on one 5x5 block the separation term alone
+  reaches -18. These are coverage heuristics that exist precisely to stop UAVs
+  clustering; a depot is the one target in this model they are supposed to
+  converge on.
+
+  THE CONTROL THAT PROVED IT. With a SINGLE UAV and no other change, mechanism 1
+  works perfectly: trigger at step 3, converge (7,45) -> (6,45) -> (5,45) ->
+  (4,45), dock at step 7, recharge to 100, re-launch at step 8, second trip at
+  step 10. With four UAVs, zero arrivals. The cause is the inter-UAV term, not
+  the planner chain.
+  FIX: skip the two dispersion terms for a return leg and let progress dominate,
+  as it already does for a victim approach. The fire, smoke, fire-probability and
+  hard-safety filters are NOT skipped, which is what keeps mechanism 1 genuinely
+  fire-aware.
+
+Every one of the three changes is guarded so it cannot fire unless a base-return
+path decision exists - which is why the kill-switch arm is still byte-identical.
+
+WHAT IT MEANS. Mechanism 1 is not "the existing machinery used unchanged".
+Reaching a corner depot required relaxing three behaviours that exist to spread
+UAVs out and keep them off edges. That is a finding about the architecture, not a
+defect in the feature: the executor has no concept of a destination the fleet is
+supposed to SHARE.
+
+A CORRECTION TO THE BRIEF'S PREMISE, carried over from Part 1 and confirmed here:
+the frozen 12-field MissionDecision was never the blocker, and the "0.01 loss on
+1,280 emergency decisions" was measured on the forced crit12 battery arms, not on
+a stock run - a stock 240-step canonical run enters EMERGENCY zero times. The
+one-line tuple reorder in fail_safe_planner.py was therefore diagnosed and
+DECLINED rather than shipped as a tenth measured-inert change.
+
+================================================================================
+3. VALIDATION
+================================================================================
+
+3.1  Kill switch - byte identity        GATE: PASS
+--------------------------------------------------------------------------------
+bsoff (feature source, BASE_STATION_MODE=0) against bsbase (a 16b2da8 worktree),
+both produced by the same frozen harness.
+
+  canonical   13/13 runs IDENTICAL on all 27 fields
+  fresh       10/10 runs IDENTICAL on all 27 fields
+
+The 27 fields include eval, all 240 per-step fire digests, per-step firefighter /
+victim / UAV traces, the planner decision log, the rescue event counts, the
+absence log and counters, first_burn_step, fire_ground_final and stdout_sha256.
+
+The uav_steps field is deliberately NOT excused even though this round added two
+columns to it: on a mode-0 arm the battery column carries the untouched drain and
+base_state is "", so it remains a valid identity field on both sides.
+
+3.2  The arms
+--------------------------------------------------------------------------------
+Built from config constants only - no per-arm code branch exists anywhere - so a
+level-N minus level-(N-1) difference attributes to exactly one increment.
+
+  bsbase    16b2da8 checkout                        identity reference
+  bsoff     MODE=0                                  kill-switch control
+  bsspawn   MODE=1                                  spawn (UAVs + firefighters)
+  bsspawnu  MODE=1, SPAWN_FIREFIGHTERS=0            UAV half of spawn only
+  bsret     MODE=2, MECHANISM=2                     + return, hardcoded
+  bsretp    MODE=2, MECHANISM=1                     + return, planner
+  bsfull    MODE=3, MECHANISM=2                     + recharge, hardcoded
+  bsfullp   MODE=3, MECHANISM=1                     + recharge, planner
+
+3.3  Outcomes - canonical sample, 13 runs per arm
+--------------------------------------------------------------------------------
+  arm       rescued  dead  never_det  unreach  geo_iso  cand  ff_deaths  burnt
+  bsbase       35     12       0         2        1       3      8       16053
+  bsoff        35     12       0         2        1       3      8       16053
+  bsspawn      38     10       1         1        0       3      4       16053
+  bsspawnu     36      9       1         4        1       3      6       16053
+  bsret        38     10       4         4        0       0      4       16053
+  bsretp       38     10       3         3        0       1      4       16053
+  bsfull       38     10       4         4        0       0      4       16053
+  bsfullp      38     10       3         3        0       1      4       16053
+
+  INCREMENT                       rescued dead never_det unreach ff_deaths
+  spawn          bsspawn - bsoff     +3    -2      +1      -1       -4
+  firefighters   bsspawn - bsspawnu  +2    +1       .      -3       -2
+  return         bsret   - bsspawn    .     .      +3      +3        .
+  recharge       bsfull  - bsret      .     .       .       .        .
+  mechanism      bsretp  - bsret      .     .      -1      -1        .
+  mechanism      bsfullp - bsfull     .     .      -1      -1        .
+
+Fresh sample, 10 runs per arm:
+  bsoff        29      4       1         2        1       5      7       10996
+  bsfull       29      6       4         4        0       1      1       10996
+  bsfullp      29      6       4         4        0       1      1       10996
+
+  bsfull - bsoff:  rescued 0, dead +2, never_det +3, unreach +2, ff_deaths -6
+
+Three things stand out.
+  - burnt_cells is IDENTICAL on every arm of both samples. The fire model is
+    untouched, so every delta above is attributable to spawn / return / recharge
+    and to nothing else.
+  - moving the FIREFIGHTERS to the depot as well is better than leaving them on
+    the ring, not worse: +2 rescued, -3 unreachable, -2 firefighter deaths
+    against bsspawnu. The design flagged this as the main rescue-rate risk and
+    the risk did not materialise; the requirement's own choice is vindicated.
+  - firefighter deaths fall in every armed arm, sharply (8 -> 4 canonical,
+    7 -> 1 fresh). A corner start keeps units out of the fire's path early.
+
+3.4  Mechanism reporting - canonical sample
+--------------------------------------------------------------------------------
+  arm      trips arrived en-route  mean    mean    mean batt  return  charge
+                          at 240  duration distance on arrival  steps   steps
+  bsret      52    47        5      40.9    41.8      47.6      2418      0
+  bsretp     52    43        9      48.0    41.8      45.4      2996      0
+  bsfull     52    52        0      42.0    41.8      47.2      2182    584
+  bsfullp    52    47        5      51.0    41.8      44.6      2926    535
+
+52 trips = exactly one per UAV per run (4 UAVs x 13 runs), which is what a
+reserve of 60 was derived to produce at a 240-step horizon.
+
+  "En route at 240" is NOT stranding: the run ended while the UAV was still
+  flying home, with battery in hand. Every trip either completed or was still in
+  progress at the horizon; none failed.
+
+  ARRIVAL BATTERY 44.6-47.6 against a trigger at 60 and a mean trigger distance
+  of 41.8 cells. The derivation predicted a cost of about 0.3 x 41.8 = 12.5
+  points for the mean trip; measured is 60 - 47.6 = 12.4. The arithmetic in the
+  design holds to one decimal place.
+
+  THE PLANNER ROUTE IS CONSISTENTLY SLOWER: mean duration 48.0 vs 40.9 at mode 2
+  and 51.0 vs 42.0 at mode 3, with fewer arrivals inside the horizon (43 vs 47,
+  47 vs 52). That is the price of keeping the fire, smoke and hard-safety filters
+  - the fire-aware route detours. It is also marginally BETTER on outcomes
+  (never_detected -1 in both mode pairs).
+
+3.5  No stranding, and the lane/sector question     GATE: PASS
+--------------------------------------------------------------------------------
+  UAVs at zero battery outside the depot:  0, in every arm, on both samples.
+
+  searcher LANE changes                    0   in every arm, INCLUDING baseline
+  searcher ROSTER changes                  0   in every arm, INCLUDING baseline
+  tracker SECTOR changes            1020-1040  against a baseline of 1053
+
+This is the answer to the brief's reporting requirement, and it is a measurement
+rather than the assertion the design offered. Zero lanes reshuffled and zero
+searchers changed lane mid-traverse, because a parked UAV keeps its role and both
+rosters are role-based and position-blind.
+
+The sector column needs its control to be readable: sectors are recomputed every
+step from the fire's bounding box, so the baseline ALREADY churns 1053 times over
+13 runs. The armed arms sit at or slightly below that. Sector churn is
+pre-existing behaviour and the feature does not add to it.
+
+13-21 of those ~1030 sector changes fall on the same step as a base-state
+transition. Given that sectors change on most steps of most runs, that is the
+coincidence rate chance would produce; the baseline's count of transitions is 0
+only because no base-state exists there. No lane or roster change coincides with
+a transition in any arm, which is the claim that actually matters.
+
+3.6  THE KEY QUESTION - does recharging cost more coverage than it saves?
+--------------------------------------------------------------------------------
+NEITHER. It is outcome-neutral, and the cost belongs entirely to the return leg.
+
+  bsfull - bsret  =  0 on rescued, dead, never_detected, unreachable,
+                     geographically_isolated, horizon_unresolved, candidate,
+                     firefighter_deaths and burnt_cells, across all 13 runs.
+
+  bsret - bsspawn =  never_detected +3, unreachable +3, candidate -3,
+                     with rescued, dead and firefighter_deaths unchanged.
+
+So the whole coverage loss - three victims moving from "unresolved" to "never
+detected" - is bought by flying home, not by charging.
+
+The step budget says the same thing. Of 12480 UAV-steps in the canonical sample:
+  return legs   2182 steps   17.5%
+  charging       584 steps    4.7%
+The design predicted the return leg would dominate the charge roughly four to
+one. Measured it is 3.7 to 1 on steps, and infinite on outcomes, because the
+charge contributes no outcome change at all.
+
+WHY, mechanically: at a reserve of 60 there is one cycle per UAV per run. The
+trigger fires near step 136, arrival near step 178, the charge takes about
+11 steps, and the re-launch lands near step 190 - leaving roughly 50 steps of
+re-flight, too late to change any victim's fate at this horizon. Recharging would
+only start paying at a longer horizon or a higher reserve, and section 5.4 of the
+design already declined to raise the reserve to force more cycles.
+
+WHAT RECHARGING DOES BUY, even while outcome-neutral:
+  - every return completes. bsfull is the only arm with 52/52 arrivals; bsret
+    leaves 5 UAVs still flying home at the horizon.
+  - it halves the fire exposure of the return-only arm (3.06% of UAV-steps on a
+    burning cell against 4.40%), because UAVs do not sit parked in the corner for
+    the last 60 steps of the run.
+
+3.7  Tests                                          GATE: PASS
+--------------------------------------------------------------------------------
+  8 failed / 523 passed in 1:04:46.
+
+The count is not the gate - the failing NAME SET is, because
+outputs/dimension_report.txt:430-432 records a case where the counts matched by
+coincidence while the sets differed by two tests. The set here is EXACTLY the
+eight at outputs/_ih_pytest_rest99.log:607-614:
+
+  test_behavior_regression::test_descriptive_next_action_uses_target_position
+  test_dashboard_panel::test_dashboard_panel_render_returns_string
+  test_firefighter_dispatch_replacement::test_no_replacement_available_marks_victim_unreachable_once
+  test_rescue_planner_authority::test_no_firefighter_planner_delay_or_unreachable
+  test_uav_sector_assignment::test_fire_tracker_uavs_receive_different_target_sets
+  test_uav_sector_assignment::test_fire_tracker_still_overridden_by_search_mode_fail_safe
+  test_wind_aware_trajectory_regression::test_north_vs_south_trajectories_diverge_over_40_steps
+  test_wind_aware_trajectory_regression::test_east_vs_west_trajectories_diverge_over_40_steps
+
+523 = 500 baseline + 23 new. No new failure, and no previously-failing test
+silently started passing. The three pins that made this true are in 3.8.
+
+3.8  Behavioural costs of the corner spawn, measured
+--------------------------------------------------------------------------------
+The first full-suite run gave 11 failed / 520 passed. The totals reconcile - 508
+baseline tests plus 23 new ones is 531, and 520 + 11 = 531 - so three
+previously-passing tests broke. All three had one root cause, and it is a real
+property of the feature rather than a defect:
+
+A corner spawn puts every UAV at boundary distance <= 4 from step 0, so
+_victim_near_edge_escape_required (<= 5.0) is true immediately.
+
+  test_wind_aware_victim_search::..._when_downwind_exists
+      asserts the bare label "victim_search_wind_aware"; it becomes
+      "victim_search_wind_aware_retarget_to_interior".
+  test_victim_searcher_scenario_matrix::test_no_crash_zero_victims
+      asserts strict_fire_smoke_steps <= 2; it becomes 3.
+  test_wind_aware_trajectory_regression::test_all_cardinals_...
+      asserts the four winds drive the searcher into distinct regions; every run
+      now starts in the same corner, which compresses the early trajectories.
+
+Each was pinned to BASE_STATION_MODE=0 with monkeypatch, so nothing leaks to the
+next test, and each pin carries a comment naming this report. The pins are
+defensible - their subject is the wind-aware searcher, not the depot, and they
+already pin NUM_AGENTS and wind the same way - but the behaviour behind them is
+NOT waved through. Measured across the whole canonical sample:
+
+  UAV-steps on a BURNING cell   bsbase 1.44%   bsspawn 3.07%   (+1.63 points)
+  UAV-steps in SMOKE            bsbase 1.50%   bsspawn 2.78%   (+1.28 points)
+  mean distance to nearest fire bsbase 8.88    bsspawn 9.96
+
+Corner-spawned UAVs sit FURTHER from the fire on average yet cross it more than
+twice as often - the trajectory from the corner runs through the front instead of
+skirting it. This is the same metric family the interior-hazard round tuned
+(searcher steps on a burning cell, 2.1% -> 3.2%), so it is worth stating plainly.
+It has no mechanical consequence, because UAVs are fire-immune; it is a realism
+and behaviour signal, not an outcome cost.
+
+Full exposure table, canonical:
+  arm       burning   smoke   mean dist to fire
+  bsbase     1.44%    1.50%        8.88
+  bsspawn    3.07%    2.78%        9.96
+  bsret      4.40%    4.62%       11.48
+  bsretp     4.04%    3.97%       11.19
+  bsfull     3.06%    2.80%       10.37
+  bsfullp    3.30%    3.01%       10.22
+
+Note that the fire-aware route is NOT reliably safer on this measure: it is
+0.36 points better at mode 2 and 0.24 points worse at mode 3. The fire-awareness
+of mechanism 1 shows up as a slower, longer route (3.4), not as measurably less
+time in fire.
+
+3.9  route_blocked gate                             GATE: FAIL
+--------------------------------------------------------------------------------
+18 runs (13 east + 5 south), four shards, run as `outputs/_ffr_rbgate.sh bsrb`.
+
+Against the ORIGINAL 70e1b33 reference the merge reports 2 of 3 items failing -
+but so does 16b2da8 itself (outputs/_ih_rbgate_ihrest.txt:71-77 records one
+rescued regression and one latched unit), so reading that as a verdict would
+misattribute pre-existing behaviour to this feature. The comparison that answers
+this round is the seed-matched one against HEAD:
+`outputs/_ffr_rbcompare.py --new bsrb --old ihrest`
+
+  ALL 18 RUNS   rescued 53 -> 48 (-5)   dead 11 -> 12 (+1)   ff_deaths 9 -> 6 (-3)
+
+  [FAIL] rescued does not decrease on any seed
+         8 regressions: east 111 (4->3), 444 (3->2), 606 (3->2), 707 (4->2),
+         808 (3->2), 909 (3->2); south 202 (4->3), 404 (4->3)
+         against 3 improvements: east 202, 222, 505; south 303
+  [PASS] recovery pass still recovers units
+         recoveries 12 -> 15, route_blocked firings 26 -> 29
+  [FAIL] no unit left latched as route_blocked at end of run
+         still blocked: seed 808 ff_unit_0 at [0,24]
+         still blocked: seed 808 ff_unit_1 at [30,6]
+         (16b2da8 leaves 1 against the same reference; this leaves 2)
+
+  assign into blocked route  0 -> 4
+
+THE LATCH IS THE SERIOUS ONE. Commit 70e1b33 closed the "latch category" - a unit
+stuck in route_blocked with no recovery - and this reopens it on one seed with
+two units. It is a concrete defect signal rather than a threshold judgement, and
+it is NOT explained by the never_detected story: both units are firefighters and
+their positions ([0,24] and [30,6]) are nowhere near the depot, so the mechanism
+is indirect and is NOT yet diagnosed.
+
+The rescued result also directly contradicts the canonical sample. Rescued across
+every seed-run measured this round:
+  canonical 13    35 -> 38   (+3)
+  fresh 10        29 -> 29   ( 0)
+  rbgate 18       53 -> 48   (-5)
+  TOTAL 41       117 -> 115  (-2)
+The canonical +3 was sample luck. The honest summary is that rescued is flat to
+slightly negative, and the variance between samples is larger than the effect.
+
+================================================================================
+4. GATES
+================================================================================
+
+4.1  Verdict
+--------------------------------------------------------------------------------
+  kill switch proves byte-identity                 PASS  13/13 + 10/10, 27 fields
+  never_detected does not increase materially      FAIL  1 -> 8 over 23 runs
+  rescued does not decrease without explanation    FAIL  -5 on the 18-seed rbgate
+                                                         sample; -2 over 41 runs
+  no UAV stranded with zero battery outside depot  PASS  zero, in every arm
+  no searcher lane reshuffle unreported            PASS  zero lane changes and
+                                                         zero roster changes
+  no NEW test failures                             PASS  exactly the 8 baseline
+                                                         names, 523 passed
+  route_blocked gate passes                        FAIL  2 units latched,
+                                                         rescued -5
+
+4.2  What this does and does not mean
+--------------------------------------------------------------------------------
+It does NOT mean the implementation is wrong. Everything checkable for
+correctness checks out: the kill switch is byte-identical on 23 runs, the fire
+model is provably untouched (burnt_cells identical on every arm), no UAV is ever
+stranded, the partition never reshuffles, the design's arithmetic matches the
+measured arrival battery to one decimal place, and the failing test name set is
+exactly the baseline's.
+
+What fails is the DEFAULT. Turning the feature on moves 17.5% of UAV-steps from
+searching to flying home, and the mission metrics move with it. That is the
+feature working as specified; the specification costs coverage.
+
+4.3  Options, for the maintainer
+--------------------------------------------------------------------------------
+  (a) SHIP WITH BASE_STATION_MODE = 0. The depot, both return mechanisms, the
+      recharge and both renderers all ship and are covered by 23 unit tests, but
+      the model's default behaviour is unchanged and every gate passes by
+      construction. The supervisor's requirement is met in code and demonstrable
+      by flipping one constant; it is not met in the default run.
+  (b) SHIP MODE 1 - spawn from a visible depot, no return leg. Best measured
+      profile of any armed arm on the canonical sample (+3 rescued, -2 dead,
+      -4 firefighter deaths, never_detected +1) with no return leg to pay for.
+      It does NOT satisfy the return-to-base and recharge requirements, and it
+      has NOT been through the route_blocked gate - that is another 18-run wave
+      before it could be claimed.
+  (c) SHIP MODE 3 AND ACCEPT THE TRADE, on the argument that firefighter deaths
+      fall by two thirds (15 -> 5 over 23 runs) while rescued is flat. This means
+      overriding two gate items and reopening the 70e1b33 latch category, and I
+      do not recommend it without first diagnosing the seed-808 latch.
+  (d) DIAGNOSE THE LATCH FIRST. Two firefighters permanently route_blocked on one
+      seed is the only finding here that looks like a defect rather than a
+      trade-off, and it should be understood before any of (a)-(c) is chosen.
+
+CHOSEN: (a) now, (d) next. BASE_STATION_MODE ships at 0. The feature stays
+complete and killable in the tree while the latch is understood, rather than
+shipping a default that reopens a closed defect category.
+
+4.4  A pattern this round is the third instance of
+--------------------------------------------------------------------------------
+A gain measured on the canonical 13 evaporated under wider measurement:
+
+  rescued   canonical 13   35 -> 38   (+3)
+            fresh 10       29 -> 29   ( 0)
+            rbgate 18      53 -> 48   (-5)
+            all 41        117 -> 115  (-2)
+
+The +3 was reported as a result before the 18-seed sample existed, and it was
+sample luck: the between-sample variance is larger than the effect. This is the
+THIRD time in this campaign that a canonical-sample gain has failed to survive a
+wider one - _reset_idle_retreat_state and the dimension fix were the first two.
+The canonical 13 is a fast screen, not evidence of an effect, and a result should
+not be stated as one until it has been seen on a second, independent seed set.
+
+================================================================================
+5. FILES CHANGED
+================================================================================
+  common_fixed_variables.py                          constants block + rationale
+  agents.py                                          accessors, UAV state, trigger,
+                                                     steer, dock, recharge, hold
+  wildfire_model.py                                  depot region, berths, UAV and
+                                                     firefighter spawn
+  src_extension/adaptation/local_adaptation_generator.py   mechanism 1 option
+  src_extension/planning/local_uav_path_planner.py         mechanism 1 selection
+  src_extension/execution/uav_executor.py                  mechanism 1 routing,
+                                                           the three gate fixes
+  src_extension/dashboard/dashboard_state_builder.py       battery_status, base_state
+  serve_dashboard.py                                 depot overlay, whitelist,
+                                                     legend, UAV table
+  Canvas_Grid_Visualization.py                       mesa depot outline
+  tests/test_base_station.py                         NEW, 23 tests
+  tests/test_wind_aware_victim_search.py             one pin
+  tests/test_victim_searcher_scenario_matrix.py      one pin
+  tests/test_wind_aware_trajectory_regression.py     one pin
+  outputs/_ffr_harness.py                            battery + docked columns,
+                                                     rtb_log, rtb_counters,
+                                                     base_station, partition_steps
+  outputs/_bs_queue.py, _bs_identity.py, _bs_egress.py     NEW, round tooling
+
+================================================================================
+6. REPRODUCTION
+================================================================================
+  python outputs/_bs_queue.py > outputs/_bs_queue.txt
+  MAXPAR=10 MINFREE_KB=3000000 bash outputs/_dim_pool.sh outputs/_bs_queue.txt
+
+  python outputs/_bs_identity.py --mode identity  --a bsoff --b bsbase --sample canonical
+  python outputs/_bs_identity.py --mode identity  --a bsoff --b bsbase --sample fresh
+  python outputs/_bs_identity.py --mode outcomes  --a bsbase,bsoff,bsspawn,bsspawnu,bsret,bsretp,bsfull,bsfullp
+  python outputs/_bs_identity.py --mode mechanism --a bsfull
+  python outputs/_bs_identity.py --mode exposure  --a bsbase,bsspawn,bsret,bsretp,bsfull,bsfullp
+
+  MPLBACKEND=Agg ./.venv/Scripts/python.exe -m pytest tests -p no:cacheprovider -q
+  bash outputs/_ffr_rbgate.sh bsrb

@@ -1,0 +1,1414 @@
+================================================================================
+BASE STATION (FEATURE 3) - PART 1: DESIGN
+depot, spawn, return-to-base, recharge, and a rendered frame
+================================================================================
+Repo      : E:\Projects\SAS
+Branch    : main (implementation moves to a feature branch before Part 2)
+HEAD      : 16b2da8 (confirmed before any work; working tree clean)
+Runtime   : E:\Projects\SAS\.venv\Scripts\python.exe
+            sys.version 3.10.11, mesa.__version__ 1.2.1 (confirmed, printed)
+Horizon   : 240 steps. SETTLED. The harness and every recorded baseline arm use
+            --steps 240; evaluate_scenarios.py:194 defaults to 300 but no gated
+            wave has ever used it. Every number below is computed at 240.
+Baselines : _ffr_ihrest99_* (canonical 13) and _ffr_ihrest99fresh_* (fresh 10).
+            NOT the older dimfix arms.
+Tests     : baseline 8 failed / 500 passed in 36:49, names recorded at
+            outputs/_ih_pytest_rest99.log:607-614. Suite NOT re-run this round -
+            no source file was touched.
+Scope     : DESIGN ONLY. No source file modified. Two files added, both under
+            outputs/: this report and the read-only probe _bs_egress.py
+            (appendix A).
+            .claude/worktrees/** excluded from every search (stale copies).
+
+All file:line references are to the checkout at 16b2da8.
+
+--------------------------------------------------------------------------------
+EXECUTIVE SUMMARY
+--------------------------------------------------------------------------------
+The feature is buildable, and the piece the brief flagged as the likely blocker
+is not the blocker. Five findings reshape the design.
+
+1. THE FROZEN DATACLASS DOES NOT BIND. MissionDecision is frozen with exactly
+   12 fields and carries no destination (decision_objects.py:19-34) - confirmed,
+   but it is not on the required path. PathDecision (decision_objects.py:37-50)
+   already carries waypoints_by_uav and path_segment; the dispatcher's
+   return-to-base test reads exactly those (decision_dispatcher.py:538-547); and
+   the executor already turns waypoints[0] into a direction
+   (uav_executor.py:1445-1447). Mechanism (a) needs NO change to any frozen type.
+   What IS dead is the fleet-wide fail-safe channel, which cannot address a
+   single UAV at all. Section 3.
+
+2. THE FEATURE IS INERT-BY-DEFAULT AT A 30% THRESHOLD, AND NOT MARGINALLY SO.
+   Measured on seed 101 at canonical defaults, the three UAVs cross 30% at steps
+   234, 238 and 239 of 240, against a worst-case return of 90 moves. ZERO returns
+   can complete. 30% is thin geometrically too: the worst-case return costs 27.0
+   points, leaving 3.0. The reserve must be >= 55 for a worst-cell return to fit
+   inside 240 at all. Design default: 60. Section 5.
+
+3. A CHARGING UAV MUST STAY ON THE GRID. Feature 1's off-grid pattern does not
+   port. An off-grid UAV kills the run on its FIRST step (TypeError out of
+   global_monitor.py:194, verified in-process); there are 12 unguarded UAV
+   position sites in 6 files, not the 7 the prior round listed; and two of the
+   required guards are not simple skips - guarding state() permanently truncates
+   MR1_LIST and thereafter credits the wrong UAV. On-grid parking was verified to
+   cost nothing. Section 4.
+
+4. THE BRIEF'S LANE/SECTOR EXCLUSION REQUIREMENT CANNOT BE SATISFIED AS WRITTEN,
+   AND DOES NOT NEED TO BE. Both rosters are position-blind and role-based, so a
+   parked UAV that KEEPS its role causes NO reshuffle - the partition is frozen
+   for the charge duration. Filtering it out is worse in every configuration:
+   with one searcher the legacy fallback re-elects it
+   (local_adaptation_generator.py:306-316); with two searchers the lane goes None
+   for BOTH, because n and idx come from the same filtered list (:333-350). This
+   is a brief requirement I am declining on evidence. It needs a maintainer
+   ruling, not silent adoption. Section 4.4.
+
+5. THE OBSERVATION-RADIUS FRAME IS HALF-BUILT ALREADY. It ships on the mesa
+   surface today (Canvas_Grid_Visualization.py:111-127) - as a 19x19 ring at
+   radius+1 around a true 17x17 field of view. Only the dashboard lacks it, where
+   it is roughly ten lines. Section 6.5.
+
+ONE THEORY-VS-MEASUREMENT CONFLICT, RESOLVED BY PROBE RATHER THAN LEFT AS A RISK.
+The executor's margin-3 edge filter (uav_executor.py:2061-2075) leaves 0 legal
+moves on the corner block diagonal and at most 1 elsewhere, which reads as an
+egress trap that would sink a corner depot outright. It is not one: the filter is
+reached only from victim-searcher code, and the searcher's dominant path skips
+the hazard gate entirely (uav_executor.py:404-411). Probed in ALL FOUR corners by
+placing every UAV on the WORST cells of the block - boundary distance 0, the
+zero-legal-move block corner included - and stepping 40 steps: 16 of 16 UAVs
+cleared the depot, within 1 to 9 steps, moving on 37-40 of 40 steps against a
+centre-spawn baseline of 34-38. Section 1.4.
+
+FOUR DECISIONS I HAVE MADE, each argued in place, for the maintainer to confirm
+or overturn: the depot burns (1.3); the charging UAV keeps its role (4.4); the
+30/15 battery labels are NOT re-pointed at the return reserve (5.2); the two
+return mechanisms are mutually exclusive by selector (3.4).
+
+================================================================================
+1. THE DEPOT
+================================================================================
+
+1.1  WHAT IT IS - a model-level region, not an agent and not terrain
+--------------------------------------------------------------------------------
+DECISION: the depot is a MODEL-LEVEL REGION. `self.base_station` is built in
+reset() from configuration constants and holds the origin, the size, the frozen
+cell set, and the per-unit berth assignment. Nothing is added to the grid,
+nothing is added to the scheduler, and set_fire_agents / new_fire_agent / the
+Fire class are not touched.
+
+Three candidate representations were measured against seed reproducibility, the
+constraint that governs everything downstream:
+
+  OPTION-1  skip creating Fire agents on the 25 depot cells      REJECTED
+  OPTION-2  create Fire everywhere, flag 25 as non-flammable     DEFERRED
+  OPTION-3  model-level coordinates only, fire untouched         CHOSEN
+
+OPTION-1 is baseline-breaking three ways at once, measured A/B at seed 101:
+construction draws fall 5002 -> 4952; every later unique_agents_id shifts by -25
+(UAVs 2500-2502 -> 2475-2477); per-spread-step draws fall 2500 -> 2475. The draw
+VALUE sequence stays positionally identical for 4952 entries, which makes an
+RNG-stream hash look clean, but the values land on different cells: only 615 of
+2475 cells keep their baseline fuel, and burning cells at step 30 were 150
+against 214. It also leaves a permanent 25-cell hole in the belief layer
+(fire_runtime_model.initialize_grid seeds all HEIGHT*WIDTH cells, but
+_belief_confirmation_flags skips cells with no Fire agent), renders the depot as
+ordinary vegetation, and silently moves the burnt_cells population from 2500 to
+2475 while outputs/_bc_analyze.py:63-67 hard-codes 2500. Reject outright; do not
+prototype. Note for anyone tempted to validate a depot change by hashing the RNG
+draw log: under OPTION-1 that hash agrees for 4952 entries while the fuel field
+has already moved. Validate against the fuel/burn MAP, never the stream.
+
+OPTION-2 is bit-exact at construction, and was verified so: baseline versus an
+in-memory emulation over 30 steps at seed 101 reproduced the full 30001-element
+draw log, the fuel-field hash, the unique ids and the burning-cell count exactly.
+That holds only if the no-ignite flag is honoured at the ASSIGNMENT site
+(agents.py:104) with the draw at agents.py:103 kept. Placing the guard as an
+early return before line 103 silently deletes one draw per depot cell per spread
+step and desynchronises the stream from the first spread step onward. That is the
+single easiest way to get OPTION-2 wrong. Deferred, not rejected - see 1.3.
+
+OPTION-3 is trivially bit-identical: no draw added, no id shifted, no Fire agent
+changed, both renderers' contracts untouched. It is the only option under which a
+base-station arm stays directly seed-comparable with the ihrest99 baselines, so a
+behaviour delta is attributable to spawn / return / recharge alone rather than to
+a perturbed fire map.
+
+The order in reset() that makes this true (wildfire_model.py:121-177):
+_make_ff_absence_rng (getstate, consumes nothing) -> set_fire_agents (2 randint,
+then 2500 x (random, randint)) -> UAVs -> _init_runtime_knowledge -> victims ->
+firefighters. Fire agents are created FIRST, so every later unique_agents_id is a
+direct function of the fire-agent count. Touch the fire count and everything
+moves; leave it alone and nothing does.
+
+1.2  WHERE IT IS - the NW block, x in [0,4], y in [45,49]
+--------------------------------------------------------------------------------
+DECISION: origin (0, 45), size 5. The 25 cells are x in [0,4], y in [45,49].
+
+Grid x is the HEIGHT axis and grid y is the WIDTH axis - the grid is built
+MultiGrid(HEIGHT, WIDTH, False) with an explicit comment about the inversion
+(wildfire_model.py:129-142). Every depot coordinate must derive from model.HEIGHT
+for x and model.WIDTH for y, never from literals and never swapped. That mix-up
+is the exact defect class this repo has hit nine times, and two live helpers
+already disagree about it (uav_executor.py:4712-4716 compares nx against WIDTH
+while :541-551 uses the opposite mapping; both inert only because HEIGHT==WIDTH).
+
+All four corners are provably identical on every static collision, so the choice
+turns on wind and distance. Three independent criteria all point the same way:
+
+  criterion                       NW(0-4,45-49)  NE(45-49,45-49)  SW(0-4,0-4)  SE(45-49,0-4)
+  -----------------------------   -------------  ---------------  -----------  -------------
+  mean victim distance, 4 scen.       39.65           40.88           41.55        42.63
+  summed over the 4 scenarios        157.2           163.5           166.2        172.5
+  upwind of east (fire -> +x)          yes              no             yes           no
+  upwind of south (fire -> -y)         yes             yes              no           no
+  corridor target blocked, east         no             yes              no          yes
+  corridor target blocked, south        no              no             yes          yes
+  spawn-cell collisions                zero            zero            zero         zero
+  can be the ignition cell               no              no              no           no
+
+NW is the only corner upwind of BOTH canonical winds, and it also has the
+shortest mean distance to the victim ring, hence the shortest return leg. SE is
+downwind of both and worst on every metric that separates the four.
+
+Wind semantics were verified against the actual spread test in
+agents.Wind.is_on_wind_direction (agents.py:209-223), not merely the vector
+helper: east pushes fire toward +x, south toward -y.
+
+STATED ASYMMETRY, so it is not discovered later. common_fixed_variables.py:36
+sets WIND_DIRECTION = 'west'; evaluate_scenarios.py:192 and
+serve_dashboard.py:350 default to 'east'; main.py contains no wind reference at
+all. A bare `python main.py` / Canvas run therefore inherits 'west', under which
+the NW corner is DOWNWIND and burns. The gated wave is east and south, so the
+depot is sited for the gated wave. This goes in the commit message.
+
+1.3  DOES FIRE SPREAD INTO THE DEPOT?  YES - and that is a decision
+--------------------------------------------------------------------------------
+DECISION: the depot is BURNABLE. Fire spreads into it exactly as into any other
+cell, the 25 cells keep their Fire agents, and NOTHING models the depot being
+destroyed. It is a service location, not a structure.
+
+Three reasons, in order of weight:
+
+  (i)  IT COSTS NOTHING MECHANICALLY. _check_fire_casualties
+       (wildfire_model.py:4679-4851) kills victims and firefighters and contains
+       no UAV branch - UAVs are fire-immune in this model. A charred depot cell
+       therefore has zero consequence for spawning, returning or recharging
+       unless new code invents one. Making the depot non-flammable buys no
+       behaviour at all.
+
+  (ii) IT WOULD CONTAMINATE THE MEASUREMENT. A non-flammable depot is a permanent
+       5x5 firebreak. The corners do burn: at the default west wind the SW corner
+       ended 25/25 ever-burned in all five seeds tested and NW in four of five.
+       The firebreak would remove real burnt cells AND suppress downstream
+       spread - a confound sitting directly inside burnt_cells, one of the
+       metrics this round is judged on - and would force its own re-baseline,
+       exactly as the dimension fix did.
+
+  (iii) SEPARABILITY DEMANDS IT. The brief requires a delta to be attributable to
+       spawn, return or recharge. Any change to the fire model injects a fourth,
+       un-separable effect into every armed run.
+
+If the maintainer later wants a hardened pad, the correct upgrade is OPTION-2 as
+its own arm with its own re-baseline, never bundled here. Two caveats recorded
+now so that round need not re-derive them: OPTION-2 is identical to baseline only
+UNTIL fire first reaches the depot, because a cell that never burns never takes
+the burnt early-return at agents.py:91-95 that skips the draw (measured step
+~150-180 for the SW corner at seed 101) - advertise it as "identical
+construction, identical until the fire arrives", not "baseline-identical"; and a
+non-burnable depot becomes a 25-cell survival sanctuary for firefighters, which
+moves firefighter_deaths.
+
+1.4  CAN AGENTS MOVE THROUGH IT?  YES - it is not an obstacle
+--------------------------------------------------------------------------------
+The depot imposes no passability rule of its own. Victims, firefighters and UAVs
+cross it freely. The only constraint is pre-existing: not_UAV_adjacent
+(agents.py:285-291) is misnamed - it tests only the TARGET cell - so two UAVs may
+not occupy the same cell, while a UAV may share a cell with a Fire agent, a
+victim or a firefighter. mesa MultiGrid stores a list per cell (the third arg is
+torus=False, not single-occupancy); 11 of 2500 cells already hold two agents at
+t=0.
+
+THE EGRESS QUESTION, SETTLED BY PROBE.
+_victim_edge_blocked_direction (uav_executor.py:2061-2075) rejects any move that
+does not strictly increase min-boundary-distance once that distance is <= 3
+(margin = 3). Inside a 5x5 corner block that leaves exactly one cell with all
+four moves legal (the inner corner, (4,45) here), at most one legal move for
+twenty cells, and ZERO legal moves for the five cells on the block diagonal.
+Taken alone that reads as a trap - and it IS the reason to reject a
+parity/checkerboard spawn layout, which would place UAVs on precisely the
+zero-move cells.
+
+It does not bind in practice, for two verified reasons (and note the filter's
+geometry is identical in all four corners, so this is not a property of the
+corner chosen):
+  - the filter is reached only from victim-searcher code. Call sites are
+    uav_executor.py:2002, 2081, 2192, 2219, 2314, 2325, 2342, 4218 - all searcher
+    machinery. Fire trackers never consult it.
+  - the searcher's dominant path skips the hazard gate altogether: at
+    uav_executor.py:404-411 the gate is bypassed when the action label contains
+    "retarget_to_interior" and _last_escape_method is non-empty. On a stock
+    centre-spawn run that is 37-39 of 40 steps for both searchers. It is the
+    normal mode, not an edge case.
+
+PROBE (appendix A; read-only, placement monkeypatched after construction, no
+simulation logic touched). Seed 101, scenario D, wind east, roles half, 40 steps,
+all four UAVs placed on the WORST cells of each block - the outer ring, boundary
+distance 0, including the zero-legal-move block corner itself. All four corners
+were run, because the filter's geometry is corner-symmetric and a result on one
+would not have settled it:
+
+  corner  uav   role              start     moved   cleared the depot at step
+  ------  ----  ----------------  --------  ------  -------------------------
+  NW      2500  fire_tracker      (0,45)    40/40             5
+  NW      2501  fire_tracker      (0,46)    40/40             5
+  NW      2502  victim_searcher   (0,47)    40/40             7
+  NW      2503  victim_searcher   (0,48)    40/40             8
+  NE      2500  fire_tracker      (45,45)   40/40             1
+  NE      2501  fire_tracker      (45,46)   40/40             1
+  NE      2502  victim_searcher   (45,47)   40/40             3
+  NE      2503  victim_searcher   (45,48)   40/40             4
+  SW      2500  fire_tracker      (0,0)     37/40             8
+  SW      2501  fire_tracker      (0,1)     38/40             9
+  SW      2502  victim_searcher   (0,2)     39/40             8
+  SW      2503  victim_searcher   (0,3)     40/40             6
+  SE      2500  fire_tracker      (45,0)    37/40             3
+  SE      2501  fire_tracker      (45,1)    37/40             3
+  SE      2502  victim_searcher   (45,2)    39/40             4
+  SE      2503  victim_searcher   (45,3)    40/40             2
+
+Sixteen of sixteen UAVs left the depot, within 1 to 9 steps, moving on 37-40 of
+40 steps - against a stock centre-spawn baseline of 34-38 of 40. UAVs placed in a
+corner move MORE than the baseline, not less. Searchers spent 37-40 of their 40
+steps on the "retarget_to_interior" label with 0-3 on "victim_search_escape_bfs",
+confirming that the gate-skipping path is what carries them out.
+
+Reproduced on a second seed (202, NW, 25 steps): 25/25 moves for all four UAVs,
+cleared at steps 5, 5, 7 and 8 - the same pattern. This is a structural property
+of the executor's escape routing, not a seed accident.
+
+The theoretical trap is a real property of one branch and does not govern the
+outcome. The berth ordering in 2.2 still prefers high-boundary-distance cells,
+because it costs nothing and removes the dependency on a fallback path.
+
+1.5  DOES IT DISPLACE ANY EXISTING PLACEMENT?  NO
+--------------------------------------------------------------------------------
+Verified exhaustively, not assumed:
+
+  - VICTIM RING (wildfire_model.py:539-557). Cells for every built-in scenario:
+    NV=5 (40,25),(32,46),(13,34),(7,12),(30,11);
+    NV=4 (40,25),(25,48),(10,25),(25,3);
+    NV=3 (40,25),(14,44),(17,12);
+    NV=2 (40,25),(3,25).
+    No cell falls in any 5x5 corner block, for any count 1..8. The ring does NOT
+    move.
+  - FIREFIGHTER RING (wildfire_model.py:588-604). NF=3 (39,39),(6,30),(30,6);
+    NF=2 (39,39),(11,11). Same result; the fixed 0.4 radius keeps every unit at
+    least 10 cells from any edge.
+  - FIRE IGNITION (wildfire_model.py:1992-1995). SYSTEM_RANDOM.randint(10,
+    HEIGHT-11) on both axes; randint is inclusive, so the reachable ignition set
+    is exactly [10,39] x [10,39] - 900 cells. No corner cell can ever be the
+    ignition point, and the depot is at least 12 Manhattan cells from any
+    possible ignition, strictly further than the current centre cluster, which
+    sits inside the band.
+  - SEARCHER LANES (local_adaptation_generator.py:332-373). Lanes are full-width
+    cross-wind BANDS - a filter, not a goal cell. Nothing anchors on a corner.
+  - TRACKER SECTORS (wildfire_model.py:438-532). Recomputed each step from the
+    fire's bounding box with a 10-cell margin. No corner anchor.
+  - The one genuine overlap is small and identical for all four corners: a 5x5
+    corner block contains exactly 1 of the 256 search-corridor candidate cells
+    and 12 coverage-escape candidates (local_adaptation_generator.py:3595-3598,
+    3627-3628, 3463-3484). Not avoidable by choosing differently. To be measured,
+    not assumed inert.
+
+================================================================================
+2. SPAWN
+================================================================================
+
+2.1  What exists, and what actually changes behaviour
+--------------------------------------------------------------------------------
+UAVs spawn in a hardcoded 2x2 block at the grid centre - (25,25),(26,25),(25,26),
+(26,26) from base_x = HEIGHT//2, base_y = WIDTH//2 (wildfire_model.py:152-172).
+Victims and firefighters spawn on the two deterministic trig rings above.
+
+Placement is already 100% deterministic. The ONLY RNG in reset() is
+set_fire_agents(), and it runs BEFORE any UAV, victim or firefighter is created
+(wildfire_model.py:145 versus 161/183/187). Moving those agents therefore shifts
+not a single fire draw, provided no new RNG call is introduced. Introducing one -
+for instance shuffling depot cells - would consume from SYSTEM_RANDOM after
+set_fire_agents and desynchronise every seed-matched comparison against the
+ihrest99 baselines. The depot placement draws nothing.
+
+warmup_dirs = (0,1,3) assigned to selected_dir at spawn is MEASURED-INERT: the
+extension pipeline is always active (decision_dispatcher is constructed
+unconditionally at wildfire_model.py:272), the pre-move MAPE cycle runs before
+_prepare_uav_directions_for_step, the executor overwrites selected_dir in
+_commit_execution_direction (uav_executor.py:141-147), and UAV.move() refuses to
+move at all unless execution_direction_applied is True (agents.py:323-325).
+Forcing every UAV's selected_dir to 0 right after construction reproduced the base
+trace EXACTLY - positions, selected_dir and execution_action - for 40 steps on
+seed 101 and 30 steps on seeds 202 and 303. KEEP the assignment anyway, unchanged
+and with the same cycle, so the OFF arm is the pre-feature code literally. It is
+inert on three seeds of one scenario, not proven inert structurally (the executor
+still reads selected_dir as a fallback at uav_executor.py:3462, 4379, 4625).
+
+Spawn POSITION, by contrast, changes behaviour at step 1. Measured: moving the
+same four UAVs to a corner block flips the searchers' action label and changes
+their chosen directions on the very first step. This is expected and is the whole
+point of the spawn arm.
+
+2.2  The berth assignment
+--------------------------------------------------------------------------------
+DECISION: every unit gets a DEDICATED berth cell, assigned deterministically by
+index. This is the same set used for spawn and for docking - they must not be two
+different sets, and pre-assignment is what removes the return-leg deadlock (3.5).
+
+Ordering rule. Rank the 25 depot cells by DESCENDING min-boundary-distance, then
+ascending (x, y) as a stable tie-break. For the NW block that distance is
+min(i, 4-j) for cell (i, 45+j), so the ranking starts at (4,45) - the single cell
+with all four moves legal under the margin-3 filter - and works outward through
+the distance-3 ring, then 2, then 1, then the nine outer-ring cells.
+
+  UAV k          -> ranked_cells[k]          (front of the list)
+  firefighter j  -> ranked_cells[24 - j]     (back of the list)
+
+Canonical maxima are 5 UAVs and 3 firefighters, so the two sets never meet: 25
+cells against 8 units. This is a pure function of (origin, size, N, M) and draws
+nothing.
+
+REJECTED: a parity/checkerboard layout. It reads well but places UAV #0 on the
+block corner and later UAVs on the diagonal - exactly the cells with zero legal
+moves under the margin-3 filter (1.4). Descending boundary distance is the right
+key precisely because it is the key the filter itself uses.
+
+If N + M ever exceeded 25, RAISE - do not wrap with modulo. Wrapping stacks two
+UAVs on one cell, which MultiGrid permits at placement (it already happens today:
+NUM_AGENTS=5 puts two UAVs on (25,25) via `a % len(base_cluster)`) but which then
+costs a blocked first move through not_UAV_adjacent. An explicit error is better
+than a silent quirk. Note that removing that existing 5-UAV stacking quirk is
+itself a behaviour change for scenario C, and belongs to the spawn arm's account.
+
+Placement must be done INSIDE the existing spawn loop, not as a fix-up after
+_init_runtime_knowledge: _init_managed_uav_states snapshots agent.pos
+(wildfire_model.py:704-720), so a later move leaves managed_uav_states[uid].position
+stale for one step.
+
+2.3  Firefighters at the depot - the part that is not free
+--------------------------------------------------------------------------------
+The requirement says the drones AND firefighters start from the base station, so
+both are moved. Nothing BREAKS: the rescue planner reads live marker positions,
+managed_firefighters[...].position is overwritten from the marker every step, and
+the post-rescue exit target is computed from the victim's cell. But two behaviours
+change materially, and both land on `rescued`, which the gate protects:
+
+  (a) REACHABILITY CLIFF. _update_unreachable_victims seeds ONE BFS flood-fill
+      from the live firefighter cells (wildfire_model.py:4430-4456, 4468-4486).
+      Ring-spread firefighters give that fill three separated seeds; a corner
+      depot gives it one. A fire arc that separates the corner from the interior
+      flips EVERY victim to geographically unreachable in the same step. That is
+      a cliff, not a gradual degradation.
+  (b) DISPATCH DEGENERACY. "Assign the closest available firefighter" compares
+      Manhattan distances (rescue_planner.py:646-652). With all units inside a
+      5x5 block those distances differ by at most 8 while typical victim
+      distances are 30-60, so the lexicographic tie-break decides most dispatches
+      and ff_unit_0 becomes the de facto sole responder at t=0.
+  Plus roughly 45-65 Manhattan cells of extra transit to the first rescue, and
+  halved retreat options in the extreme corner cells (_neighbor_cells is
+  bounds-filtered and 4-connected; the idle-retreat leash disc is clipped by two
+  walls), which feeds ff_deaths.
+
+DESIGN RESPONSE: make the firefighter half separately attributable rather than
+arguing about it in advance. BASE_STATION_SPAWN_FIREFIGHTERS (default 1, per the
+requirement) gives a diagnostic arm with UAVs-only at the depot, so if `rescued`
+drops the report can say which half caused it. This directly serves the gate item
+"rescued does not decrease without an explained reason". One extra constant, one
+extra arm.
+
+2.4  Determinism statement
+--------------------------------------------------------------------------------
+Under a fixed seed the depot, the berth ranking, and every unit's spawn cell are
+pure functions of (HEIGHT, WIDTH, origin, size, NUM_AGENTS, NUM_FIREFIGHTERS).
+No RNG is consumed by any of it, the SYSTEM_RANDOM stream position at the end of
+reset() is unchanged, and unique_agents_id numbering is unchanged because the
+creation ORDER in reset() is untouched. If a randomised element is ever wanted,
+the only acceptable pattern is Feature 1's dedicated random.Random seeded from
+sha256(SYSTEM_RANDOM.getstate()) (wildfire_model.py:2519-2528), since getstate()
+consumes nothing.
+
+================================================================================
+3. RETURN-TO-BASE - BOTH MECHANISMS
+================================================================================
+
+3.1  Correcting the premise the brief inherited
+--------------------------------------------------------------------------------
+Two facts from the battery round were re-checked and one does not survive.
+
+CONFIRMED: the 0.01 is real, and it is exactly where the code says.
+_MODE_PREFERRED_ACTIONS[EMERGENCY] = ("safe_hold", "return_to_base")
+(fail_safe_planner.py:50) is scored by _mode_preference_bonus as
+2.0 + (len(preferred) - index) * 0.01 (:615), giving safe_hold 2.02 and
+return_to_base 2.01. That bonus is the FIRST key of the sort tuple in
+_select_fail_safe_option_mode_override (:574-581), so it decides before the
+utility score and before the +0.75 critical bonus that return_to_base alone
+earns. Reordering the tuple is a one-line, 0.02-swing fix.
+
+NOT CONFIRMED, and materially wrong: "return_to_base loses to safe_hold on all
+1,280 emergency decisions" implies 1,280 emergency decisions exist. A stock
+240-step canonical run (seed 101, scenario D, east, default roles) produced ZERO
+emergency decisions - 158 information_recovery, 81 safety_first, and one
+degenerate step-1 return_to_base. The battery never reaches critical in a stock
+run (floor 29.2 against a threshold of 15.0), so critical_battery is never a live
+reason. The 1,280 almost certainly came from the forced crit12/low25 battery arms
+in outputs/_bat_*, where outputs/_bat_analysis.txt:321 records CRITICAL_BATTERY
+firing 1,912 times. Flagged as UNVERIFIED rather than re-run; it does not change
+the design, but it does change what "fixing the 0.01" would buy.
+
+CONSEQUENCE: reordering _MODE_PREFERRED_ACTIONS alone would be the tenth
+measured-inert change in this campaign's dead-input family. It is diagnosed and
+DECLINED here, with the reason, rather than shipped as a cosmetic win.
+
+3.2  Mechanism (a) - through the planner. FEASIBLE, via the LOCAL channel
+--------------------------------------------------------------------------------
+The brief asked whether a winning option can carry a destination given the frozen
+MissionDecision. Answer: MissionDecision is indeed frozen with 12 fields and no
+destination field (decision_objects.py:19-34, confirmed verbatim) - and it is the
+wrong carrier. Two frozen types already carry destinations, and one of them is
+already consumed by the executor.
+
+THE DEAD ARM, named so it is not attempted: the fleet-wide FAIL-SAFE channel
+cannot address one UAV.
+  - _dispatch_fail_safe (decision_dispatcher.py:206-222) finds no uav_id in the
+    generator's option params (measured keys: battery, critical_degradation,
+    failsafe_action, predicted_remaining_useful_time) and so `continue`s; the
+    fallback options carry target_entity 'system' (fallback_strategy.py:81-85),
+    which constructs UAVExecutor('system') and returns agent_not_found.
+  - wildfire_model.py:1748 injects target_entity='mission' into shared_input,
+    which shadows the generator's runtime_models['uav_id'] fallback entirely.
+  - _fail_safe_decision_for_execute (decision_dispatcher.py:519-535) returns None
+    for EMERGENCY/SAFETY_FIRST and for action return_to_base, so
+    FailSafeDecision.target_region never reaches the executor.
+  - target_region's only reader, _execute_search_mode, is never called: all UAVs
+    are fire_tracker or victim_searcher, so every search execution routes to
+    _execute_role_preserving_search. Measured 0 calls against 176 in 45 steps.
+  - MissionDecision.recall_orders is inert on both ends - the planner writes the
+    action string into a slot the executor reads as a uav_id
+    (global_mission_planner.py:265-274, global_executor.py:97-105), and a repo-wide
+    grep finds no consumer of the resulting command.
+
+THE LIVE ARM: the per-UAV LOCAL PATH channel. PathDecision has uav_id,
+path_segment and waypoints_by_uav (decision_objects.py:37-50), and the executor
+already does exactly the right thing with them: waypoints_by_uav[uav_id][0] ->
+_choose_best_direction -> action "waypoint" (uav_executor.py:1445-1447).
+
+Route, end to end, with the cost of each link:
+
+  1. TRIGGER. Battery reserve crossed (section 5). One comparison, agent-side
+     state, no MAPE involvement.
+  2. OPTION. New per-UAV local adaptation option in local_adaptation_generator,
+     alongside the existing per-UAV options, with
+     option_id = f"local_path_return_to_base_{uav_id}" and params carrying
+     waypoints = [berth_cell].  NEW OPTION + NEW SELECTION RULE.
+  3. PATH. local_uav_path_planner already converts those params into
+     PathDecision.path_segment / waypoints_by_uav. ZERO CHANGE.
+  4. DISPATCHER DROP TEST. FREE, and this is the one piece of existing machinery
+     that works in our favour: _path_consistent_with_return_to_base
+     (decision_dispatcher.py:538-547) scans next_action, selected_option_id,
+     path_segment and waypoints for "return"/"base"/"home"/"rtb". The option id
+     contains "base", so the path survives. ZERO DISPATCHER CHANGE.
+  5. EXECUTOR. ONE GUARDED EARLY-RETURN, and it is load-bearing. The waypoint
+     branch at :1445 sits AFTER the victim branch (:871-1428) and the fire branch
+     (:1429-1434), both of which return first whenever they find a target - so a
+     searcher that can see any victim steers to the victim, not to base. Insert
+     roughly five lines immediately after :869: if this decision carries a base
+     waypoint for this uav, resolve it before the role branches.
+  6. ARRIVAL. Shared with mechanism (b) - see 3.5. The option stops being emitted
+     once the UAV is docked.
+
+No frozen type is mutated. No dispatcher edit. Two new pieces of code and one
+early-return.
+
+WHAT MECHANISM (a) KEEPS: the searcher hazard gate and _apply_final_direction_safety
+(uav_executor.py:404-419). Mechanism (a) is FIRE-AWARE.
+
+WHAT IT IS EXPOSED TO: a fleet-wide fail-safe override with action safe_hold
+rewrites the local path's next_action to "hold"
+(_adjust_local_path_for_fail_safe, decision_dispatcher.py:481-512), suppressing
+the return leg for that step. With 81 safety_first steps measured in a 240-step
+run this is not hypothetical, and it is a genuine, reportable difference between
+the two mechanisms rather than a defect.
+
+CAUTION, recorded: do NOT enable a fleet-wide return_to_base action as part of
+this. Once the fail-safe action is return_to_base, EVERY local path whose text
+lacks return/base/home/rtb is DROPPED (:494-508) - measured 0 of 4 real option
+ids pass that test - and every UAV freezes on its last selected_dir. The local
+channel is per-UAV precisely because the fail-safe channel is not.
+
+3.3  Mechanism (b) - hardcoded at agent level
+--------------------------------------------------------------------------------
+Two insertion points, both inside the UAV class in agents.py, nothing in
+src_extension.
+
+  (1) _apply_return_to_base(self) as the FIRST statement of UAV.advance()
+      (agents.py:339, before the intended_delta snapshot at :344). It must set
+      THREE fields, not one:
+          self.selected_dir            = <greedy step toward the berth>
+          self.execution_direction_applied = True
+          self.execution_action        = "rtb_return"
+      Setting only selected_dir produces a SILENT PERMANENT HOLD: move() returns
+      False at agents.py:325 with the label "no_managed_direction_hold", so the
+      UAV appears to have a return direction and never moves.
+
+      This is the last-writer-wins slot. The pre-move MAPE cycle has already
+      finished (wildfire_model.py:5307), _prepare_uav_directions_for_step has
+      already early-returned without calling set_drone_dirs (:2078-2080), and
+      nothing between there and schedule.step() (:5315) writes selected_dir. The
+      only writers of selected_dir in the live tree are agents.py:233,
+      uav_executor.py:144 and wildfire_model.py:2028.
+
+      Placing it BEFORE :344 also keeps intended_delta consistent with what the
+      monitor re-reads from selected_dir (local_uav_monitor.py:303-305);
+      inserting after :344 corrupts the drift-error observation.
+
+  (2) A docked-hold branch at the very top of UAV.move(), ABOVE the pipeline
+      check at agents.py:316-325:
+          if self.rtb_docked: self.execution_action = "rtb_docked_hold"; return False
+      Required because there is no "stay" action anywhere: N_ACTIONS = 4 and all
+      four selected_dir values are moves, and even the executor's _execute_hold
+      commits a direction and sets execution_direction_applied, so an
+      executor-level "hold at base" still walks the UAV off the pad.
+
+STEERING: re-implement the greedy step locally in about ten lines rather than
+importing _direction_toward (uav_executor.py:4624-4646). Two reasons: it keeps
+agents.py free of a src_extension dependency, and _direction_toward returns the
+CURRENT direction when dx == dy == 0, so a UAV that reaches its berth immediately
+walks back out. Rule: dx>0 -> 0, dx<0 -> 2, dy<0 -> 1, dy>0 -> 3, larger residual
+axis first; plus an explicit arrival test and a stall sidestep (if the position
+did not change last step, take the other axis's direction). Do NOT read
+model._uav_stuck_counts for stall detection - it is updated in the POST-move
+cycle and is also what makes the executor emit hold-escape directions.
+
+Mechanism (b) is FIRE-BLIND by construction: it bypasses the searcher hazard gate
+and _apply_final_direction_safety entirely. That is the deliberate, declared
+difference between the arms, not a confound to be discovered in the results.
+
+3.4  How the two coexist:  THEY DO NOT
+--------------------------------------------------------------------------------
+DECISION: mutually exclusive, selected by BASE_STATION_RETURN_MECHANISM
+(0 = none, 1 = planner, 2 = hardcoded). A "both on" configuration is UNDEFINED and
+the implementation must reject it rather than silently pick one.
+
+The reason is that mechanism (b)'s override at the top of advance() is the last
+writer of selected_dir before move(), so a planner-routed waypoint committed by
+the executor earlier in the same step would be overwritten with no trace. A
+"both" arm would measure only (b) while appearing to measure both.
+
+COMPARABILITY CAVEAT, declared in advance rather than discovered: arm (a) is
+safety-filtered and arm (b) is not, so an (a)-vs-(b) difference is a difference in
+routing AND in hazard filtering together. Rather than add a third sub-arm, the
+report will carry the per-step fire-exposure columns the harness already records
+from the interior-hazard round (burning / smoke / distance-to-nearest-fire under
+each UAV), so the filter's contribution is directly visible instead of inferred.
+
+3.5  Arrival, docking and re-launch - shared by both mechanisms
+--------------------------------------------------------------------------------
+Deliberately ONE implementation, so the two arms differ only in the outbound
+routing and the comparison is clean:
+
+  - a UAV is DOCKED when its position equals its assigned berth and rtb_active is
+    set. Because berths are pre-assigned and distinct, two UAVs never contend for
+    a cell and the greedy-steer deadlock (a memoryless steer re-picking the same
+    blocked direction against not_UAV_adjacent, forever) cannot arise.
+  - while docked, move() returns False via the branch in 3.3(2). The UAV holds its
+    cell exactly. Verified behaviour, not assumed: a UAV whose executor returns
+    without applying a direction held its cell for four consecutive steps with
+    execution_action == "no_managed_direction_hold" and battery draining exactly
+    0.1/step, with no consumer raising and no other UAV affected.
+  - re-launch at full charge (5.4). rtb_active and rtb_docked clear together, and
+    the UAV re-enters normal execution the same step.
+
+ONE THING THE FOUR-STEP OBSERVATION ABOVE DOES NOT ESTABLISH, and which Part 3
+must: stuck_count reaches 3 on the third motionless step, at which point
+_hold_needs_escape flips true for every role (wildfire_model.py:2736-2743,
+uav_executor.py:567-571) and _hold_escape_direction begins scoring moves by
+boundary distance, pushing toward the interior. Under the docked branch the UAV
+does not move regardless of what the executor commits, so this should be cosmetic -
+it pollutes the action label and the stuck-based analytics, not the position. A
+four-step observation cannot distinguish "stable" from "stable just long enough",
+and a charge dwell is tens of steps. Part 3 runs a >= 40-step dwell probe before
+the wave.
+
+================================================================================
+4. RECHARGE AND THE CHARGING STATE
+================================================================================
+
+4.1  On the grid, not off it
+--------------------------------------------------------------------------------
+DECISION: a charging UAV stays ON the grid, parked on its berth. Feature 1's
+off-grid pattern is the obvious template and it does not port.
+
+Feature 1 was cheap for firefighters because Firefighter.advance already carried
+`if self.pos is None ... return` (agents.py:841) and exactly one consumer needed
+patching. For UAVs neither holds:
+
+  - UAV.advance has NO pos guard (agents.py:339-346). Adding one silently stops
+    the battery drain, because _update_battery_after_step is reached only from
+    advance():346.
+  - An off-grid UAV KILLS THE RUN ON ITS FIRST STEP. Verified in-process:
+    model.step() raises TypeError out of the pre-move cycle at
+    global_monitor.py:194 before anything else executes. Guarding sites one at a
+    time walks a crash chain: global_monitor:194 -> wildfire_model:985 ->
+    uav_executor:3502 (tracker) or :4194 (searcher) -> wildfire_model:2806 (MR2)
+    -> agents:298 (surrounding_states).
+  - The unguarded-consumer count is 12 line-level sites across 6 files, not the 7
+    the prior round listed, and one of its citations is wrong: global_monitor.py:58
+    is `self.uavs = uavs`, an assignment; the real read in that file is only :194.
+  - Two of the required guards are not simple skips. Guarding state() PERMANENTLY
+    TRUNCATES MR1_LIST - MR1 does `self.MR1_LIST = [a + b for a, b in
+    zip(self.MR1_LIST, reward)]`, so a shorter reward list makes zip truncate and
+    the assignment makes the shrink permanent; worse, index i then refers to a
+    DIFFERENT UAV and every subsequent step credits the wrong accumulator
+    (wildfire_model.py:2785-2791). Guarding surrounding_states instead makes the
+    zero-padding loop at :2823-2829 produce an all-zero observation of full
+    length, which MR1 scores as "no burning cells observed" - a false reading
+    rather than a missing one.
+  - As a trap for reviewers: uav_executor._position_at_boundary returns False on
+    pos None (:544), so the `or` at :369 short-circuits straight into an
+    unguarded int(agent.pos[0]) at :370. A guard is visible; the crash is one line
+    later.
+
+On-grid parking needs none of this. It uses vocabulary the model already has.
+
+4.2  How long, and what is the UAV doing
+--------------------------------------------------------------------------------
+GRADUAL, not instant. BASE_STATION_RECHARGE_PER_STEP, default 5.0/step, applied
+in _update_battery_after_step (agents.py:270-281) when docked, BEFORE the existing
+clamp at :275 which already bounds at 100. The -0.1/step drain continues, so the
+net rate is +4.9.
+
+Gradual because instant would make "total steps spent charging" identically zero,
+and the brief asks for exactly that number. At the default reserve of 60 a UAV
+docks at roughly 60 minus 0.3 x (distance travelled) and refills to 100 in about
+8-10 steps.
+
+While charging the UAV holds its berth, contributes nothing to coverage, keeps
+its role, and keeps its lane/sector slot (4.4).
+
+4.3  Latch and release
+--------------------------------------------------------------------------------
+Latch on trigger; release at BASE_STATION_RECHARGE_RELEASE_LEVEL, default 100.0.
+Full-charge release, not a partial level, because a partial release chatters
+around the threshold and because it makes charge duration a clean function of the
+depth of discharge - which is what makes the "does recharging cost more coverage
+than it saves" question answerable.
+
+4.4  Lanes and sectors:  KEEP THE ROLE, ADD NO FILTER
+--------------------------------------------------------------------------------
+This is where I decline a brief requirement, so the argument is given in full.
+
+The brief requires that a charging UAV "must be excluded from lane and sector
+partitioning". I recommend the opposite, on measured evidence.
+
+BOTH ROSTERS ARE POSITION-BLIND AND ROLE-BASED, rebuilt live on every call with
+no memo:
+  - resolve_victim_searcher_uav_ids (local_adaptation_generator.py:288-307)
+  - _update_fire_tracker_sector_assignments (wildfire_model.py:440-446, 491-532),
+    called once per step at :5289
+Neither consults pos. So a parked UAV that KEEPS its role produces NO RESHUFFLE
+AT ALL: no other UAV's lane or sector moves, nothing changes mid-traverse, and
+the returning UAV lands back in the lane it left. The partition is frozen for the
+charge duration. Verified: taking a searcher off the grid changed neither the
+roster nor either lane.
+
+EXCLUDING IT IS WORSE IN EVERY CONFIGURATION:
+  - With ONE searcher (the legacy default split, n-1 trackers + 1 searcher):
+    filtering empties the list and the legacy fallback at
+    local_adaptation_generator.py:306-316 RE-ELECTS the excluded UAV by
+    unique_id regardless of role. Verified: flipping the only searcher to role
+    'charging' left the roster unchanged. The exclusion is a no-op.
+  - With TWO searchers (the 3T+2S / half-roles override used by 10 of the 13
+    canonical runs): removing one makes _searcher_crosswind_lane return None for
+    BOTH, because n and idx are derived from the SAME filtered list (:333-350).
+    The survivor does not inherit a wider lane - it loses lane discipline
+    entirely and reverts to the whole grid. At two searchers, "exclusion" means
+    "lane feature off".
+  - On the tracker side a role flip moved both surviving trackers' sectors and
+    left the departed tracker's STALE sector dict in place, because
+    _update_fire_tracker_sector_assignments never deletes entries and
+    _fire_tracker_flank_bounds reads that dict by id - so a returning charger
+    would be steered by a box computed for a roster size that no longer exists.
+  - It is not one edit. It needs a skip in the searcher loop, a guard on the
+    legacy fallback, a skip in the sector loop, explicit disposal of the stale
+    sector entry, and the same treatment in a THIRD builder,
+    _fire_tracker_uav_ids (local_adaptation_generator.py:2409-2435), whose result
+    is index-searched at :2453. Three functions, two files, five or six insertion
+    points - and the roster is read from two sources that can disagree
+    (managed_uav_states[uid].role first, then uav_resource_model.by_uav_id
+    current_role), with _fire_tracker_uav_ids reading by_uav_id FIRST, so a writer
+    that updates only one moves the trackers and not the searchers.
+
+WHAT THE BRIEF IS PROTECTING AGAINST IS REAL: a lane assigned to a UAV that is
+not there is a silent coverage hole. My answer is that it is the same hole the
+already-accepted Feature 1 takes for firefighters, it is bounded by the charge
+duration, and - unlike today - it becomes MEASURABLE. Trade an unmeasured hole
+for a measured one; do not trade it for a reshuffle that is worse in both
+configurations.
+
+MAINTAINER RULING REQUESTED. If exclusion is required anyway, it is buildable at
+the cost above and should be its own arm, not the default.
+
+SCOPE NOTE for the gate: at the default role split the searcher lane is already
+inert (n = 1 gives lane None), so this decision only bites at the half-roles
+override. The tracker sector is the live surface at default roles; the searcher
+lane at 3T+2S.
+
+4.5  Instrumentation the brief's reporting requires
+--------------------------------------------------------------------------------
+"How often lanes reshuffled due to a charging transition, and whether any
+searcher's lane changed mid-traverse" has an expected answer of ZERO under 4.4,
+and the report must PROVE that rather than assert it. Record per step, per UAV:
+  - the searcher roster (the ordered id list) and each searcher's (axis, lo, hi)
+  - the tracker roster and each tracker's sector bounds
+  - the docked/returning flag and the battery level
+  - the current search target, so "mid-traverse" is well defined
+A reshuffle is then any step at which a UAV's lane or sector tuple differs from
+the previous step while that UAV was not itself transitioning. Mid-traverse is a
+reshuffle on a step where the UAV had an unreached target.
+
+REQUIRED HARNESS EDIT, BEFORE THE FIRST WAVE. outputs/_ffr_harness.py records NO
+battery at all (zero grep hits) and no docked state. Add both columns to the
+uav_steps row (outputs/_ffr_harness.py:498-509), plus the roster/lane/sector
+capture above, and then FREEZE the harness. Adding a field changes the recorded
+JSON shape, so arms recorded before and after the edit are not comparable on the
+identity fields - the interior-hazard round added --uav-actions to EVERY arm in
+its queue, including the baseline checkout arm, for exactly this reason.
+
+4.6  Two defects a working recharge would walk into
+--------------------------------------------------------------------------------
+Neither is fixed in this round; both are instrumented so they cannot masquerade
+as results.
+
+  (i) predicted_remaining_useful_time FREEZES during a charge.
+      uav_resource_model.py:193-197 computes drain_per_time = max(0.0, (prev -
+      level) / dt) and guards the assignment behind `if drain_per_time > 0.0`. A
+      RISING battery clamps the rate to 0.0, so the last pre-charge pessimistic
+      estimate stays in place for the whole charge and is read by four live
+      consumers, including the fail-safe adaptation generator
+      (failsafe_adaptation_generator.py:131-134, local_uav_analyzer.py:136,
+      global_adaptation_generator.py:583-586, global_analyzer.py:700). This is the
+      defect most likely to make a working recharge look broken - or a broken one
+      look working.
+  (ii) A THIRD STATUS VOCABULARY becomes reachable. uav_resource_model.py:186-190
+      emits "nominal" with a 50.0 breakpoint; agents.py produces "normal";
+      global_monitor tests "low"/"critical". Today the branch is dead because
+      wildfire_model.py:1098 always passes a non-empty battery_status. A
+      non-monotonic battery is the first thing that could wake it.
+
+Also recorded: several analyzers read battery as a monotonically declining signal
+(global_analyzer.py:679-714, 1559; local_uav_analyzer.py:218-225;
+alert_manager.py:236). A recharge makes it non-monotonic for the first time in
+this codebase's history.
+
+================================================================================
+5. THE THRESHOLD
+================================================================================
+
+5.1  There are thirteen copies, not five
+--------------------------------------------------------------------------------
+  site                                              value   status
+  ------------------------------------------------  ------  ---------------------
+  agents.py:241 battery_low_threshold                30.0   LIVE - the SOLE
+                                                            producer of the
+                                                            "low"/"critical" label
+  agents.py:242 battery_critical_threshold           15.0   LIVE, same
+  common_fixed_variables.py:86 LOW_BATTERY_THRESHOLD 30.0   LIVE (analyzers, via
+                                                            wildfire_model.py:248)
+  common_fixed_variables.py:87 BATTERY_CRITICAL_...  15.0   LIVE, same (:252)
+  alert_manager.py:10 (from-import)                  30.0   LIVE but FROZEN at
+                                                            import - unreachable
+                                                            by apply_scenario_config
+  global_monitor.py:349 / :353                      15/30   LIVE
+  global_monitor.py:356 (bl < 20.0)                  20.0   UNREACHABLE - :353
+                                                            already caught it
+  uav_resource_model.py:185-190                     20/50   DEAD VALUE - always
+                                                            overwritten
+                                                            (wildfire_model.py:1098)
+  utility_evaluation.py:257                          15.0   INERT - guarded by
+                                                            params keys only tests
+                                                            populate
+  live_dashboard_panel.py:269-270                   50/20   display only
+  serve_dashboard.py:692                            50/20   display only
+
+The prior round's site list mis-cites the panel colour map as
+dashboard_state_builder.py:269-270; that file emits only the raw float at :207.
+Anyone editing from the old list would touch the wrong file.
+
+PROVEN, not inferred: apply_scenario_config(cfv, wf, LOW_BATTERY_THRESHOLD=80.0)
+leaves agents.py's label logic at 30.0 and alert_manager at 30.0. Because
+global_monitor.classify_events tests the LABEL STRING before the number
+(`st_b == 'low' or bl <= 30.0`, :347-357), and local_uav_analyzer.py:142-146 and
+global_analyzer.py:703-707 OR the label against the injected threshold, raising
+the cfv constant alone changes nothing any consumer branches on.
+
+5.2  One source of truth - for the thing this round adds
+--------------------------------------------------------------------------------
+DECISION: add ONE new constant, UAV_RETURN_TO_BASE_RESERVE, read ONLY by the
+return trigger. Leave agents.py:241-242 and the 30/15 labels alone.
+
+This is a deliberate narrowing of the brief's "consolidate to one source", and the
+reason is a trap worth stating: agents.py:241 IS the label producer, and every
+downstream consumer tests the label before the number. Re-pointing it at a
+60-point return reserve would relabel every UAV "low" from about step 136 and fire
+low_battery events fleet-wide - a large, unrelated behaviour change smuggled in
+under a refactor. The return reserve and the low-battery label are different
+concepts that happen to share units.
+
+What the brief's item is delivered as instead: the complete 13-copy inventory
+above, with live/inert status, so the divergence is documented and a later round
+can collapse the display copies deliberately. Collapsing them is not free and is
+not this round's job.
+
+PLUMBING, following the agents.py:359-371 precedent exactly:
+  - the constant lives in common_fixed_variables.py with a prose block stating
+    the kill value, in the shape of the interior-hazard block at :145-165;
+  - it is read INSIDE the function, AT CALL TIME, via getattr(cfv, "NAME",
+    <off value>) in a try/except (TypeError, ValueError) with a clamp;
+  - NEVER via `from common_fixed_variables import NAME` (that is
+    alert_manager.py:10, the frozen counterexample and a ready-made tenth
+    dead-input defect) and NEVER via the star-imported name in agents.py, which
+    apply_scenario_config does not update;
+  - apply_scenario_config (local_adaptation_generator.py:270-273) is a generic
+    two-module setattr with no whitelist, so nothing needs registering - but it
+    also silently accepts typos, which is how nine dead-input defects happened.
+    A unit test asserting the value reaches the read site is mandatory
+    (tests/test_base_station.py, section 7).
+
+5.3  Is 30% enough?  NO, on two independent grounds
+--------------------------------------------------------------------------------
+GEOMETRY. Worst-case return is the far corner to the nearest depot cell:
+90 Manhattan cells under 4-direction movement, identical for all four corners.
+Every returning step is a moving step, so the cost is 90 x 0.3 = 27.0 points.
+A 30% reserve arrives with 3.0 - below the 5-point margin the brief asks for,
+which needs 32.0. It also has no slack against a congested return: the true cost
+is (90/f) x 0.1 + 18 for move-success fraction f, which reaches exactly 30.00 at
+f = 0.75. Measured f today is 0.95-1.00, but a depot with UAVs queueing to enter
+is precisely the situation that lowers it.
+
+TIME, and this is decisive. With a moving step costing 0.3, level(t) = 100 - 0.3t,
+so 30% is first reachable at step 233.3 of a 240-step run:
+
+  reserve R    earliest step reached (moving every step)    steps left of 240
+  ---------    -----------------------------------------    -----------------
+     15                     283.3                            NEVER REACHED
+     20                     266.7                            NEVER REACHED
+     25                     250.0                            NEVER REACHED
+     30                     233.3                                 6.7
+     40                     200.0                                40.0
+     50                     166.7                                73.3
+     55                     150.0                                90.0   <- floor
+     60                     133.3                               106.7
+     70                     100.0                               140.0
+     80                      66.7                               173.3
+
+MEASURED, seed 101, canonical defaults: the three UAVs cross 30% at steps 234,
+238 and 239, finishing at 28.4 / 29.2 / 29.6 with effective drain 0.2933-0.2983
+per step. One to six steps of runway against a 90-step return. ZERO returns can
+complete. The 15% gate needs step 288 and is never reached at all.
+
+So at the stock threshold the feature would be INERT BY DEFAULT and every
+seed-matched A/B would show an exact tie - the same signature as the drain-zeroed
+negative control from the battery round. A base-station round shipped at 30 would
+prove nothing.
+
+HARD FLOOR: 55. Below it a worst-cell return provably cannot finish inside 240.
+
+5.4  The chosen rule
+--------------------------------------------------------------------------------
+DECISION: trigger when
+
+    battery_level <= max( UAV_RETURN_TO_BASE_RESERVE ,
+                          0.3 * manhattan_to_berth + BASE_STATION_RETURN_MARGIN )
+
+with UAV_RETURN_TO_BASE_RESERVE = 60.0 and BASE_STATION_RETURN_MARGIN = 5.0.
+
+DERIVATION OF 60. The reserve is the larger of two independent constraints. The
+first is the one the brief names; the second is the one that actually binds, and
+neither is "30 did not work".
+
+Common terms. The worst-case return distance is the farthest grid cell from the
+depot: (49,0) to the nearest depot cell (4,45) = 45 + 45 = D = 90 Manhattan cells
+under the 4-direction action space. A moving step costs 0.3 (0.1 per step + 0.2
+per move); a BLOCKED step still costs 0.1. Let f be the move-success fraction on
+the return leg and m the move fraction on the outbound leg, so the effective
+outbound drain is e = 0.1 + 0.2m.
+
+  (A) FUEL - can the UAV physically reach the depot?
+      cost(f) = (D/f) * 0.1 + D * 0.2
+        f = 1.00 -> 90.0 steps -> 27.00      f = 0.90 -> 100.0 steps -> 28.00
+        f = 0.95 -> 94.7 steps -> 27.47      f = 0.75 -> 120.0 steps -> 30.00
+      Add one step of trigger latency (the analyzers read a one-step-stale copy
+      of the battery, so under mechanism (a) the reaction lands one step after
+      the crossing): +0.3. Add the 5-point margin the brief asks for.
+          R_fuel = 27.0 + 0.3 + 5.0 = 32.3
+
+  (B) TIME - can it reach the depot before the run ends?
+      The return needs D/f steps and must finish by step 240, and the UAV reaches
+      reserve R at t_trig = (100 - R)/e:
+          (100 - R)/e + D/f <= 240        =>        R >= 100 - e*(240 - D/f)
+      At f = 1 and D = 90 that is R >= 100 - 150e:
+        m = 1.0000  e = 0.3000  moves every step                  R >= 55.00
+        m = 0.9777  e = 0.2955  measured, seed 101, slowest UAV    R >= 55.67
+        m = 0.9000  e = 0.2800  holds 1 step in 10                 R >= 58.00
+        m = 0.8333  e = 0.2667  holds 1 step in 6                  R >= 60.00
+        m = 0.7500  e = 0.2500  holds 1 step in 4                  R >= 62.50
+
+          R_time = 60.0
+
+  R = max(R_fuel, R_time) = max(32.3, 60.0) = 60.
+
+WHAT 60 BUYS, stated as a guarantee rather than a hope. Read constraint (B)
+backwards - R = 60 requires e >= 0.2667, i.e. m >= 5/6 - so:
+
+    A reserve of 60 guarantees that a UAV at the WORST cell on the grid completes
+    its return inside the 240-step horizon, provided it moved on at least five of
+    every six steps beforehand.
+
+Measured outbound move fractions today are 0.95-1.00, so 5/6 = 0.833 is a
+comfortable envelope rather than a tight one. For comparison, R = 55 - the naive
+floor from assuming the UAV moves on every single step - tolerates m >= 1.0000
+exactly, i.e. it has no slack at all and fails on the very first held step; R = 56
+tolerates one held step in 30; R = 58 one in 10.
+
+The guarantee also absorbs an obstructed return leg. At m = 1 outbound:
+    f = 1.00 -> 133.3 + 90.0  = 223.3      f = 0.90 -> 133.3 + 100.0 = 233.3
+    f = 0.95 -> 133.3 + 94.7  = 228.1      f = 0.85 -> 133.3 + 105.9 = 239.2
+so the worst-cell return still completes down to f ~ 0.85. Pre-assigned berths
+(2.2) are what keep f high: no two UAVs ever contend for the same target cell,
+which is the only UAV-vs-UAV blocking this model has.
+
+WHY BOTH TERMS ARE IN THE RULE, and not just the constant 60:
+  - the DISTANCE term is the correct engineering formulation of constraint (A).
+    It yields 32.0 at the worst cell and about 5 next to the depot, and it is
+    what guarantees the UAV gets home from wherever it actually is. Alone it
+    fires too late to be observed inside 240.
+  - the FLAT RESERVE carries constraint (B), which the distance term cannot see
+    because it has no notion of the horizon.
+Taking the max means the UAV turns back at 60%, and if it is ever somehow
+further out than 60% covers, the distance term raises the trigger above it.
+
+CYCLE ARITHMETIC (work = (100-R)/0.3, return = d moves, charge = (100 - R + 0.3d)
+/ rate):
+
+  R = 60, d = 25, rate = 5   ->  133.3 + 25 + 9.5   = 167.8   1.43 cycles / 240
+  R = 70, d = 25, rate = 5   ->  100.0 + 25 + 7.5   = 132.5   1.81 cycles / 240
+  R = 75, d = 25, rate = 5   ->   83.3 + 25 + 6.5   = 114.8   2.09 cycles / 240
+  R = 80, d = 25, rate = 5   ->   66.7 + 25 + 5.5   =  97.2   2.47 cycles / 240
+
+DO NOT chase two or three cycles at 240 steps. Two need R >= 70.65 at mean return
+distance and 77.83 at worst; three need 84.51 / 94.09. A UAV that turns for home
+three-quarters charged is not a battery model, it is a metronome. And raising the
+DRAIN instead is arithmetically self-defeating: two cycles at R = 30 would need
+0.9333/step, which burns 84 points over the 90-cell return and strands the UAV at
+-54. If multiple cycles are genuinely required, extend the horizon (two cycles
+need about 509 steps at mean return distance) rather than distorting either
+constant - and that is a separate decision, because it re-bases everything.
+
+A NOTE THE ARITHMETIC MAKES VISIBLE, and which section 6 of the brief's Part 3
+question turns on: the CHARGE is not the expensive part. At rate 5 a full refill
+costs 8-10 steps; the RETURN LEG costs d steps of not searching, and d is 15-45.
+The return leg dominates the coverage cost by roughly four to one. Expect the
+"does recharging cost more than it saves" answer to be governed by travel, not by
+charging.
+
+================================================================================
+6. RENDERING
+================================================================================
+
+6.1  The worked example, re-verified
+--------------------------------------------------------------------------------
+Commit 3b1ffbf gave scorched ground its own colour and is the template. It touched
+exactly four tracked files - main.py (agent_portrayal), serve_dashboard.py
+(_cell_color, the muting predicate, the legend, one panel label),
+live_dashboard_panel.py (one label) and tests/test_executor_routing_and_burnt.py
+(a locking assertion) - and introduced #895e00 as an INLINE LITERAL in both
+renderers, with no env override and no kill switch, deliberately:
+common_fixed_variables holds colour RAMPS, not single-state colours.
+
+Its dead-code finding re-measured at HEAD and HOLDS EXACTLY. serve_dashboard.py:121
+writes cells["x,y"] for every Fire agent unconditionally, so the muting loop's
+first guard at :144 (`if key in cells: continue`) is always true. Over 41 frames:
+102,500 emitted cells against 102,500 Fire agents, 0 instances of "#2f4a1a", 0
+cells surviving the guard. Two consequences for this round: do not copy that
+loop's shape for a depot post-pass, and note the legend at serve_dashboard.py:632
+already advertises a "spared veg" swatch for a colour the canvas has never
+painted. Adding a depot swatch beside it inherits a legend that is already wrong
+about one entry - either fix that entry in the same commit or state it out of
+scope.
+
+INHERITED OBLIGATION: 3b1ffbf skipped the route_blocked gate because no changed
+file was on a simulation code path, and recorded that the next round touching
+simulation source must run it. Spawn + return + recharge is simulation source.
+The rendering half can borrow the display-only reasoning; the round as a whole
+cannot.
+
+6.2  The z-order trap - the depot must be an OVERLAY
+--------------------------------------------------------------------------------
+DECISION: draw the depot as an OVERLAY on both surfaces, never as a cell colour.
+
+The reason is measured, not stylistic. All 2500 cells carry a Fire agent
+(DENSITY_PROB = 1), and on BOTH surfaces the colour decider tests
+smoke / burning / burnt / scorched before anything else (serve_dashboard.py:58-67,
+main.py:66-83). A depot expressed as a cell background is preempted exactly when a
+depot cell smokes or burns - that is, at the moment an operator most needs to see
+where the base is. Since the depot is burnable (1.3), that moment will arrive.
+
+  DASHBOARD. Publish the footprint once in _capture_frame's return dict
+  (serve_dashboard.py:199-202) as a single rect descriptor, and stroke it in
+  drawMap between the gridline stroke at :657 and the trails loop at :660. The
+  canvas is immediate-mode, so statement position IS z-order: that slot puts the
+  depot above the ground and below every unit marker.
+
+  MESA. Synthesise per-cell portrayals in CanvasGrid.render at LAYER 2 - currently
+  free (ground 0; UAV, PathMarker and the FOV frame 1; Victim and Firefighter 3) -
+  following the precedent of the existing UAV frame at
+  Canvas_Grid_Visualization.py:111-127. A multi-cell outline cannot be one shape:
+  GridDraw.js:223-224 clamps every rect inside a single cell.
+
+  THE LAYER MUST BE AN INTEGER. CanvasModule.js:63 does `for (const layer in
+  data)`, which enumerates array-index-like keys in ascending numeric order but
+  enumerates any non-index key such as '0.5' afterwards, in insertion order. A
+  fractional layer chosen to "slot between ground and markers" would silently draw
+  OVER the victims and firefighters.
+
+NEVER put the depot (or the FOV frame) into the dashboard `cells` dict. That
+destroys ground truth: the live payload is 2500 entries / 49,000 bytes, and
+overwriting depot cells there would hide their real fire state.
+
+6.3  The colour:  #770099
+--------------------------------------------------------------------------------
+Existing palette, complete, as the choice must be justified against it:
+
+  vegetation  VEGETATION_COLORS, 12 greens, #414141 .. #124b05
+  fire        FIRE_COLORS, 12, #414141 .. #fe0101 (yellow-orange-red arc)
+  smoke       #ababab
+  burnt       #2b2b2b
+  scorched    #895e00
+  spared veg  #2f4a1a (emitted 0 times - see 6.1)
+  prob map    BLACK_AND_WHITE_COLORS, 11-step full-range grey ramp
+  victim      #FFFF00 candidate, #FFA500 confirmed, #00AAFF assigned/rescued,
+              #000000 dead
+  firefighter #00FFCC, #000000 dead
+  path marker #00BFFF
+  UAV         #00FFFF victim_searcher, #FF00FF fire_tracker, #0066CC relay,
+              #FF8C00 victim_confirmer, #888888 return_to_base, Black otherwise
+              (main.py:85-100 - note "return_to_base" ALREADY has a colour)
+
+The palette leaves exactly one unclaimed hue band, between #0066CC (~210 deg) and
+#FF00FF (~300 deg): greens are vegetation, the whole yellow-orange-red arc is fire
+and victims, the greys are smoke / burnt / probability map, and the cyans are
+taken by the searcher UAV, the firefighter and the assigned victim.
+
+A CIEDE2000 sweep over the 39 co-occurring map colours (validated to a worst error
+of 4.2e-05 against the eight Sharma reference pairs) returns a top-15 that is
+entirely violet. #770099 tops it at a minimum of 28.76 dE2000, nearest neighbour
+#414141, second #0066CC at 29.60.
+
+THE DECISIVE COMPARISON: the shipped scorched colour #895e00 scores 27.34 on the
+identical set with the identical code. #770099 is BETTER SEPARATED FROM THE
+PALETTE THAN A COLOUR THE MAINTAINER HAS ALREADY ACCEPTED.
+
+Under stress it holds: gridline-composited 23.03 (shipped scorched 23.83),
+deuteranopia 8.85 (3.37), protanopia 14.77 (1.54). It loses only on tritanopia,
+11.28 against 21.22 - and 11.28 is still roughly five times the just-noticeable
+difference. Against the ground it will actually overlay: 30.07 from burnt, 58.10
+from scorched, 79.61 from deep vegetation, 49.24 from smoke.
+
+EXPLICITLY REJECTED: the existing CSS token --purple #b07cff. It is the intuitive
+reuse and it is measurably wrong - 15.28 dE to fire-tracker magenta plain, and
+0.64 dE under deuteranopia to the assigned-victim blue, i.e. indistinguishable.
+
+Ship #770099 as an inline literal in both renderers, matching how #2b2b2b,
+#895e00 and #2f4a1a are already handled and matching 3b1ffbf's stated rule. Add
+one legend swatch and one locking test in the shape of
+tests/test_executor_routing_and_burnt.py:217-219 - asserting equality AND that it
+is not any ground colour, since equality alone would survive someone later
+collapsing two branches.
+
+6.4  The UAV status field
+--------------------------------------------------------------------------------
+uav_status_view (dashboard_state_builder.py:156-216) publishes id, role, position,
+battery, execution_action, target_position, fail_safe_override_active, stuck_count
+and last_explanation. There is no returning/charging field, and battery_status
+("normal"/"low"/"critical") is computed every step at agents.py:276-281 and never
+published.
+
+Add both. Four display-only edit sites: one dict key in _build_uav_status_view,
+one entry in the _slim_panel whitelist at serve_dashboard.py:90-92, one table cell
+at :693, and optionally the mesa panel at live_dashboard_panel.py:267-281.
+
+THE ONE THING TO GET RIGHT: the _slim_panel whitelist. Skip it and the field is
+dropped with no error, no warning and no test failure - the browser simply renders
+nothing. No test breaks otherwise: the only key-set assertion is a subset check
+(test_dashboard_state.py:354) and the rows are plain dicts.
+
+6.5  SEPARATE ITEM - the observation-radius square frame
+--------------------------------------------------------------------------------
+The brief asks for this to be scoped separately. It is separate, it is cheap, and
+it is HALF ALREADY BUILT.
+
+  MESA: IT ALREADY SHIPS. Canvas_Grid_Visualization.py:111-127 draws it today, at
+  limit = UAV_OBSERVATION_RADIUS + 1 = 9 - a 19x19 ring, one cell OUTSIDE the true
+  17x17 Moore field of view (agents.py:294-299, radius 8, moore=True, 289 cells).
+  Measured 216 frame portrayals for 3 UAVs at layer 1. Two latent flaws in it:
+  portrayal_aux 'h'/'w' are written as STRINGS and work only by JavaScript
+  coercion, and at the four corners both if-branches fire with the second
+  overwriting the first, so the frame renders with four notched corners.
+
+  DASHBOARD: ABSENT, and cheap to add. Emit three {x,y,r} descriptors - 84 bytes
+  against a 49,000-byte cells payload, 0.17% - and draw one ctx.strokeRect per
+  UAV, clamped to the grid since it is non-torus. Roughly ten lines in drawMap.
+  It does NOT multiply the emitted cell count unless implemented wrongly: putting
+  it in `cells` would cost 216 entries perimeter-only, or 867 filled - overwriting
+  34.7% of the map's fire state.
+
+RECOMMENDATION: its own MICRO-ROUND, not this one, and not because it is large.
+Because it is display-only it can borrow 3b1ffbf's gate exemption and ship without
+the full simulation gate; bundling it into a simulation-source round forfeits that
+for no benefit. Two things it must settle first: the 19-vs-17 convention, chosen
+deliberately for both surfaces rather than allowed to drift; and whether the frame
+should be suppressed for a docked UAV, since three UAVs parked in one 5x5 block
+would draw three near-identical overlapping frames.
+
+================================================================================
+7. KILL SWITCH
+================================================================================
+
+7.1  The recipe, taken from the three shipped features
+--------------------------------------------------------------------------------
+9c3eac6 (FF_RESCUE_ABSENCE_MAX_STEPS <= 0), 5000f70 (VICTIM_FLEE_TRIGGER_DISTANCE
+<= 0) and 16b2da8 (VICTIM_SEARCHER_HAZARD_RETREAT_RANGE 0/K/99) all use one
+identical recipe:
+  - a single constant in common_fixed_variables.py with a prose block above it
+    stating the kill value;
+  - a tiny accessor that reads it AT CALL TIME through the cfv MODULE handle,
+    with a try/except and a clamp;
+  - one early-return guard at the TOP of each entry point, so the OFF path is the
+    pre-feature code literally.
+
+Three ways to get it silently wrong, all of which have happened here before:
+  - reading via the star-import (`from common_fixed_variables import *`) - the
+    local name keeps its import-time value forever, because apply_scenario_config
+    setattrs only the cfv and wf modules. agents.py has BOTH import forms at
+    :9-10, and agents.py is where UAV logic lives.
+  - reading at IMPORT time (`RANGE = SOME_CONSTANT` at module level) - same
+    failure even with the module handle.
+  - guarding the visible EFFECT rather than returning before any state WRITE.
+    Feature 2 needed guards at three separate entry points; a missed one leaves a
+    residual write that breaks byte identity on a field like eval or the planner
+    log.
+
+7.2  The entry points - count them first
+--------------------------------------------------------------------------------
+Five, and a missed one breaks byte identity:
+  1. spawn placement in reset()
+  2. the return trigger in UAV.advance()
+  3. the docked hold in UAV.move()
+  4. the recharge tick in _update_battery_after_step()
+  5. the depot region construction itself (self.base_station must not even be
+     built when off, so no consumer can see it)
+Plus two display sites, which are outside the identity argument but inside the
+commit: the depot overlay on each renderer.
+
+7.3  Proving byte-identity
+--------------------------------------------------------------------------------
+Run the mode-0 arm on the feature source and compare against a scratchpad
+checkout of 16b2da8 over the 13 canonical runs, using the 22-field identity
+comparison from outputs/_vm_analyze.py:40-48 - which includes the 240 per-step
+fire digests, the per-step firefighter trajectories, the whole planner decision
+log, and stdout_sha256. Target 13/13 canonical AND 10/10 fresh, matching the
+standard 16b2da8 set.
+
+The ON arm cannot use fire-map identity as a criterion, but under OPTION-3 (1.1)
+it SHOULD still reproduce the fire digests exactly, because nothing the feature
+does touches the fire model. That makes the fire digest a useful integrity check
+on the ON arms too: a differing fire digest on an ON arm means an unintended RNG
+perturbation, not a feature effect. Worth stating as a sub-gate.
+
+================================================================================
+8. SEPARABILITY AND THE WAVE PLAN
+================================================================================
+
+8.1  Constants
+--------------------------------------------------------------------------------
+  BASE_STATION_MODE                  0 off / 1 spawn / 2 +return / 3 +recharge
+  BASE_STATION_RETURN_MECHANISM      0 none / 1 planner / 2 hardcoded
+  BASE_STATION_SPAWN_FIREFIGHTERS    1 default / 0 UAVs-only (diagnostic)
+  BASE_STATION_CORNER                0 NW (default) / 1 NE / 2 SW / 3 SE
+  UAV_RETURN_TO_BASE_RESERVE         60.0
+  BASE_STATION_RETURN_MARGIN         5.0
+  BASE_STATION_RECHARGE_PER_STEP     5.0
+  BASE_STATION_RECHARGE_RELEASE_LEVEL 100.0
+
+BASE_STATION_MODE is an ORDINAL LADDER, not a set of booleans, and each higher
+mode is a STRICT SUPERSET of the lower - so a mode-N minus mode-(N-1) diff
+attributes exactly one increment. This matters: the interior-hazard round got
+three arms out of one queue with one ordinal constant, while Feature 2's two
+booleans could not be separated by config and cost two extra 13-run waves as
+staged code arms.
+
+BASE_STATION_CORNER is numeric, not a string, deliberately - it sidesteps the
+question of how the harness's --set parsing and the pool script's CR-stripping
+handle a string value.
+
+Note the mechanism selector is genuinely orthogonal to the ladder, so it is its
+own constant rather than folded into BASE_STATION_MODE. Folding them would break
+the superset property for the increment the brief cares most about.
+
+8.2  Arms
+--------------------------------------------------------------------------------
+  tag         constants                                          purpose
+  ---------   ------------------------------------------------   ---------------------
+  bsoff       MODE=0                                             byte-identity control
+  bsspawn     MODE=1                                             spawn increment
+  bsspawnu    MODE=1 SPAWN_FIREFIGHTERS=0                        UAV half of spawn
+  bsret       MODE=2 MECHANISM=2                                 + return, hardcoded
+  bsretp      MODE=2 MECHANISM=1                                 + return, planner
+  bsfull      MODE=3 MECHANISM=2                                 + recharge, hardcoded
+  bsfullp     MODE=3 MECHANISM=1                                 + recharge, planner
+
+Attribution: bsspawn - bsoff = spawn; bsret - bsspawn = the return leg;
+bsfull - bsret = recharge; bsretp vs bsret and bsfullp vs bsfull = mechanism;
+bsspawn vs bsspawnu = the firefighter half of the spawn move.
+
+COST, and it is deliberately bounded. The immediately preceding round declined a
+change on runtime cost alone (8520706), so: all seven arms on the CANONICAL 13
+only = 91 runs; the FRESH 10 only on bsoff (identity), bsfull and bsfullp = 30
+runs. Total 121 runs plus the route_blocked gate and the pytest gate. The corner
+is FIXED as a constant of the round, not an arm - a corner axis would triple this.
+
+Runner: build the queue as a generator script in the shape of
+outputs/_ih_queue3.py (an ARMS list of (tag, repo, sample, "--set K=V ...")) and
+run it through `MAXPAR=13 MINFREE_KB=3000000 bash outputs/_dim_pool.sh <queue>`.
+Every arm carries the same harness flags including the new battery/docked columns,
+the baseline checkout arm included. Emit the queue with newline='\n' - queue files
+written on Windows can carry CR into the last field, which argparse then sees as a
+stray argument.
+
+A tag must never contain the substring "fresh" by accident: outputs/_ih_arms.py
+selects the canonical versus fresh combo list by testing for it.
+
+8.3  Gates
+--------------------------------------------------------------------------------
+  1. KILL SWITCH. bsoff versus a 16b2da8 checkout: 22-field identity, 13/13
+     canonical and 10/10 fresh. Any single field differing is a fail.
+  2. FIRE-MAP INTEGRITY ON THE ON ARMS. Fire digests must match the baseline on
+     every armed run too (8.3 rationale in 7.3). A mismatch means an RNG
+     perturbation, not a feature effect.
+  3. TESTS. `MPLBACKEND=Agg ./.venv/Scripts/python.exe -m pytest tests
+     -p no:cacheprovider -q`, diffed on the failing NAME SET, not the count,
+     against the eight at outputs/_ih_pytest_rest99.log:607-614. The count can
+     match by coincidence while the set differs - outputs/dimension_report.txt:430-432
+     records exactly that. Two of the eight
+     (test_wind_aware_trajectory_regression.py::test_east_vs_west... and
+     ::test_north_vs_south...) are ORDER-DEPENDENT and must be rerun in isolation
+     via outputs/_ih_flips.sh before any change in them is treated as signal.
+  4. ROUTE_BLOCKED. `bash outputs/_ffr_rbgate.sh <prefix>` (4 shards, 18 runs:
+     13 east + 5 south) merged by `_ir_rbmerge.py --prefix <prefix>` against the
+     three items in outputs/rblatch_report.txt:96-105, AND cross-checked with
+     outputs/_ffr_rbcompare.py against the ihrest* shards from 16b2da8. The
+     reference (70e1b33) already produces FAIL lines for pre-existing behaviour -
+     the interior-hazard round shipped with 2 of 3 items failing on one seed
+     each - so reading the merge output as a plain verdict would misattribute old
+     regressions to the base station.
+  5. NO UAV STRANDED. Every return either completes or is accounted for: for each
+     triggered return, record the trigger step, the trigger battery, the distance
+     to berth, the arrival step or the reason it did not arrive, and the battery
+     on arrival. A UAV at battery 0 outside the depot is a fail.
+  6. LANE/SECTOR. Expected zero reshuffles attributable to a charging transition
+     (4.4). The report must show the measured count, not assert it.
+
+8.4  Structural movements to declare BEFORE the wave, not discover after
+--------------------------------------------------------------------------------
+  - MR1 DEPRESSED in every spawn arm, for reasons unrelated to feature quality.
+    The ignition band is [10,39] on both axes and UAV_OBSERVATION_RADIUS is 8, so
+    a corner-spawned UAV starts at least 12 Manhattan cells from any possible
+    ignition and outside its own observation reach of it, for every seed.
+  - MR2 INFLATED in the return and recharge arms, and asymmetrically so.
+    SECURITY_DISTANCE is 10, so UAVs inside one 5x5 block always count as pairs;
+    and LAUNCH_GRACE_STEPS = 20 forgives exactly this geometry at t = 0 but not on
+    return. The penalty is therefore specific to the return/recharge increments,
+    not to spawn.
+  - RESCUE-RATE RISK on the firefighter half of the spawn move: the single-seed
+    reachability BFS, the degenerate closest-unit tie-break, +45-65 cells of
+    transit, and halved corner retreat options (2.3). This is what bsspawnu is
+    for.
+  - SCENARIO C loses its existing two-UAVs-on-one-cell spawn quirk (2.2).
+
+================================================================================
+9. MAINTAINER RULINGS - ALL FOUR RECEIVED AND RECORDED
+================================================================================
+Asked and answered before Part 2 began. All four confirmed as designed.
+
+  1. LANE/SECTOR EXCLUSION (4.4).  DECLINED, as designed.
+     The rosters are position-blind, so keeping the role causes zero reshuffle,
+     and excluding is measurably worse in both role configurations. The original
+     requirement came from the lane investigation's live-rebuild finding, which
+     is about the ROSTER and not about position. Ship "keep the role, freeze the
+     partition"; the measured reshuffle count still has to be reported, not
+     assumed (4.5).
+
+  2. THE DEPOT BURNS (1.3).  CONFIRMED BURNABLE, fire model untouched.
+     UAVs are fire-immune so a firebreak buys no behaviour, and a non-burnable
+     pad would contaminate burnt_cells, which several baselines depend on.
+
+  3. THE RESERVE IS 60 (5.3-5.4).  CONFIRMED, with the derivation required.
+     Recorded as the maximum of a fuel constraint (32.3) and a horizon
+     constraint (60.0), not as a reaction to 30 having failed. The guarantee it
+     buys is stated explicitly in 5.4.
+
+  4. FIREFIGHTERS SPAWN AT THE DEPOT (2.3).  CONFIRMED.
+     The requirement is explicit that drones AND firefighters start there.
+     Firefighters get NO return leg - they have no battery - so spawn is the
+     whole of their scope. bsspawnu remains, to attribute the rescue-rate risk
+     if it materialises.
+
+Three findings of this round corrected premises carried in from earlier rounds,
+and all three were accepted:
+  - the frozen MissionDecision is not on the return-to-base path; PathDecision
+    carries waypoints_by_uav and the executor already consumes it. The blocker
+    was carried forward in error from the global-planner scoping round.
+  - the 1,280 emergency decisions came from the forced crit12 arms, not from a
+    stock run, so "return_to_base loses by 0.01" was never a live measurement.
+    Declining the tuple reorder as the tenth measured-inert change stands.
+  - off-grid UAVs are a hard stop, not a template. Charging is on-grid.
+
+Also settled: the observation-radius frame is its own display-only micro-round
+and is NOT bundled here (6.5). The two uav_resource_model defects in 4.6 are
+instrumented rather than fixed. The harness battery + docked columns are frozen
+BEFORE the first wave, and the 121-run ladder stands as the deliberate bound.
+
+================================================================================
+APPENDIX A - PROBES AND REPRODUCTION
+================================================================================
+Read-only. Nothing under E:\Projects\SAS was modified this round.
+
+  outputs/_bs_egress.py
+    Mirrors evaluate_scenarios._run_seed seeding exactly (seed -> cfv/wf/am,
+    apply_scenario_config, debug_log False, stdout redirected), constructs the
+    model, then moves the UAVs to a chosen corner block AFTER construction and
+    before the first step, and reports per-UAV move counts, depot dwell and the
+    step at which each cleared the block. No simulation logic is touched; it
+    draws from no RNG and mutates nothing except the probe placement.
+
+    ./.venv/Scripts/python.exe outputs/_bs_egress.py --corner NW --seed 101 \
+        --steps 40 --wind east --roles half
+    (--corner none reproduces the stock centre spawn for comparison; the table in
+    1.4 is the four runs --corner NW / NE / SW / SE at seed 101.)
+
+  Other measurements quoted above were produced by read-only in-process probes
+  during the investigation phase and are cited inline at the point of use with
+  the code they exercise.
+
+================================================================================
+STATUS
+================================================================================
+DESIGN COMPLETE. No implementation performed. Awaiting confirmation - in
+particular on the four rulings in section 9 - before Part 2.

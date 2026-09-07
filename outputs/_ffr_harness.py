@@ -412,6 +412,30 @@ def main() -> int:
     # first diverging UAV step of a seed-matched pair can be located exactly.
     uav_steps: list[list] = []
     uav_actions: list[list] = []
+    # base-station round: per-step partition snapshot - the ordered searcher
+    # roster with each searcher's lane, and the ordered tracker roster with each
+    # tracker's sector bounds. A reshuffle is any step at which a UAV's tuple
+    # differs from the previous step; "mid-traverse" is a reshuffle on a step
+    # where that UAV still had an unreached target. Pure reads.
+    partition_steps: list[dict] = []
+
+    def _base_state(uav) -> str:
+        """"" / returning / docked / charging.
+
+        Every read is defensive because this harness runs against ANY checkout
+        via --repo, including 16b2da8, where none of these attributes and no
+        base_station_mode() exist. "docked" and "charging" are distinct: at
+        BASE_STATION_MODE 2 a UAV parks with nothing recharging it, and calling
+        that "charging" would hide the cost the return-only arm exists to show.
+        """
+        if not getattr(uav, "rtb_docked", False):
+            return "returning" if getattr(uav, "rtb_active", False) else ""
+        mode_fn = getattr(am, "base_station_mode", None)
+        try:
+            recharging = callable(mode_fn) and int(mode_fn()) >= 3
+        except (TypeError, ValueError):
+            recharging = False
+        return "charging" if recharging else "docked"
     # feature 2: first step at which each cell was observed burning. Small
     # (<= one entry per grid cell) and it is what answers "did the victim step
     # into a cell that burned LATER".
@@ -500,13 +524,56 @@ def main() -> int:
                 if type(a).__name__ != "UAV":
                     continue
                 sd = getattr(a, "selected_dir", None)
+                # base-station round: battery and docked state. The harness
+                # recorded NO battery at all before this, so a recharge arm had no
+                # observable. base_state is "" / "returning" / "charging". Adding
+                # these changes the recorded JSON shape, so every arm of the round
+                # - the baseline checkout arm included - must be produced by this
+                # same frozen harness or the arms are not comparable.
                 urow.append([
                     str(a.unique_id),
                     _cell(getattr(a, "pos", None)),
                     str(getattr(a, "current_role", "") or ""),
                     (int(sd) if sd is not None else None),
+                    round(float(getattr(a, "battery_level", 0.0) or 0.0), 4),
+                    _base_state(a),
                 ])
             uav_steps.append(urow)
+            try:
+                from src_extension.adaptation.local_adaptation_generator import (
+                    resolve_victim_searcher_uav_ids as _rs_ids,
+                    _searcher_crosswind_lane as _rs_lane,
+                )
+                _sids = list(_rs_ids(model) or [])
+                _wind = str(getattr(cfv, "WIND_DIRECTION", "east"))
+                _lanes = {}
+                for _sid in _sids:
+                    try:
+                        _lanes[_sid] = _rs_lane(model, _sid, _wind, 0, int(model.HEIGHT) - 1,
+                                                0, int(model.WIDTH) - 1)
+                    except Exception:
+                        _lanes[_sid] = None
+                _sectors = {
+                    str(k): (dict(v) if isinstance(v, dict) else None)
+                    for k, v in (getattr(model, "_uav_sector_assignments", {}) or {}).items()
+                }
+                _targets = {}
+                for a in model.schedule.agents:
+                    if type(a).__name__ != "UAV":
+                        continue
+                    uid = str(a.unique_id)
+                    try:
+                        _targets[uid] = _cell(model._resolve_uav_path_context_target(uid))
+                    except Exception:
+                        _targets[uid] = None
+                partition_steps.append({
+                    "searchers": _sids,
+                    "lanes": {k: (list(v) if v is not None else None) for k, v in _lanes.items()},
+                    "sectors": _sectors,
+                    "targets": _targets,
+                })
+            except Exception:
+                partition_steps.append({})
             # interior-hazard round: the executed action label per UAV (from the
             # dispatcher's result of this step) and the strict hazard state of the
             # cell the UAV now stands on - burning (the executor's level 2), smoke
@@ -663,6 +730,41 @@ def main() -> int:
         "rescue_failed": failed_reasons,
         "pending_removal_failures_total": int(getattr(model, "pending_removal_failures_total", 0) or 0),
         "leftover_pending": len(list(getattr(model, "_agents_pending_removal", []) or [])),
+        # --- base-station round -------------------------------------------------
+        # The depot geometry actually used, so an arm's spawn cells are recoverable
+        # from its own output rather than re-derived.
+        "base_station": (
+            None if getattr(model, "base_station", None) is None else {
+                "origin": list(model.base_station["origin"]),
+                "size": int(model.base_station["size"]),
+                "uav_berths": [list(c) for c in model.base_station["uav_berths"]],
+                "firefighter_berths": [list(c) for c in model.base_station["firefighter_berths"]],
+            }
+        ),
+        # ONE RECORD PER RETURN TRIP, per UAV: trigger step and level, how far the
+        # UAV was, when it arrived (None = never arrived, i.e. stranded), which
+        # cell it docked on, and when it was released. This is what "every return
+        # must complete or be accounted for" is checked against.
+        "rtb_log": {
+            str(a.unique_id): list(getattr(a, "rtb_log", []) or [])
+            for a in model.schedule.agents if type(a).__name__ == "UAV"
+        },
+        "rtb_counters": {
+            str(a.unique_id): {
+                "trips": int(getattr(a, "rtb_trips", 0) or 0),
+                "cycles": int(getattr(a, "rtb_cycles", 0) or 0),
+                "return_steps": int(getattr(a, "rtb_return_steps", 0) or 0),
+                "charge_steps": int(getattr(a, "rtb_charge_steps", 0) or 0),
+                "final_battery": round(float(getattr(a, "battery_level", 0.0) or 0.0), 4),
+                "final_docked": bool(getattr(a, "rtb_docked", False)),
+                "final_active": bool(getattr(a, "rtb_active", False)),
+                "berth": _cell(getattr(a, "rtb_berth", None)),
+            }
+            for a in model.schedule.agents if type(a).__name__ == "UAV"
+        },
+        # Per-step searcher lane and tracker sector, so "did any partition change
+        # because a UAV went charging" is a measurement rather than an assertion.
+        "partition_steps": partition_steps,
         "stdout_sha256": hashlib.sha256(stdout_text.encode("utf-8", "replace")).hexdigest(),
         "stdout_lines": stdout_text.count("\n"),
     }

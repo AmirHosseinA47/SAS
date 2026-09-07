@@ -148,6 +148,11 @@ class WildFireModel(mesa.Model):
         self.new_direction_counter = 0
         self.evaluation_timesteps_counter = 0
 
+        # Feature 3: the depot region, built before anything is placed so the
+        # spawn loop below can read its berths. Returns None when the kill switch
+        # is off, and then every branch that reads it is skipped.
+        self.base_station = self._build_base_station()
+
         # create and configure UAV agents in the grid
         warmup_dirs = (0, 1, 3)
         base_x = HEIGHT // 2
@@ -161,7 +166,14 @@ class WildFireModel(mesa.Model):
         for a in range(0, self.NUM_AGENTS):
             aux_UAV = agents.UAV(self.unique_agents_id, self)
             aux_UAV.selected_dir = warmup_dirs[a % len(warmup_dirs)]
-            spawn_pos = base_cluster[a % len(base_cluster)]
+            if self.base_station is not None:
+                # One dedicated berth per UAV, used both as the spawn cell and as
+                # the docking cell. Distinct berths are what make the return leg
+                # deadlock-free.
+                spawn_pos = self.base_station["uav_berths"][a]
+                aux_UAV.rtb_berth = spawn_pos
+            else:
+                spawn_pos = base_cluster[a % len(base_cluster)]
             if self.grid.out_of_bounds(spawn_pos):
                 spawn_pos = (
                     max(0, min(base_x, HEIGHT - 1)),
@@ -531,6 +543,66 @@ class WildFireModel(mesa.Model):
                 }
             self._uav_sector_assignments[uid] = bounds
 
+    # --- Feature 3 (base station) -------------------------------------------
+    def _build_base_station(self) -> dict | None:
+        """The 5x5 depot as a model-level region, or None when the feature is off.
+
+        Adds no agent, consumes no RNG and shifts no unique_agents_id: it is a
+        pure function of the grid extent, the corner and the agent counts, which
+        is what keeps an armed run seed-comparable with the baselines.
+
+        Berths are ranked by DESCENDING distance from the nearest grid edge. That
+        is deliberately the same key the executor's own margin-3 edge filter uses
+        (_victim_edge_blocked_direction), so the berths handed out first are the
+        ones with the most legal moves out of the block. UAVs take the front of
+        that ranking and firefighters the next slice - a contiguous prefix, so the
+        two sets cannot collide, and neither is pushed onto the outer ring where a
+        firefighter's 4-connected retreat options would be halved by two walls.
+        """
+        if agents.base_station_mode() <= 0:
+            return None
+        height, width = int(self.HEIGHT), int(self.WIDTH)
+        size = max(1, min(agents.base_station_size(), height, width))
+        corner = agents.base_station_corner()
+        # 0 NW (default), 1 NE, 2 SW, 3 SE. x is the HEIGHT axis and y is the
+        # WIDTH axis - the grid is built MultiGrid(HEIGHT, WIDTH), so getting
+        # these the wrong way round is silently inert only while the grid is square.
+        origin_x = 0 if corner in (0, 2) else height - size
+        origin_y = 0 if corner in (2, 3) else width - size
+        cells = [
+            (origin_x + i, origin_y + j)
+            for i in range(size)
+            for j in range(size)
+        ]
+        ranked = sorted(
+            cells,
+            key=lambda c: (-min(c[0], c[1], height - 1 - c[0], width - 1 - c[1]), c[0], c[1]),
+        )
+        n_uavs = int(self.NUM_AGENTS)
+        n_ff = int(NUM_FIREFIGHTERS) if agents.base_station_spawn_firefighters() else 0
+        if n_uavs + n_ff > len(ranked):
+            raise ValueError(
+                "base station footprint %dx%d holds %d berths, but %d UAVs + %d "
+                "firefighters were requested; widen BASE_STATION_SIZE rather than "
+                "stacking units on one cell"
+                % (size, size, len(ranked), n_uavs, n_ff)
+            )
+        return {
+            "origin": (origin_x, origin_y),
+            "size": size,
+            "cells": frozenset(cells),
+            "ranked": tuple(ranked),
+            "uav_berths": tuple(ranked[:n_uavs]),
+            "firefighter_berths": tuple(ranked[n_uavs:n_uavs + n_ff]),
+        }
+
+    def base_station_contains(self, pos) -> bool:
+        """True when pos is inside the depot footprint. Reporting only."""
+        station = getattr(self, "base_station", None)
+        if station is None or pos is None:
+            return False
+        return (int(pos[0]), int(pos[1])) in station["cells"]
+
     def _init_managed_victims(self) -> None:
         if not hasattr(self, "managed_victims"):
             self.managed_victims = {}
@@ -586,7 +658,15 @@ class WildFireModel(mesa.Model):
         self.firefighter_marker_agents = {}
 
         positions = {}
+        # Feature 3: firefighters launch from the depot too, on berths taken from
+        # the far end of the ranking so they never collide with a UAV berth. They
+        # get no return leg - they have no battery - so spawn is the whole of it.
+        station = getattr(self, "base_station", None)
+        ff_berths = station["firefighter_berths"] if station is not None else ()
         for i in range(NUM_FIREFIGHTERS):
+            if i < len(ff_berths):
+                positions[f"ff_unit_{i}"] = (float(ff_berths[i][0]), float(ff_berths[i][1]))
+                continue
             angle = (2 * math.pi * i) / max(NUM_FIREFIGHTERS, 1) + math.pi / 4
             fx = max(
                 1.0,

@@ -148,7 +148,17 @@ def test_wind_aware_target_avoids_fire_and_smoke() -> None:
     assert target != (float(unsafe[0]), float(unsafe[1]))
 
 
-def test_victim_search_wind_aware_action_when_downwind_exists() -> None:
+def test_victim_search_wind_aware_action_when_downwind_exists(monkeypatch) -> None:
+    # Feature 3 pin. This test is about the wind-aware search branch, not about
+    # the base station, and it asserts the bare "victim_search_wind_aware" label.
+    # With the depot on, the searcher spawns in a corner at boundary distance <= 4,
+    # so _victim_near_edge_escape_required (<= 5.0) is true from step 0 and the
+    # label becomes "victim_search_wind_aware_retarget_to_interior". That is a
+    # genuine behavioural consequence of the corner spawn, reported in
+    # outputs/basestation_report.txt, not a defect in this subsystem - so the
+    # depot is pinned off here to keep this test measuring what it was written to
+    # measure. monkeypatch restores it, so nothing leaks to the next test.
+    monkeypatch.setattr(cfv, "BASE_STATION_MODE", 0, raising=False)
     model = _fresh_model()
     vs_id = _victim_searcher_id(model)
     executor = UAVExecutor(uav_id=vs_id, model=model)

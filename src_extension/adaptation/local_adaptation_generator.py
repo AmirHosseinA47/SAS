@@ -1917,6 +1917,9 @@ class LocalAdaptationSpaceGenerator:
                 read_value(runtime_models, "uav_id", "local_uav"),
             )
         )
+        options.extend(
+            self._generate_base_return_options(uav_id, runtime_models, timestamp)
+        )
         options.append(
             self._generate_local_noop_option(
                 uav_id,
@@ -1932,6 +1935,83 @@ class LocalAdaptationSpaceGenerator:
             explanation_summaries=[],
             timestamp=timestamp,
         )
+
+    def _generate_base_return_options(
+        self,
+        uav_id: str,
+        runtime_models: Any,
+        timestamp: float,
+    ) -> list[AdaptationOption]:
+        """Feature 3, mechanism 1: carry this UAV's berth as a local path waypoint.
+
+        This is the per-UAV channel, deliberately not the fleet-wide fail-safe
+        channel: _dispatch_fail_safe cannot address a single UAV (its option
+        parameters carry no uav_id and the fallback options carry target_entity
+        "system"), so a base return routed through there is a silent no-op.
+
+        The option id and next_action both contain "base"/"return_to_base", which
+        is what carries the path through _path_consistent_with_return_to_base in
+        the dispatcher instead of being dropped.
+
+        Emits nothing at all unless the feature is on, mechanism 1 is selected,
+        and this UAV is actually returning - so it is inert by construction on
+        every other arm.
+        """
+        import agents as agents_module
+
+        if agents_module.base_station_mode() < 2:
+            return []
+        if agents_module.base_station_return_mechanism() != 1:
+            return []
+        simulation = _simulation_from_runtime(runtime_models)
+        if simulation is None:
+            return []
+        schedule = getattr(simulation, "schedule", None)
+        agents_list = getattr(schedule, "agents", None) if schedule is not None else None
+        if not agents_list:
+            return []
+        agent = None
+        for candidate in agents_list:
+            if type(candidate) is agents_module.UAV and str(candidate.unique_id) == uav_id:
+                agent = candidate
+                break
+        if agent is None:
+            return []
+        berth = getattr(agent, "rtb_berth", None)
+        if berth is None or getattr(agent, "pos", None) is None:
+            return []
+        if not getattr(agent, "rtb_active", False) or getattr(agent, "rtb_docked", False):
+            return []
+        if (int(agent.pos[0]), int(agent.pos[1])) == (int(berth[0]), int(berth[1])):
+            return []
+        target = (float(berth[0]), float(berth[1]))
+        parameters = {
+            "next_action": "return_to_base",
+            "path_action": "return_to_base",
+            "waypoints": [target],
+            "target_position": target,
+            "target_region": "%d,%d" % (int(berth[0]), int(berth[1])),
+            "return_to_base": True,
+            "reason": "battery_return_reserve",
+            "source": "base_station",
+            "battery_level": float(getattr(agent, "battery_level", 0.0)),
+        }
+        return [
+            LocalAdaptationOption(
+                option_id=f"local_path_return_to_base_{uav_id}",
+                option_type="path_planning",
+                target_entity=uav_id,
+                parameters=parameters,
+                expected_effect="Return UAV to its base station berth to recharge",
+                cost_estimate=1.0,
+                risk_estimate=0.2,
+                confidence=0.95,
+                scope=Scope.local,
+                timestamp=timestamp,
+                originating_trigger="battery_return_reserve",
+                explanation_hint="Base-station return option only; no UAV path is modified.",
+            )
+        ]
 
     def _generate_path_options(
         self,

@@ -326,6 +326,17 @@ def _select_feasible_option(
     scored: tuple[ScoredOption, ...],
     options: tuple[object, ...],
 ) -> object | None:
+    # Feature 3, mechanism 1: a base return is a destination order, not a
+    # candidate to be out-scored, so it takes precedence the same explicit way
+    # wind_aware_victim_search already does below. Winning it on utility instead
+    # would mean re-weighting the scorer for every decision in every run; this
+    # branch cannot fire unless the generator emitted the option, which it only
+    # does for a UAV that is actually returning.
+    for entry in scored:
+        if entry.evaluation.feasible and str(
+            option_id(entry.option) or ""
+        ).startswith("local_path_return_to_base"):
+            return entry.option
     for entry in scored:
         if (
             entry.evaluation.feasible

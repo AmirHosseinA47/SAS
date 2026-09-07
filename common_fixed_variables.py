@@ -164,6 +164,106 @@ VICTIM_FLEE_MAX_DISPLACEMENT = 6
 # applies. Deterministic - it draws from no RNG.
 VICTIM_SEARCHER_HAZARD_RETREAT_RANGE = 99
 
+# Base station (feature 3). A 5x5 depot in one corner of the grid that the UAV
+# team and the firefighters launch from, that a UAV returns to when its battery
+# reaches the return reserve, and that recharges it.
+#
+# BASE_STATION_MODE is an ordinal ladder, and each level is a strict superset of
+# the one below it, so a level-N vs level-(N-1) comparison attributes exactly one
+# increment:
+#   0  off - the kill switch. No depot is built, spawn is the pre-feature centre
+#      cluster, and every entry point returns before any state write, so the model
+#      is byte-identical to the checkout before this feature.
+#   1  spawn only: UAVs (and firefighters, unless BASE_STATION_SPAWN_FIREFIGHTERS
+#      is 0) start on depot berths instead of the centre cluster / the ring.
+#   2  + return-to-base: a UAV whose battery reaches the trigger flies to its
+#      berth and parks there. With no recharge it stays parked, which is the
+#      honest cost of a return leg on its own.
+#   3  + recharge: a parked UAV refills at BASE_STATION_RECHARGE_PER_STEP and
+#      re-launches at BASE_STATION_RECHARGE_RELEASE_LEVEL.
+#
+# The depot is a MODEL-LEVEL REGION, not an agent and not terrain: it adds no
+# agent, consumes no RNG, shifts no unique_agents_id, and does not touch the fire
+# model. Fire spreads into it exactly as into any other cell and nothing models
+# the depot being destroyed - UAVs are fire-immune (_check_fire_casualties has no
+# UAV branch), so a hardened pad would buy no behaviour while inserting a 5x5
+# firebreak straight into burnt_cells. See outputs/basestation_part1.txt 1.1-1.3.
+#
+# The corner is the NW block, x in [0,4] and y in [WIDTH-5, WIDTH-1]: the only
+# corner upwind of BOTH canonical winds (east pushes fire toward +x, south toward
+# -y) and the shortest mean distance to the victim ring in all four built-in
+# scenarios. NOTE the asymmetry: common_fixed_variables defaults WIND_DIRECTION to
+# 'west', under which this corner is downwind - a bare `python main.py` run
+# therefore puts the depot in the fire's path, while the gated east/south wave
+# does not.
+#
+# UAV_RETURN_TO_BASE_RESERVE is derived, not tuned. It is the larger of a fuel
+# constraint and a horizon constraint over the worst-case return of D = 90 cells
+# (the far corner to the nearest depot cell) at 0.3 per moving step:
+#   fuel     D*0.2 + (D/f)*0.1 = 27.0 at f=1, + 0.3 trigger latency + 5.0 margin
+#            = 32.3
+#   horizon  the return needs D steps and must finish by step 240, so
+#            R >= 100 - e*(240 - D) where e = 0.1 + 0.2m is the effective drain
+#            at outbound move fraction m; at m = 5/6 that is 60.0
+# so R = max(32.3, 60.0) = 60. Read backwards, a reserve of 60 guarantees that a
+# UAV at the worst cell on the grid completes its return inside 240 steps as long
+# as it moved on at least five of every six steps beforehand. Measured move
+# fractions are 0.95-1.00. The naive floor of 55 - which assumes the UAV moves on
+# every single step - has no slack and fails on the first held step.
+#
+# The trigger takes the MAX of that reserve and a distance-aware term,
+# 0.3 * manhattan_to_berth + BASE_STATION_RETURN_MARGIN, so a UAV that is somehow
+# further out than the flat reserve covers turns back earlier.
+#
+# BASE_STATION_RETURN_MECHANISM selects between the two routes, which are
+# MUTUALLY EXCLUSIVE - an agent-level override is the last writer of selected_dir
+# before move() and would silently mask a planner route, so "both" is rejected:
+#   1  planner   - a per-UAV local adaptation option carries the berth as a
+#                  waypoint through PathDecision to the executor. Keeps the
+#                  searcher hazard gate and the final direction safety filter,
+#                  so this route is FIRE-AWARE, and it can be suppressed for a
+#                  step by a fleet-wide safe_hold fail-safe override.
+#   2  hardcoded - agents.UAV.advance steers straight at the berth, bypassing the
+#                  adaptation layer. FIRE-BLIND by construction; that is the
+#                  declared difference between the arms, not a defect.
+#
+# Every one of these is overridable per run through apply_scenario_config like
+# any other scenario parameter, and every one is read at CALL TIME from the
+# common_fixed_variables MODULE (agents.py:base_station_mode and friends), never
+# through the star-imported names above and never at import time - otherwise the
+# override is invisible and the constant is decorative. Deterministic: the depot,
+# the berth ranking and every spawn cell are pure functions of the grid extent and
+# the agent counts, and draw from no RNG at all.
+#
+# SHIPPED DEFAULT IS 0 - OFF. The feature is complete, killable and covered by
+# tests, but it is not on by default, because at mode 3 it fails three of the
+# round's gate items: never_detected 1 -> 8 over 23 runs, rescued -5 on the
+# route_blocked gate's independent 18-seed sample, and - the blocker - TWO
+# firefighters left permanently latched as route_blocked on seed 808, which is
+# the defect category commit 70e1b33 closed and whose mechanism here is indirect
+# and NOT diagnosed. With this at 0 the model's default behaviour is provably
+# identical to 16b2da8: that is the bsoff arm, byte-identical on all 27 recorded
+# fields across 13 canonical and 10 fresh runs. Set it to 1/2/3 to arm the
+# feature. See outputs/basestation_report.txt section 4.
+BASE_STATION_MODE = 0
+BASE_STATION_RETURN_MECHANISM = 2
+BASE_STATION_SPAWN_FIREFIGHTERS = 1
+BASE_STATION_SIZE = 5
+UAV_RETURN_TO_BASE_RESERVE = 60.0
+BASE_STATION_RETURN_MARGIN = 5.0
+BASE_STATION_RECHARGE_PER_STEP = 5.0
+BASE_STATION_RECHARGE_RELEASE_LEVEL = 100.0
+# The depot outline colour is #770099, and it lives as an inline literal in both
+# renderers rather than here, exactly like #2b2b2b (burnt), #895e00 (scorched) and
+# #2f4a1a (spared veg): this module holds colour RAMPS and simulation parameters,
+# not single-state display colours, and a per-run override of a colour would be
+# meaningless. Violet is the only unclaimed hue band in the palette - greens are
+# vegetation, the yellow-orange-red arc is fire and victims, the greys are
+# smoke/burnt/probability map, the cyans are the searcher UAV / firefighter /
+# assigned victim, and magenta is the fire tracker. Chosen by a CIEDE2000 sweep
+# over the 39 co-occurring map colours: minimum 28.76 dE, against 27.34 for the
+# already-shipped scorched #895e00 on the identical set.
+
 N_ACTIONS = 4
 UAV_OBSERVATION_RADIUS = 8
 side = ((UAV_OBSERVATION_RADIUS * 2) + 1)

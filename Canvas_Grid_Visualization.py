@@ -126,4 +126,47 @@ class CanvasGrid(VisualizationElement):
                                                 portrayal_aux["w"] = "1"
                                             grid_state[portrayal_aux["Layer"]].append(portrayal_aux)
 
+        # Base station (feature 3): an outline around the depot footprint, drawn
+        # the same way the UAV observation frame above is - as perimeter bars on
+        # their own cells. It has to be an outline rather than 25 filled cells,
+        # because a filled overlay would hide the ground state underneath it, and
+        # a multi-cell rectangle is impossible as one shape: GridDraw.js clamps
+        # every rect inside a single cell.
+        #
+        # Layer 2 is deliberately free between the ground (0) and the unit markers
+        # (UAV/PathMarker at 1, Victim/Firefighter at 3). It MUST stay an integer:
+        # CanvasModule.js iterates layers with `for (const layer in data)`, which
+        # enumerates array-index-like keys in ascending numeric order but puts any
+        # non-index key such as '0.5' last - so a fractional layer would draw over
+        # the victims instead of under them.
+        station = getattr(model, "base_station", None)
+        if station is not None:
+            origin_x, origin_y = station["origin"]
+            size = int(station["size"])
+            for i in range(size):
+                for j in range(size):
+                    on_edge_x = i == 0 or i == size - 1
+                    on_edge_y = j == 0 or j == size - 1
+                    if not (on_edge_x or on_edge_y):
+                        continue
+                    cell = (origin_x + i, origin_y + j)
+                    if model.grid.out_of_bounds(cell):
+                        continue
+                    bars = []
+                    if on_edge_x:
+                        bars.append(("0.15", "1"))
+                    if on_edge_y:
+                        bars.append(("1", "0.15"))
+                    for w, h in bars:
+                        grid_state[2].append({
+                            "Shape": "rect",
+                            "Filled": True,
+                            "Color": "#770099",
+                            "Layer": 2,
+                            "w": w,
+                            "h": h,
+                            "x": cell[0],
+                            "y": cell[1],
+                        })
+
         return grid_state

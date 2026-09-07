@@ -240,6 +240,24 @@ class UAV(mesa.Agent):
         self.battery_drain_per_move = 0.2
         self.battery_low_threshold = 30.0
         self.battery_critical_threshold = 15.0
+        # Feature 3 (base station). All defaulted so that with BASE_STATION_MODE = 0
+        # nothing here is ever read and the class behaves exactly as before.
+        # rtb_berth is the UAV's own docking cell, assigned once by the model at
+        # spawn; distinct berths are what make the return leg deadlock-free, since
+        # not_UAV_adjacent only ever refuses a move into an occupied cell.
+        self.rtb_berth: tuple[int, int] | None = None
+        self.rtb_active = False
+        self.rtb_docked = False
+        self.rtb_last_pos: tuple[int, int] | None = None
+        # Mechanism reporting, read by the harness; none of it feeds behaviour.
+        # rtb_log carries ONE RECORD PER TRIP, not just the latest, because the
+        # round has to account for every return individually - how long it took,
+        # how far the UAV was, whether it arrived at all.
+        self.rtb_trips = 0
+        self.rtb_cycles = 0
+        self.rtb_return_steps = 0
+        self.rtb_charge_steps = 0
+        self.rtb_log: list[dict] = []
         # Local monitoring (observe-only); monitor object is attached after runtime knowledge init.
         self.local_monitor = None
         self.latest_local_observation = None
@@ -272,6 +290,13 @@ class UAV(mesa.Agent):
         self.battery_level -= self.battery_drain_per_step
         if moved:
             self.battery_level -= self.battery_drain_per_move
+        # Feature 3: the depot is the first and only code path in this model that
+        # raises battery_level. It is applied after the drain and before the
+        # existing clamp, which already caps at 100, so a recharge that overshoots
+        # is harmless. A docked UAV never moves, so the net rate is rate - 0.1.
+        if self.rtb_docked and base_station_mode() >= 3:
+            self.battery_level += base_station_recharge_per_step()
+            self.rtb_charge_steps += 1
         self.battery_level = max(0.0, min(100.0, float(self.battery_level)))
         if self.battery_level <= self.battery_critical_threshold:
             self.battery_status = "critical"
@@ -305,6 +330,143 @@ class UAV(mesa.Agent):
                     surrounding_states.append(int(agent.is_burning() is True))
         return surrounding_states
 
+    # --- Feature 3 (base station): return-to-base, docking and re-launch --------
+
+    def _rtb_trigger_level(self, berth: tuple[int, int]) -> float:
+        """Battery at or below which this UAV must turn for home, from where it is.
+
+        The max of a flat reserve (which carries the horizon constraint - the
+        return has to FINISH inside the run) and a distance-aware term (which
+        carries the fuel constraint - it has to be ABLE to get home from here).
+        Neither alone is sufficient; see the derivation in common_fixed_variables.
+        """
+        per_move = float(self.battery_drain_per_step) + float(self.battery_drain_per_move)
+        distance = abs(int(self.pos[0]) - berth[0]) + abs(int(self.pos[1]) - berth[1])
+        return max(
+            uav_return_to_base_reserve(),
+            per_move * distance + base_station_return_margin(),
+        )
+
+    def _rtb_direction(self, berth: tuple[int, int]) -> int:
+        """Greedy one-step direction toward the berth, with a stall sidestep.
+
+        Deliberately re-implemented here rather than borrowing the executor's
+        _direction_toward: this keeps agents.py free of a src_extension import,
+        and _direction_toward returns the CURRENT direction once it is on target,
+        which would walk a docked UAV straight back off the pad.
+        """
+        x, y = int(self.pos[0]), int(self.pos[1])
+        dx, dy = berth[0] - x, berth[1] - y
+        # move_x = [1, 0, -1, 0], move_y = [0, -1, 0, 1]
+        x_dir = 0 if dx > 0 else (2 if dx < 0 else None)
+        y_dir = 3 if dy > 0 else (1 if dy < 0 else None)
+        if abs(dx) >= abs(dy):
+            primary, secondary = x_dir, y_dir
+        else:
+            primary, secondary = y_dir, x_dir
+        # A blocked move leaves the position unchanged; taking the other axis
+        # breaks the deadlock a memoryless greedy steer would sit in forever.
+        stalled = self.rtb_last_pos is not None and self.rtb_last_pos == (x, y)
+        if stalled and secondary is not None:
+            primary, secondary = secondary, primary
+        if primary is not None:
+            return primary
+        if secondary is not None:
+            return secondary
+        return int(self.selected_dir)
+
+    def _rtb_inside_depot(self, cell: tuple[int, int]) -> bool:
+        contains = getattr(self.model, "base_station_contains", None)
+        return bool(contains(cell)) if callable(contains) else False
+
+    def _rtb_berth_blocked(self, berth: tuple[int, int]) -> bool:
+        """True when another UAV is standing on this UAV's berth."""
+        try:
+            occupants = self.model.grid.get_cell_list_contents([berth])
+        except Exception:
+            return False
+        return any(type(o) is UAV and o is not self for o in occupants)
+
+    def _apply_return_to_base(self) -> None:
+        """Run before move(): trigger, steer, dock and re-launch.
+
+        Called as the first statement of advance(), which is the last-writer-wins
+        slot for selected_dir - the pre-move MAPE cycle has finished and
+        _prepare_uav_directions_for_step has already early-returned without
+        calling set_drone_dirs, so nothing between here and move() writes it.
+
+        Both mechanisms share the trigger, the docking and the re-launch; only the
+        steering differs. Mechanism 1 leaves the direction to the executor, which
+        received the berth as a waypoint through the local path channel.
+        """
+        mode = base_station_mode()
+        if mode < 2:
+            return
+        berth = self.rtb_berth
+        if berth is None or self.pos is None:
+            return
+
+        step = int(getattr(self.model, "evaluation_timesteps_counter", 0))
+
+        if self.rtb_docked:
+            if mode >= 3 and self.battery_level >= base_station_recharge_release_level():
+                self.rtb_docked = False
+                self.rtb_active = False
+                self.rtb_last_pos = None
+                self.rtb_cycles += 1
+                if self.rtb_log:
+                    self.rtb_log[-1]["released_step"] = step
+                    self.rtb_log[-1]["released_level"] = float(self.battery_level)
+                self.execution_action = "rtb_relaunch"
+            return
+
+        here = (int(self.pos[0]), int(self.pos[1]))
+        if not self.rtb_active:
+            if self.battery_level > self._rtb_trigger_level(berth):
+                return
+            self.rtb_active = True
+            self.rtb_trips += 1
+            self.rtb_log.append({
+                "trigger_step": step,
+                "trigger_level": float(self.battery_level),
+                "trigger_distance": abs(here[0] - berth[0]) + abs(here[1] - berth[1]),
+                "arrival_step": None,
+                "arrival_level": None,
+                "dock_cell": None,
+                "released_step": None,
+                "released_level": None,
+            })
+
+        # Dock at the assigned berth, or - if some OTHER UAV happens to be
+        # standing on it - on whatever depot cell this UAV has already reached.
+        # Berths are distinct, so no two returning UAVs contend; but a UAV that is
+        # not returning can be parked on someone else's berth, and without this
+        # fallback the returning UAV would oscillate against not_UAV_adjacent
+        # until the blocker happened to move. This guarantees the return
+        # terminates, which is what "no UAV stranded" actually requires.
+        docking = here == berth
+        if not docking and self._rtb_inside_depot(here):
+            docking = self._rtb_berth_blocked(berth)
+        if docking:
+            self.rtb_docked = True
+            self.execution_action = "rtb_docked"
+            if self.rtb_log:
+                self.rtb_log[-1]["arrival_step"] = step
+                self.rtb_log[-1]["arrival_level"] = float(self.battery_level)
+                self.rtb_log[-1]["dock_cell"] = here
+            return
+
+        self.rtb_return_steps += 1
+        if base_station_return_mechanism() != 2:
+            # Planner route: the executor already committed a direction from the
+            # base waypoint. Overriding it here would mask the mechanism entirely.
+            return
+        direction = self._rtb_direction(berth)
+        self.rtb_last_pos = (int(self.pos[0]), int(self.pos[1]))
+        self.selected_dir = direction
+        self.execution_direction_applied = True
+        self.execution_action = "rtb_return"
+
     # function for moving UAV over the grid area
     def move(self):
         # vectors for moving to different positions, based on 4 directions = [0, 1, 2, 3] = [right, down, left, up].
@@ -312,6 +474,14 @@ class UAV(mesa.Agent):
         move_x = [1, 0, -1, 0]
         move_y = [0, -1, 0, 1]
         moved = False
+
+        # Feature 3: a docked UAV holds its berth. This has to sit above the
+        # pipeline check below, because there is no "stay" action anywhere in the
+        # model - all four selected_dir values are moves, and even the executor's
+        # own hold commits a direction and walks the agent off the pad.
+        if self.rtb_docked:
+            self.execution_action = "rtb_docked_hold"
+            return False
 
         pipeline_active = False
         try:
@@ -337,6 +507,7 @@ class UAV(mesa.Agent):
     # Mesa framework native method, which is overwritten, necessary for executing changes made in step() method
     # (as it can be seen, in this case UAVs don't need to update anything in step() method, so it isn't overwritten).
     def advance(self):
+        self._apply_return_to_base()
         move_x = [1, 0, -1, 0]
         move_y = [0, -1, 0, 1]
         current_time = float(self.model.evaluation_timesteps_counter)
@@ -376,6 +547,89 @@ def victim_flee_max_displacement() -> int:
         return max(0, int(getattr(cfv, "VICTIM_FLEE_MAX_DISPLACEMENT", 0)))
     except (TypeError, ValueError):
         return 0
+
+
+# --- Feature 3 (base station) configuration -----------------------------------
+# Every one of these reads the `cfv` MODULE at call time, for the same reason
+# victim_flee_trigger_distance does: apply_scenario_config sets attributes on
+# common_fixed_variables and wildfire_model but NOT on this module, so a per-run
+# override - the kill-switch arm included - is only visible through `cfv`. A
+# module-level constant or a star-imported name would freeze at import and the
+# switch would be silently inert, which is the dead-input defect this repo has
+# already hit nine times.
+
+def base_station_mode() -> int:
+    """0 off (kill switch) / 1 spawn / 2 +return-to-base / 3 +recharge."""
+    try:
+        return max(0, min(3, int(getattr(cfv, "BASE_STATION_MODE", 0))))
+    except (TypeError, ValueError):
+        return 0
+
+
+def base_station_return_mechanism() -> int:
+    """1 = through the planner (fire-aware), 2 = hardcoded in advance() (fire-blind)."""
+    try:
+        value = int(getattr(cfv, "BASE_STATION_RETURN_MECHANISM", 2))
+    except (TypeError, ValueError):
+        return 2
+    return value if value in (1, 2) else 2
+
+
+def base_station_size() -> int:
+    """Depot footprint edge length, in cells."""
+    try:
+        return max(1, int(getattr(cfv, "BASE_STATION_SIZE", 5)))
+    except (TypeError, ValueError):
+        return 5
+
+
+def base_station_corner() -> int:
+    """0 NW (default) / 1 NE / 2 SW / 3 SE. Numeric, so --set never has to carry a string."""
+    try:
+        value = int(getattr(cfv, "BASE_STATION_CORNER", 0))
+    except (TypeError, ValueError):
+        return 0
+    return value if value in (0, 1, 2, 3) else 0
+
+
+def base_station_spawn_firefighters() -> bool:
+    """False keeps firefighters on their ring while UAVs still spawn at the depot."""
+    try:
+        return bool(int(getattr(cfv, "BASE_STATION_SPAWN_FIREFIGHTERS", 1)))
+    except (TypeError, ValueError):
+        return True
+
+
+def uav_return_to_base_reserve() -> float:
+    """Flat battery reserve that triggers a return; see the derivation in cfv."""
+    try:
+        return float(getattr(cfv, "UAV_RETURN_TO_BASE_RESERVE", 60.0))
+    except (TypeError, ValueError):
+        return 60.0
+
+
+def base_station_return_margin() -> float:
+    """Points kept in hand on top of the distance-aware term."""
+    try:
+        return float(getattr(cfv, "BASE_STATION_RETURN_MARGIN", 5.0))
+    except (TypeError, ValueError):
+        return 5.0
+
+
+def base_station_recharge_per_step() -> float:
+    """Battery points added per step while docked, before the existing clamp."""
+    try:
+        return max(0.0, float(getattr(cfv, "BASE_STATION_RECHARGE_PER_STEP", 5.0)))
+    except (TypeError, ValueError):
+        return 5.0
+
+
+def base_station_recharge_release_level() -> float:
+    """Level at which a docked UAV re-launches. Full charge avoids threshold chatter."""
+    try:
+        return float(getattr(cfv, "BASE_STATION_RECHARGE_RELEASE_LEVEL", 100.0))
+    except (TypeError, ValueError):
+        return 100.0
 
 
 # Orthogonal offsets in a FIXED order for the victim's flee scan. The same four

@@ -87,8 +87,13 @@ def _slim_panel(p):
         "communication_view": {k: cv.get(k) for k in
                                ["communication_mode", "delivery_confidence", "message_load", "relay_needed"]},
         "fail_safe_view": {"current_mode": fs.get("current_mode"), "active_triggers": fs.get("active_triggers", [])},
+        # NOTE: this whitelist is a silent-break site. A key added to
+        # dashboard_state_builder._build_uav_status_view and forgotten here is
+        # dropped with no error, no warning and no test failure - the browser just
+        # renders nothing. battery_status and base_state are feature-3 additions.
         "uav_status_view": [{k: u.get(k) for k in
-                             ["id", "role", "position", "battery", "execution_action", "target_position"]}
+                             ["id", "role", "position", "battery", "battery_status",
+                              "base_state", "execution_action", "target_position"]}
                             for u in p.get("uav_status_view", [])],
         "victim_view": [{k: v.get(k) for k in ["id", "position", "status", "detected", "assigned_firefighter"]}
                         for v in p.get("victim_view", [])],
@@ -196,9 +201,22 @@ def _capture_frame(model, step):
     uav_trails = [{"id": k.split(":", 1)[1], "kind": "uav", "pts": v}
                   for k, v in trails.items() if k.startswith("UAV:")]
 
+    # Base station (feature 3): published as one rect descriptor, never as cell
+    # colours. Every one of the 2500 cells carries a Fire agent and _cell_color
+    # tests smoke/burning/burnt/scorched first, so a depot painted into `cells`
+    # would vanish the moment the corner burns - which is exactly when an operator
+    # needs to see where the base is. Drawn as an overlay in drawMap instead, so
+    # the terrain under it stays readable.
+    station = getattr(model, "base_station", None)
+    depot = None
+    if station is not None:
+        depot = {"x": int(station["origin"][0]), "y": int(station["origin"][1]),
+                 "size": int(station["size"])}
+
     return {"step": step, "cells": cells, "prob": prob,
             "uavs": uavs, "victims": vics, "firefighters": ffs,
             "assignments": assignments, "trails": ff_trails + uav_trails,
+            "depot": depot,
             "panel": _slim_panel(st)}
 
 
@@ -628,7 +646,7 @@ document.getElementById('stepbtn').onclick=function(){if(playing)stopPlaying();d
 
 function setLegend(){document.getElementById('maplegend').innerHTML=probMode
   ?'<span><i class="sw" style="background:#ffffff"></i>low prob</span><span><i class="sw" style="background:#636363"></i>med</span><span><i class="sw" style="background:#000000;border:1px solid #444"></i>high</span><span><i class="sw" style="background:#00FFFF"></i>victim-searcher</span><span><i class="sw" style="background:#FF00FF"></i>fire-tracker</span>'
-  :'<span><i class="sw" style="background:#fe5501"></i>fire</span><span><i class="sw" style="background:#ababab"></i>smoke</span><span><i class="sw" style="background:#2b2b2b"></i>burnt (spent)</span><span><i class="sw" style="background:#895e00"></i>scorched (re-ignites)</span><span><i class="sw" style="background:#2f4a1a"></i>spared veg</span><span><i class="sw" style="background:#FF00FF"></i>fire-tracker</span><span><i class="sw" style="background:#00FFFF"></i>victim-searcher</span><span><i class="sw" style="background:#FFFF00"></i>victim</span><span><i class="sw" style="background:#00FFCC"></i>firefighter</span><span><i class="sw" style="background:#ffd75a"></i>assigned-to</span>';}
+  :'<span><i class="sw" style="background:#fe5501"></i>fire</span><span><i class="sw" style="background:#ababab"></i>smoke</span><span><i class="sw" style="background:#2b2b2b"></i>burnt (spent)</span><span><i class="sw" style="background:#895e00"></i>scorched (re-ignites)</span><span><i class="sw" style="background:#770099"></i>base station</span><span><i class="sw" style="background:#FF00FF"></i>fire-tracker</span><span><i class="sw" style="background:#00FFFF"></i>victim-searcher</span><span><i class="sw" style="background:#FFFF00"></i>victim</span><span><i class="sw" style="background:#00FFCC"></i>firefighter</span><span><i class="sw" style="background:#ffd75a"></i>assigned-to</span>';}
 
 function showEval(e){const box=document.getElementById('eval');box.style.display='block';
   const ok=e.all_terminal?'var(--green)':'var(--amber)';box.style.borderLeftColor=ok;
@@ -655,6 +673,14 @@ function drawMap(fr){
   for(let i=0;i<=W;i++){const gx=Math.round(i*cs)+0.5;ctx.moveTo(gx,0);ctx.lineTo(gx,H*cs);}
   for(let j=0;j<=H;j++){const gy=Math.round(j*cs)+0.5;ctx.moveTo(0,gy);ctx.lineTo(W*cs,gy);}
   ctx.stroke();
+  // base station (feature 3): an OVERLAY, drawn after the ground and before every
+  // unit marker, so the terrain under the depot stays readable even while it
+  // burns. Immediate-mode canvas means this statement's position IS the z-order.
+  if(fr.depot){const d=fr.depot,dx=d.x*cs,dy=(H-d.y-d.size)*cs,dw=d.size*cs,dh=d.size*cs;
+    ctx.fillStyle='rgba(119,0,153,0.22)';ctx.fillRect(dx,dy,dw,dh);
+    ctx.strokeStyle='#770099';ctx.lineWidth=2;ctx.strokeRect(dx+1,dy+1,dw-2,dh-2);
+    ctx.fillStyle='#770099';ctx.font='bold 9px ui-monospace,monospace';
+    ctx.fillText('BASE',dx+3,dy-3);}
   const px=(gx)=>(gx+0.5)*cs, py=(gy)=>(H-1-gy+0.5)*cs;
   // walked trails (B): faint fading polylines of where each unit has been
   for(const t of (fr.trails||[])){const pts=t.pts||[];if(pts.length<2)continue;
@@ -690,7 +716,8 @@ function render(fr){
   document.getElementById('failsafe').innerHTML=kv('mode',badge(fmode,fmc))+kv('critical alerts',`<b style="color:var(--red)">${p.critical_alert_count||0}</b>`)+kv('option cmp',p.option_comparison_count||0)+`<div style="margin-top:5px;display:flex;gap:4px;flex-wrap:wrap">${trig}</div>`;
   let h='<table style="table-layout:fixed;width:100%"><tr><th style="width:16%">uav</th><th style="width:30%">role</th><th style="width:20%">pos</th><th style="width:18%">batt</th></tr>';
   for(const x of (p.uav_status_view||[])){const rcol=String(x.role).includes('tracker')?'var(--teal)':'var(--purple)';const b=x.battery||0,bc=b>=50?'var(--green)':(b>=20?'var(--amber)':'var(--red)');
-    h+=`<tr><td><b style="color:var(--accent)">${x.id}</b></td><td>${badge(x.role,rcol)}</td><td>${fmtpos(x.position)}</td><td><b style="color:${bc}">${Math.round(b)}%</b></td></tr>`+
+    const bs=x.base_state?badge(x.base_state,'#770099'):'';
+    h+=`<tr><td><b style="color:var(--accent)">${x.id}</b></td><td>${badge(x.role,rcol)}</td><td>${fmtpos(x.position)}</td><td><b style="color:${bc}">${Math.round(b)}%</b> ${bs}</td></tr>`+
        `<tr><td></td><td colspan="3" class="k" style="word-break:break-word;white-space:normal;padding-top:0;padding-bottom:6px;border-bottom:1px solid var(--line)">${x.execution_action||''}</td></tr>`;}
   document.getElementById('uavs_v').innerHTML=h+'</table>';
   h='<table><tr><th>victim</th><th>pos</th><th>status</th><th>det</th></tr>';

@@ -319,7 +319,14 @@ def test_east_vs_west_trajectories_diverge_over_40_steps() -> None:
     _assert_trajectory_or_region_diverged(east, west)
 
 
-def test_all_cardinals_produce_distinct_regions_and_safe_positions() -> None:
+def test_all_cardinals_produce_distinct_regions_and_safe_positions(monkeypatch) -> None:
+    # Feature 3 pin, for the same reason as the two sibling tests in this file
+    # that were already order-dependent: this asserts that the four wind
+    # directions drive the searcher into DISTINCT regions. A corner spawn starts
+    # every run in the same corner inside the near-edge regime, which compresses
+    # the early trajectories and collapses the distinctness this test measures.
+    # Reported in outputs/basestation_report.txt. monkeypatch restores it.
+    monkeypatch.setattr(cfv, "BASE_STATION_MODE", 0, raising=False)
     steps = 35
     traces = {
         wind: _run_wind_simulation(wind, steps=steps, seed=DEFAULT_SEED)

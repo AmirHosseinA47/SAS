@@ -205,6 +205,20 @@ class DashboardStateBuilder:
                     "role": role,
                     "position": pos,
                     "battery": float(getattr(agent, "battery_level", 0.0) or 0.0),
+                    # battery_status is computed every step on the agent and was
+                    # never published; base_state is feature 3. Both are display
+                    # only. If either is added here, serve_dashboard._slim_panel's
+                    # whitelist must list it or the browser silently sees nothing.
+                    "battery_status": str(getattr(agent, "battery_status", "") or ""),
+                    # "docked" and "charging" are deliberately distinct: at
+                    # BASE_STATION_MODE 2 a UAV returns and parks but nothing
+                    # recharges it, and calling that "charging" would hide the
+                    # cost the return-only increment is there to measure.
+                    "base_state": (
+                        ("charging" if agents.base_station_mode() >= 3 else "docked")
+                        if getattr(agent, "rtb_docked", False)
+                        else ("returning" if getattr(agent, "rtb_active", False) else "")
+                    ),
                     "execution_action": execution_action,
                     "target_position": target,
                     "fail_safe_override_active": fail_safe_override,

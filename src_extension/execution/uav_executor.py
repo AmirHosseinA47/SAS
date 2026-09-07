@@ -401,7 +401,22 @@ class UAVExecutor:
                 agent, decision, role_kind, action
             )
 
-        if self._role_is_victim_searcher(role) and action != "hold":
+        # Feature 3, mechanism 1. A base return is exempt from both post-filters,
+        # the same way a deliberately pathfinding-routed escape already is. Both
+        # filters are GEOMETRY filters, not fire filters: the searcher hazard gate
+        # replaces the chosen direction with a hazard-scored retreat, and
+        # _safe_direction_or_escape pushes a UAV near a boundary back toward the
+        # interior. A depot berth is by construction near a boundary, so leaving
+        # them in place does not make the return safer - it makes it impossible,
+        # and it was measured doing exactly that (searchers oscillating one cell
+        # short of the berth, trackers walking away from it). The fire awareness
+        # that separates this mechanism from the hardcoded one lives in
+        # _choose_best_direction, which still penalises burning, high-fire-
+        # probability and smoke-obscured cells and is untouched here.
+        base_return_leg = action == "rtb_waypoint"
+        if base_return_leg:
+            pass
+        elif self._role_is_victim_searcher(role) and action != "hold":
             pathfinding_routed = (
                 "retarget_to_interior" in str(action or "")
                 and str(getattr(self, "_last_escape_method", "") or "") != ""
@@ -859,6 +874,34 @@ class UAVExecutor:
             "victim" in normalized and "search" in normalized
         )
 
+    def _base_return_direction(
+        self,
+        agent: Any,
+        decision: PathDecision,
+        action: str,
+    ) -> tuple[int, str] | None:
+        """Feature 3, mechanism 1: steer at the berth carried on the path decision.
+
+        Keyed on the option id as well as the action, because the action alone is
+        not reliable here: local_uav_path_planner rewrites next_action to a
+        CARDINAL word whenever the option carries a target_position and is not the
+        wind-aware search, so "return_to_base" arrives as "west". The option id
+        survives that rewrite, and it is the same marker the dispatcher's own
+        _path_consistent_with_return_to_base test relies on.
+        """
+        marker = "return_to_base"
+        if marker not in str(action or "").strip().lower() and marker not in str(
+            getattr(decision, "selected_option_id", "") or ""
+        ).strip().lower():
+            return None
+        waypoints = decision.waypoints_by_uav.get(self.uav_id)
+        if not waypoints:
+            return None
+        return (
+            self._choose_best_direction(agent, waypoints[0], "base_return"),
+            "rtb_waypoint",
+        )
+
     def _resolve_direction_intent(
         self,
         agent: Any,
@@ -867,6 +910,15 @@ class UAVExecutor:
         action: str,
     ) -> tuple[int, str]:
         chosen_dir = int(getattr(agent, "selected_dir", 0))
+
+        # Feature 3, mechanism 1. A base return has to be resolved BEFORE the role
+        # branches: both of them return as soon as they find a target, so a
+        # searcher that can see any victim would steer to the victim and the
+        # waypoint channel further down would never be read. Guarded on the action
+        # token, so it is inert unless a base-return path decision exists.
+        base_return = self._base_return_direction(agent, decision, action)
+        if base_return is not None:
+            return base_return
 
         if role_kind == "victim":
             target = self._nearest_target(self._victim_positions_from_runtime())
@@ -4190,6 +4242,18 @@ class UAVExecutor:
             (preferred + 2) % 4,
         )
         victim_mode = target_kind == "victim"
+        # Feature 3, mechanism 1. A base return is the one target in this model
+        # that UAVs are supposed to CONVERGE on. The two terms below - the visit
+        # penalty and the inter-UAV separation penalty - are dispersion
+        # heuristics for coverage, not safety rules, and they dominate the
+        # 0.1-per-cell distance term: with four UAVs inside one observation
+        # radius the separation term alone reaches -18. Measured, they prevent a
+        # fleet from ever reaching a shared depot (one UAV alone converges in
+        # three steps; four never arrive). They are skipped for a return leg. The
+        # fire, smoke and fire-probability penalties below are NOT skipped, which
+        # is what keeps this mechanism fire-aware and distinct from the hardcoded
+        # one.
+        base_return_mode = target_kind == "base_return"
         scored: list[tuple[float, int, float]] = []
         ax, ay = float(agent.pos[0]), float(agent.pos[1])
         tx, ty = float(target[0]), float(target[1])
@@ -4247,11 +4311,18 @@ class UAVExecutor:
                 score -= 2.0
             elif hasattr(smoke_status_2, "value") and "smoke" in str(smoke_status_2.value).lower():
                 score -= 2.0
-            score -= self._visit_penalty(nx, ny) * 0.5
+            if not base_return_mode:
+                score -= self._visit_penalty(nx, ny) * 0.5
             if self._is_failed_direction(direction):
                 score -= 5.0
             if direction == preferred:
                 score += 0.5
+            if base_return_mode:
+                # Make closing the distance the dominant term for a return leg,
+                # the way progress already dominates in victim_mode.
+                score += progress * 2.0
+                if progress < 0:
+                    score -= 4.0
             if (
                 victim_mode
                 and direction == preferred
@@ -4261,7 +4332,7 @@ class UAVExecutor:
             ):
                 score += 1.5
             model = getattr(agent, "model", None) or self._model
-            if model is not None:
+            if model is not None and not base_return_mode:
                 obs_radius = getattr(
                     model,
                     "UAV_OBSERVATION_RADIUS",
