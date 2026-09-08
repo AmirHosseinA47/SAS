@@ -15,6 +15,7 @@ import matplotlib.pyplot as plt
 
 import agents
 
+import common_fixed_variables as cfv
 from common_fixed_variables import *
 from src_extension.knowledge.communication_model import CommunicationModel
 from src_extension.knowledge.fire_runtime_model import FireRuntimeModel
@@ -2536,13 +2537,32 @@ class WildFireModel(mesa.Model):
         if not isinstance(markers, dict) or not isinstance(victim_markers, dict):
             return
 
+        # `stale` is the no-referent candidate list and is deliberately NOT
+        # `blocked`: the `assigned` filter below exists only for the reachability
+        # test, and a unit that kept `assigned` through a SECOND route_blocked
+        # raise on the same pair - _handle_rescue_incident returns at :3402
+        # before its unassign - is exactly the latch that filter would hide. At
+        # mode 0 `stale_mode` is 0, the append never runs, `stale` stays empty
+        # and every line below that mentions it short-circuits to the pre-fix
+        # behaviour. Enclosure is deferred to _clear_stale_route_blocks: it is a
+        # grid read and must not run on the fast path.
+        stale_mode = self._route_block_stale_clear_mode()
         blocked: list[tuple[str, Any]] = []
+        stale: list[tuple[str, Any]] = []
         for ff_id, ff_marker in markers.items():
             status = str(getattr(ff_marker, "status", "") or "").strip().lower()
             if status != "route_blocked":
                 continue
             if getattr(ff_marker, "dead", False):
                 continue
+            if (
+                stale_mode
+                and not getattr(ff_marker, "exiting", False)
+                and getattr(ff_marker, "pos", None) is not None
+                and not getattr(ff_marker, "rescue_completed", False)
+                and (stale_mode >= 2 or not getattr(ff_marker, "assigned", False))
+            ):
+                stale.append((str(ff_id), ff_marker))
             if getattr(ff_marker, "assigned", False):
                 continue
             if getattr(ff_marker, "exiting", False):
@@ -2550,7 +2570,7 @@ class WildFireModel(mesa.Model):
             if getattr(ff_marker, "pos", None) is None:
                 continue
             blocked.append((str(ff_id), ff_marker))
-        if not blocked:
+        if not blocked and not stale:
             return
 
         # Live victim cells. The flag was raised against the cell the victim
@@ -2564,6 +2584,55 @@ class WildFireModel(mesa.Model):
             if pos is not None:
                 victim_cells.append((int(pos[0]), int(pos[1])))
         if not victim_cells:
+            # No live victim anywhere: the flag has outlived its referent, and
+            # the loop below cannot even ask its question - there is no cell
+            # left to test a path to. The other two clears are disarmed by the
+            # same single act. The replacement unassign issued inside the
+            # raise's own call stack (:4449-4453) nulled target_pos, which
+            # Firefighter.advance needs before it will enter _move_toward at all
+            # (agents.py:1114/1163/1198, the third of which needs exiting and
+            # exit_target - nulled too), and nulled rescued_victim, which
+            # _release_other_claimants reads through _bound at :3582 before it
+            # can reach its own no-referent clear at :3632. So the flag would
+            # stand to the horizon while four gates - :3040, :3474, :4339 and
+            # rescue_planner.py:591 - keep refusing a unit that is unharmed,
+            # unassigned and standing on open ground.
+            #
+            # This is the one site BOTH terminal shapes reach. When the last
+            # victim DIES, _release_other_claimants runs (from :3331) and is
+            # defeated by _bound; the pass then runs in the same step with
+            # victim_cells empty. When the last victim is marked UNREACHABLE the
+            # helper is never called at all - none of its three call sites
+            # (:3331, :3354, :3388) is on either unreachable path, neither the
+            # planner decision applied at :3416-3425, whose mark_unreachable
+            # handler touches no firefighter field, nor the escape sweep.
+            #
+            # Deliberately NOT placed at the unassign: :3416 takes the
+            # replacement decision three statements later in the same frame, off
+            # a snapshot re-derived from this marker (:3139, :3141), and the
+            # planner selects on Manhattan distance with no path test anywhere.
+            # Here the pass runs from adaptation_manager.py:184, after both
+            # incident drains, so no pairing this step has seen the cleared
+            # status - 70e1b33's "no unit is its own replacement", preserved by
+            # ordering exactly as before.
+            #
+            # NO DISPATCH CAN FOLLOW, and NOT because victim status is monotone -
+            # it is not: the reset_victim_pending arm of the unassign relabels a
+            # victim "confirmed" at :4489-4491 (guarded only against dead and
+            # rescued) and writes the marker unguarded at :4499. The load-bearing
+            # fact is different: mark_unreachable also sets state.cancelled
+            # (:4518) and state.unreachable (:4522), reset_victim_pending resets
+            # NEITHER, the snapshot exports both (:3104-3111), and
+            # rescue_planner.py:556-559 drops any victim carrying either. If a
+            # later round makes reset_victim_pending clear those two booleans,
+            # this branch becomes a source of zero-path-evidence dispatches -
+            # tests/test_route_block_stale_clear.py pins them for that reason.
+            #
+            # No dispatch kick either, unlike the tail at :2669:
+            # _any_victim_needs_rescue() is False, so there is nothing to
+            # dispatch to. Nothing here draws from any RNG stream.
+            if stale and not self._any_victim_needs_rescue():
+                self._clear_stale_route_blocks(stale, stale_mode)
             return
 
         recovered: list[str] = []
@@ -3628,6 +3697,120 @@ class WildFireModel(mesa.Model):
             )
         except Exception:
             return False
+
+    @staticmethod
+    def _route_block_stale_clear_mode() -> int:
+        """ROUTE_BLOCK_STALE_CLEAR: 0 kill switch / 1 unassigned only / 2 also bound.
+
+        Read at CALL TIME from the common_fixed_variables MODULE, never through
+        the star-imported name at :19 and never at import time. Two reasons, one
+        specific to this file: apply_scenario_config
+        (local_adaptation_generator.py:270-273) sets the attribute on BOTH cfv
+        and wildfire_model, so a bare global read would in fact see a harness
+        --set override here - but the tests set only cfv (test_base_station.py,
+        test_victim_searcher_hazard_retreat.py), and any future caller that
+        passes one module makes the star-imported name dead. Reading cfv is the
+        only form correct under both, and it is the house pattern
+        (agents.py:561, uav_executor.py:2099). A module-level read would freeze
+        at import and make the switch silently inert - the dead-input defect
+        this repo has already hit nine times.
+
+        Out-of-range NUMBERS clamp to the ladder (-5 -> 0, 99 -> 2), matching
+        base_station_mode's contract at agents.py:561-565; a missing or
+        unparseable value falls back to the SHIPPED default, which is 1.
+        """
+        try:
+            return max(0, min(2, int(getattr(cfv, "ROUTE_BLOCK_STALE_CLEAR", 1))))
+        except (TypeError, ValueError):
+            return 1
+
+    def _clear_stale_route_blocks(
+        self, stale: list[tuple[str, Any]], mode: int
+    ) -> None:
+        """Drop route_blocked flags that have lost their referent. Never at mode 0.
+
+        Only ever called from _revalidate_route_blocked_firefighters, and only
+        once _any_victim_needs_rescue() is False - so every referent still bound
+        here is terminal by construction and no release can steal a live claim.
+
+        The status write goes on the MARKER, never on managed_firefighters:
+        _sync_firefighter_operational_knowledge re-derives every reported field
+        from the marker (_derive_firefighter_operational_fields), which is why
+        70e1b33 calls the managed-state guard at :4454-4471 provably inert.
+        "available" is the right label because it is exactly what the agent's own
+        clear computes for an unassigned unit (agents.py:1816) and the only
+        status that maps to availability available / route_state idle /
+        route_blocked False.
+        """
+        for ff_id, ff_marker in stale:
+            try:
+                # 70e1b33's trapped guard, via the shared helper rather than a
+                # re-inlined copy: a unit with no fire-free neighbour is
+                # genuinely blocked and must stay flagged.
+                if self._firefighter_fire_enclosed(ff_marker):
+                    continue
+                # WIDER THAN THE MEMBERSHIP TEST ON PURPOSE. Stale MEMBERSHIP
+                # branches on `assigned` alone (:2563); this branches on the
+                # full binding. The two agree today only because of a cross-file
+                # invariant nothing here enforces: every site that writes
+                # assigned=False on a firefighter marker nulls target_pos and
+                # rescued_victim in the same block (agents.py:978-981,
+                # wildfire_model.py:2207-2211, :2291-2295, :4439-4441). If that
+                # ever stops holding, a unit could enter `stale` at rung 1 and
+                # be skipped here while rung 2 released it - so keep the wide
+                # form, which fails safe by leaving the flag up.
+                bound = (
+                    bool(getattr(ff_marker, "assigned", False))
+                    or getattr(ff_marker, "rescued_victim", None) is not None
+                    or getattr(ff_marker, "target_pos", None) is not None
+                )
+                if bound:
+                    if mode < 2:
+                        continue
+                    # Clearing status alone would leave it undispatchable at
+                    # :3042 on `assigned`, and agents.py:1816 would relabel it
+                    # "assigned" rather than "available" - a latch that hides
+                    # from any detector counting status == "route_blocked". So
+                    # release the stale claim first, through the audited path.
+                    # metadata={} deliberately: reset_victim_pending would
+                    # relabel the terminal victim back to "confirmed"
+                    # (:4489-4491 guards only dead/rescued; :4499 is unguarded).
+                    rv = getattr(ff_marker, "rescued_victim", None)
+                    vid = self._victim_id_from_agent(rv) if rv is not None else ""
+                    result = self._execute_physical_rescue_via_executor(
+                        PhysicalRescueCommand(
+                            action="unassign",
+                            victim_id=str(vid or ""),
+                            firefighter_id=str(ff_id),
+                            reason="stale_route_block_no_referent",
+                            metadata={},
+                        )
+                    )
+                    if not result.get("success"):
+                        continue
+                    self.ff_route_blocks_stale_released_total = (
+                        int(
+                            getattr(self, "ff_route_blocks_stale_released_total", 0)
+                            or 0
+                        )
+                        + 1
+                    )
+                ff_marker.status = "available"
+            except Exception as exc:
+                print(
+                    f"[Route Cleared] FF-{ff_id} stale clear failed: "
+                    f"{type(exc).__name__}: {exc}"
+                )
+                continue
+            self.ff_route_blocks_stale_cleared_total = (
+                int(getattr(self, "ff_route_blocks_stale_cleared_total", 0) or 0) + 1
+            )
+            unit_label = str(getattr(ff_marker, "unit_id", ff_id) or ff_id)
+            print(
+                f"[Route Cleared] FF-{unit_label} flag dropped with no "
+                f"victim left to reach at {ff_marker.pos}"
+            )
+            self._sync_firefighter_operational_knowledge([ff_id])
 
     def _find_closest_available_firefighter(
         self, victim_pos: tuple[int, int]

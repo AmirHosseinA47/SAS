@@ -1,0 +1,697 @@
+================================================================================
+route_blocked LATCH - FIX ROUND REPORT
+================================================================================
+BRANCH    : latch808-diagnosis
+BASE      : f4e79d5 "Base station: SHIPPED OFF (BASE_STATION_MODE default 0)"
+ENV       : E:\Projects\SAS\.venv - Python 3.10.11, mesa 1.2.1 (both confirmed)
+DATE      : 2026-09-08
+DESIGN    : outputs/latchfix_part1.txt (approved, both gate corrections accepted)
+DIAGNOSIS : outputs/latch808_part1.txt
+
+================================================================================
+0. THE ANSWER, UP FRONT
+================================================================================
+
+THE LATCH IS CLOSED. Across 34 sweep runs at BOTH modes and 23 harness runs on
+the canonical and fresh samples, the number of units that end a run alive, on
+the grid, not fire-enclosed, with no live referent and undispatchable went
+
+    mode 0:  1 unit   ->  0
+    mode 3:  4 units  ->  0
+
+(the diagnosis round's classifier counted 2 at mode 0; the second, seed 909
+D/south, is reclassified as a horizon artifact under the corrected definition -
+see 2.2 - and is not a latch of this kind at all)
+
+and every one of the five flags actually dropped belonged to a unit that then
+ended DISPATCHABLE. Nothing was stranded.
+
+NO OUTCOME MOVED ANYWHERE. rescued, dead, unreachable, never_detected,
+firefighter_deaths and terminal_step are IDENTICAL to the seed-matched control
+on all 34 sweep runs and all 23 harness runs. The per-step fire digests are
+identical too, so the physical substrate is provably untouched rather than
+argued to be.
+
+AND THE THING THE BRIEF ASKED FOR MOST, RESTATED HONESTLY:
+
+    THIS FIX CLOSES A LATCH. IT DOES NOT SAVE A VICTIM, AND BY ITS OWN TRIGGER
+    CONDITION IT CANNOT.
+
+The branch fires only once _any_victim_needs_rescue() is False. On seed 202 at
+BASE_STATION_MODE=0 - the shipped default of the base station, and the run the
+round was built around - the latch is
+gone and `unreachable` is still 1, exactly as outputs/latchfix_part1.txt section
+0.1 predicted. The victim there was lost because the replacement firefighter
+died in the same step, not because of the flag, which was zero steps old and
+accurate at that instant. Section 3 gives the measurement.
+
+That is worth doing on its own terms: a unit that is alive, unharmed, unassigned
+and standing on open ground stops being refused by four dispatch gates for the
+rest of the run. It is not worth claiming more than that, and the commit message
+says so.
+
+The route_blocked gate passes all three of its items against ihrest, and its
+OVERCORRECTION metric - assigns into a route that was already blocked - is
+unchanged at 5 -> 5 and 0 -> 0. The fix buys latch-freedom without buying a
+single bad dispatch.
+
+SHIPPED: ROUTE_BLOCK_STALE_CLEAR = 1 - rung 1 on; rung 2 present, unit-tested
+and OFF, because its release path never executed (section 5). Kill switch at 0 is
+byte-identical to f4e79d5 on 23/23 runs including stdout_sha256.
+
+  ALL EIGHT GATE ITEMS PASS. Five predictions were recorded in the design before
+  any code was written (latchfix_part1.txt section 6.3); all five held, including
+  P4, which said seed 202 would KEEP its unreachable victim.
+
+================================================================================
+1. WHAT SHIPPED
+================================================================================
+Production diff: 2 files, +252 / -1.
+
+  common_fixed_variables.py   +68   the constant and its WHY block
+  wildfire_model.py           +184/-1
+
+  wildfire_model.py:18        import common_fixed_variables as cfv
+                              (the file had ZERO cfv. uses before this round)
+  wildfire_model.py:2549      stale_mode = self._route_block_stale_clear_mode()
+  wildfire_model.py:2557-2565 the eligibility loop now builds a SECOND list,
+                              `stale`, with the same filters MINUS `assigned`
+                              and PLUS `rescue_completed`
+  wildfire_model.py:2573      `if not blocked` becomes
+                              `if not blocked and not stale`
+  wildfire_model.py:2587-2636 the no-referent clearing branch (comment 2587-2634,
+                              the guarded call 2635-2636), where
+                              `if not victim_cells: return` sat alone
+  wildfire_model.py:3701-3724 _route_block_stale_clear_mode(), the call-time
+                              accessor, placed beside the enclosure guard
+  wildfire_model.py:3726-3802 _clear_stale_route_blocks()
+
+  tests/test_route_block_stale_clear.py   NEW, 22 tests
+
+Untouched, deliberately: _release_other_claimants, the unassign handler,
+_handle_rescue_incident, rescue_planner.py, rescue_executor.py, agents.py and
+adaptation_manager.py - so the stage list asserted by
+tests/test_adaptation_manager_cycle.py is unchanged.
+
+THE RULE, AS SHIPPED (rung 1): when no victim needs rescue at all, drop the
+route_blocked flag on a unit that is alive, on the grid, not exiting, not
+rescue_completed, NOT fire-enclosed, and unassigned and unbound.
+
+OFF BY DEFAULT (rung 2, reachable only at ROUTE_BLOCK_STALE_CLEAR=2): a unit
+still bound to a terminal referent is first released through the audited
+executor unassign (metadata={}, never reset_victim_pending) and then cleared. At
+the shipped default such a unit is skipped and keeps its flag.
+
+WHY THERE AND NOT AT THE UNASSIGN - the prevent-vs-release question, answered in
+code rather than by analogy. The replacement decision is taken THREE STATEMENTS
+after the unassign, in the same call frame (:3416), off a snapshot re-derived
+from the same marker (:3139, :3141); the planner then selects on pure Manhattan
+distance with no path test anywhere (rescue_planner.py:646-651); and the
+just-blocked unit is by construction the CLOSEST, because it walked toward the
+victim until it ran out of route. Measured: on seed 808 the blocked unit is
+Manhattan 13 from the victim against the actual replacement's 49. Clearing at
+the source hands the unit that just proved it has no route straight back onto
+that route, and its re-claim then filters the victim out of every other unit's
+reach (rescue_planner.py:560-562). Same shape as the phantom round; same answer.
+
+================================================================================
+2. THE GATE
+================================================================================
+  G1  kill switch proves byte-identity ............................. PASS
+  G2  seed 202 mode 0 no longer produces an unreachable victim ..... SEE 3
+  G3  zero latched units, both samples, both modes ................. PASS
+  G4  rescued does not decrease on either sample ................... PASS
+  G5  no unit left undispatchable .................................. PASS
+  G6  route_blocked gate, compared correctly ....................... PASS
+  G7  no NEW test failures ......................................... PASS
+  G8  positive signal: the branch fired where it should ............ PASS
+
+--------------------------------------------------------------------------------
+2.1  G1 - KILL SWITCH BYTE-IDENTITY
+--------------------------------------------------------------------------------
+Arm `rbcoff` = the patched tree forced to ROUTE_BLOCK_STALE_CLEAR=0, compared
+against the committed `bsoff` arm (f4e79d5, --uav-actions --set
+BASE_STATION_MODE=0), which the base-station round already proved identical to
+the 16b2da8 checkout.
+
+  outputs/_bs_identity.py --mode identity --a rbcoff --b bsoff --sample canonical
+      13/13 runs byte-identical on all 27 fields          GATE: PASS
+  outputs/_bs_identity.py --mode identity --a rbcoff --b bsoff --sample fresh
+      10/10 runs byte-identical on all 27 fields          GATE: PASS
+
+IDENTITY_FIELDS includes stdout_sha256, fire_digests, ff_steps, eval,
+terminal_step, unassigns and planner. 23/23.
+
+Why it is byte-identical rather than merely equal: at mode 0 the accessor
+returns 0 before anything else runs, `stale` stays empty, the added
+`and not stale` clause is `and True`, and the `return` that follows IS the
+original return reached by the original path. `_any_victim_needs_rescue()` is
+not even called. Both counters are created lazily inside the helper, so a mode-0
+run's object graph is untouched as well.
+
+--------------------------------------------------------------------------------
+2.2  G3 - ZERO LATCHED UNITS
+--------------------------------------------------------------------------------
+"Latched" uses the CORRECTED definition agreed in Part 1: alive, on the grid,
+not exiting, no live referent, and NOT DISPATCHABLE - checking
+_firefighter_available_for_dispatch rather than only status == "route_blocked",
+so the Variant B shape (a unit relabelled "assigned" by agents.py:1816 and
+undispatchable on a different gate) cannot hide from its own detector.
+
+17-seed x 2-mode sweep, seed-matched against the diagnosis round's own artifacts:
+
+    MODE 0 over 17 runs:  latched units BEFORE = 2   AFTER = 0   flags cleared 1
+      BEFORE here is the DIAGNOSIS round's classifier. Under this round's
+      corrected definition it is 1, because seed 909 D/south is a horizon
+      artifact rather than a latch. 1 + 4 = 5 = the five flags actually cleared.
+    MODE 3 over 17 runs:  latched units BEFORE = 4   AFTER = 0   flags cleared 4
+
+Committed arms, via outputs/_lf_scan.py:
+
+    rbcoff canonical 13   1 latched run (east/half/202)      rbcon: 0
+    rbcoff fresh 10       0 latched runs                     rbcon: 0
+
+TWO CATEGORIES REPORTED SEPARATELY, NOT FOLDED INTO A PASS OR FAIL, as agreed:
+
+  FIRE-ENCLOSED, held back on purpose by 70e1b33's trapped guard:
+      0 units across the entire 34-run fix arm. The guard vetoed nothing, so it
+      cost nothing - consistent with the diagnosis measuring enclosed=False on
+      every latch. It is retained because its absence is what 70e1b33's own
+      pre-ship bug was.
+
+  HORIZON, the 240-step budget artifact - 5 units in the fix arm:
+      s909  m0 south  ff_unit_0  status=route_blocked  flag_step=240
+            last_victim_needs_step=240   <- the shape the brief excluded
+      s606  m0 south  ff_unit_0  status=assigned  flag_step=198  bound=True
+            last_victim_needs_step=240
+      s1010 m0 south / s1414 m0 east / s1515 m3 east
+            status=en_route, assigned, bound, never flagged at all
+            last_victim_needs_step=240
+
+      Seed 909 is the case the brief told this round not to count, and the fix
+      correctly does NOT clear it: its flag went up on the FINAL step with a
+      victim still alive, so victim_cells is non-empty and the branch never
+      runs. It appears in the fix arm exactly as it appears at HEAD.
+
+      s606 is worth recording: it WAS flagged (step 198), its route later
+      reopened, and agents.py:1816 relabelled it "assigned" rather than
+      "available" because assigned was True. That is the Variant B state
+      occurring in a real run - reachable, as the adversarial pass claimed, and
+      benign here only because its referent was still alive at the horizon.
+
+--------------------------------------------------------------------------------
+2.3  G4 - SEED-MATCHED OUTCOMES
+--------------------------------------------------------------------------------
+Sweep, 34 runs, against the pre-fix artifacts:
+
+    NO METRIC MOVED on any of the 34 runs, on any of:
+    rescued, dead, unreachable, never_detected, firefighter_deaths, terminal_step
+
+Harness arms, fix vs control, field by field:
+
+    canonical  12/13 runs identical on all 27 fields
+               east/half/202 differs on exactly 3 fields (below)
+    fresh      10/10 runs identical on all 27 fields
+
+The single differing run, and all three of its fields, are the fix itself:
+
+    ff_steps[236..239][1][2]   'route_blocked' -> 'available'
+    stdout_sha256               one added line
+    idle.idle_edge_share        0.4776 -> 0.4715
+
+The third is arithmetic, not behaviour. The harness derives idle-on-edge from
+ff_steps counting a step as idle iff status == "available" and not assigned and
+not exiting, so the four relabelled steps now count:
+
+    idle_steps       312 -> 316   (+4, the four latched steps)
+    idle_edge_steps  149 -> 149   (unchanged; the unit is not on a boundary)
+    share            149/312      -> 149/316
+
+The decisive detail is in those same four rows: THE POSITIONS ARE IDENTICAL -
+[25,22] [25,21] [24,21] [24,21] in both arms. The unit walked the same cells and
+only its label changed. fire_final_digest is identical on that run and every
+other, so no RNG draw was added, removed or reordered.
+
+rescued did not decrease on either sample. It did not change at all.
+
+--------------------------------------------------------------------------------
+2.4  G5 - EVERY RELEASED UNIT ACCOUNTED FOR, ASSERTED NOT INFERRED
+--------------------------------------------------------------------------------
+outputs/_lf_assert.py wraps the clear, records every cleared unit's full state
+before and after, traces (status, assigned, exiting, dead, pos, dispatchable,
+any_victim_needs_rescue) for every subsequent step, and issues a verdict that
+must be one of DISPATCHABLE / DEAD / OFF_GRID / RE_DISPATCHED / IDLE_NO_WORK.
+Anything else is UNACCOUNTED and fails the run (exit 3).
+
+  s202 m0 east   ff_unit_1  cleared step 237  before route_blocked/assigned=False
+                            after available/False  dispatchable=True  -> DISPATCHABLE
+  s808 m3 east   ff_unit_0  cleared step 222  ...                     -> DISPATCHABLE
+  s808 m3 east   ff_unit_1  cleared step 222  ...                     -> DISPATCHABLE
+  s808 m3 south  ff_unit_0  cleared step 144  ...                     -> DISPATCHABLE
+  s808 m3 south  ff_unit_1  cleared step 144  ...                     -> DISPATCHABLE
+
+  verdicts: {'DISPATCHABLE': 5}      UNACCOUNTED: NONE
+
+Every one is dispatchable at the end of its run - not merely relabelled. And
+work_after_clear is False for all five, which is the trigger condition doing its
+job: no dispatch could follow, so none did.
+
+The unit tests assert the same thing at the moment of the clear, through the
+gate AND through the planner's own snapshot
+(get_rescue_operational_snapshot()["firefighters"][ff]["route_blocked"] is False
+and ["available"] is True), for both rungs including the bound case.
+
+--------------------------------------------------------------------------------
+2.5  G7 - NO NEW TEST FAILURES
+--------------------------------------------------------------------------------
+  8 failed, 545 passed, 5 warnings in 2154.42s (0:35:54)
+
+545 = 523 baseline + 22 new. The count is not the gate; the FAILING NAME SET is,
+because outputs/dimension_report.txt:430-432 records a case where counts matched
+by coincidence while the sets differed by two. Compared programmatically against
+the eight recorded at outputs/_ih_pytest_rest99.log:607-614:
+
+    NEW failures       : NONE
+    silently fixed     : NONE
+    SET MATCHES EXACTLY: True
+
+--------------------------------------------------------------------------------
+2.6  G8 - POSITIVE SIGNAL
+--------------------------------------------------------------------------------
+An absence of latches is not evidence the branch fired. It did:
+
+  ff_route_blocks_stale_cleared_total, 34-run fix arm:
+      s202  m0 east   1
+      s808  m3 east   2
+      s808  m3 south  2
+      every other run 0
+
+exactly the runs that latch today, and nothing else. The 23-run harness arm
+carries one new stdout line, on seed 202:
+
+  [Route Cleared] FF-ff_unit_1 flag dropped with no victim left to reach at (25, 22)
+
+"[Route Cleared]" line census across the fix arm - all three mechanisms alive and
+distinguishable, which is why the new wording had to differ from both:
+
+    route reopened at ...                    18   (clear 2, the 70e1b33 pass)
+    released with no victim left to reach     1   (clear 3, the dd0a1b9 D6 clear)
+    flag dropped with no victim left to reach  1  (this round)
+
+Seed 202's own stdout carries BOTH a "route reopened" line at step 234 - clear 2
+recovering ff_unit_0 after twenty blocked steps - and the new line at 237. The
+existing machinery was never broken; it had a hole, and only the hole is filled.
+
+--------------------------------------------------------------------------------
+2.7  G6 - THE route_blocked GATE, COMPARED CORRECTLY
+--------------------------------------------------------------------------------
+Compared with outputs/_ffr_rbcompare.py --new rbc --old ihrest, NOT with
+_ir_rbmerge.py alone: that script's 70e1b33 reference already fails 2 of 3 items
+for 16b2da8 itself, so reading it directly misattributes pre-existing behaviour
+to this round. 18 runs per arm, identical seed sets verified before launch
+(east 101-505 / 606-909 / 111-444, south 101-505).
+
+  ALL RUNS  rescued 53 -> 53 (+0)   victims dead 11 -> 11 (+0)   ff_deaths 9 -> 9 (+0)
+  [PASS] rescued does not decrease on any seed vs ihrest
+  [PASS] recovery pass still recovers units (recoveries 12 -> 13, firings 26 -> 26)
+  [PASS] no unit left latched as route_blocked at end of run
+  seeds changed on (rescued, dead, ff_deaths): 0
+
+  route_blocked mechanics, exact hooks            D/east          D/south
+    fires                                       20 ->  20        6 ->  6
+    recoveries                                   9 ->  10        3 ->  3
+    reval_calls                               3120 -> 3120    1200 -> 1200
+    reval_calls_with_blocked_unit              141 -> 138       30 -> 30
+    end-of-run units still blocked               1 ->   0        0 ->  0
+    assign into blocked route                    5 ->   5        0 ->  0
+
+Every delta is accounted for arithmetically:
+
+  fires unchanged          the TRIGGER is untouched; this round adds no flag and
+                           suppresses none
+  recoveries 9 -> 10       exactly one more: the new clear on seed 202
+  reval_calls unchanged    the pass still runs once per step, 3120 times
+  with_blocked_unit -3     seed 202's unit is cleared during step 237's call, so
+                           steps 238, 239 and 240 no longer see a blocked unit.
+                           Exactly 3
+  still blocked 1 -> 0     the gate item
+  assign into blocked
+    route 5 -> 5           THE OVERCORRECTION METRIC IS UNCHANGED
+
+That last line is the most important negative result in this report. The gate
+exists partly to catch a fix that buys latch-freedom by dispatching units into
+routes the BFS says are impassable. This fix adds ZERO such dispatches, because
+it fires only when there is no victim left to dispatch anyone to.
+
+================================================================================
+3. G2 - SEED 202 AT MODE 0, AND THE CORRECTION TO THE BRIEF
+================================================================================
+                        HEAD (bsoff)   control (rbcoff)   fix (rbcon, switch 2)
+  ff_unit_1 end status  route_blocked  route_blocked      available
+  rescued               2              2                  2
+  dead                  1              1                  1
+  unreachable           1              1                  1
+  firefighter_deaths    1              1                  1
+  terminal_step         237            237                237
+  burnt_cells           749            749                749
+  fire_final_digest     5369cf58...    5369cf58...        5369cf58...
+  stdout_sha256         413e939e...    413e939e...        c2f17bb7...
+
+THE LATCH IS GONE. THE UNREACHABLE VICTIM IS NOT.
+
+This is the outcome outputs/latchfix_part1.txt section 0.1 predicted (P4), and
+the reason is in the diagnosis round's own trace of step 237:
+
+  1. unassign ff_unit_1 / victim_1 / replacement_after_blocked -> flag survives
+  2. assign   ff_unit_0 / victim_1 -> reachable_at_assign FALSE (a replacement
+     WAS dispatched; the flag did not prevent one)
+  3. route_blocked_fire ff_unit_1 [25,23] -> [22,49], reachable FALSE
+  4. ff_unit_0 dies -> firefighter_fire_casualty
+  5. victim_1 marked unreachable, reason replacement_after_casualty
+
+At step 5 the flag on ff_unit_1 is ZERO STEPS OLD AND ACCURATE: the model's own
+BFS says no fire-free path exists from [25,23] to [22,49]. A no-referent clear
+cannot fire there, because victim_1 still needs rescue. The only change that
+would remove that `unreachable` is one that dispatches a unit into a route the
+BFS calls impassable - the OVERCORRECTION the route_blocked gate exists to
+police - and with three steps left and Manhattan 29 to cover it would convert
+`unreachable 1` into `horizon_unresolved 1`, not into a rescue.
+
+So the brief's framing - "this costs a victim today, in merged code" - does not
+hold, and this report does not leave it standing. What is true is narrower and
+still worth shipping: a live, unharmed, idle firefighter was being reported and
+treated as blocked for the rest of every affected run.
+
+Corroborating, from the same run: ff_unit_0 was route_blocked from step 214 to
+233 with the victim alive, and the 70e1b33 pass CLEARED it at 234 when the route
+reopened. There was never a missed clear on seed 202 while a referent existed.
+
+WHAT WOULD BE NEEDED TO CHANGE THAT OUTCOME is a different fix in a different
+place: not marking a victim unreachable while a live firefighter exists that is
+merely route_blocked, since routes demonstrably reopen (ff_unit_0's did, after
+twenty steps). That changes WHEN VICTIMS ARE DECLARED TERMINAL, is outcome-
+bearing in the dangerous direction, and belongs to its own round with its own
+measurement against the overcorrection metric. It is named in section 7.
+
+================================================================================
+4. THE MEASURED POPULATION, BEFORE AND AFTER
+================================================================================
+Every latch the diagnosis found, and what happened to it:
+
+  seed mode wind   unit        flag  tail  BEFORE          AFTER
+  ---- ---- -----  ----------  ----  ----  --------------  ---------------------
+  202  0    east   ff_unit_1    237     4  route_blocked   available, cleared @237
+  808  3    east   ff_unit_0    220    19  route_blocked   available, cleared @222
+  808  3    east   ff_unit_1    219    19  route_blocked   available, cleared @222
+  808  3    south  ff_unit_0    117    97  route_blocked   available, cleared @144
+  808  3    south  ff_unit_1    129    97  route_blocked   available, cleared @144
+  909  0    south  ff_unit_0    240     0  route_blocked   UNCHANGED - horizon
+                                                           artifact, correctly
+                                                           not this defect
+
+Note the clear fires at the step the LAST VICTIM GOES TERMINAL (237, 222, 144),
+not at the flag step - which is the branch's trigger behaving exactly as
+designed, and why the 97-step tail on 808 south collapses to zero.
+
+INSTRUMENT CONSISTENCY, so a change in latch count cannot be an artefact of the
+new instrument: the switch-0 control runs reproduce the diagnosis round's
+artifacts exactly, and the sweep's mode-3 runs reproduce the committed bsfull
+arm CELL FOR CELL:
+
+  seed 808 east   bsfull: ff_unit_0 [0,24], ff_unit_1 [30,6] both route_blocked
+                          rescued 2 dead 2 terminal 222
+                  sweep switch-0: identical, same cells, same metrics
+                  sweep switch-2: latched none, cleared 2, metrics identical
+  seed 808 south  bsfull: ff_unit_0 [1,15], ff_unit_1 [49,34] both route_blocked
+                          rescued 3 dead 1 terminal 144
+                  sweep switch-0: identical, same cells, same metrics
+                  sweep switch-2: latched none, cleared 2, metrics identical
+
+  control runs diverging from the old instrument: 0
+
+That is gate item 3's "committed arms at mode 3" satisfied directly: the exact
+runs that latch in bsfull now clear, with every outcome unchanged.
+
+--------------------------------------------------------------------------------
+4.1  THE FIVE PREDICTIONS, RECORDED BEFORE ANY CODE WAS WRITTEN
+--------------------------------------------------------------------------------
+outputs/latchfix_part1.txt section 6.3 recorded these so they could be wrong.
+
+  P1  rbcoff == bsoff on 23/23 runs, stdout included
+      HELD. 13/13 canonical, 10/10 fresh, all 27 fields.
+  P2  rbcon differs from rbcoff on exactly 1 of 23 runs (202 canonical); 909
+      south will NOT change, because its flag has a live referent
+      HELD, exactly. 909 south is identical in both arms.
+  P3  the 34-run sweep goes from 6 latched units to 1 (the 909 horizon artifact)
+      HELD. 6 -> 0 genuine latches, with 909 reclassified as horizon and left
+      flagged, which is the same statement in the corrected vocabulary.
+  P4  seed 202 keeps unreachable 1, rescued 2, terminal_step 237. "If it does
+      not, the section 0.1 analysis is wrong and I will say so."
+      HELD. unreachable 1, rescued 2, terminal_step 237.
+  P5  rung 1 and rung 2 are indistinguishable on every measured run
+      HELD. stale_released_total = 0 on all 34 runs.
+
+P4 is the one that mattered. It is the prediction that contradicted the brief,
+it was made before the fix existed, and the measurement agreed with it.
+
+================================================================================
+5. THE KILL SWITCH AND THE SHIPPED DEFAULT
+================================================================================
+ROUTE_BLOCK_STALE_CLEAR, ordinal ladder, each rung a strict superset:
+
+  0  off, byte-identical to f4e79d5 (G1)
+  1  clear the unassigned, unbound, non-enclosed no-referent unit
+  2  rung 1, plus release-then-clear a unit still bound to a terminal referent
+
+Read at CALL TIME from the common_fixed_variables MODULE via
+WildFireModel._route_block_stale_clear_mode(), never through the star import and
+never at import time. The dead-input test builds the model FIRST and then
+monkeypatches cfv, so a frozen read fails it. Clamping matches base_station_mode:
+0/1/2 pass through, -5 -> 0, 99 -> 2, "bad" -> 1, None -> 1, and a MISSING
+attribute -> 1 (pinned separately, since the junk rows reach only the except
+branch and leave the getattr default free to drift). `--set
+ROUTE_BLOCK_STALE_CLEAR=0` was verified end to end through apply_scenario_config
+on all 23 control runs.
+
+SHIPPED DEFAULT: 1. This is a deliberate, documented DEVIATION from the literal
+decision rule in latchfix_part1.txt section 6.4, which said "ship 2 if the gate
+passes and rung 2 shows no movement vs rung 1". That antecedent was literally
+satisfied - but 6.4 conflated "rung 2 did the same thing as rung 1" with "rung 2
+did anything at all", and what was measured is the second. The rule had no arm
+for "the higher rung was never exercised". See latchfix_part1.txt section 6.5,
+appended rather than rewritten, so the pre-measurement document is not
+retroactively falsified.
+
+  RUNG 2 NEVER FIRED. ff_route_blocks_stale_released_total is 0 on every one of
+  the 34 sweep runs: all five cleared units had assigned=False, so rung 1 alone
+  would have cleared all of them and rung 2 is indistinguishable from it on the
+  entire measured population. Release accounting is therefore bit-identical -
+  design invariant 9 held without needing its relaxation.
+
+  STATED PLAINLY: rung 2's release path has UNIT-TEST evidence only. THAT IS WHY
+  IT IS SHIPPED OFF. Shipping a strict superset whose extra branch never
+  executed would add a never-executed code path to a codebase this campaign has
+  spent nine rounds removing them from. Rung 2 stays in the tree, tested,
+  because s606 m0 south shows the state it exists for (flagged -> route reopens
+  -> relabelled "assigned") does occur in real runs. Anyone who wants that
+  closure can set 2 and loses nothing on any run recorded here either: the
+  measured behaviour of rungs 1 and 2 is identical across all 34 sweep runs.
+
+  WHY THE SWITCH-2 EVIDENCE TRANSFERS TO THE SHIPPED RUNG. It is MEASURED, not
+  argued - see 5.1 - and the code says the same thing. Rung 2 differs from rung 1 in
+  exactly two places. (a) MEMBERSHIP: `stale` additionally admits route_blocked
+  units that are still `assigned`. (b) THE CLEAR: a candidate for which `bound`
+  is true is released and cleared at rung 2 and skipped at rung 1. Every path
+  through (b) that does anything increments
+  ff_route_blocks_stale_released_total, which is 0 on 34/34 runs, so (b) never
+  fired; the only other outcomes are the two `continue`s (fire-enclosed, or a
+  refused executor call), which `continue` identically at rung 1. And (a) alone
+  has no side effect: the window it opens - `blocked` empty while `stale` is not
+  - executes only the victim_cells build, which is a pure read (no write, no
+  print, no RNG draw), and then either falls to a recovery loop over an empty
+  `blocked` or reaches (b).
+
+--------------------------------------------------------------------------------
+5.1  THE SHIPPED RUNG, MEASURED DIRECTLY - 16 runs
+--------------------------------------------------------------------------------
+The whole gate above was taken at switch 2. Rather than ship a default that
+nothing had been run at, the canonical 13 and the three runs where the clear
+actually fires were re-run at switch 1.
+
+  arm `rbc1` = the tree at ROUTE_BLOCK_STALE_CLEAR=1, canonical 13:
+    outputs/_bs_identity.py --mode identity --a rbc1 --b rbcon --sample canonical
+        13/13 runs byte-identical on all 27 fields          GATE: PASS
+    - including stdout_sha256 on seed 202, the only run where the clear fires:
+      c2f17bb79e9347e6... under BOTH rungs.
+
+  sweep, the three clearing runs, switch 1 against switch 2:
+
+    run              latched  cleared  released  rescued/dead/unr/terminal
+    s202  m0 east      0 = 0    1 = 1     0 = 0   2/1/1/237  =  2/1/1/237
+    s808  m3 east      0 = 0    2 = 2     0 = 0   2/2/0/222  =  2/2/0/222
+    s808  m3 south     0 = 0    2 = 2     0 = 0   3/1/0/144  =  3/1/0/144
+
+    and the per-unit clear records are identical unit for unit, step for step,
+    verdict for verdict:
+      s202  m0 east   ff_unit_1 @237 DISPATCHABLE
+      s808  m3 east   ff_unit_0 @222 DISPATCHABLE, ff_unit_1 @222 DISPATCHABLE
+      s808  m3 south  ff_unit_0 @144 DISPATCHABLE, ff_unit_1 @144 DISPATCHABLE
+
+  16/16 runs, 0 failures. The shipped configuration is the measured one.
+
+================================================================================
+6. TESTS
+================================================================================
+tests/test_route_block_stale_clear.py - 22 tests, all passing:
+
+  the switch      call-time read (the DEAD-INPUT test, model built first),
+                  clamping, the shipped default pinned
+  mode 0          no-op for the unassigned latch AND the bound latch; nothing
+                  printed; no counter; unassign audit unchanged
+  fast path       untouched at modes 0/1/2 with no flagged marker anywhere
+  rung 1          clears the unassigned unit -> available, dispatchable,
+                  snapshot route_blocked False / available True, counter 1, the
+                  new line printed, and NO assign in the audit
+  rung boundary   rung 1 LEAVES the bound second-block latch flagged
+  rung 2          releases and clears it: assigned False, rescued_victim None,
+                  target_pos None, dispatchable True; exactly one audit unassign
+                  with reason "stale_route_block_no_referent" and NO
+                  reset_victim_pending; the victim still unreachable/cancelled
+  rung 2 superset still clears the plain unassigned latch, with no release
+  guards          fire-enclosed stays flagged (modes 1 and 2, via
+                  _firefighter_fire_enclosed, not a re-inlined copy);
+                  dead / exiting / off-grid untouched
+  live victim     with work left the branch is invisible; the ordinary BFS path
+                  decides and prints its own message
+  the premise     mark a victim unreachable, fire a reset_victim_pending
+                  unassign, observe the marker really is relabelled "confirmed"
+                  (the non-monotonicity is real), and assert
+                  select_rescue_assignment still refuses to assign because
+                  state.cancelled and state.unreachable are never reset
+
+That last test exists because the design's original safety argument was WRONG
+and an adversarial pass caught it - see section 8.
+
+================================================================================
+7. WHAT THIS ROUND DID NOT DO
+================================================================================
+  - The hazard-standoff oscillation (diagnosis 4.4). Out of scope by
+    instruction, and in the family that measured worse in four prior rounds.
+  - A path test in the replacement planner. It is what put ff_unit_0 onto a
+    reachable_at_assign=false route on seed 202 at step 237, and what makes
+    clearing at the unassign unsafe. Changing it changes DISPATCH while victims
+    are live. Own round.
+  - Scoping route_blocked to its (unit, target) pair. This is the structural fix
+    for the category; the flag is a fact about a pair read as a property of a
+    unit. Own round.
+  - Deferring the `unreachable` marking while a live but route_blocked
+    firefighter exists. The ONLY thing that could have moved seed 202's outcome.
+    Changes when victims are declared terminal; must be measured against the
+    overcorrection metric. Own round.
+  - The Variant B residual, KNOWN-OPEN IN THE SHIPPED CONFIGURATION: a unit
+    flagged, then relabelled "assigned" by agents.py:1816 when its route
+    reopens, is undispatchable on `assigned` rather than on status. Rung 2
+    closes it at the point all victims go terminal - the only point this round's
+    trigger permits - but RUNG 2 IS OFF BY DEFAULT, so at the shipped default it
+    is not closed. MEASURED COUNT: the state occurred once across the 34-run
+    sweep (s606 m0 south, flagged at step 198, route reopened, relabelled
+    "assigned"), and ZERO units were left in it at end of run across all 34
+    sweep runs and all 23 harness runs. Not a regression - it predates this
+    round - but now named and detectable, because outputs/_lf_scan.py and
+    _lf_assert.py check dispatchability rather than the status string. Set
+    ROUTE_BLOCK_STALE_CLEAR=2 to close it.
+
+================================================================================
+8. CORRECTIONS
+================================================================================
+TO THE BRIEF:
+ 8.1 "on seed 202 at MODE 0 that produced an unreachable victim ... this costs a
+     victim today" - NOT SUPPORTED. Section 3. The flag was accurate and zero
+     steps old when the victim was written off; the loss is attributable to the
+     replacement dying, not to the latch. Measured, not argued: the fix removes
+     the latch on that seed and `unreachable` stays 1.
+ 8.2 "zero latched units" needed two carve-outs, both accepted before
+     implementation: fire-enclosed units (held back on purpose by 70e1b33's
+     guard) and the seed-909 horizon artifact. Both are reported with their own
+     counts in section 2.2 rather than folded into a verdict.
+
+TO outputs/latch808_part1.txt:
+ 8.3 Section 8.3's safety argument - "_any_victim_needs_rescue is MONOTONE, a
+     victim's status only moves into {dead, rescued, unreachable} and never out"
+     - is FALSE. wildfire_model.py:4478-4480 resets a victim's state status to
+     "confirmed" guarded only against dead and rescued, so "unreachable" IS
+     resurrected, and :4488 writes the marker unconditionally, even over "dead".
+     The fix is safe for a DIFFERENT reason, now cited in the code and pinned by
+     a test: mark_unreachable also sets state.cancelled (:4507) and
+     state.unreachable (:4511), reset_victim_pending resets NEITHER, the
+     snapshot exports both (:3104-3111), and rescue_planner.py:556-559 drops any
+     victim carrying either.
+ 8.4 Section 8.3's "honest caveat" that the fix is "outcome-bearing exactly
+     where it is most valuable" is wrong as applied to this placement: the
+     branch's own trigger forecloses the re-dispatch it imagines. Measured:
+     zero metric movement on 34 sweep runs and 23 harness runs.
+ 8.5 "both dispatch gates exclude route_blocked units" - there are FOUR, five
+     counting the executor: :3040, :3474, :4328 (a hard refusal at the ASSIGN
+     boundary, which is why no fix can work by relaxing a filter alone),
+     rescue_planner.py:591, and adaptation_manager.py:244-252 (reporting only).
+ 8.6 "Firefighter.advance only calls _move_toward when target_pos is set
+     (agents.py:1114/1163)" is incomplete - agents.py:1198 is a third site, on
+     the exiting branch. The conclusion survives: the unassign nulls `exiting`
+     and `exit_target` too, so all three are dead for a latched unit.
+ 8.7 The status census listed seven write sites; there are TEN. Omitted:
+     wildfire_model.py:3617 and agents.py:977.
+ 8.8 Line drift, re-verified: the _bound guard is :3513 not :3512 (pre-change
+     numbering), _firefighter_fire_enclosed's def is one line after its
+     decorator, the three _release_other_claimants call sites are +7 from the
+     quoted values, and the trapped guard is 2579-2581. Full table in
+     outputs/latchfix_part1.txt section 1.0. All references inside the shipped
+     comments were re-derived AGAINST THE POST-CHANGE FILE.
+
+================================================================================
+9. METHOD
+================================================================================
+118 simulation runs plus two full runs of the test suite:
+
+  46  _ffr_harness.py   rbcoff (switch 0) and rbcon (switch 2), canonical 13 +
+                        fresh 10 each, --uav-actions --set BASE_STATION_MODE=0
+  38  _lf_assert.py     the diagnosis round's 34 sweep combos at switch 2, plus
+                        a 4-run switch-0 arm on the runs that latch today
+  18  _rblatch_campaign2.py via _ffr_rbgate.sh rbc
+  16  AT THE SHIPPED DEFAULT of 1: rbc1, the canonical 13 through
+      _ffr_harness.py, plus the three clearing runs through _lf_assert.py.
+      Added after the default was changed from 2 to 1, so that no part of the
+      gate rests on a configuration nothing was ever run at (section 5.1)
+   0  failures, 0 zero-length artifacts (the OOM signature this project's notes
+      record); memory-gated pools, CR-hardened queues
+
+NEW INSTRUMENTS, all read-only w.r.t. the model:
+  outputs/_lf_assert.py         wraps the clear; per-cleared-unit trajectory and
+                                an end-of-run accountability VERDICT; exits 3 if
+                                any unit is UNACCOUNTED. Gate item 5 asserted.
+  outputs/_lf_scan.py           whole-arm end-of-run latch scan on the corrected
+                                definition (dispatchability, not the status
+                                string), with horizon runs held separate
+  outputs/_lf_sweepanalyze.py   latch counts before/after, accountability,
+                                outcome movement, instrument consistency
+  outputs/_lf_sweeppool.sh      CR-hardened memory-aware pool for the sweep
+
+DESIGN VERIFICATION: the design was put through a 14-agent adversarial pass -
+five readers, four option advocates, an adjudicator, three attackers and a
+kill-switch designer. TWO ATTACKS BROKE THE FIRST DESIGN and both changed what
+shipped:
+  - the `assigned` filter gap: a branch iterating the pass's existing `blocked`
+    list would have inherited its `assigned` filter and missed the second-block
+    latch entirely. This produced rung 2, the separate `stale` list, and the
+    rewording of gate item 3 around dispatchability.
+  - the monotonicity claim (8.3), which was false and is replaced.
+The corner-trap attack could not break the design; its findings are recorded in
+outputs/latchfix_part1.txt section 3.3.
+
+The main session independently established the seed-202 step-237 event order,
+the six-unit latch inventory and the bsoff/ihrest99 agreement that made bsoff a
+valid byte-identity reference - which is what surfaced the correction in 8.1
+BEFORE any code was written.
+
+================================================================================
+END
+================================================================================

@@ -264,6 +264,74 @@ BASE_STATION_RECHARGE_RELEASE_LEVEL = 100.0
 # over the 39 co-occurring map colours: minimum 28.76 dE, against 27.34 for the
 # already-shipped scorched #895e00 on the identical set.
 
+# ROUTE_BLOCK_STALE_CLEAR - drop a route_blocked flag that has lost its referent.
+# An ordinal ladder, each rung a strict superset of the one below, so a
+# rung-N vs rung-(N-1) comparison attributes exactly one increment:
+#   0  OFF - the kill switch. Provably byte-identical to f4e79d5, stdout included.
+#   1  clear a flag on a unit that is alive, on the grid, not exiting, not
+#      rescue_completed, NOT fire-enclosed, and UNASSIGNED AND UNBOUND, once no
+#      victim needs rescue at all. This is the entire MEASURED population: the
+#      five units the clear fired on in the round's 34-run sweep, covering both
+#      baseline-arm latches (east/half 202 at mode 0, east+south/half 808 at
+#      mode 3). A sixth unit was flagged - s909 m0 south, raised on the FINAL
+#      step with a victim still live - and is a 240-step horizon artifact that
+#      neither rung reaches, by design.
+#   2  rung 1, plus a unit still assigned/bound to a TERMINAL referent, which is
+#      first released through the audited executor unassign and then cleared.
+#
+# THE DEFECT. route_blocked is raised about ONE target, but every gate reads it
+# as a property of the unit. The replacement unassign issued inside the raise's
+# own call stack (wildfire_model.py:4449-4453) deletes the whole referent -
+# assigned, target_pos, rescued_victim, exiting, exit_target - and leaves the
+# flag, which disarms all three clears at once: clear 1 (agents.py:1816) needs
+# target_pos, clear 2 (:2657) needs a live victim to test a path against, and
+# clear 3 (:3632) needs rescued_victim through the _bound gate at :3582. Once
+# the last victim is terminal the flag can never be cleared, and the unit is
+# refused by four gates (:3040, :3474, :4339, rescue_planner.py:591) for the
+# rest of the run - the end-of-run latch 70e1b33's gate item forbids.
+#
+# WHAT IT DOES AND DOES NOT BUY. The clear fires only when no victim needs
+# rescue, so it is end-state bookkeeping: it closes the latch and it does NOT
+# save a victim - by its own trigger it cannot. On seed 202, the shipped
+# default, the victim was lost because the replacement died in the same step,
+# not because of the flag, which was zero steps old and accurate at that
+# instant. See outputs/latchfix_part1.txt section 0.1.
+#
+# WHY NOT AT THE UNASSIGN. Clearing at the source would hand the just-blocked
+# unit back to the replacement decision three statements later at :3416, off a
+# snapshot re-derived from the same marker; the planner selects on Manhattan
+# distance with no path test anywhere (rescue_planner.py:646-651), and the
+# blocked unit is usually the CLOSEST because it walked toward the victim until
+# it ran out of route (seed 808 s219: 13 against the actual replacement's 49).
+# Its re-claim would then filter the victim out of every other unit's reach at
+# rescue_planner.py:560-562. Release, not prevention - the phantom round's
+# choice, for a mechanically identical reason.
+#
+# Rung 2 exists because a unit cleared to status "assigned" by agents.py:1816 is
+# undispatchable on a DIFFERENT gate (:3042, on `assigned`) and invisible to any
+# check counting status == "route_blocked" - a latch that hides from its own
+# detector. Rung 1 leaves that shape flagged; rung 2 releases it first. That
+# shape is real and was observed at step 198 of D/south/half seed 606, where the
+# route later reopened and the unit was relabelled "assigned" - benign there only
+# because the run hit the 240-step horizon with its victim still alive.
+#
+# SHIPPED DEFAULT IS 1, NOT 2, and the reason is deliberate. Rung 2's release
+# path NEVER FIRED: ff_route_blocks_stale_released_total is 0 on every one of the
+# round's 34 sweep runs, because all five units it cleared were already unbound.
+# So rung 2 behaved exactly as rung 1 everywhere it was measured, and shipping it
+# on would add a never-executed code path to a codebase this campaign has spent
+# nine rounds removing them from. Rung 1 loses nothing on any run in the record;
+# rung 2 stays here, tested, for whenever a case demands it. Raise it to 2 and
+# the only difference is that a unit still bound to a TERMINAL victim is released
+# before its flag is dropped. See outputs/latchfix_report.txt section 5.
+#
+# Read at CALL TIME from the common_fixed_variables MODULE
+# (WildFireModel._route_block_stale_clear_mode), never through the star import
+# above and never at import time, so an apply_scenario_config override is
+# visible - otherwise the switch is decorative and this is the tenth dead-input
+# instance. Deterministic: it draws from no RNG.
+ROUTE_BLOCK_STALE_CLEAR = 1
+
 N_ACTIONS = 4
 UAV_OBSERVATION_RADIUS = 8
 side = ((UAV_OBSERVATION_RADIUS * 2) + 1)

@@ -1,0 +1,723 @@
+================================================================================
+SEED-808 route_blocked LATCH - DIAGNOSIS ROUND
+================================================================================
+BRANCH    : latch808-diagnosis
+HEAD      : f4e79d5 "Base station: SHIPPED OFF (BASE_STATION_MODE default 0)"
+ENV       : E:\Projects\SAS\.venv - Python 3.10.11, mesa 1.2.1 (both confirmed)
+SCOPE     : DIAGNOSIS ONLY. No source file was modified. No fix implemented.
+DATE      : 2026-09-08
+
+This report supersedes the earlier draft of the same name. That draft was
+written at 22:14 on 09-07, BEFORE its own 28-run frequency sweep ran, and that
+sweep then destroyed all 34 of its results (see section 10). Its section 6.1 was
+left "[PENDING]". Everything below has been re-derived on this tree; where the
+draft was right that is recorded as confirmation, and where it was wrong or
+over-stated that is recorded as a correction (section 9).
+
+================================================================================
+0. THE ANSWER, UP FRONT
+================================================================================
+
+VERDICT: (B) PRE-EXISTING, EXPOSED - with one quantitative refinement that
+matters for disposition:
+
+    THE BASE STATION DOES NOT MAKE THIS LATCH MORE LIKELY.
+    It relocates it to different seeds at an unchanged per-run rate, while
+    roughly doubling the number of units caught per latching run.
+
+  Measured two independent ways, both seed-matched:
+
+    committed harness arms      bsoff  (mode 0)  2 latched runs / 23,  2 units
+                                bsfull (mode 3)  2 latched runs / 23,  4 units
+    fresh 17-seed-wind sweep    mode 0           2 latched runs / 17,  2 units
+    (this session, new seeds)   mode 3           2 latched runs / 17,  4 units
+
+  and the latching SEEDS are disjoint: mode 0 latches on {202 east, 909 south},
+  mode 3 latches on {808 east, 808 south}. The rate is identical; the identity
+  of the victim seed is what moves.
+
+THE MECHANISM, and it is NOT the guard the brief expected:
+
+  The single load-bearing event is the UNASSIGN that the replacement pathway
+  performs in the SAME call stack that raises the flag
+  (wildfire_model.py:4268, reached from _mark_route_blocked via
+  _on_firefighter_route_blocked -> _process_rescue_incidents inline).
+  That one unassign disarms ALL THREE clears at once:
+
+    clear 1  agents.py:1813, the _move_toward tail
+             -> disarmed: unassign nulls target_pos, and Firefighter.advance
+                only calls _move_toward when target_pos is set
+                (agents.py:1114/1163). A targetless unit never reaches it.
+    clear 2  wildfire_model.py:2588, the 70e1b33 revalidation pass
+             -> disarmed once every victim is terminal: the pass returns at
+                `if not victim_cells: return` (:2566).
+    clear 3  wildfire_model.py:3563, the dd0a1b9 "D6" no-referent clear
+             -> disarmed: it sits AFTER `if not _bound(ff_marker): continue`
+                (:3512), and the unassign has already set rescued_victim=None.
+
+  Clear 3 is the one written for exactly this situation - "released with no
+  victim left to reach". The recorded step-222 event shows it reached with its
+  precondition satisfied (work_left_before: false) and releasing nobody,
+  because both units had already been unbound three steps earlier.
+
+THE BASE STATION'S CONTRIBUTION is indirect via SEARCH GEOMETRY, and it is
+firefighter-spawn-independent - now MEASURED, not argued:
+
+    mode 1 + BASE_STATION_SPAWN_FIREFIGHTERS=0  (UAVs on depot berths,
+    firefighters restored to the pre-feature spawn) reproduces the latch
+    cell for cell. See section 4.3. Firefighter spawn relocation is neither
+    necessary nor load-bearing on this seed.
+
+  The chain is: mode>=1 moves the UAV searchers to the NW depot -> victim_3, in
+  the diagonally opposite corner, is detected 105 steps later -> the firefighter
+  is dispatched at 123 instead of 18 -> it stalls in a hazard oscillation and
+  the corridor closes at 219 -> flag + atomic unassign -> victim dies at 222 ->
+  all three clears disarmed -> the flag stands to the horizon.
+
+TWO FINDINGS NEITHER PRIOR ROUND STATED:
+
+  (i)  A 30-STEP HAZARD-STANDOFF OSCILLATION is the proximate reason victim_3
+       dies, not distance and not the detection delay alone. ff_unit_1 closed to
+       Manhattan 9 by step 189 - 33 steps before the victim died - and then
+       oscillated between two cells for 30 consecutive steps, drifting back to
+       13, until the route actually closed. Section 4.4. This is a
+       movement-near-fire defect and is independent of the base station.
+
+  (ii) THE LATCH IS NOT COSMETIC. route_blocked removes a unit from the dispatch
+       pool (wildfire_model.py:2971 and rescue_planner.py:591). On seed 808 east
+       that is harmless because every victim was already terminal, but on
+       seed 202 - a MODE 0 run, i.e. the shipped default - the latched unit was
+       the last living firefighter and the victim it could not be re-dispatched
+       to was scored `unreachable`. Section 7.2.
+
+AND ONE CORRECTION TO THE ROUND'S OWN FRAMING: seed 909 is NOT a third instance
+of this gap. Its flag goes up on step 240, the final step, with a live victim
+still needing rescue and terminal_step never reached. It is a horizon artifact,
+not a flag that outlived its referent. Section 5.2.
+
+================================================================================
+1. REPRODUCTION  (Part 1, item 1)
+================================================================================
+
+Scenario D, wind east, 240 steps, BATCH_SIZE 300, FIRE_SPREAD_MULTIPLIER 0.75,
+PROBABILITY_MAP False, NUM_FIRE_TRACKERS = n//2, NUM_VICTIM_SEARCHERS = n - ft.
+Instruments: outputs/_l808_trace.py (full per-step trace + reval decision log)
+and outputs/_l808_sweep.py (light latch classifier). Both read-only.
+
+  mode  spawn ff_0 / ff_1     rescued dead  nd  terminal  latched
+  ----  -------------------   ------- ----  --  --------  -----------------------
+  0     [39,39] / [11,11]     3       1     0   173       none
+  1     [ 2,45] / [ 2,46]     2       2     0   222       ff_unit_0 [0,24]
+                                                          ff_unit_1 [30,6]
+  2     [ 2,45] / [ 2,46]     2       2     0   222       same two
+  3     [ 2,45] / [ 2,46]     2       2     0   222       same two
+
+CONFIRMED, and confirmed twice more independently:
+  - a fresh re-run through the light instrument reproduces both arms exactly
+    (_l808sw2_s808_m0_east.json latched 0; _l808sw2_s808_m3_east.json latched 2,
+    ff_unit_0 [0,24] flag 220, ff_unit_1 [30,6] flag 219);
+  - the committed harness arms agree: _ffr_bsoff_east_half_808 (explicit mode 0
+    at HEAD) has no latch, _ffr_bsfull_east_half_808 (mode 3) latches the same
+    two units at the same two cells.
+
+BOTH UNITS AT END OF RUN: alive (dead=False), status route_blocked,
+assigned=False, exiting=False, target=None, rescued_victim=None, on the grid,
+and NOT fire-enclosed (enclosed_at_end=False for both, so the trapped guard is
+not involved). ALL FOUR VICTIMS TERMINAL: victim_1 and victim_2 rescued,
+victim_0 dead at 33, victim_3 dead at 222.
+
+It does NOT occur at BASE_STATION_MODE = 0 on this seed. Confirmed three times
+(trace instrument, sweep instrument, committed bsoff arm).
+
+================================================================================
+2. THE TWO UNITS, STEP BY STEP  (Part 1, item 2)
+================================================================================
+
+--------------------------------------------------------------------------------
+2.1  ff_unit_1 - the first block
+--------------------------------------------------------------------------------
+  s1     spawns [2,46] (depot berth), available
+  s16    assigned victim_1 at [25,48], reachable_at_assign TRUE
+  s42-44 carries and rescues victim_1; goes off_grid (rescue absence)
+  s48    returns at [25,49], available. IDLE 48 -> 122 (75 steps).
+  s123   assigned victim_3 at [25,3], reachable_at_assign TRUE, Manhattan 46
+  s123-188  genuine approach: reaches [26,8], Manhattan 9, at step 189
+  s189-218  STALLS. Thirty consecutive steps oscillating between adjacent
+            cells - [27,8]<->[27,7], [28,7]<->[29,7], [29,6]<->[30,6],
+            [30,6]<->[31,6] - while the victim drifts [22,3]->[24,0].
+            Manhattan distance goes 9 -> 13. Status stays en_route throughout;
+            the route is NOT yet blocked. Full table in section 4.4.
+  s219   _move_toward finds no fire-free path to [24,0]. route_blocked raised
+         at [31,6]. neighbors_all_fire = FALSE (not trapped).
+         IN THE SAME CALL STACK: _on_firefighter_route_blocked ->
+         _process_rescue_incidents -> unassign "replacement_after_blocked".
+         target_pos, assigned and rescued_victim are all cleared.
+  s219   revalidation pass runs. ff_unit_1 is now unassigned so it IS examined.
+         victim_cells = [[24,0]]. Outcome "skip:no_reachable_victim". Correct
+         on its own terms - no fire-free path existed.
+  s220-221  same, twice more.
+  s222   victim_3 dies. _release_other_claimants fires for victim_3 with
+         work_left_before FALSE - clear 3's precondition met - and releases
+         NOBODY, because ff_unit_1 is no longer _bound.
+  s222-240  nineteen consecutive revalidation calls, every one
+            "EARLY_RETURN:no_live_victim". Flag stands at [30,6] to the horizon.
+
+--------------------------------------------------------------------------------
+2.2  ff_unit_0 - the replacement, blocked one step later
+--------------------------------------------------------------------------------
+  s1     spawns [2,45] (depot berth)
+  s22    assigned victim_2, rescued at s62, off_grid, returns [0,25] at s65
+  s65-218  IDLE AND STATIONARY at [0,25] for 154 consecutive steps.
+  s219   the replacement pathway assigns it victim_3 at Manhattan 49,
+         with reachable_at_assign FALSE. The planner selects purely on
+         Manhattan distance (rescue_planner.py:646-652); there is no path test
+         in the planner, the executor, or apply_physical_rescue_command.
+         Because it is `assigned` this step, the revalidation pass correctly
+         skips it (assigned-guard, wildfire_model.py:2545) - the assigned-skip
+         is doing its job and is NOT the latch.
+  s220   it takes exactly ONE step ([0,25] -> [0,24]), finds no path, is flagged
+         and is unassigned by the same pathway. Now both units are flagged and
+         unbound.
+  s220-240  identical ending to ff_unit_1.
+
+--------------------------------------------------------------------------------
+2.3  Answers to the specific questions asked
+--------------------------------------------------------------------------------
+  Did _revalidate_route_blocked_firefighters run on them?
+      YES, every step - it has one call site, _sync_firefighter_marker_status
+      (wildfire_model.py:4934), invoked unconditionally each step.
+  How often, and what did it decide?
+      ff_unit_1: 3 calls with a live victim (219,220,221), all
+      "skip:no_reachable_victim"; then 19 calls "EARLY_RETURN:no_live_victim".
+      ff_unit_0: 1 call skipped by the assigned-guard (219), 2 calls
+      "skip:no_reachable_victim" (220,221), then 19 early returns.
+  Was the trapped guard the reason?
+      NO. enclosed_at_flag=False and enclosed_at_end=False for both units. The
+      guard never fired. From step 222 the pass never even reaches the per-unit
+      loop.
+  Was there ever a live victim it could have reached?
+      NO, for the whole remaining run. During 219-221 victim_3 was alive but
+      genuinely unreachable by the model's own BFS; from 222 there was no live
+      victim at all. This is the no-referent gap, not a missed clear.
+
+  ONE PRECISION the draft got slightly wrong: the flag-without-referent state
+  begins at s219/s220, when the unassign nulls target_pos - not at s222. From
+  s219 the flag is already about a target the unit no longer has. What changes
+  at 222 is only that the pass stops examining it at all.
+
+================================================================================
+3. THE FIRST DIVERGENCE FROM MODE 0  (Part 1, item 3)
+================================================================================
+
+The first divergence is at STEP 1: spawn placement.
+
+  UAVs          mode 0  (24,25) (25,25) (25,26) (27,26)   centre cluster
+                mode 3  ( 4,44) ( 4,45) ( 3,46) ( 4,46)   NW depot berths
+  firefighters  mode 0  (39,39) and (11,11)
+                mode 3  ( 2,45) and ( 2,46)               NW depot berths
+
+That is a DIRECT effect, not an indirect one. wildfire_model.py:169-176 places
+each UAV on uav_berths[a] whenever self.base_station is not None;
+wildfire_model.py:660-668 places each firefighter on firefighter_berths[i],
+gated by BASE_STATION_SPAWN_FIREFIGHTERS (default 1,
+common_fixed_variables.py:250). _build_base_station returns None only when
+base_station_mode() <= 0.
+
+Note on axes: x is the HEIGHT axis and y the WIDTH axis. The depot is x in
+[0,4], y in [45,49]. victim_3 spawns at [25,3] and dies at [24,0] - the low-y
+edge, diagonally opposite the depot corner.
+
+THE RANDOM STREAM IS NOT SHIFTED. The depot, berth ranking and every spawn cell
+are pure functions of (HEIGHT, WIDTH, corner, size, NUM_AGENTS,
+NUM_FIREFIGHTERS) and draw no RNG (wildfire_model.py:546-597). Measured
+consequence: all 240 per-step fire digests are identical between
+_ffr_bsoff_east_half_808.json and _ffr_bsfull_east_half_808.json, with equal
+fire_final_digest and burnt_cells 1094 in both. The fire, and therefore the
+whole physical substrate, is untouched. Only where the agents start.
+
+================================================================================
+4. THE CAUSAL CHAIN  (Part 2, item 4)
+================================================================================
+
+--------------------------------------------------------------------------------
+4.1  Which of the brief's routes
+--------------------------------------------------------------------------------
+  (a) DISPATCH TIMING   TRUE as the proximate mechanism, but its cause is not
+                        the return leg. Dispatch moved 18 -> 123 because
+                        DETECTION moved 18 -> 123.
+  (b) POOL COMPOSITION  ELIMINATED. never_detected is 0 on this seed in every
+                        arm; victim_3 is found, just late. The first UAV
+                        absence begins at step 135 - twelve steps AFTER the
+                        dispatch.
+  (c) THE D6-ADJACENT GAP  TRUE for why the flag STICKS, and it is
+                        pre-existing. But see 4.2: the gap is wider than the
+                        one guard the brief names.
+  (d) SOMETHING ELSE    YES, and it is required to explain why the victim dies
+                        at all: a 30-step hazard-standoff oscillation (4.4).
+
+  Root cause of the divergence: UAV SPAWN RELOCATION -> detection delay.
+  Measured, isolated in 4.3.
+
+--------------------------------------------------------------------------------
+4.2  Why removing the early return alone would not fix it
+--------------------------------------------------------------------------------
+The brief and both prior reports treat `if not victim_cells: return`
+(wildfire_model.py:2566) as the gap. It is the visible symptom, not a
+sufficient description:
+
+  delete that line and nothing changes. The per-unit loop at :2582-2586 tests
+      any(_path_exists_avoiding_fire(cell, vcell, fire) for vcell in victim_cells)
+  which over an empty victim_cells evaluates False, so every unit hits
+  `continue` at :2587 and is still not cleared.
+
+A fix must ADD a clearing branch for the empty-referent case, not remove a
+guard. And the deeper statement is the one in section 0: a single unassign
+disarms all three clears simultaneously. That is why this keeps reappearing on
+a different seed every round - it is structural, not an ordering accident.
+
+Corollary, and this is the sharpest structural point: a unit flagged on the
+FIRST block of an (ff, victim) pair can never be a bound claimant while
+flagged, because the flag and the unbinding happen inside the single statement
+`self._mark_route_blocked()`. Clear 3 can therefore only ever reach a unit
+flagged on a SECOND block of the same pair, where
+`if attempt_key in self._blocked_replacement_attempted: return`
+(wildfire_model.py:3333) returns before the unassign. Every first-block flag
+whose victim then goes terminal falls through - deterministically.
+
+--------------------------------------------------------------------------------
+4.3  Which increment is responsible - MEASURED
+--------------------------------------------------------------------------------
+Seed-matched on 808 D/east:
+
+  arm                                    rescued dead terminal latched
+  -------------------------------------  ------- ---- -------- ------------------
+  mode 0                                 3       1    173      none
+  mode 1  (spawn only)                   2       2    222      2 units [0,24][30,6]
+  mode 2  (+ return-to-base)             2       2    222      same
+  mode 3  (+ recharge)                   2       2    222      same
+  mode 1 + SPAWN_FIREFIGHTERS=0          2       2    222      2 units [0,24][30,6]
+
+THE LAST ROW IS THIS ROUND'S DECISIVE NEW MEASUREMENT
+(outputs/_l808iso_m1_ffs0.json, 695.6s). With firefighters restored to the
+pre-feature spawn and only the UAVs on depot berths, the run reproduces the
+latch cell for cell: same evaluation, same terminal step 222, same two cells,
+flags at 219 (vs 219/220). The only deltas are which unit carries which label.
+
+  => FIREFIGHTER SPAWN RELOCATION IS NEITHER NECESSARY NOR LOAD-BEARING here.
+     UAV spawn relocation alone is sufficient.
+
+This also kills the intuitive "the firefighters started further away" story:
+the [Dispatch] record gives Manhattan 46 for the mode-3 assignment of victim_3
+against 50 for mode 0. The depot-spawned firefighter was CLOSER at the decisive
+moment. And ff_unit_0's latch position derives from a post-rescue recycle cell
+[0,25] occupied from step 65, not from a depot berth at all.
+
+Detection is UAV-proximity-only (_detect_victims_in_uav_radius,
+wildfire_model.py:1064, iterates only UAV agents), which is why moving the
+searchers and nothing else is enough.
+
+  CAVEAT, measured: firefighter spawn is not universally irrelevant. On
+  D/east/half seed 404, _ffr_bsspawn (ffspawn default 1) latches ff_unit_1 at
+  [33,5] while _ffr_bsspawnu (ffspawn 0) does not latch at all (it kills both
+  firefighters instead, terminal 190 vs 234). Either lever can matter depending
+  on seed; what is general is that SPAWN RELOCATION re-rolls the run.
+
+--------------------------------------------------------------------------------
+4.4  The 30-step hazard-standoff oscillation  [NEW THIS ROUND]
+--------------------------------------------------------------------------------
+Neither prior report noticed this, and it changes what "too late" means.
+
+  step  ff_unit_1 pos  target   Manhattan
+  ----  -------------  -------  ---------
+  189   [26, 8]        [22, 3]   9   <- closest approach
+  190   [27, 8]        [22, 2]  11
+  191   [27, 7]        [22, 2]  10
+  192   [27, 8]        [22, 2]  11
+  193   [27, 7]        [22, 2]  10
+  194   [27, 8]        [22, 2]  11
+  ...   (oscillation continues)
+  205   [28, 6]        [22, 0]  12
+  206   [28, 7]        [22, 0]  13
+  207   [29, 7]        [22, 0]  14
+  208   [28, 7]        [22, 0]  13
+  209   [29, 7]        [22, 0]  14
+  210   [29, 6]        [23, 0]  12
+  211   [30, 6]        [23, 0]  13
+  ...   [29,6]<->[30,6], then [30,6]<->[31,6]
+  218   [31, 6]        [24, 0]  13
+  219   route_blocked
+
+Thirty consecutive steps, status en_route throughout, the route NOT blocked,
+the unit simply unable to make progress. It arrived within 9 cells with 33
+steps to spare and lost them to a two-cell oscillation.
+
+Mechanism: _move_toward's tier system (agents.py:1774-1800) prefers cells that
+are improving AND not adjacent-to-fire AND not smoky (tier 1), then maintaining
+under the same constraints (tier 2), then any non-adjacent-non-smoky cell
+(tier 3). When every improving neighbour is adjacent to fire, tier 3 selects a
+non-improving cell, and the next step's tier 3 selects the cell it just left.
+The unit is held at a standoff distance by the hazard tiers, not by an absent
+route - the flag only fires 30 steps later.
+
+IMPORTANT SCOPING NOTE: this is a movement-near-fire behaviour, which is
+precisely the family that has measured WORSE in every round that touched it
+(section 8.3). It is diagnosed here, not proposed for change.
+
+================================================================================
+5. IS THIS THE SAME DEFECT AS 909 AND 202?  (Part 2, item 5)
+================================================================================
+
+Answer: SAME as 202. NOT the same as 909 - 909 was mis-classified by the
+earlier rounds and by this round's brief.
+
+--------------------------------------------------------------------------------
+5.1  Seed 202 - the same defect, and it is a MODE 0 run
+--------------------------------------------------------------------------------
+Re-run on this tree at BASE_STATION_MODE = 0, pre-feature spawn
+([39,39]/[11,11]): rescued 2, dead 1, unreachable 1, ff_deaths 1, terminal 237,
+ff_unit_1 latched at [24,21].
+
+  s237  ff_unit_1 at [25,23] flagged route_blocked, target [22,49],
+        BFS-unreachable, NOT fire-enclosed, unassigned in the same call stack
+        by "replacement_after_blocked".
+        ff_unit_0 is assigned as replacement with reachable_at_assign FALSE,
+        then dies of fire the same step ("firefighter_fire_casualty").
+        victim_1 is marked UNREACHABLE, reason "replacement_after_casualty".
+  237-240  four consecutive "EARLY_RETURN:no_live_victim". Latched.
+
+Same guard, same file, same line, same atomic-unassign origin. The differences
+(4 tail steps vs 19; one unit vs two) are not mechanistic.
+
+One shape difference worth recording: on 202 the last victim goes terminal by
+being marked UNREACHABLE, and _release_other_claimants is never called on that
+path at all (its three call sites are wildfire_model.py:3262 victim_dead, :3285
+and :3319 rescue_complete). On 808 the victim DIES, the helper does run, and is
+defeated by the _bound gate instead. Two routes into the same trap; a fix
+placed only in the release helper would close 808 and miss 202.
+
+--------------------------------------------------------------------------------
+5.2  Seed 909 is NOT this defect  [CORRECTION]
+--------------------------------------------------------------------------------
+Fresh run, D/south, mode 0 (_l808sw2_s909_m0_south.json):
+
+  ff_unit_0 flagged at STEP 240 - the final step - at [17,46], ending [17,47].
+  steps_blocked_after_last_live_victim = 0.
+  last_victim_needs_step = 240: a victim still needed rescue when the run ended.
+  terminal_step = None: the mission never reached all-victims-terminal.
+
+The flag never outlived its referent; the run simply ended one step after it was
+raised. Given a 241st step the ordinary machinery would have had its chance.
+This is a HORIZON ARTIFACT of the 240-step budget, and counting it as a latch of
+the 808/202 kind inflates the category. The committed bsoff/bsbase and
+ihrest99fresh arms record the same seed-909 unit with the same step-240 onset.
+
+The D/east 909 case cited from the dimension round (dimfixb, flagged at 186)
+is a different run of a different arm and may well be the real shape; it is not
+reproduced at HEAD mode 0 - the fresh 909 D/east mode-0 run here latches
+nothing.
+
+--------------------------------------------------------------------------------
+5.3  Answer to the round's key question
+--------------------------------------------------------------------------------
+Seed 808 is the SAME mechanism as seed 202, and both are pre-existing. It is
+NOT "surfaced more often" by the base station - the per-run rate is unchanged
+(section 6). What the base station changes is WHICH seed lands in the trap and,
+because the replacement pathway dispatches a second unit into a route it never
+path-tests, HOW MANY units are caught when it does: 2 units per latching run at
+mode 0, 4 at mode 3, in both independent samples.
+
+================================================================================
+6. DOES IT OCCUR AT MODE 0?  (Part 2, item 6)
+================================================================================
+
+YES. Measured two independent ways, and it is present in the SHIPPED DEFAULT.
+
+--------------------------------------------------------------------------------
+6.1  Committed harness arms (canonical seeds 101-505, 13/23 runs per arm)
+--------------------------------------------------------------------------------
+  arm            mode  runs  latch_runs  units  where
+  -------------  ----  ----  ----------  -----  ----------------------------------
+  bsoff          0     23    2           2      east/half/202, south/half/909
+  bsbase         -     23    2           2      identical (16b2da8 checkout)
+  bsspawn        1     13    1           1      east/half/404
+  bsspawnu       1     13    0           0      -
+  bsret          2     13    0           0      -
+  bsretp         2     13    0           0      -
+  bsfull         3     23    2           4      east/half/808, south/half/808
+  bsfullp        3     23    2           4      identical
+
+bsoff is BASE_STATION_MODE=0 at f4e79d5 and bsbase is the 16b2da8 checkout;
+they agree run for run, which is the bit-identity the base station round
+claimed. The shipped default therefore carries a latch on D/east seed 202 today.
+
+Many pre-base-station arms carry it too: ihrest99 (202), ihofffresh and
+dimfreshfix and ihrest6fresh (909 east, 707 south x2, 909 south), phfix and
+phfix2 (303 south), vmon and vmon2 (303 east, 2 units). The category was never
+empty after 70e1b33.
+
+--------------------------------------------------------------------------------
+6.2  Fresh 17-seed-wind sweep, this session, seeds NOT in the canonical set
+--------------------------------------------------------------------------------
+34 runs (17 seed-wind combinations x mode 0 and mode 3), no failures.
+Seeds 202, 606, 707, 808, 909, 1010-1717 across east and south.
+
+  mode 0   17 runs   2 latched runs   2 units   rate 0.118
+  mode 3   17 runs   2 latched runs   4 units   rate 0.118
+
+  latching runs, mode 0:  202 east  ff_unit_1 [24,21]  flag 237  no-referent tail 4
+                          909 south ff_unit_0 [17,47]  flag 240  HORIZON ARTIFACT
+  latching runs, mode 3:  808 east  2 units            flags 219/220  tail 19
+                          808 south 2 units            flags 117/129  tail 97
+
+Restricting to the genuine no-referent shape (excluding the 909 horizon case):
+mode 0 = 1 run / 1 unit; mode 3 = 2 runs / 4 units.
+
+CAVEAT, and it is the one this project keeps relearning: these are 17-run
+samples with counts of 1-2. A ratio computed from them is noise. The defensible
+statement is the qualitative one - the latch occurs at BOTH modes, at the same
+order of frequency, on DISJOINT seed sets - not a multiplier.
+
+================================================================================
+7. VERDICT  (Part 3, item 7)
+================================================================================
+
+(B) PRE-EXISTING, EXPOSED.
+
+--------------------------------------------------------------------------------
+7.1  Why not the others
+--------------------------------------------------------------------------------
+  Not (A) NEW DEFECT. The complete f4e79d5 source diff touches no line in the
+      route_blocked raise, clear, revalidation, unassign or replacement
+      pathways. git blame dates every load-bearing line earlier: a4a01b4
+      (2026-07-27) the replacement pathway, unassign and handler; f2827ed
+      (08-28) and 70e1b33 (08-30) the trigger, the _move_toward clear and the
+      whole revalidation pass including :2566; dd0a1b9 (09-05) the D6 clear at
+      :3563. agents.py's added lines are entirely inside class UAV; a grep over
+      the Firefighter class body (agents.py:970-1819) finds zero base_station
+      references. The feature touches firefighters ONLY at construction time
+      (berth spawn :660-668, berth reservation :582/:593) and has no per-step
+      code path to them.
+  Not (C) UNRELATED. The effect is deterministic and reproducible, and the
+      mechanism from spawn to detection to dispatch to flag is traced end to
+      end. It is not coincidence that THIS seed latches at mode 3.
+
+--------------------------------------------------------------------------------
+7.2  Severity - and this is where the draft was too relaxed
+--------------------------------------------------------------------------------
+route_blocked is not an inert label. Both dispatch gates exclude it:
+_firefighter_available_for_dispatch (wildfire_model.py:2971) returns False, and
+the planner skips the entry (rescue_planner.py:591). A latched unit is
+undispatchable for the rest of the run.
+
+  On 808 east the consequence is nil, because every victim was already terminal
+  when the flags stuck. Nothing in _build_evaluation reads firefighter state
+  except `dead`.
+
+  On 202 - MODE 0, the shipped default - it is NOT nil. ff_unit_1 was flagged
+  at 237 and ff_unit_0 died the same step; victim_1 was then scored
+  `unreachable` because no dispatchable firefighter remained. The flag is
+  upstream of an evaluation-visible outcome.
+
+So the correct disposition is: the latch is worth fixing on its own merits, at
+mode 0, independently of whether the base station is ever armed. It is not a
+blocker specific to arming the feature, and it should not be described as one.
+
+================================================================================
+8. SCOPING A FIX - NOT IMPLEMENTED  (Part 3, item 8)
+================================================================================
+
+--------------------------------------------------------------------------------
+8.1  Candidate hook points
+--------------------------------------------------------------------------------
+(i)   ADD a no-referent clearing branch inside
+      _revalidate_route_blocked_firefighters, where `if not victim_cells:
+      return` sits today (wildfire_model.py:2566).
+      RECOMMENDED. The pass has already done all the eligibility work at
+      :2539-2554 (route_blocked, alive, unassigned, not exiting, on the grid)
+      and then discards it. It is the only site BOTH shapes flow through - 808
+      (victim dies, helper defeated by _bound) and 202 (victim marked
+      unreachable, helper never called). It needs no new state and no new call
+      site, and it keeps the trapped guard in the function that owns it.
+      MUST ADD a branch, not merely delete the guard - see 4.2.
+      MUST retain the enclosure test, exactly as clear 3 already does at :3562.
+      MUST preserve the early-exit fast path for the ordinary case: 70e1b33
+      measured this pass early-returning on 99.05% of calls, which is why it is
+      free.
+
+(ii)  Hoist clear 3 out of the `if not _bound(...)` skip in
+      _release_other_claimants (wildfire_model.py:3512).
+      Closes 808. MISSES 202 entirely, because the unreachable path is not one
+      of the helper's three call sites. Not sufficient alone.
+
+(iii) At the call site _sync_firefighter_marker_status (:4932-4934). Works, but
+      puts route_blocked policy outside the function that owns it and
+      duplicates the eligibility and enclosure tests. Strictly worse than (i).
+
+(iv)  In the replacement pathway - refuse to assign a firefighter with no
+      fire-free path (the planner currently selects on Manhattan distance
+      alone, rescue_planner.py:646-652, with no path test anywhere in the
+      planner, executor or apply_physical_rescue_command).
+      This would stop one blocked unit becoming two, which is the entire
+      mode-0-to-mode-3 unit-count difference. BUT it changes DISPATCH behaviour
+      while victims are still live - the dangerous family (8.3) - and the
+      unassign is load-bearing, since it is what frees the victim for a
+      replacement at all. The phantom round explicitly rejected
+      prevention-style guards on this pathway. Worth its own round; do not
+      bundle it with (i).
+
+(v)   The hazard-standoff oscillation (4.4). DO NOT TOUCH in this round. It is
+      the proximate reason the victim died, so it is tempting, but it is
+      squarely in the family that has measured worse every time.
+
+--------------------------------------------------------------------------------
+8.2  Does (i) risk reopening what 70e1b33 closed?
+--------------------------------------------------------------------------------
+It touches the same function and MUST keep that commit's trapped guard.
+
+70e1b33 added the pass to break a circular dependency: the only in-run clear
+needs target_pos, which needs a dispatch, which refuses route_blocked units.
+Its own design caught a bug in itself before shipping - an early version
+"recovered" a unit trapped in a corner, carrying a victim, because
+_path_exists_avoiding_fire returns True at distance zero. The fix was the
+trapped guard: at least one fire-free neighbour before any clear.
+
+A no-referent clearing does not reopen that, provided it keeps the guard:
+  - the corner case involved a unit CARRYING a victim (exiting); the pass
+    already excludes exiting units at :2548-2549;
+  - the distance-zero false positive came from testing reachability against a
+    victim in the unit's own cell. On the no-referent path there is no
+    reachability test at all, so that failure mode is structurally absent;
+  - the enclosure test must still be applied. A unit standing in a ring of fire
+    should stay flagged. (On every latch measured this round enclosed=False, so
+    the guard would not have blocked any of them.)
+
+Tests that would police the change:
+  tests/test_phantom_rescue_release.py      (D6 / release-path clearing)
+  tests/test_firefighter_dispatch_replacement.py  (the replacement pathway)
+  tests/test_firefighter_fire_avoidance.py  (trigger and trapped guard)
+  tests/test_rescue_planner_authority.py    (planner selection)
+  tests/test_base_station.py                (23 tests, feature-side)
+  tests/test_adaptation_manager_cycle.py    (the per-step call site)
+
+--------------------------------------------------------------------------------
+8.3  Is (i) in the "changing firefighter behaviour near fire" family?
+--------------------------------------------------------------------------------
+The brief's warning is well founded. The record:
+  c92e136  scorched-ground hazard term - measured HARMFUL at every magnitude
+  fd743f5  lateral-when-pinned - best rule saves 2 and kills 4, declined
+  e76c806  dimension fix's searcher hazard change - fresh-seed deaths 3 -> 8
+  db57df6  fix12 hazard re-validation, measured BELOW fix8
+  and the base station round itself, a canonical gain evaporating on wider seeds.
+
+Candidate (i) is OUTSIDE that family, checkably:
+  - it fires only when _any_victim_needs_rescue() is False, and that predicate
+    is MONOTONE (a victim's status only moves into {dead, rescued, unreachable}
+    and never out). So there is never another dispatch after it fires, and no
+    movement decision can be affected;
+  - route_blocked is read only by dispatch/pairing gates. Firefighter.advance,
+    _check_fire_casualties and _update_unreachable_victims never read it;
+  - the only firefighter field _build_evaluation reads is `dead`.
+  => on runs where the last victim is already terminal, (i) changes the
+     reported end status and nothing else. Zero outcome movement expected.
+
+  HONEST CAVEAT: that argument is airtight only for the 808-shaped case. On a
+  202-shaped run the whole POINT is that clearing the flag earlier could let
+  the unit be re-dispatched and change `unreachable` - i.e. (i) is
+  outcome-bearing exactly where it is most valuable. Whether that is an
+  improvement must be MEASURED on a seed-matched wave, not assumed. Do not
+  gate this fix as "bookkeeping only".
+
+  Candidates (iv) and (v) ARE in the dangerous family. Say so out loud in any
+  round that proposes them.
+
+================================================================================
+9. CORRECTIONS TO PRIOR DOCUMENTS
+================================================================================
+
+To outputs/basestation_report.txt:
+ 9.1 "the mechanism must be indirect because firefighters never visit the
+     depot" - the premise is wrong. At mode >= 1 firefighters SPAWN on depot
+     berths (BASE_STATION_SPAWN_FIREFIGHTERS default 1). The influence is
+     direct at step 1. (Though see 9.5: firefighter spawn turns out not to be
+     the operative lever anyway.)
+ 9.2 "reopens the 70e1b33 latch" / "the defect category commit 70e1b33 closed"
+     - overstated. The category was already non-empty at mode 0 before the base
+     station existed, including in the shipped default (seed 202).
+
+To the earlier draft of this file:
+ 9.3 "there are only two clears" - REFUTED. There is a third genuine clear at
+     wildfire_model.py:3563. There are also three non-recovery overwrites
+     (:2205 recycle-after-exit, :2289 off-grid absence, :4886 casualty) and one
+     blocked path (:4154-4156 refuses assign for route_blocked units).
+ 9.4 "modes 1, 2 and 3 are IDENTICAL" - true for seed 808 D/east on
+     firefighter, victim and event traces; FALSE in general. UAV traces diverge
+     from step 135. On D/east/half seed 404, mode 1 latches ff_unit_1 at [33,5]
+     while modes 2 and 3 do not (terminal 234 vs 210). The return leg is not
+     inert.
+ 9.5 The draft attributed the divergence to UAV spawn by argument. This round
+     MEASURED it (4.3) and the attribution holds - but the draft's companion
+     claim about firefighter starting distance is contradicted: the mode-3
+     firefighter was CLOSER (Manhattan 46 vs 50).
+ 9.6 "every decision the pass made was correct" - true of the revalidation
+     pass, false of the replacement pathway, which assigned a unit to a victim
+     it had no path to because nothing path-tests the selection.
+ 9.7 Seed 909 counted as an instance of this gap - see 5.2, it is a horizon
+     artifact.
+ 9.8 The draft's section 6.1 was "[PENDING]" and its supporting sweep produced
+     nothing. Section 6.2 above replaces it with 34 completed runs.
+
+================================================================================
+10. METHOD, AND ONE PROCESS FAILURE WORTH RECORDING
+================================================================================
+
+THE PRIOR SWEEP LOST ALL 34 RESULTS. outputs/_l808_pool.sh read a CRLF queue
+file with `while IFS='|' read -r s m w`, which left a literal CR in $w. The CR
+propagated into the --out filename, so every run computed for 5-14 minutes and
+then died at the final write with
+  OSError: [Errno 22] Invalid argument: 'outputs/_l808sw_s808_m3_east\r.json'
+Approximately two hours of compute produced zero bytes of output, and the
+failure was invisible in `ls` (the CR is not printed) - it took `ls -b` to see
+the filenames. The .out files were all zero-length, which is the same signature
+this project's notes already record for OOM, so the two failure modes are easy
+to confuse.
+
+Fixed in outputs/_l808_pool2.sh by stripping CR from every field after read.
+34/34 runs completed, no failures.
+
+INSTRUMENTS USED, all read-only, none modifying the model:
+  _l808_trace.py     full per-step trace, reval decision log, rescue events
+  _l808_sweep.py     light latch classifier (used for the 34-run sweep and the
+                     isolation run); --ffspawn added the isolating arm
+  _l808_pool2.sh     CR-hardened memory-aware job pool
+  _l808_tl.py        timeline extractor (new this round)
+  _l808_armcount.py  per-arm latch counter over committed _ffr_ artifacts (new)
+  _l808_shape.py     latch shape classifier - no-referent vs live-victim tail (new)
+
+VERIFICATION: the mechanism claim was put to four independent adversarial
+reviewers (alternative causation, pre-existing classification, pass
+correctness, severity). The pre-existing classification survived unrefuted. The
+other three each forced a correction that is incorporated above: the
+firefighter-spawn attribution (4.3), the s219-not-s222 onset (2.3), and the
+severity scoping (7.2).
+
+WHAT THIS ROUND DID NOT ESTABLISH:
+  - whether the D/east 909 latch recorded by the dimension round (dimfixb,
+    flag at 186) is the no-referent shape. It does not reproduce at HEAD mode 0
+    and was not re-run on its own arm.
+  - whether the hazard oscillation (4.4) is general or specific to this
+    corridor. One run, one unit, 30 steps. It is reported as an observation,
+    not a characterised defect.
+  - any frequency multiplier. The samples do not support one (6.2).
+  - the 202-shaped counterfactual (would clearing the flag at 237 have rescued
+    victim_1?) is argued from the dispatch gates, not measured. It needs a
+    run with the fix in place, which is a fix round's job.
+
+TEST BASELINE: no source file was modified this round (git status shows no
+change to any .py outside outputs/), so the suite is unchanged by construction.
+Re-run at the end of the round for confirmation anyway:
+  8 failed, 523 passed, 5 warnings in 2015.20s
+which matches the stated f4e79d5 baseline exactly.
+
+================================================================================
+END
+================================================================================
