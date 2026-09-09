@@ -1,0 +1,463 @@
+================================================================================
+DEPOT COST (BASE STATION, ROUND 2) - PARTS 2 AND 3: IMPLEMENTATION AND VALIDATION
+a configurable depot set, a distance-derived reserve, and what they cost
+================================================================================
+Repo      : E:\Projects\SAS
+Branch    : depot-cost-round, branched from main at e703861
+Runtime   : E:\Projects\SAS\.venv\Scripts\python.exe
+            sys.version 3.10.11, mesa.__version__ 1.2.1 (confirmed)
+Design    : outputs/depotcost_part1.txt. All five maintainer rulings received
+            before implementation; R5 gained one addition (section 5).
+Sample    : 141 harness runs + 41 gate seed-runs x 4 arms + 1 inertness shard.
+            0 failures.
+Readout   : `bash outputs/_dc_readout.sh` regenerates every number below.
+
+================================================================================
+0. VERDICT
+================================================================================
+NO ARM MEETS THE GATE. The gate asks for never_detected within 1-2 of the mode-0
+baseline ON ALL THREE SAMPLES without rescued decreasing. Measured:
+
+  arm    never_detected delta   verdict    rescued delta        verdict
+         canon / fresh / rbgate            canon / fresh / rbgate
+  dcA      +4    +3     +9       FAIL       +3     0     -5      FAIL
+  dcB      +4    +3     +9       FAIL       +3     0     -5      FAIL
+  dcC      +2    -1     +3       FAIL       +1    +4     -1      FAIL
+  dcD      +1    +3      0       FAIL       +4     0     +4      PASS
+
+RECOMMENDATION: BASE_STATION_MODE STAYS AT 0. The default is not flipped, which
+this round was instructed not to do in any case.
+
+BUT THE ROUND IS NOT A NULL RESULT, and the coverage cost is NOT inherent at
+50x50 - which is what the "no arm passes" branch of the gate anticipated. The
+cost is more than halved by depot placement alone:
+
+  never_detected over all 41 runs   baseline 3    dcA/dcB 19    dcC 7    dcD 7
+  rescued over all 41 runs          baseline 117  dcA/dcB 115   dcC 121  dcD 125
+
+dcD is the arm to carry forward. It is the ONLY arm whose rescued count does not
+decrease on any sample; it ties dcC on never_detected and beats it by 4 on
+rescued; it misses the gate on ONE sample by ONE victim (fresh 10: 4 against a
+baseline of 1); and unlike dcC it carries no firefighter-spawn confound. It is
+not shippable on this evidence. It is a candidate for a follow-up round with a
+wider sample, and section 4.4 says what that round should measure.
+
+================================================================================
+1. WHAT WAS BUILT
+================================================================================
+
+1.1  The depot set
+--------------------------------------------------------------------------------
+BASE_STATION_DEPOTS, a bitmask over five anchors - NW 1, NE 2, SW 4, SE 8,
+CENTRAL 16 - built in ASCENDING BIT ORDER so the set is ordered and
+deterministic. 0 means "one depot at BASE_STATION_CORNER", the pre-round
+behaviour and the shipped default.
+
+The accessor RAISES outside 0..31 rather than falling back. base_station_corner()
+silently maps anything outside 0..3 to NW, and the same habit here would have run
+arm C as arm A with no error anywhere - the wave would have measured the wrong
+thing and reported it as a result. That is this repo's recorded dead-input class
+and it is not repeated.
+
+model.base_station carries a "depots" tuple, per-depot berth tables and the
+per-unit home index, with "origin" / "size" / "ranked" / "uav_berths" kept as
+depot-0 ALIASES so every pre-existing reader - both renderers, the harness, the
+eleven shipped geometry tests - works unchanged.
+
+1.2  One berth per UAV PER DEPOT, and a latched target
+--------------------------------------------------------------------------------
+The single-depot design rests on an invariant stated twice in the source:
+"distinct berths are what make the return leg deadlock-free". Giving every UAV a
+berth in EVERY depot preserves it exactly - no two UAVs share a berth whichever
+depot each picks - with no claim/release protocol.
+
+The target is chosen ONCE at the trigger and latched. Re-running the argmin every
+step would make a UAV equidistant from two depots flip its target each step, and
+_rtb_direction would reverse with it. rtb_log gains target_depot / target_berth /
+home_depot so a return leg is attributable to a depot.
+
+The berth ranking stayed PER BLOCK. A single sort over the union interleaves the
+depots: applied to NW+SE it gives uav_berths [(4,45) NW, (45,4) SE, (3,45) NW,
+(3,46) NW], a 3/1 split that is an artifact of the (x,y) tie-break. Depot regions
+are asserted pairwise disjoint, because the ranking sorts a list not a set.
+
+1.3  base_station_contains is depot-scoped
+--------------------------------------------------------------------------------
+The docking fallback parks a UAV on any depot cell it has reached when its berth
+is blocked. Against the UNION of two depots that would let a UAV dock - and at
+mode 3 recharge and re-launch - inside a depot it was never flying to. The index
+is threaded through; with one depot it is depot 0 and the union, i.e. unchanged.
+
+1.4  The spawn split
+--------------------------------------------------------------------------------
+BASE_STATION_SPAWN_SPLIT: 0 all at depot 0 (default), 1 alternate, 2
+partition-nearest. Split 2 homes each SEARCHER at the depot nearest its own
+crosswind lane centroid. NW and SE fall in opposite halves of both lane axes, so
+the correct assignment FLIPS between east and south wind and no wind-blind index
+rule can be right for both - measured, and pinned by a test.
+
+Two refactors, both single definitions rather than copies:
+  _crosswind_band      split out of _searcher_crosswind_lane
+  _uav_role_for_index  split out of _assign_uav_roles
+_assign_depot_homes lives outside _build_base_station because the shipped
+geometry tests bind that method onto a stand-in exposing only HEIGHT, WIDTH and
+NUM_AGENTS.
+
+1.5  The route_blocked gate could not run on an armed arm at all
+--------------------------------------------------------------------------------
+outputs/_rblatch_campaign2.py took only --scenario / --wind / --steps / --seeds /
+--tag. Without --set the only way to gate a non-default configuration was to edit
+the shipped default, which this round is forbidden to do, so the gate was
+unreachable for arms A-D. Part 2 adds a --set passthrough there and in
+_ffr_rbgate.sh. Proven inert in 3.3.
+
+================================================================================
+2. THE INSTRUMENTS, AND WHY THEY CAN BE TRUSTED
+================================================================================
+Every instrument this round relies on was validated against a case with a known
+answer BEFORE it was used to judge an arm.
+
+  THE OFFLINE REPLAY (Part 1). outputs/_dc_replay.py replays a candidate trigger
+  against recorded per-step battery and position. Validated 52/52 EXACT against
+  the previous round's own rtb_log. It required reconstructing the battery as the
+  model's exact float: the harness rounds to 4 decimals and the flat-60 rule
+  lands on a tie (60.000000000000284 stored as 60.0), which fires the trigger one
+  step early on 15 of 52 trips. It predicted arm C at 9.39% and arm D at 11.79%
+  return share; measured 8.51% and 12.39%. It also predicted arm B would be null
+  before any wave ran.
+
+  THE STRANDING DETECTOR. Redefined from "zero battery outside the depot" - which
+  scored all five of the previous round's permanently deadlocked legs as ZERO -
+  to a positional test. Validated: it finds 5/5 in bsret and 0 in bsfull.
+
+  THE IDENTITY COMPARATOR. Carries the drift signature automatically: a 0/N whose
+  differing field set is identical on every run and contains no evaluation metric
+  is reported as schema drift, not regression. It fired for real in 3.2.
+
+  THE GATE READER. outputs/_dc_rbread.py exists because _ffr_rbcompare.py reports
+  rescued / dead / ff_deaths but NOT never_detected - the round's target metric -
+  so the 18-seed sample could not otherwise answer the round's own gate. Both are
+  run and both are reported.
+
+================================================================================
+3. VALIDATION
+================================================================================
+
+3.1  Kill switch - byte identity                    GATE: PASS
+--------------------------------------------------------------------------------
+dcoff (MODE=0) against dcref (an e703861 worktree measured by THIS round's
+harness, built BEFORE the wave):
+
+  canonical  13 / 13 runs IDENTICAL on all 39 recorded fields
+
+The 39 include eval, all 240 per-step fire digests, the per-step UAV / victim /
+firefighter traces, the planner log, base_station, rtb_log, rtb_counters,
+partition_steps and stdout_sha256.
+
+3.2  THE REFACTOR IS INERT WITH THE FEATURE ARMED   GATE: PASS
+--------------------------------------------------------------------------------
+This check is not in the brief and the round would have been wrong without it.
+Mode-0 identity proves the kill switch but executes NONE of the new code -
+_apply_return_to_base returns at `mode < 2`, no depot is built, no berth is
+assigned. Arm A is the baseline B, C and D are read against, and nothing else
+tested whether it had moved.
+
+dcAref = e703861's SOURCE at MODE 3, single depot, measured by this round's
+harness. dcA vs dcAref:
+
+  canonical  13 / 13 runs IDENTICAL on all 39 fields
+
+IT FIRST READ 0/13, differing on base_station on every run. THE COMPARISON WAS
+NOT RELAXED. The field was dumped: the key sets are identical; the four
+PRE-EXISTING sub-keys (origin, size, uav_berths, firefighter_berths) match
+exactly; the four NEW ones (depots, uav_berths_by_depot, uav_home,
+firefighter_home) are EMPTY on the pre-round side, because that source has no
+such structures and the harness's `.get(...) or ()` records []. Same class as the
+three new rtb_log keys. The exclusion is coded and documented in _dc_arms.py
+(BS_NEW_KEYS / RTB_NEW_KEYS) rather than argued in prose, and the kill-switch
+gate is unaffected by it - still 13/13 without the flag.
+
+An independent six-dimension code review reached the same conclusion by tracing
+the chain of equalities in the source, without running anything.
+
+3.3  The --set passthrough is inert                 GATE: PASS
+--------------------------------------------------------------------------------
+Adding --set to the gate script carries an obligation: with no --set the params
+dict must be bit-identical, or the existing e703861 reference shards (tag `rbc`)
+are not comparable and every gate number is unreadable. One shard was re-run
+through the MODIFIED script with no --set and compared FIELD FOR FIELD:
+
+  dcinerta vs rbca, 15 top-level keys, per-seed evals: IDENTICAL on every key.
+
+The tag deserves a note. It was originally `rbcv`, which is a PREFIX EXTENSION of
+the reference tag `rbc` - and _ffr_rbcompare.py globs "_rblatch_camp2_<old>*_D_*",
+so that shard would have been swept into the reference merge and silently
+double-counted five east seeds in every gate comparison. Caught in review before
+the check was ever run; retagged `dcinert`, which shares no prefix with any
+reference or arm tag.
+
+3.4  Tests                                          GATE: PASS
+--------------------------------------------------------------------------------
+  at e703861     8 failed, 545 passed  (outputs/_dc_pytest_e703861.log)
+  at Part 2      8 failed, 562 passed  (outputs/_dc_pytest_part2.log)
+
+THE FAILING NAME SET IS IDENTICAL - checked name by name, not by count, because
+outputs/dimension_report.txt:430-432 records a case where the counts matched by
+coincidence while the sets differed by two tests. No new failure; nothing
+previously failing silently started passing.
+
+Five tests were added after a review found the ENTIRE dcD mechanism
+(BASE_STATION_SPAWN_SPLIT, _assign_depot_homes, _crosswind_band) had zero
+coverage - an axis error there would have homed every searcher at depot 0 and
+recorded a null lane-matching effect as though it had been measured, with the
+suite green. The wind-flip test was MUTATION-TESTED: swapping the centroid axes
+makes it fail. Also added: the role-index map, the split modes, the per-trip
+latch, and the distance-regime margin derivation.
+
+3.5  No UAV stranded                                GATE: PASS for 4 of 5 arms
+--------------------------------------------------------------------------------
+Under the REDEFINED gate (positional, not battery - see 5):
+
+  arm      zero-battery   stuck   unarrived
+  dcoff         0           0         0
+  dcA           0           0         0
+  dcB           0           1         1     <-- east/half/808, 38 steps, batt 35.4
+  dcC           0           0         3     <-- still flying at the horizon, not stuck
+  dcD           0           0         0
+
+dcC's three "unarrived" are UAVs still legitimately in flight at step 240: its
+trigger fires around step 185-210 and the leg is ~21 cells. They are not stuck.
+
+================================================================================
+4. THE RESULT
+================================================================================
+
+4.1  All three samples, mode-0 baseline first
+--------------------------------------------------------------------------------
+  arm      never_detected        rescued              ff_deaths       return
+           c    f    r   ALL     c    f    r   ALL    c   f   r  ALL  share
+  baseline 0    1    2     3     35   29   53  117    8   7   9   24    --
+  dcA      4    4   11    19     38   29   48  115    4   1   6   11  16.81%
+  dcB      4    4   11    19     38   29   48  115    4   1   6   11  18.03%
+  dcC      2    0    5     7     36   33   52  121    7   5   9   21   8.51%
+  dcD      1    4    2     7     39   29   57  125    6   4   9   19  12.39%
+
+  c = canonical 13, f = fresh 10, r = route_blocked 18. Return share is
+  UAV-steps on a return leg, over the canonical+fresh runs; the gate sample does
+  not record per-step traces.
+
+4.2  What moved, and what did not
+--------------------------------------------------------------------------------
+DEPOT PLACEMENT IS THE WHOLE EFFECT, AS PREDICTED. Arms A and B cost 16 extra
+never_detected over 41 runs; arms C and D cost 4. The return-leg share tracks the
+mean return distance exactly as the arithmetic said it would (share = mean_d/240):
+41.0 -> 16.81%, 29.4 -> 12.39%, 21.4 -> 8.51%.
+
+ARM B IS NULL, MEASURED. Identical to arm A on EVERY outcome metric on all three
+samples - 13/13 canonical, 10/10 fresh, and the same 53->48 / 2->11 / 9->6 on the
+gate 18 - while its return share is 1.2 points WORSE and its trajectories
+demonstrably differ (triggers at 164/137/159/181 against 135/135/151/136;
+uav_steps and stdout differ; overrides confirmed present in extra_params). The
+distance-based reserve at a single depot changes WHEN a UAV flies home, not what
+happens to the victims. Part 1's replay predicted this before the wave ran.
+
+A CORRECTION TO SOMETHING THIS ROUND REPORTED EARLIER. On the 23-run
+canonical+fresh sample never_detected was monotone in the return share across all
+four arms, and I reported a least-squares fit of 0.43 victims per point, R^2 0.90.
+THAT DOES NOT SURVIVE THE THIRD SAMPLE. Over all 41 runs dcC and dcD TIE on
+never_detected (7 each) despite return shares of 8.51% and 12.39%. The return
+share separates the big step - arms A/B at 16.8-18.0% and 19 never_detected, from
+arms C/D at 8.5-12.4% and 7 - but it does NOT order dcC against dcD. The fit was
+an artifact of aggregating five points from one sample; it is withdrawn.
+
+4.3  The route_blocked gate proper
+--------------------------------------------------------------------------------
+`_ffr_rbcompare.py --new <tag> --old ihrest`, as the brief specifies:
+
+  arm    rescued        [1] no per-seed  [2] recovery   [3] no unit left
+                            regression       alive          latched
+  dcA    53 -> 48 (-5)      FAIL (4)         PASS           PASS
+  dcC    53 -> 52 (-1)      FAIL (4)         PASS           PASS
+  dcD    53 -> 57 (+4)      FAIL (4)         PASS           PASS
+
+THE PREVIOUS ROUND'S BLOCKER IS CLOSED. It failed item 3 with two firefighters
+permanently latched as route_blocked on seed 808 - the category commit 70e1b33
+closed - and would not ship for that reason. Every arm here leaves ZERO units
+latched, against ONE for the ihrest reference. That is the latch fix (4795708,
+in e703861) doing its job, not this round's doing, but it removes the blocker
+that stopped the feature last time.
+
+Item 1 is a per-seed strictness: it fails if ANY seed regresses even when the
+total improves. dcD's total is +4 rescued with 4 of 18 seeds regressing. Read
+alongside 4.1 rather than as a verdict on its own.
+
+4.4  Why dcD and not dcC, despite dcC winning two samples
+--------------------------------------------------------------------------------
+On canonical+fresh, dcC looked like the answer: never_detected 2 against dcA's 8,
+rescued +5. The third sample reversed it - dcC 5 never_detected and rescued -1,
+dcD 2 and rescued +4. Reported in that order because the canonical 13 is a screen
+and this campaign has four recorded instances of a gain evaporating on a wider
+sample, arm A's own +3 among them.
+
+Across all 41 runs dcD is better or equal on every count:
+  - never_detected 7, equal to dcC
+  - rescued 125 against dcC's 121 and the baseline's 117
+  - rescued NEVER DECREASES on any sample; dcC's does, on the gate 18
+  - ff_deaths 19 against dcC's 21 (baseline 24)
+  - 0 stranded and 0 unarrived; dcC has 3 unarrived
+  - 1 fallback dock in 92 trips; dcC has 26 in 91 (4.5)
+  - NO FIREFIGHTER-SPAWN CONFOUND. dcC is the only arm whose firefighter spawn
+    moves: it has no NW depot, so ruling R3 is unachievable there and
+    firefighters spawn central, inside the ignition rectangle. Its ff_deaths of
+    21 cannot be cleanly attributed. dcD keeps them at NW in every run.
+
+The second depot is genuinely used: 40 of dcD's 92 trips returned to SE, mean
+distance 28.4 against 30.1 for NW, and the partition-nearest split homed the
+lane-matched searcher there on 20 of 92 UAV-runs.
+
+WHAT A FOLLOW-UP ROUND SHOULD DO. dcD misses the gate on one sample by one victim
+on 10 runs. That is inside the noise this campaign has repeatedly demonstrated,
+in both directions. The question is not answerable by re-reading these 41 runs;
+it needs a fourth, larger, independent seed set for dcD against mode 0, and
+nothing else. If never_detected holds at or below baseline+2 there, dcD is
+shippable and the depot set should be flipped to 9 with SPAWN_SPLIT 2.
+
+4.5  Exposure and contention, reported for completeness
+--------------------------------------------------------------------------------
+  UAV-steps on a burning cell / in smoke, canonical+fresh:
+    dcoff 1.69/1.54   dcA 2.78/2.65   dcB 3.27/3.12   dcC 2.52/1.97   dcD 2.83/3.08
+  A central depot burns in 18 of 20 distinct baseline fires and SE in 19, against
+  3 for NW - but arm C's UAV exposure is LOWER than arm A's, because the UAVs
+  spend far less time crossing the fire front on long return legs.
+
+  Fallback docks (a UAV parked on a cell that is not its latched target berth):
+    dcA 1 of 90 trips   dcB 6 of 90   dcC 26 of 91   dcD 1 of 92
+  dcC's central berths are mutually adjacent, so UAVs converging from all
+  directions transit each other's berths constantly. It caused no deadlock there
+  - an interior cell leaves the displaced UAV escape routes - but it is a
+  high-contention signal, and section 5 is what it looks like when it does bite.
+
+================================================================================
+5. A DEFECT IN THE SHIPPED FEATURE - REPORTED, NOT FIXED
+================================================================================
+Recorded here as a defect in the feature rather than as a note about this round,
+per ruling R5. Mode 0 means nobody is exposed today. ANY FUTURE ROUND THAT FLIPS
+THE MODE INHERITS IT.
+
+MECHANISM, two independent parts, either fix alone would prevent it:
+  (a) agents._rtb_direction CANNOT SIDESTEP ON A PURE-AXIS APPROACH. When dx == 0
+      the corresponding direction is None, so `secondary` is None, the swap puts
+      None in `primary`, and the function falls through and returns the ORIGINAL
+      BLOCKED DIRECTION. The UAV retries the refused move forever.
+  (b) THE DOCKING FALLBACK FIRES ON A TRANSIENT BLOCK. It requires only that the
+      berth be occupied AT THAT INSTANT - including by a UAV merely passing
+      through it - and it permanently parks the returning UAV on another unit's
+      berth.
+
+FULL TRACE, dcB east/half/808, this round's own wave:
+  step 203  UAV 2501 TRANSITS (3,46) on its way to its own berth (3,45). mesa
+            advances agents in order, so 2502 evaluates docking in the same step,
+            finds its berth (3,46) momentarily occupied, and the fallback parks it
+            permanently on (4,45) - UAV 2500's berth.
+  step 203+ UAV 2500 reaches (4,44), one cell short of (4,45), dx = 0. The
+            sidestep has nothing to swap to. It retries the blocked move for 38
+            steps and ends the run with 35.4 battery in hand.
+So the fallback that exists to guarantee ONE UAV's return terminates is what
+permanently blocks ANOTHER, and a one-step transit is enough to trigger it.
+
+WHY THIS MATTERS MORE THAN THE PREVIOUS ROUND THOUGHT. That round reported its
+five non-arriving mode-2 legs as "still flying home, none failed". They were
+permanently deadlocked, all five the same UAV at the same cell for 34-66 steps
+with 37-42 battery. It has now reproduced AT MODE 3, prospectively, in an arm
+nobody predicted it in.
+
+TEST GAP, closed: tests/test_base_station.py:273 covered only (10,48) -> (4,45),
+where dx and dy are BOTH non-zero and a secondary direction exists. The pure-axis
+case - the only one where the swap has nothing to swap to - is now pinned by
+test_stall_sidestep_cannot_fire_on_a_pure_axis_approach, which asserts the
+CURRENT BROKEN behaviour so a fix flips it visibly and is labelled as such.
+
+NOT FIXED HERE because a fix changes mode-2 behaviour and would confound the
+placement comparison this round exists to make. It is a separate round with its
+own gate.
+
+A SECOND, SMALLER LATENT DEFECT, found by review and unreached by any arm here:
+the mechanism-1 planner waypoint publishes the UAV's HOME berth
+(local_adaptation_generator.py:2004), not the latched target. At one depot the
+two are the same value. With two depots and BASE_STATION_RETURN_MECHANISM=1 a UAV
+would be steered to a berth the docking logic is not scoped to, and the trip could
+not terminate. All four arms here use mechanism 2.
+
+================================================================================
+6. WHAT WENT WRONG OPERATIONALLY
+================================================================================
+Recorded because one of the two causes is still unknown and a reader should not
+assume both are closed.
+
+  CHAIN 1 died during stage 2 with no diagnostic, no traceback and no marker,
+  after launching 8 of 13 runs. Its launched runs survived as orphans and kept
+  writing correctly; the remaining 5 never started, and the gate and the test
+  suite never started at all. CAUSE STILL UNKNOWN. It is NOT the bug below:
+  chain 1 had the same bare `wait` but no heartbeat, so its `wait` had nothing to
+  block on and would have returned correctly. TWO FAILURES, TWO CAUSES, ONE OPEN.
+
+  CHAIN 2 stalled at the gate stage, and that one is understood - it was the
+  heartbeat added to chain 2 to make a silent death detectable:
+      heartbeat &                                    # never exits
+      bash _dc_rbgate.sh A & bash _dc_rbgate.sh B &
+      wait                                           # waits for A, B AND the heartbeat
+  Bare `wait` waits for EVERY background job of the shell. Arms A and B finished
+  at 11:59:17 and 12:01:07; `wait` blocked on the heartbeat, so the next stage
+  never started. Reproduced in miniature: bare wait hangs, `wait "$A" "$B"`
+  proceeds. Chain 3 targets every wait at explicit PIDs and completed.
+
+  NO DATA WAS LOST OR CORRUPTED BY EITHER. The pool skips any run whose output
+  exists and is non-empty, so both restarts were resumes. Checked explicitly for
+  the CR-in-filename failure mode this campaign has hit before: zero files in
+  outputs/ carry a control character in the name, and the gate path uses no queue
+  file at all - seeds are literal argv.
+
+  ONE PROCESS ERROR OF MINE. I ran a mutation test (deliberately breaking the
+  centroid axes to prove a new test had assertion power) IN THE LIVE TREE while
+  the wave was reading it. No contamination - the only dcD file predated the
+  window by ten hours and _assign_depot_homes early-returns for every arm with
+  one depot, so dcA/dcB/dcC cannot reach that line - and every run's spawn homes
+  were verified post hoc. It was still careless; mutation testing belongs in a
+  worktree.
+
+================================================================================
+7. FILES CHANGED
+================================================================================
+  common_fixed_variables.py        BASE_STATION_DEPOTS, BASE_STATION_SPAWN_SPLIT,
+                                   BASE_STATION_CORNER declared, the distance-
+                                   regime derivation, two corrections to the
+                                   shipped reserve rationale (D is 92 not 90; the
+                                   distance term is dead code at the defaults)
+  agents.py                        per-depot berths, nearest selection, the latch,
+                                   depot-scoped _rtb_inside_depot, two accessors,
+                                   the known-defect note in _rtb_direction
+  wildfire_model.py                _base_station_origins, multi-depot build,
+                                   _assign_depot_homes, _uav_role_for_index,
+                                   depot-scoped base_station_contains
+  src_extension/adaptation/local_adaptation_generator.py   _crosswind_band
+  serve_dashboard.py               depots payload + browser loop
+  Canvas_Grid_Visualization.py     one outline per depot
+  outputs/_ffr_harness.py          depot set recorded inside base_station
+  outputs/_rblatch_campaign2.py    --set passthrough
+  outputs/_ffr_rbgate.sh           --set passthrough; shebang corrected to bash
+                                   (this round added bash arrays to a #!/bin/sh file)
+  tests/test_base_station.py       5 new tests, 2 false rationales corrected, 1
+                                   tautological assertion replaced with concrete cells
+  outputs/_dc_*.py, _dc_*.sh       round tooling (queue, arms, replay, geom,
+                                   evidence, rbread, rbinert, readout, chains)
+
+================================================================================
+8. REPRODUCTION
+================================================================================
+  bash outputs/_dc_readout.sh                      every number in this report
+  python outputs/_dc_evidence.py                   Part 1's measured evidence
+  python outputs/_dc_replay.py --validate          the replay's 52/52 validation
+  python outputs/_dc_queue.py > outputs/_dc_queue.txt
+  MAXPAR=10 MINFREE_KB=2500000 bash outputs/_dim_pool.sh outputs/_dc_queue.txt
+  bash outputs/_dc_rbgate.sh {verify|A|B|C|D}
+  MPLBACKEND=Agg ./.venv/Scripts/python.exe -m pytest tests -p no:cacheprovider -q
