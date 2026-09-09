@@ -209,14 +209,24 @@ def _capture_frame(model, step):
     # the terrain under it stays readable.
     station = getattr(model, "base_station", None)
     depot = None
+    depots = []
     if station is not None:
-        depot = {"x": int(station["origin"][0]), "y": int(station["origin"][1]),
-                 "size": int(station["size"])}
+        blocks = station.get("depots") or ({"origin": station["origin"],
+                                            "size": station["size"]},)
+        depots = [{"x": int(d["origin"][0]), "y": int(d["origin"][1]),
+                   "size": int(d["size"])} for d in blocks]
+        # "depot" stays a SINGLE object for depot 0. The browser guard is
+        # `if (fr.depot)`, which is truthy for a list and would then read .x and
+        # .size off it, yielding NaN rect coordinates that canvas silently draws
+        # as nothing. Publishing the list under a NEW key instead means an old
+        # client keeps drawing depot 0 and a new one draws them all; neither
+        # fails silently.
+        depot = depots[0]
 
     return {"step": step, "cells": cells, "prob": prob,
             "uavs": uavs, "victims": vics, "firefighters": ffs,
             "assignments": assignments, "trails": ff_trails + uav_trails,
-            "depot": depot,
+            "depot": depot, "depots": depots,
             "panel": _slim_panel(st)}
 
 
@@ -676,7 +686,17 @@ function drawMap(fr){
   // base station (feature 3): an OVERLAY, drawn after the ground and before every
   // unit marker, so the terrain under the depot stays readable even while it
   // burns. Immediate-mode canvas means this statement's position IS the z-order.
-  if(fr.depot){const d=fr.depot,dx=d.x*cs,dy=(H-d.y-d.size)*cs,dw=d.size*cs,dh=d.size*cs;
+  // Depot-cost round: iterate fr.depots so a second depot is DRAWN rather than
+  // silently missing. fr.depot is still the single depot-0 object, so an older
+  // client keeps working; the fallback here means a server that only sends
+  // fr.depot still renders. NOTE the axis convention: this file flips gy with H
+  // (= cfv.HEIGHT) and scales gx by W (= cfv.WIDTH), while the model puts x on the
+  // HEIGHT axis and y on the WIDTH axis - the two are swapped. Pre-existing, and
+  // provably inert while the grid is square (50x50 everywhere in this campaign).
+  // Not fixed here: it is a rendering-wide convention, not a depot issue, and
+  // changing it would move every marker on the surface. Recorded so it is found.
+  const _dps=(fr.depots&&fr.depots.length)?fr.depots:(fr.depot?[fr.depot]:[]);
+  for(const d of _dps){const dx=d.x*cs,dy=(H-d.y-d.size)*cs,dw=d.size*cs,dh=d.size*cs;
     ctx.fillStyle='rgba(119,0,153,0.22)';ctx.fillRect(dx,dy,dw,dh);
     ctx.strokeStyle='#770099';ctx.lineWidth=2;ctx.strokeRect(dx+1,dy+1,dw-2,dh-2);
     ctx.fillStyle='#770099';ctx.font='bold 9px ui-monospace,monospace';

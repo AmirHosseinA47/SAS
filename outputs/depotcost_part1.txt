@@ -1,0 +1,1052 @@
+================================================================================
+DEPOT COST (BASE STATION, ROUND 2) - PART 1: DESIGN
+reduce the return-leg coverage cost so the base station can ship enabled
+================================================================================
+Repo      : E:\Projects\SAS
+Branch    : depot-cost-round, branched from main at e703861 (confirmed at start)
+Runtime   : E:\Projects\SAS\.venv\Scripts\python.exe
+            sys.version 3.10.11, mesa.__version__ 1.2.1 (confirmed, this session)
+Date      : 2026-09-08
+Status    : DESIGN ONLY. Nothing is implemented. Part 2 waits on confirmation.
+Given     : the cause is taken from the brief and is NOT re-derived - recharging
+            is outcome-neutral, the whole cost is the return leg, 17.5% of
+            UAV-steps against 4.7% charging.
+
+Evidence written for this part. All read-only, all run in seconds, none runs a
+simulation:
+  outputs/_dc_trips.py   what the 208 RECORDED return trips actually cost
+  outputs/_dc_replay.py  replays a candidate trigger against the recorded
+                         per-step battery and position. VALIDATED 52/52 EXACT
+                         against the previous round's own rtb_log.
+  outputs/_dc_geom.py    the depot geometry that sets the return-leg cost
+  outputs/_dc_evidence.py  regenerates EVERY measured number quoted below, in
+                         one command, so this document can be checked rather
+                         than trusted
+
+================================================================================
+0. THE HEADLINE - READ THIS BEFORE THE REST
+================================================================================
+Four findings, all measured before spending a wave. Together they change what the
+four arms can measure, and one of them is a defect in the shipped feature. I am
+putting them first because arm B as literally specified is a null arm, and the
+maintainer should know that before approving the round.
+
+0.1  THE RETURN-LEG SHARE IS ARITHMETIC, NOT A TUNING CONSTANT
+--------------------------------------------------------------------------------
+One return trip costs d steps, d being the Manhattan distance from wherever the
+UAV was to its berth. A reserve of 60 produces exactly one trip per UAV per run.
+So
+
+      return share  =  mean d / 240
+
+The measured mean d was 41.8 and the measured share 17.5%. 41.8/240 = 17.4%. The
+17.5% is not a number to be tuned away - it is the mean distance to a corner
+depot divided by the horizon. That leaves exactly two levers: fire fewer trips,
+or make d smaller.
+
+0.2  THE FIRST LEVER DOES NOT WORK. THE LITERAL DISTANCE RULE IS A NULL ARM
+--------------------------------------------------------------------------------
+Replaying candidate triggers against the recorded per-step battery and position
+(outputs/_dc_replay.py), canonical 13 x 4 UAVs = 52 UAV-runs:
+
+  rule                                          trips fired    return share
+  max(60, 0.3d + 5)     the shipped rule           52 / 52        17.41%
+  0.3d + 16.40          fuel-derived (3.4)         22 / 52         3.13%   none completes
+  0.3d + 3              fuel, small margin          0 / 52         0.00%
+  0.3d + 39.23          horizon-derived (3.5)      52 / 52        17.88%
+
+A trigger derived from FUEL ALONE either never fires or fires so late that no trip
+completes. The reason is not subtle: a UAV drains 0.2983 points per step
+(measured, 3.1), so it ends a 240-step run at battery 28.7, while the fuel a
+return needs is at most 0.3 x 92 = 27.6 points. The battery never gets low enough
+for distance to bind.
+
+Related, and it sharpens the point: THE DISTANCE TERM IN THE SHIPPED TRIGGER HAS
+NEVER ONCE BEEN THE MAX. max(60, 0.3d + 5) selects the distance term only when
+d >= 183.3, and the largest d reachable on a 50x50 grid is 92. The round is
+proposing to promote a term that is currently dead code.
+
+0.3  THE SECOND LEVER IS THE WHOLE EFFECT, AND IT IS PLACEMENT
+--------------------------------------------------------------------------------
+Same replay, at the derived margin that keeps returns completing (3.5), 52/52
+trips in every row:
+
+  depots           mean d over the grid   predicted return share    vs 17.41%
+  NW (shipped)              41.40                 17.88%              +0.5
+  NW+NE                     29.10                 13.58%              -3.8
+  NW+SW                     29.10                 13.86%              -3.6
+  NW+SE                     25.12                 11.79%              -5.6
+  CENTRAL                   21.16                  9.39%              -8.0
+
+  (NW+NE and NW+SW are the same geometry by symmetry - grid mean 29.10 and
+  D=65 for both - and their 0.28-point difference here is trajectory noise,
+  not a preference between them. Both are clearly worse than NW+SE.)
+
+Making the reserve distance-based AT A SINGLE NW DEPOT does not reduce the cost -
+it is half a point WORSE, because the trigger fires from further out. Every point
+of improvement in this round comes from where the depot is.
+
+That is the honest framing: this is a DEPOT PLACEMENT round wearing a
+reserve-derivation hat. The reserve still has to be re-derived, because a flat 60
+tuned for a 90-cell worst case is wrong for a 45-cell one, but deriving it is what
+makes the placement comparison fair, not what delivers the gain.
+
+0.4  A DEFECT FOUND WHILE MEASURING: THE MODE-2 RETURNS DO NOT DEADLOCK-FREE
+--------------------------------------------------------------------------------
+The previous round reported its five non-arriving mode-2 legs as
+"'En route at 240' is NOT stranding: the run ended while the UAV was still flying
+home, with battery in hand. Every trip either completed or was still in progress
+at the horizon; none failed."
+
+That is wrong, and the record shows it. All five are the SAME UAV in the SAME
+cell, permanently stuck:
+
+  seed            UAV    stuck at   stuck for   final battery   berth
+  east/half/101   2502   (3,44)     34 steps       39.6          (3,46)
+  east/half/303   2502   (3,44)     36 steps       40.0          (3,46)
+  east/half/404   2502   (3,44)     43 steps       37.2          (3,46)
+  east/half/505   2502   (3,44)     63 steps       40.8          (3,46)
+  south/half/404  2502   (3,44)     66 steps       41.6          (3,46)
+
+MECHANISM, fully diagnosed. At mode 2 nothing recharges, so a docked UAV never
+leaves its berth. UAV 2502's berth is (3,46); it approaches from (3,44), one cell
+OUTSIDE the depot (the depot is y >= 45).
+  - _rtb_direction (agents.py:350-376) computes dx = 0, dy = +2, so x_dir is None
+    and the primary direction is y_dir = 3.
+  - The target cell (3,45) is UAV 2501's berth and 2501 is docked on it, so
+    not_UAV_adjacent refuses the move and the position does not change.
+  - The stall sidestep swaps primary and secondary - but secondary is None,
+    because dx = 0. The function then falls through to `if secondary is not None`
+    and returns the ORIGINAL blocked direction. The sidestep cannot fire on a
+    pure-axis approach, which is exactly the case that needs it.
+  - The docking fallback at agents.py:447-449 requires _rtb_inside_depot(here);
+    (3,44) is outside, so the fallback never fires either.
+Both escape hatches miss the same case, and the UAV retries the same blocked move
+for 34 to 66 steps with 37-42 battery in hand.
+
+AND THE SIDESTEP IS TESTED ONLY ON THE CASE THAT WORKS. tests/test_base_station.py
+:273-278 exercises _rtb_direction from (10,48) to (4,45) - dx = -6, dy = -3, BOTH
+axes non-zero, so a secondary direction exists and the swap succeeds. The
+pure-axis case (dx = 0 or dy = 0), which is the one that deadlocks in production
+and the only one where the swap has nothing to swap to, is not covered. Whatever
+round fixes this should add exactly that case.
+
+WHAT I AM DOING ABOUT IT. Not fixing it in this round: a fix changes mode-2
+behaviour and would confound the placement comparison this round exists to make,
+and this campaign's practice is to report a defect and diagnose it before
+bundling a fix into an unrelated round. What this round DOES do:
+  - the "no UAV stranded" gate is redefined for Part 3. "Zero battery outside the
+    depot" would have passed all five of these. The gate becomes: no UAV ends the
+    run rtb_active with an unchanged position for more than N steps, whatever its
+    battery. Part 3 reports the stuck count per arm.
+  - arms C and D change the berth geometry, so the deadlock's frequency changes.
+    That is measured, not assumed.
+  - a one-line follow-up (make the sidestep pick any legal direction, or let the
+    docking fallback fire from a cell adjacent to the depot) is recommended as its
+    own round with its own gate.
+
+================================================================================
+1. THE DEPOT SET AS A LIST OF POSITIONS
+================================================================================
+
+1.1  Every reader of model.base_station - the complete list, eight sites
+--------------------------------------------------------------------------------
+  wildfire_model.py:155        write: self.base_station = self._build_base_station()
+  wildfire_model.py:170,174    UAV spawn: station["uav_berths"][a]
+  wildfire_model.py:602,605    base_station_contains: pos in station["cells"]
+  wildfire_model.py:665-669    firefighter spawn: station["firefighter_berths"][i]
+  Canvas_Grid_Visualization.py:142-166  mesa outline: ["origin"], ["size"]
+  serve_dashboard.py:210-215   dashboard payload: ["origin"], ["size"]
+  outputs/_ffr_harness.py:736-742  recording: origin / size / uav_berths /
+                                   firefighter_berths
+  tests/test_base_station.py   injects a station (:168) and reads ["ranked"] (:151)
+
+outputs/_bs_identity.py:53 carries "base_station" only as a FIELD NAME in the
+identity whitelist and never inspects its shape.
+
+WHAT GENERALISES FOR FREE
+  ["cells"] is already a frozenset. As a union it is correct for any number of
+  blocks, and base_station_contains needs no change.
+  agents._rtb_trigger_level, _rtb_direction and _rtb_berth_blocked all take the
+  berth as an ARGUMENT and are already depot-count agnostic.
+  Mechanism 1 (the planner route) reads agent.rtb_berth and never touches
+  model.base_station, so it is agnostic end to end.
+  move(), _update_battery_after_step, the docked hold and the recharge are keyed
+  purely on rtb_docked.
+
+WHAT BREAKS, and every one of these is a silent no-op or a crash rather than a
+loud failure - which is why they are enumerated rather than discovered in Part 2:
+
+  (a) rtb_berth IS WRITTEN EXACTLY ONCE IN THE TREE, at wildfire_model.py:175,
+      and never re-assigned. "Return to the nearest depot" has NO existing code
+      path at all. It has to be added, and 2.5 says how without breaking the
+      distinct-berth invariant.
+  (b) THE DOCKING FALLBACK DOCKS AT THE WRONG DEPOT. _rtb_inside_depot tests the
+      UNION, so with two depots a UAV whose own berth is momentarily occupied can
+      dock inside the depot it was NOT returning to - and at mode 3 recharge and
+      re-launch from there. _rtb_inside_depot must become "inside the depot this
+      UAV is currently returning to", not "inside any depot".
+  (c) THE BERTH RANKING INTERLEAVES THE BLOCKS. A single sort over the union of
+      NW+SE at 50x50 hands out uav_berths as 3 NW / 1 SE and firefighter_berths as
+      1 each, purely as an artifact of the (c[0], c[1]) tie-break. The contiguous-
+      prefix argument that keeps UAVs and firefighters from colliding is a
+      PER-BLOCK argument and only survives if the ranking stays per block.
+  (d) DUPLICATE BERTHS. wildfire_model.py:578 sorts a plain LIST, not a set. Two
+      depot regions that overlap or touch put the same cell in the ranking twice
+      and hand it out as two different berths, stacking two UAVs on one cell.
+      Depot regions must be asserted pairwise disjoint at build time.
+  (e) THE CAPACITY CHECK BECOMES VACUOUS. It compares against len(ranked), the
+      total berths across all depots - 50 for two 5x5 blocks. The real constraint
+      under nearest-depot return is PER DEPOT, since every UAV needs a berth in
+      every depot it may return to.
+  (f) THE OUT-OF-BOUNDS SPAWN FALLBACK REPAIRS spawn_pos BUT NOT rtb_berth
+      (wildfire_model.py:174-182), leaving a UAV with a berth pointing off the
+      grid. Unreachable at the four hardcoded corners; reachable the moment
+      origins are configurable. An off-grid berth is a UAV that returns forever.
+  (g) BOTH RENDERERS EMIT ONE BLOCK. Canvas_Grid_Visualization.py:144 unpacks
+      `origin_x, origin_y = station["origin"]` and raises ValueError if origin
+      becomes a list; serve_dashboard.py:213 does int(station["size"]) and would
+      raise TypeError. Worse, the browser guard `if (fr.depot) {...}` is TRUTHY
+      FOR A LIST and then reads .x / .size off it, yielding NaN rect coordinates
+      that canvas draws as nothing - a silent no-op with no error anywhere.
+  (h) THE HARNESS CRASHES MID-WAVE on int(model.base_station["size"]) if size
+      becomes a list. A crash is the good case; see 6.5 for the drift case.
+  (i) TEN of the 23 tests in tests/test_base_station.py hardcode single-depot
+      facts - the exact berth tuples, the scalar origin, the dict shape, the
+      global capacity check. They must be widened, not deleted.
+  (j) base_station_corner() maps any unrecognised value to NW with no error
+      (agents.py:592, `return value if value in (0,1,2,3) else 0`). A new layout
+      code passed through that accessor would silently run arm C as arm A. This is
+      the repo's recorded dead-input class and the new accessor must RAISE on an
+      unrecognised value rather than fall back.
+  (k) A CONSTRAINT ON WHERE THE LAYOUT CODE MAY LIVE: tests/test_base_station.py
+      binds _build_base_station onto a stand-in class exposing ONLY HEIGHT, WIDTH
+      and NUM_AGENTS. The layout code may therefore read no other model attribute.
+      This is what forces the spawn-home assignment (section 2) OUT of
+      _build_base_station and into the spawn loop.
+
+1.2  The berth ranking across two blocks, and what it means for a central depot
+--------------------------------------------------------------------------------
+The ranking key - descending distance from the nearest grid edge, then (x, y) -
+must stay PER BLOCK for the reason in 1.1(c). Verified reproduction of the shipped
+ranking (outputs/_dc_geom.py):
+
+  NW       (4,45) (3,45) (3,46) (4,46) (2,45) (2,46) (2,47) (3,47)
+which is exactly the report's "UAV berths (4,45) (3,45) (3,46) (4,46) /
+firefighter berths (2,45) (2,46)". Same key on the other anchors:
+  NE  (45,45) (45,46) (46,45) (46,46) ...   SW  (4,4) (3,3) (3,4) (4,3) ...
+  SE  (45,4) (45,3) (46,3) (46,4) ...       CENTRAL (24,24) (24,25) (25,24) (25,25) ...
+
+The ranking's stated RATIONALE - "the berths handed out first are the ones with
+the most legal moves out of the block", matching the executor's margin-3 edge
+filter - is a CORNER rationale. Every cell of a central block is 22-24 cells from
+the grid edge, so the key is flat across it and the (x, y) tie-break does all the
+work. Nothing breaks (an interior cell has all four moves legal) but the rationale
+carries no information there and must not be repeated for arm C.
+
+1.3  Proposed internal representation
+--------------------------------------------------------------------------------
+  model.base_station = {
+    "depots": (                      # ordered, one entry per block, disjoint
+      {"origin": (ox,oy), "size": n, "cells": frozenset(...), "ranked": (...)}, ...
+    ),
+    "cells":  frozenset(union),                   # unchanged semantics
+    "uav_berths":         ( (berth_in_depot0, berth_in_depot1, ...), ... ),
+    "firefighter_berths": ( (berth_in_depot0, ...), ... ),
+    "uav_home":           (depot_index_per_uav, ...),
+    "firefighter_home":   (depot_index_per_ff, ...),
+    # aliases kept so the existing readers and the shipped tests are untouched
+    # in the single-depot case:
+    "origin": depots[0]["origin"],
+    "size":   depots[0]["size"],
+  }
+
+Every UAV owns a berth in EVERY depot. That is what preserves the invariant the
+source calls load-bearing - "distinct berths are what make the return leg
+deadlock-free" - because within any one depot no two UAVs share a berth, whichever
+depot they choose. Keeping "origin"/"size" as aliases for the FIRST depot means
+the renderers and the harness keep working unchanged when there is one depot; both
+renderers additionally LOOP over ["depots"], and Part 2 must assert the emitted
+portrayal count per depot, exactly as the previous round asserted 20 portrayals at
+Layer int 2. An invisible second depot is the silent no-op this design is most
+exposed to.
+
+================================================================================
+2. SPAWN WITH TWO DEPOTS
+================================================================================
+
+2.1  Roles, lanes and sectors are index-based and constant - measured
+--------------------------------------------------------------------------------
+From the recorded uav_steps of the mode-0 arms, identical at steps 1, 120 and 240:
+
+  roles=half  2500 tracker  2501 tracker  2502 SEARCHER   2503 SEARCHER
+  roles=def   2500 tracker  2501 tracker  2502 tracker    2503 SEARCHER
+
+(Scenario D's evaluate_scenarios default is 4 UAVs / 4 victims / 2 firefighters,
+and the ROLE default is the legacy 3 trackers + 1 searcher; "half" is the round's
+explicit 2+2 override. Both are in the wave.)
+
+A searcher's crosswind lane is a pure function of its index among searchers, the
+wind and the grid bounds - no RNG, no position
+(local_adaptation_generator.py:332-363). Recorded at step 1:
+
+  east  wind   2502 -> y in [0,24]     2503 -> y in [25,49]
+  south wind   2502 -> x in [0,24]     2503 -> x in [25,49]
+
+So a split by UAV INDEX is a split by ROLE, and never_detected - the metric this
+round exists to fix - is a SEARCHER metric.
+
+2.2  The lane arithmetic rules out every wind-blind index rule
+--------------------------------------------------------------------------------
+Against NW (x 0-4, y 45-49) and SE (x 45-49, y 0-4):
+
+  east    NW (high y) lies in 2503's lane;   SE (low y)  lies in 2502's lane
+  south   NW (low x)  lies in 2502's lane;   SE (high x) lies in 2503's lane
+
+THE ASSIGNMENT THAT PUTS EACH SEARCHER IN ITS OWN LANE IS THE EXACT OPPOSITE FOR
+THE TWO CANONICAL WINDS. No wind-blind index rule is right for both. That is a
+computation, not a preference, and it eliminates options (ii) and (iii) below.
+
+The consequence is already visible in the shipped arm's own record. Taking the
+recorded trigger_distance field directly (bsfull, roles=half, 10 runs - no replay,
+so no indexing question arises):
+
+  searcher whose lane CONTAINS the NW depot   n=10   mean d 29.6   min 10  max 46
+  searcher whose lane does NOT                n=10   mean d 54.9   min 30  max 68
+  trackers                                    n=20   mean d 35.5   min 10  max 68
+
+The far-lane searcher's return leg is 1.85x the home-lane searcher's, and which
+searcher that is flips with the wind.
+
+2.3  The options
+--------------------------------------------------------------------------------
+  (i)   ALL AT THE FIRST DEPOT. Deterministic, and identical to today when there
+        is one depot. Wastes the second depot's spawn value - but NOT its return
+        value, since return is to the nearest depot regardless of spawn.
+  (ii)  ALTERNATE BY INDEX. Deterministic, balances roles across depots at
+        roles=half, but per 2.2 gives BOTH searchers the far depot at east wind.
+        Measurably worse than the status quo on a replay bound.
+  (iii) BLOCK SPLIT (first half / second half). Role-segregated: both trackers at
+        NW, both searchers at SE. A wash on the replay bound, because it moves a
+        tracker to SE and trackers are nearer NW at trigger under every wind.
+  (iv)  SPLIT BY ROLE. Same as (iii) at roles=half; degenerate at roles=def.
+  (v)   PARTITION-NEAREST: home each UAV to the depot nearest the centroid of its
+        own initial partition - crosswind lane for a searcher, sector for a
+        tracker. Correct at both winds by construction, and deterministic: the
+        lane is a pure function of (searcher index, wind, bounds) and the sector
+        of (tracker index, bounds).
+
+2.4  CHOSEN: (v) PARTITION-NEAREST, with (i) as the default and the fallback
+--------------------------------------------------------------------------------
+  - never_detected is a searcher metric, and 2.2 shows the partition-aware rule is
+    the only one that starts every searcher in its own lane at both winds.
+  - the measured asymmetry in 2.2 says what it is worth: the far-lane searcher
+    pays roughly twice the return leg, and under east wind spends ~86 of 240 steps
+    reaching its own lane before it can search at all.
+  - it is deterministic and RNG-free, the invariant the whole feature rests on.
+  - it costs nothing at one depot: every UAV is nearest the only depot, so the
+    rule degenerates to today's behaviour exactly.
+
+CONSTRAINTS THIS IMPOSES ON THE IMPLEMENTATION, both from 1.1(k):
+  - the home assignment may NOT live in _build_base_station, which the geometry
+    tests bind onto a stand-in exposing only HEIGHT / WIDTH / NUM_AGENTS. It lives
+    in the spawn loop, where the model is real.
+  - it must call the SAME resolve_victim_searcher_uav_ids /
+    _searcher_crosswind_lane the rest of the model uses, never a re-derivation.
+    A second copy of the role split is a worse defect than a suboptimal spawn.
+    _searcher_crosswind_lane returns None for n <= 1 and for an unknown id; both
+    must fall back to (i) explicitly rather than silently.
+IF THAT PROVES IMPOSSIBLE BEFORE THE UAVs EXIST, take fallback (i) and say so in
+the report rather than shipping a duplicate rule.
+
+FIREFIGHTERS. They never return to base - the depot is spawn-only for them, and
+nothing in the Firefighter class reads rtb_*. They have no lane and no sector, so
+partition-nearest does not apply. THEY STAY AT NW IN EVERY ARM. The previous
+round's measured firefighter benefit (+2 rescued, -3 unreachable, -2 ff deaths) is
+a benefit of the NW depot specifically; firefighters are NOT fire-immune and the
+SE block burns in 19 of 20 distinct fires (4.3), so moving them there opens a new
+casualty channel and confounds the placement comparison with a firefighter-risk
+change. Keeping them at NW in all four arms keeps that variable fixed.
+
+2.5  Nearest-depot selection, and the one rule that makes it safe
+--------------------------------------------------------------------------------
+THE TARGET BERTH IS CHOSEN ONCE, AT THE TRIGGER, AND LATCHED FOR THE TRIP.
+Re-evaluating the argmin every step would make a UAV equidistant from two depots
+flip its target each step; _rtb_direction would reverse with it and the stall
+sidestep - already shown broken on a pure-axis approach in 0.4 - would not save
+it. Latching also gives the record something to report: rtb_log gains the chosen
+depot index and the target berth, which is what makes "mean return distance per
+arm" attributable in Part 3.
+
+With one depot the selector returns the existing rtb_berth unchanged, so the
+single-depot path is bit-for-bit what it is today.
+
+2.6  Determinism, to be asserted by a test in Part 2
+--------------------------------------------------------------------------------
+The depot set, every berth, every home assignment and every spawn cell must remain
+a pure function of the grid extent, the agent counts, the role counts and the
+wind, and must draw from NO RNG - so no agent is added, unique_agents_id is not
+shifted and the fire stream is untouched. The existing check is exact and already
+passes on seven arms: the per-step fire digest must be identical to the baseline
+on all 240 steps of every seed. A two-depot spawn that changed UAV count or agent
+creation order would break it immediately.
+
+================================================================================
+3. THE DISTANCE-BASED THRESHOLD AND THE MARGIN
+================================================================================
+
+3.1  The battery model, the ordering, and the measured drain
+--------------------------------------------------------------------------------
+agents.py:509-517   advance() = _apply_return_to_base(); moved = move();
+                    _update_battery_after_step(moved)
+so the trigger reads the battery BEFORE that step's drain and the position BEFORE
+that step's move.
+agents.py:289-296   -0.1 unconditionally, -0.2 additionally ONLY IF THE MOVE
+                    HAPPENED, then (mode 3) +recharge, then clamp to [0,100].
+                    Maximum single-step drop 0.3.
+A move fails - costing 0.1 with no progress - in exactly four ways: the docked
+hold, the pipeline hold, out-of-bounds, and another UAV on the target cell. On a
+mechanism-2 return leg only the last can fire.
+
+Measured on the mode-0 canonical sample, 52 UAV-runs:
+  move fraction        mean 0.9869   min 0.8577   max 1.0000
+  drain rate           0.2983 per step
+  final battery at 240 mean 28.71    min 28.00    max 34.80
+  crosses 60 at step   mean 135.8    min 134   max 156   (52 of 52)
+  crosses 30 at step   mean 235.1    min 234   max 240   (48 of 52; 4 never do)
+
+This confirms the brief's premise to the step - 30% is reached at 234-240 of 240 -
+and it validates the shipped derivation's conservatism: it assumed a move fraction
+of 5/6 = 0.8333 and the measured MINIMUM is 0.8577, so the assumed drain is
+genuinely a lower bound on the real one and 5/6 is the safe number to keep using.
+
+3.2  What the battery actually gates
+--------------------------------------------------------------------------------
+For MOVEMENT: nothing. Reaching zero does not stop, kill, slow or reroute a UAV.
+For PLANNING: three things, and only one of them is currently live.
+  - src_extension/analysis/global_analyzer.py:43-44,679-720 raises a LOW_BATTERY
+    StructuredTrigger at <= 30.0 and CRITICAL_BATTERY at <= 15.0.
+  - src_extension/dashboard/alert_manager.py:236-245 raises a low_battery alert at
+    cfv.LOW_BATTERY_THRESHOLD = 30.0.
+  - INTRODUCED BY FEATURE 3 ITSELF: the mechanism-1 return option carries its own
+    battery_level, and the utility layer marks any option with
+    battery_level <= 15.0 infeasible. Feature 3 gave a previously dead planning
+    gate a key to read.
+LOW (30) already fires in the baseline - a mode-0 run ends at 28.7 - so it is an
+exercised path. CRITICAL (15) has NEVER fired: the minimum battery ever recorded
+across every arm of every base-station run is 28.00. That asymmetry is what sets
+the arrival buffer in 3.4: 15, not 30.
+
+3.3  What a return leg actually costs - measured on 208 recorded trips
+--------------------------------------------------------------------------------
+outputs/_dc_trips.py, over the previous round's rtb_log:
+
+  MECHANISM 2 (hardcoded, fire-blind - THE SHIPPED MECHANISM, used by all four
+  arms), pooled bsret + bsfull, 137 arrived trips:
+     battery spent vs the 0.3*d prediction: median 0.00  p95 0.10  p99 0.10  MAX 1.10
+     realised steps minus Manhattan d:      median 0     p95 1              MAX 11
+  MECHANISM 1 (planner, fire-aware), not used by any arm here:
+     battery spent vs 0.3*d:  mean 2.11-2.91  p95 10.20-12.60  MAX 19.30
+     steps minus d:           mean 6.1-10.3   p95 24-44        MAX 65
+
+Mechanism 2 flies the Manhattan path essentially exactly; its whole overhead is
+BLOCKED steps at 0.1 each, and the worst case observed (11 blocked steps = 1.10
+points) is ONE CONTIGUOUS STANDOFF against a UAV parked in the approach corridor,
+not blocking proportional to leg length. That is the same corridor that produces
+the deadlock in 0.4.
+
+3.4  THE FUEL CONSTRAINT, and why it is not sufficient
+--------------------------------------------------------------------------------
+Trigger, evaluated live from the UAV's own position:
+      return when  battery <= 0.3 * d_nearest + MARGIN
+0.3 = battery_drain_per_step + battery_drain_per_move, the cost of one moving
+step; d_nearest is the Manhattan distance to the nearest of this UAV's berths.
+
+The fuel-only margin, every term measured or a constant of the source:
+  blocked-step allowance   1.10   measured MAXIMUM over 137 mechanism-2 trips
+                                  (11 blocked steps x 0.1). p99 is 0.10; the
+                                  maximum is used because the gate is per-UAV.
+  trigger latency          0.30   the battery can undershoot the threshold by up
+                                  to one full step's drain before the next check
+                                  sees it (3.1)
+  arrival buffer          15.00   CRITICAL_BATTERY, the threshold this campaign
+                                  has NEVER reached (3.2). Arriving above it keeps
+                                  the return out of a trigger path with no
+                                  baseline, and out of the mechanism-1 feasibility
+                                  floor if that mechanism is ever selected.
+  detour allowance         0.00   mechanism 2 measurably does not detour; its
+                                  1.10 maximum overhead is the blocked-step term
+                                  already counted.
+                                  ------------------------------------------------
+  FUEL-DERIVED MARGIN     16.40
+
+AND IT IS NOT ENOUGH. At 0.3d + 16.40 the trigger fires on 22 of 52 UAV-runs, at a
+mean step of 222, and NOT ONE TRIP COMPLETES - every one is still flying 41-58
+steps past the horizon. At the two-depot and central geometries it is worse
+(2/52 and 0/52), because a shorter d LOWERS the threshold and delays the trigger
+further. Fuel alone cannot size this trigger at a 240-step horizon.
+
+3.5  THE HORIZON CONSTRAINT, UNFROZEN - and this is the margin
+--------------------------------------------------------------------------------
+The shipped reserve is max(fuel, horizon) evaluated at the WORST CASE D = 90; the
+horizon term is what selected 60. Unfreezing d - the same "computed live from the
+UAV's actual position" move the brief asks for, applied to the other constraint -
+is what makes the trigger genuinely distance-based AND keeps the trip completing.
+
+  trigger at step t where battery first <= 0.3d + M, outbound drain e per step:
+      t = (100 - 0.3d - M) / e
+  the return takes d steps plus its blocked steps, and must finish by H:
+      t + d + blocked <= H
+  =>  M  >=  [100 - e*H + e*blocked]  -  d*(0.3 - e)
+  worst at d = 0, with e = 0.1 + 0.2*(5/6) = 0.26667 (3.1) and blocked = 11 (3.3):
+      M  >=  100 - 64.00 + 2.9333            =  38.9333
+  plus the trigger latency of 3.4                 +  0.30
+                                             ------------
+      BASE_STATION_RETURN_MARGIN             =    39.23
+
+  with  UAV_RETURN_TO_BASE_RESERVE = 0.0 for arms B, C and D. A reserve of 0 is
+  not a special case: the trigger is a max() over battery levels, which are
+  non-negative, so 0 is the identity element and "reserve 0" means exactly "no
+  flat floor", with no code change.
+
+CHECKS ON 39.23
+  it dominates the fuel constraint. Arrival battery is at least
+  39.23 - 0.30 (latency) - 1.10 (blocked) = 37.83, which clears CRITICAL (15) by
+  22.8 points and LOW (30) by 7.8. The fuel constraint is satisfied automatically,
+  exactly as it was in the shipped derivation where 60 = max(32.3, 60).
+
+  it is NO LESS SAFE THAN WHAT SHIPS. At the worst case it gives
+  0.3*92 + 39.23 = 66.83 against the shipped 60.00, i.e. it turns back EARLIER
+  than the current rule at the distance the current rule was derived for. The two
+  differ because the shipped derivation used blocked = 0 and latency = 0; folding
+  in the measured terms is strictly more correct.
+
+  d           0     10     21     25    41.8     45      90      92
+  0.3d+39.23  39.23  42.23  45.53  46.73  51.77  52.73  66.23  66.83
+  shipped     60.00  60.00  60.00  60.00  60.00  60.00  60.00  60.00
+
+  A correction to the shipped derivation while we are here: its D = 90 is the
+  distance to the nearest depot CELL, but agents.py:344 computes the distance to
+  the UAV's OWN BERTH, whose worst case is 92 - berth (3,46), from cell (49,0).
+  A 2-cell understatement. It does not change the shipped conclusion and it does
+  not affect the margin above, which is worst at d = 0, but the comment in
+  common_fixed_variables should say 92.
+
+  IT WORKS. Replayed: 52/52 trips fire and 52/52 complete, with 18-35 steps of
+  slack at the horizon, at every depot geometry (0.3).
+
+3.6  Sensitivity
+--------------------------------------------------------------------------------
+  MARGIN halved (19.6)   below the horizon floor. Trips fire but do not complete;
+                         the arm measures a truncated return leg, and the
+                         comparison across arms stops being like-for-like because
+                         the truncation depends on d.
+  MARGIN doubled (78.5)  0.3d + 78.5 exceeds 60 for every d, so the trigger fires
+                         EARLIER than the shipped rule everywhere and the return
+                         share rises above 17.5%. Strictly worse.
+  The margin is not a sensitive knob inside the range where it is defensible, but
+  it has a hard FLOOR at ~36-39 set by the horizon, and the whole interval below
+  that floor is the null-arm region of 0.2. That is the single most important
+  thing this section establishes.
+  MECHANISM 1, if a future round selects it: add the 19.30 measured detour, giving
+  58.53, and re-derive rather than inherit. No arm here uses it.
+
+3.7  WHAT EACH ARM WILL MEASURE - predicted before the wave
+--------------------------------------------------------------------------------
+  arm  reserve margin depots    trips  mean d  return share  mean trigger step
+  A     60.0    5.0   NW         52/52   41.8     17.41%          137.0
+  B      0.0   39.23  NW         52/52   42.9     17.88%          163.9
+  C      0.0   39.23  CENTRAL    52/52   22.5      9.39%          183.9
+  D      0.0   39.23  NW+SE      52/52   28.3     11.79%          178.5
+
+  ARM A'S ROW IS NOT A PREDICTION - it is the replay reproducing the SHIPPED rule,
+  and it lands on 17.41% against the measured 17.5% and 2173 return steps against
+  the measured 2182. That is the validation of the method.
+
+  VALIDITY. The replay is EXACT UP TO THE FIRST TRIGGER and only there: before any
+  UAV turns for home an armed run is identical to the return-less arm it is
+  replayed against, and after that the trajectories diverge. Arm B's row is exact
+  (it replays NW-spawn trajectories and arm B spawns at NW). ARMS C AND D ARE
+  BOUNDS, NOT PREDICTIONS - they replay NW-spawn trajectories against hypothetical
+  footprints. Their real numbers will differ, and the split spawn should push them
+  DOWN further because each UAV works nearer its own depot. Validated 52/52 exact
+  against the previous round's own recorded rtb_log
+  (`outputs/_dc_replay.py --validate`).
+
+  A note on why the replay had to reconstruct the battery: the harness rounds
+  battery_level to 4 decimals, and the flat-60 rule lands on a float tie - the
+  model's accumulated value at the crossing step is 60.000000000000284, stored as
+  60.0. Comparing against the stored value fires the trigger one step early on 15
+  of 52 trips. Replaying the arithmetic of _update_battery_after_step in the same
+  order reproduces the model's float exactly, and only then does validation reach
+  52/52. Anything built on the recorded battery column has to do this.
+
+================================================================================
+4. THE CENTRAL DEPOT - WHAT IT BUYS AND WHAT IT COSTS
+================================================================================
+
+4.1  The footprint
+--------------------------------------------------------------------------------
+Two candidates: origin (22,22) spanning [22,26] and centred on (24,24), or origin
+(23,23) spanning [23,27] and centred on (25,25). Neither is more symmetric - a 5x5
+block cannot be centred on an even 50-cell axis. PROPOSED: origin (23,23), because
+it CONTAINS the entire pre-feature 2x2 UAV spawn cluster
+{(25,25),(26,25),(25,26),(26,26)} at (HEIGHT//2, WIDTH//2). That makes arm C's
+spawn a strict refinement of the pre-feature spawn rather than a move somewhere
+else, which is a cleaner comparison against the mode-0 baseline than any corner
+can offer: the mode-1 spawn increment is nearly a no-op for UAVs at a central
+depot (berths 2 cells from the old cluster, against 41-43 for NW).
+
+4.2  What it buys
+--------------------------------------------------------------------------------
+  mean distance over the grid   21.16  against 41.40 for any corner   (x0.51)
+  worst-case D                     46  against 90                     (x0.51)
+  mean distance to the scenario-D victim ring  16.75 against 41.50
+  predicted return share         9.39%  against 17.41%
+It is the best configuration in this round on every distance measure, better even
+than NW+SE. Re-running the shipped reserve derivation at D=46 gives 48.3, so even
+the flat reserve would fall.
+
+4.3  What it costs - the upwind property, MEASURED for the first time
+--------------------------------------------------------------------------------
+Wind directions verified in the source, not assumed: east biases spread toward +x
+(the HEIGHT axis), south toward -y (the WIDTH axis). Measured on the mode-0
+baseline fire - which is the right fire, since the feature provably does not touch
+the fire model - from the recorded first_burn_step and burn_intervals.
+
+DEDUPLICATED. The 23 canonical + fresh files hold only 20 DISTINCT FIRES: the fire
+stream depends on (wind, seed) and not on the role split, so east/def 101/202/303
+repeat the fires of east/half 101/202/303. Verified - all three pairs have an
+identical fire_final_digest. Counting the 23 files would weight three fires twice
+and it moves the NE/SW ordering, so the table is over the 20 distinct fires:
+
+  block     runs in which ANY   first burn step    berth-burning share of the
+            depot cell burns    mean    earliest   240 steps: mean / max
+  NW            3 / 20           166       120       0.96%  /  8.54%
+  NE           11 / 20            94        33       5.22%  / 11.46%
+  SW           11 / 20            91        33       5.03%  / 11.25%
+  SE           19 / 20           116        54       9.33%  / 11.46%
+  CENTRAL      18 / 20            61         3       7.99%  / 11.25%
+
+(berth-burning share is over the six top-ranked berth cells of each block.)
+
+The upwind property is real and this is the first time it has been quantified: NW
+burns in 3 runs of 20, CENTRAL in 18, and CENTRAL burns EARLIEST - mean first burn
+at step 61 and as early as step 3, i.e. before the search has begun. NE and SW are
+tied at 11/20; only NW and SE separate cleanly.
+
+A structural difference the corner analysis never had to consider: ignition is
+SYSTEM_RANDOM.randint(10, HEIGHT-11) per axis (wildfire_model.py:2074-2076), so
+the ignition rectangle at 50x50 is [10,39] x [10,39], 900 cells. EVERY CORNER
+BLOCK LIES OUTSIDE IT AND CAN NEVER BE THE IGNITION CELL. The central block
+[23,27]^2 lies ENTIRELY INSIDE it: 25 of 900 cells, so in 2.78% of runs the fire
+STARTS on a depot cell, and the mean ignition-to-depot distance is ~11 cells
+against ~41 for NW.
+
+4.4  What burning actually does
+--------------------------------------------------------------------------------
+Nothing mechanical for UAVs, and the previous round chose that deliberately so the
+fire model stays untouched: _check_fire_casualties kills victims and firefighters
+and has NO UAV branch, the depot is a model-level region rather than terrain, and
+hardening it would insert a 5x5 firebreak straight into burnt_cells and destroy
+the property that makes every delta attributable.
+
+The real costs are three, and all are reportable rather than hypothetical:
+  (a) UAV FIRE EXPOSURE rises - steps on a burning cell. This is the metric the
+      interior-hazard round tuned, and the corner spawn already moved it 1.44% ->
+      3.07%. Part 3 reports it per arm.
+  (b) FIREFIGHTERS ARE NOT FIRE-IMMUNE and they spawn on depot berths. This is why
+      2.4 keeps them at NW in EVERY arm, including arm C. If a later round wants
+      firefighters at a central or SE depot it is a separate change with its own
+      casualty question.
+  (c) THE MECHANISM-1 EXEMPTION COMMENT BECOMES FALSE. uav_executor.py justifies
+      skipping both post-move filters for a return leg on the grounds that "a
+      depot berth is by construction near a boundary". That is a CORNER fact. At a
+      central depot the justification evaporates, and _choose_best_direction
+      penalises a burning target cell by -8.0 against a 0.1-per-cell distance
+      term, so a mechanism-1 return to a burning central berth may not terminate.
+      No arm here uses mechanism 1; the comment must still be corrected in Part 2
+      rather than left asserting something false.
+
+4.5  A side effect worth knowing: the three pinned tests
+--------------------------------------------------------------------------------
+The corner spawn broke three previously-passing tests because a corner puts every
+UAV at boundary distance <= 4, making _victim_near_edge_escape_required (<= 5.0)
+true from step 0; they were pinned to BASE_STATION_MODE=0. A central berth is 22-24
+cells from every boundary, so neither the margin-3 edge filter nor the <= 5.0 rule
+can fire there and arm C would not have needed two of those three pins. Those pins
+are therefore evidence about CORNER depots, not about the feature.
+
+================================================================================
+5. THE SECOND CORNER - SE CONFIRMED, BUT NOT ON THE ORIGINAL'S CRITERION
+================================================================================
+
+5.1  Reproducing the original single-corner criterion
+--------------------------------------------------------------------------------
+The original chose NW on mean distance to the victim ring pooled over all four
+built-in scenarios: 39.65 NW against 40.88 / 41.55 / 42.63. Recomputed from the
+victim-placement formula in _init_managed_victims (outputs/_dc_geom.py):
+
+  NW 39.76    NE 40.76    SW 41.87    SE 42.87
+
+The ORDERING is reproduced exactly and the values agree to within 0.3 on three of
+four. (An independent recomputation in this round's investigation gives
+NW 39.29 / NE 40.88 / SW 41.54 / SE 43.13 and reports two transcription errors in
+the original's row while its SUM row is exact. The three computations differ only
+in how the block-to-victim distance is taken - nearest cell versus origin, rounded
+versus float victim positions - and no ranking moves. I am not asserting the
+original's exact digits; I am asserting the ordering, which all three agree on.)
+
+ON THIS CRITERION SE IS THE WORST OF THE FOUR CORNERS.
+
+5.2  But the pairing criterion is a different criterion, and it is the one that
+     sets the cost this round exists to reduce
+--------------------------------------------------------------------------------
+For two depots the statistic that matters is min(distance to A, distance to B),
+because a UAV returns to the nearest.
+
+  pair        grid mean d   grid max D   victim mean d   victim max d
+  NW+NE          29.10          65          33.25            62
+  NW+SW          29.10          65          31.00            56
+  NW+SE          25.12          45          23.25            26
+  NW (single)    41.40          90          41.50            63
+
+NW+SE wins on all four columns, and not narrowly - 4 cells better on the mean and
+20 on the worst case. And the worst case is not merely better, it is OPTIMAL:
+enumerating all 2116 possible placements of a second 5x5 block with NW fixed, the
+minimum achievable worst-case D is 45, and SE attains it while NE and SW (65) do
+not. Verified by exhaustive computation this session.
+
+The reason is geometric rather than meteorological: NE and SW are ADJACENT corners
+to NW so their coverage overlaps NW's, while SE is the DIAGONALLY OPPOSITE corner,
+which is the only pairing that halves the worst case. Re-running the shipped
+reserve derivation at each pair's D gives 48.0 for NW+SE against 53.3 for the
+others, reproducing 60 exactly at D=90.
+
+So SE is confirmed, but the criterion that confirms it is NOT the criterion that
+chose NW. Stating that plainly matters: "the same criteria the original used"
+would have selected NE, which is the second-best single corner and the
+second-WORST pair.
+
+5.3  Wind and burning - the cost of the pairing, and it is unavoidable
+--------------------------------------------------------------------------------
+SE is downwind of BOTH canonical winds - east pushes fire toward +x and south
+toward -y, and SE is the (+x, -y) corner. It is the only corner downwind of both,
+and 4.3 measures the consequence: its block burns in 19 of 20 distinct fires, more
+than any other candidate, with its berths burning 9.33% of the run on average.
+
+There is no way around this. A second depot diagonally opposite NW is NECESSARILY
+downwind of both winds, because NW was chosen precisely for being upwind of both.
+The trade is inherent to the pairing and the round measures it rather than
+designing around it. Per 4.4 it is mechanically free at the shipped mechanism 2,
+costs exposure, and is kept away from firefighters by the 2.4 decision.
+
+5.4  Spawn collisions separate nothing
+--------------------------------------------------------------------------------
+No candidate corner block contains a scenario-D victim cell (the ring is at
+(40,25) (25,48) (10,25) (25,3); nearest approach to any corner block is 21 cells),
+none can be the ignition cell (4.3), and firefighters are at NW in every arm by
+2.4. All four corners are identical on every static collision test, so this
+criterion cannot choose between NE, SW and SE. The choice rests on 5.2.
+
+  RECOMMENDATION: SE, on the pairing criterion, which is the criterion that sets
+  the cost this round exists to reduce. Noting for completeness that the CORNER
+  CONSTRAINT is what costs most: a free second block near (27,17) reaches grid-mean
+  17.8 at the same optimal D=45, against SE's 25.1. Corners are a design
+  convention, not an optimum, and that is worth a later round rather than this one.
+
+================================================================================
+6. KILL SWITCH AND ARM CONSTRUCTION
+================================================================================
+
+6.1  What is pinned today, and the test baseline
+--------------------------------------------------------------------------------
+tests/test_base_station.py:63-79, test_shipped_defaults, pins SEVEN constants:
+  BASE_STATION_MODE == 0                BASE_STATION_RETURN_MECHANISM == 2
+  BASE_STATION_SIZE == 5                UAV_RETURN_TO_BASE_RESERVE == 60.0
+  BASE_STATION_RETURN_MARGIN == 5.0     BASE_STATION_RECHARGE_PER_STEP == 5.0
+  BASE_STATION_RECHARGE_RELEASE_LEVEL == 100.0
+Two of those - the reserve and the margin - are exactly what arms B/C/D change.
+That is why the arms are built from --set overrides and NOT from edited defaults.
+A second test, test_reserve_covers_the_worst_case_return, forces the reserve
+>= 55.0 through its horizon assertion, so a lowered DEFAULT would break the suite
+as well. This round changes no default, per the brief.
+
+TEST BASELINE, CONFIRMED BY RE-RUNNING IT, not assumed. The brief cites 8 failed /
+545 passed at e703861; outputs/_mm_pytest.log (the log commit e703861 itself added)
+records "8 failed, 545 passed, 5 warnings in 2208.41s". A full-suite run on this
+branch at e703861 this session, outputs/_dc_pytest_e703861.log, gives
+
+    8 failed, 545 passed, 5 warnings in 2040.95s (0:34:00)
+
+and the FAILING NAME SET IS IDENTICAL to _mm_pytest.log's, checked name by name
+rather than by count:
+    test_behavior_regression::test_descriptive_next_action_uses_target_position
+    test_dashboard_panel::test_dashboard_panel_render_returns_string
+    test_firefighter_dispatch_replacement::test_no_replacement_available_marks_victim_unreachable_once
+    test_rescue_planner_authority::test_no_firefighter_planner_delay_or_unreachable
+    test_uav_sector_assignment::test_fire_tracker_uavs_receive_different_target_sets
+    test_uav_sector_assignment::test_fire_tracker_still_overridden_by_search_mode_fail_safe
+    test_wind_aware_trajectory_regression::test_north_vs_south_trajectories_diverge_over_40_steps
+    test_wind_aware_trajectory_regression::test_east_vs_west_trajectories_diverge_over_40_steps
+
+The SET is the gate, not the count: outputs/dimension_report.txt:430-432 records a
+case where the counts matched by coincidence while the sets differed by two tests.
+The base station report's "8 failed / 523 passed" reconciles against this as 22
+test items added by the latch-fix commit between f4e79d5 and e703861.
+Reproduce with `bash outputs/_dc_pytest.sh` (~34 minutes).
+
+BASE_STATION_CORNER is NOT declared in common_fixed_variables.py at all: it exists
+only as the getattr default 0 in agents.base_station_corner(), plus --set, which
+works because apply_scenario_config setattr-creates the attribute. That is the
+in-tree precedent for an override-only knob. Part 2 should declare it anyway.
+
+6.2  The override contract
+--------------------------------------------------------------------------------
+agents.py:556-635. Every constant is read at CALL TIME through the
+common_fixed_variables MODULE by an accessor, never through the star-imported
+names and never at import time, inside a try/except that falls back to the shipped
+default. apply_scenario_config (local_adaptation_generator.py:270-273) is a plain
+setattr onto BOTH cfv and wildfire_model - so a bare global read inside
+wildfire_model is also a dead input. The harness's --set coercion
+(_ffr_harness.py:51-65) yields bool / None / int / float / str in that order, so a
+new constant MUST BE ONE SCALAR; a Python list cannot be passed through --set.
+evaluate_scenarios.py has no --set at all, so the wave runs through the harness.
+
+6.3  The new constants - two, both no-ops at their defaults
+--------------------------------------------------------------------------------
+  BASE_STATION_DEPOTS = 0
+      A bitmask over five anchors, numeric so --set never carries a string (the
+      stated reason base_station_corner() is numeric):
+        bit 0 (1) NW   bit 1 (2) NE   bit 2 (4) SW   bit 3 (8) SE   bit 4 (16) CENTRAL
+      0 means "the single depot at BASE_STATION_CORNER" - today's behaviour
+      exactly, so the default changes nothing and the 23 shipped tests are
+      untouched. Depots are built in ascending bit order, so the set is ordered
+      and deterministic. This is the "list of positions" the brief asks for: any
+      subset is expressible, not just the three the arms use.
+        arm B  NW        1   (identical to 0)
+        arm C  CENTRAL  16
+        arm D  NW+SE     9
+      THE ACCESSOR RAISES on a value outside 0..31 rather than falling back,
+      because base_station_corner()'s silent fallback to NW (1.1(j), agents.py:592) is exactly how
+      arm C would silently run as arm A.
+
+  BASE_STATION_SPAWN_SPLIT = 0
+      0 all units home to the first depot (today's behaviour, and the only
+        possibility with one depot)
+      1 alternate by index
+      2 partition-nearest (section 2.4)
+
+No new reserve knob. Arms B/C/D set the two EXISTING constants,
+UAV_RETURN_TO_BASE_RESERVE=0 and BASE_STATION_RETURN_MARGIN=39.23, which express
+the rule exactly (3.5). The cost is that the derivation comment and the accessor
+docstring currently describe only the flat regime; Part 2 rewrites both to describe
+the two regimes and the margin's dependence on which one is selected. That is a
+documentation debt, and paying it is cheaper than a third knob that would need its
+own pin, its own guard and its own test.
+
+6.4  THE ARMS, as --set strings - one wave, no rebuild
+--------------------------------------------------------------------------------
+  dcref   e703861 worktree, no --set        the same-instrument reference (6.5)
+  dcoff   --set BASE_STATION_MODE=0         kill-switch control; must equal dcref
+  dcA     --set BASE_STATION_MODE=3 --set BASE_STATION_RETURN_MECHANISM=2
+          flat-60, single NW. The previous round's bsfull re-measured by the
+          current instrument at the current HEAD. THE REFERENCE FOR B, C AND D.
+  dcB     dcA + --set UAV_RETURN_TO_BASE_RESERVE=0
+                --set BASE_STATION_RETURN_MARGIN=39.23
+  dcC     dcB + --set BASE_STATION_DEPOTS=16
+  dcD     dcB + --set BASE_STATION_DEPOTS=9 --set BASE_STATION_SPAWN_SPLIT=2
+
+Every arm is config only; there is no per-arm code branch anywhere, which is what
+makes an arm-minus-arm difference attributable to exactly one change. Every arm
+carries the same harness flags (--uav-actions), the reference arm included - a
+flag on some arms and not others changes the recorded shape.
+
+6.5  GUARDS for byte-identity at the defaults
+--------------------------------------------------------------------------------
+Every entry point, with its condition, all of which already exist except the last
+two:
+  depot construction   base_station_mode() <= 0 -> return None
+  UAV spawn            self.base_station is None -> pre-feature cluster
+  firefighter spawn    station is None -> pre-feature ring
+  return trigger       base_station_mode() < 2 -> return
+  docked hold          rtb_docked False by default
+  recharge tick        rtb_docked and mode >= 3
+  NEW depot layout     BASE_STATION_DEPOTS == 0 -> exactly one depot at
+                       BASE_STATION_CORNER, and the returned dict keeps the
+                       scalar "origin"/"size" aliases, so every existing reader
+                       sees today's shape
+  NEW home/nearest     one depot -> the selector returns the existing rtb_berth
+                       and the home index is 0 for every unit
+With BASE_STATION_MODE at 0 none of the new code is reachable at all, which is the
+property the kill-switch gate proves.
+
+6.6  INSTRUMENT DRIFT - the plan, decided before the wave
+--------------------------------------------------------------------------------
+The hazard, recorded in memory as baseline-instrument-drift and hit for real in the
+merge round: if this round adds, removes or reshapes any recorded field, every
+artifact captured before that change stops being a valid reference, and the
+comparison reads as catastrophic (0/13) when nothing regressed. The diagnostic
+signature is a 0/N result where THE DIFFERING FIELD SET IS IDENTICAL ON EVERY RUN
+and contains no evaluation metric.
+
+The exposure here is precise, and smaller than it first looks. outputs/
+_bs_identity.py:53 lists base_station and rtb_log in IDENTITY_FIELDS; rtb_counters
+and partition_steps are NOT. At mode 0, base_station is None and rtb_log is
+{uid: []} - both empty - so a shape change to either is INVISIBLE to the
+kill-switch comparison. IDENTITY_FIELDS has exactly one consumer,
+_bs_identity.identity(), which IS the kill-switch gate; the armed subcommands
+(mechanism / outcomes / exposure) never read base_station. So no existing tool
+path would turn a reshaped base_station into a false armed-vs-armed regression.
+The obligation below is therefore belt-and-braces rather than a live hazard - but
+it is cheap, and the merge round is why this round does not rely on that
+reasoning holding.
+
+  WHAT THIS ROUND RECORDS THAT THE HARNESS DOES NOT: the depot set actually used,
+  and which depot each trip targeted. Both go where they cost nothing:
+    - the depot set goes INSIDE the existing "base_station" field (None at mode 0)
+    - the target depot and berth go INSIDE the existing rtb_log records (empty
+      lists at mode 0). rtb_log does not currently carry the target berth at all,
+      so without this the instrument could not say which depot a trip aimed at.
+    - NOTHING is added to rtb_counters, uav_steps, partition_steps or any
+      top-level field. A single new key in rtb_counters WOULD drift mode 0,
+      because that dict is populated at every mode.
+
+  AND THE REFERENCE IS BUILT FIRST, NOT ASSUMED:
+    git worktree add <scratch>/dc_e703861 e703861
+    run dcref on the canonical 13 with THIS round's final harness
+    confirm dcoff == dcref on every recorded field BEFORE any other arm is queued.
+  Arm A must be re-measured regardless of drift, because the source HEAD moved
+  between f4e79d5 (where bsfull was measured) and e703861. If dcoff != dcref the
+  comparison is read field by field against the signature above; the fix is never
+  to relax the comparison, it is to re-measure the old commit with the new
+  instrument.
+
+  Only three files in outputs/ read the recorded "base_station" field and only
+  outputs/_bs_identity.py needs widening (to report per-depot trips). One dead line
+  in this round's own outputs/_dc_trips.py assigns it and never uses it; removed.
+
+6.7  THE ROUTE_BLOCKED GATE - a blocker that has to be fixed before Part 3
+--------------------------------------------------------------------------------
+outputs/_rblatch_campaign2.py takes only --scenario / --wind / --steps / --seeds /
+--tag. IT HAS NO --set. As the code stands, a four-arm route_blocked gate is
+IMPOSSIBLE without flipping the shipped default, which this round is forbidden to
+do. Part 2 therefore adds a --set KEY=VALUE passthrough to that script and to
+outputs/_ffr_rbgate.sh, mirroring the harness's own _parse_value.
+
+That is a tooling change, and it has its own identity obligation: with no --set the
+params dict must be bit-identical to today's, so the existing e703861 reference
+(tag `rbc`, 18 seeds in four shards, already on disk - zero runs) stays valid. One
+shard is re-run through the modified script with no --set and compared with the
+existing artifact to prove the addition is inert, in parallel with the main wave.
+
+Gate comparison is `outputs/_ffr_rbcompare.py --new <tag> --old ihrest`, NOT
+_ir_rbmerge.py alone - its 70e1b33 reference already fails 2 of 3 for 16b2da8
+itself, so reading it as a verdict would misattribute pre-existing behaviour.
+_ffr_rbgate.sh SKIPS any shard whose output already exists, so each arm needs a
+NEW prefix.
+
+6.8  The wave
+--------------------------------------------------------------------------------
+  canonical 13   scenario D, winds east+south, roles half+default, seeds 101-505
+  fresh 10       seeds 606/707/808/909/1010, east and south, roles half
+  rbgate 18      13 east + 5 south, four shards
+
+  harness runs   dcref 13 (canonical only; no fresh reference at e703861 defaults
+                 exists, and the fresh arm is read against dcoff, which IS proven
+                 equal to dcref on the canonical 13)
+                 dcoff, dcA, dcB, dcC, dcD  x 23 each = 115
+                 TOTAL 128
+  rbgate runs    dcA, dcB, dcC, dcD x 18 = 72, against the existing `rbc`
+                 reference at zero cost
+  plus           1 shard re-run to prove the --set passthrough inert (6.7)
+  TOTAL          ~205 runs
+
+One restartable queue through outputs/_dim_pool.sh, which is memory-aware: the
+ceiling on this box is COMMIT CHARGE, not RAM or cores, and only ~13-15 concurrent
+simulation processes fit at ~0.85-0.9 GB each. MAXPAR=10 MINFREE_KB=3000000 is what
+the previous round's 144-run queue used. Measured effective parallelism on this box
+is ~7 rather than MAXPAR, because the binding constraints are free commit and the
+25 s launch gap - so budget on ~7, i.e. roughly 5 hours for the harness runs, with
+the rbgate shards after. The pool skips any run whose output JSON already exists
+and is non-empty, so the wave is restartable. Queue files must be LF; a CR in the
+last field reaches argparse as a stray argument.
+
+================================================================================
+7. WHAT I AM ASKING THE MAINTAINER TO RULE ON
+================================================================================
+  R1  THE MARGIN IS 39.23, DERIVED FROM THE HORIZON, NOT 16.40 FROM FUEL. The
+      literal reading of the brief ("cost_to_reach_nearest_depot + margin") gives
+      16.40 and produces a return leg that fires late and never completes - a null
+      arm (0.2, 3.4). 39.23 is the same live-distance rule with the horizon
+      constraint unfrozen from its worst-case D, and it produces 52/52 completed
+      returns. CONFIRM THIS READING. The alternative - measure what the feature
+      costs when it effectively never returns - is a legitimate round but a
+      different one.
+  R2  SPAWN SPLIT (2.4): partition-nearest, with the stated duplication risk and
+      the fallback to all-at-NW. Confirm, or pick the simpler rule and accept that
+      one searcher starts a grid width from its lane.
+  R3  FIREFIGHTERS STAY AT NW IN EVERY ARM (2.4), so the placement comparison is
+      not confounded by a new firefighter casualty channel at a burning depot.
+  R4  CENTRAL FOOTPRINT (4.1): origin (23,23), containing the pre-feature cluster.
+  R5  THE MODE-2 DEADLOCK (0.4) IS REPORTED AND NOT FIXED IN THIS ROUND, and the
+      "no UAV stranded" gate is redefined from "zero battery outside the depot" to
+      "not stuck rtb_active with an unchanged position". Confirm, or say if you
+      want the one-line fix folded in - in which case arm A stops being comparable
+      with the previous round's bsret/bsfull and the round grows an extra arm.
+  R6  This round does not flip BASE_STATION_MODE whatever the numbers say. Stated
+      here so it is not a surprise at Part 3.
+
+================================================================================
+8. RISKS
+================================================================================
+  - SILENT NO-OP, the repo's recorded dead-input class, four live instances here:
+    a new constant read through the star import or at import time; the new layout
+    accessor falling back instead of raising; the browser's `if (fr.depot)` being
+    truthy for a list and drawing nothing; a per-UAV depot column added to the
+    dashboard state but not to serve_dashboard._slim_panel's whitelist. Each gets
+    an explicit assertion in Part 2, not a comment.
+  - AXIS TRAP. x is the HEIGHT axis and y is the WIDTH axis; at 50x50 a swapped
+    computation is INERT and therefore invisible. One instance already looks
+    present: the dashboard JS depot overlay uses HEIGHT to flip a coordinate that
+    lives on the WIDTH axis. Part 2 checks every new geometry expression against a
+    non-square grid on paper even though the wave is square.
+  - THE REPLAY IS A PROJECTION FOR ARMS C AND D. Every distance in 0.3 and 3.7
+    re-scores trajectories generated with a single NW depot. It bounds WHETHER the
+    trigger fires - the battery curve is what it is - but it does not predict where
+    UAVs will be once the spawn moves. Nothing in Part 3 may cite these as results.
+  - ARMS C AND D CHANGE TWO THINGS AT ONCE: the depot burns, and the depot is
+    elsewhere. If exposure or firefighter deaths move, the round cannot separate
+    them without a further arm. Report both, claim neither alone.
+  - THE BLOCKED-STEP TERM IS SIZED TO A SAMPLE MAXIMUM (11 steps) for a quantity
+    whose true worst case is unbounded - it is a standoff against another UAV, and
+    0.4 shows the standoff can be permanent. The margin does not close that; only
+    the deadlock fix would.
+  - THE CANONICAL 13 IS A SCREEN, NOT EVIDENCE. Three rounds in a row have had a
+    canonical gain evaporate on wider seeds, this feature's own +3 rescued
+    included. No arm is called a result on the canonical sample alone; all three
+    samples are reported, canonical first, and the report does not lead with
+    whichever looks best.
+  - FIRE IGNITION DRAWS FROM random.SystemRandom() unless a harness binds
+    cfv.SYSTEM_RANDOM. The harness does bind it, so the wave is reproducible; unit
+    tests are not, and must not assert positions after advance().
+
+================================================================================
+9. GATE FOR PART 3, agreed before the numbers exist
+================================================================================
+  SHIPPABLE  an arm brings never_detected back to within 1-2 of the mode-0
+             baseline of 1 over 23 runs, ACROSS ALL THREE SAMPLES, without rescued
+             decreasing. Then recommend flipping BASE_STATION_MODE, naming the arm.
+  NOT        no arm does. Then report the coverage cost as inherent at 50x50 and
+             recommend the feature stays at mode 0. That is an acceptable outcome
+             and will be reported as one, not dressed up.
+  EITHER WAY the default is not flipped in this round.
+
+  REQUIRED PER ARM: never_detected against the mode-0 baseline of 1/23; return-leg
+  share of UAV-steps against 17.5% (an arm that improves never_detected WITHOUT
+  moving the return share is explained before it is trusted); rescued; dead;
+  ff_deaths; terminal_step; number of return trips; mean return distance; steps
+  charging; the no-UAV-stranded check as redefined in 0.4/R5; UAV fire exposure
+  (4.4a). Plus the route_blocked gate via _ffr_rbcompare.py --new <tag> --old
+  ihrest, the kill-switch byte-identity against the same-instrument dcref, and the
+  full-suite failing NAME SET against the eight at e703861.

@@ -215,6 +215,35 @@ VICTIM_SEARCHER_HAZARD_RETREAT_RANGE = 99
 # 0.3 * manhattan_to_berth + BASE_STATION_RETURN_MARGIN, so a UAV that is somehow
 # further out than the flat reserve covers turns back earlier.
 #
+# TWO CORRECTIONS TO THE ABOVE, from the depot-cost round (2026-09-08), left in
+# place rather than rewritten because the shipped defaults are still 60.0 / 5.0
+# and this is the derivation of those numbers:
+#   1. D = 90 is the distance to the nearest depot CELL, but the trigger computes
+#      the distance to the UAV's OWN BERTH, whose worst case is 92 - berth (3,46),
+#      from cell (49,0). A 2-cell understatement that does not change R = 60.
+#   2. AT THESE DEFAULTS THE DISTANCE TERM IS DEAD CODE. max(60, 0.3d + 5) selects
+#      the distance term only at d >= 183.3, and the grid maximum is 92. It has
+#      never once been the max in any measured run.
+#
+# THE DISTANCE REGIME. Setting UAV_RETURN_TO_BASE_RESERVE = 0 removes the flat
+# floor and leaves the distance term alone; the trigger is a max() over battery
+# levels, which are non-negative, so 0 is the identity element and means exactly
+# "no flat floor". THE MARGIN IS REGIME-DEPENDENT and 5.0 is only correct for the
+# flat regime. In the distance regime the margin must carry the horizon
+# constraint, which the flat reserve was carrying before:
+#     M >= [100 - e*H + e*blocked] - d*(0.3 - e)      worst at d = 0
+#     with e = 0.1 + 0.2*(5/6) = 0.26667, H = 240 and blocked = 11 (the measured
+#     maximum blocked-step standoff over 137 recorded mechanism-2 return legs),
+#     M >= 38.9333, plus 0.30 of trigger latency  =>  M = 39.23
+# 39.23 turns a UAV back EARLIER than the shipped rule at the worst case
+# (0.3*92 + 39.23 = 66.83 against 60.00), so it is nowhere less safe than what
+# ships, and it keeps arrival battery above 37.8 - clear of the LOW_BATTERY (30)
+# and CRITICAL_BATTERY (15) analyzer thresholds. The FUEL-only margin for the same
+# mechanism is 16.40 (1.10 blocked + 0.30 latency + 15.00 arrival buffer) and it
+# is USELESS: a trigger at 0.3d + 16.40 fires on 22 of 52 measured UAV-runs and
+# not one return completes inside the horizon. See outputs/depotcost_part1.txt
+# section 3.
+#
 # BASE_STATION_RETURN_MECHANISM selects between the two routes, which are
 # MUTUALLY EXCLUSIVE - an agent-level override is the last writer of selected_dir
 # before move() and would silently mask a planner route, so "both" is rejected:
@@ -245,6 +274,64 @@ VICTIM_SEARCHER_HAZARD_RETREAT_RANGE = 99
 # identical to 16b2da8: that is the bsoff arm, byte-identical on all 27 recorded
 # fields across 13 canonical and 10 fresh runs. Set it to 1/2/3 to arm the
 # feature. See outputs/basestation_report.txt section 4.
+# BASE_STATION_DEPOTS - the depot SET, as a bitmask over five anchors, added by
+# the depot-cost round. Numeric for the same reason BASE_STATION_CORNER is: a
+# --set value is coerced bool -> None -> int -> float -> str, so a scalar int
+# survives that channel unambiguously and a list does not.
+#   bit 0 (1)  NW      bit 1 (2)  NE      bit 2 (4)  SW
+#   bit 3 (8)  SE      bit 4 (16) CENTRAL
+# 0 means "one depot, at BASE_STATION_CORNER" - byte-identical to the behaviour
+# before this round, which is why it is the default. Depots are built in ASCENDING
+# BIT ORDER, so the set is ordered and deterministic, and depot 0 is the first set
+# bit. Unlike base_station_corner(), which silently maps an unrecognised value to
+# NW, base_station_depots() RAISES on a value outside 0..31 - a silent fallback
+# here would run a two-depot arm as a one-depot arm and the wave would measure the
+# wrong thing with no error anywhere. That is this repo's recorded dead-input
+# defect class and it is not repeated.
+#
+# WHY A DEPOT SET AT ALL. The return-leg share of UAV-steps is arithmetic, not a
+# tuning constant: one trip costs d steps and the reserve produces one trip per
+# UAV per run, so the share is mean_d / 240. Measured mean d was 41.8 and the
+# measured share 17.5%; 41.8/240 = 17.4%. Making the reserve distance-based does
+# NOT reduce it - at a single NW depot it is half a point worse, because the
+# trigger fires from further out. Only shortening d does. Whole-grid mean
+# distance: NW 41.40, NW+NE and NW+SW 29.10, NW+SE 25.12, CENTRAL 21.16. NW+SE is
+# the diagonally opposite pairing and its worst-case return of 45 is PROVABLY the
+# minimum over all 2116 placements of a second 5x5 block with NW fixed.
+# The cost of that pairing, measured on the 20 distinct baseline fires: the SE
+# block burns in 19 of them against 3 for NW, because SE is the only corner
+# downwind of both canonical winds - which is exactly what NW was chosen to avoid.
+# Mechanically free (UAVs are fire-immune) but it is why firefighters stay at the
+# NW depot in every arm. See outputs/depotcost_part1.txt sections 0, 4 and 5.
+BASE_STATION_DEPOTS = 0
+
+# BASE_STATION_SPAWN_SPLIT - which depot each unit LAUNCHES from when there is
+# more than one. It does not affect where a UAV RETURNS to; return is always to
+# the nearest of that UAV's own berths.
+#   0  every unit at depot 0                (default; the only possibility with
+#      one depot, and byte-identical to the behaviour before this round)
+#   1  alternate by index, a % n_depots
+#   2  partition-nearest: each SEARCHER launches from the depot nearest the
+#      centroid of its own crosswind lane; trackers and firefighters stay at
+#      depot 0
+# 2 is the measured choice. A searcher's lane is a pure function of its index
+# among searchers and the wind, and NW and SE fall in OPPOSITE halves of both
+# possible lane axes - so the assignment that puts each searcher in its own lane
+# is the exact opposite for east and south wind, and no wind-blind index rule
+# (0 or 1) can be right for both. It matters because the searcher whose lane does
+# not contain the depot pays 1.85x the return leg of the one whose does (mean
+# trigger distance 54.9 against 29.6, measured on the shipped arm's own record),
+# and never_detected is a searcher metric.
+# TRACKERS ARE DELIBERATELY NOT LANE-MATCHED: a tracker's sector is recomputed
+# every step from the fire's bounding box - the baseline itself churns them ~1053
+# times over 13 runs - so there is no stable tracker home region to match, and
+# trackers are measurably nearer NW at trigger under both winds anyway.
+# With one searcher (the legacy role split) the lane is None and the searcher
+# falls back to depot 0, so at "default" roles this setting is inert by
+# construction. Deterministic: every input is a config constant or an agent index,
+# and no branch here draws RNG.
+BASE_STATION_SPAWN_SPLIT = 0
+
 BASE_STATION_MODE = 0
 BASE_STATION_RETURN_MECHANISM = 2
 BASE_STATION_SPAWN_FIREFIGHTERS = 1
@@ -253,6 +340,12 @@ UAV_RETURN_TO_BASE_RESERVE = 60.0
 BASE_STATION_RETURN_MARGIN = 5.0
 BASE_STATION_RECHARGE_PER_STEP = 5.0
 BASE_STATION_RECHARGE_RELEASE_LEVEL = 100.0
+# BASE_STATION_CORNER was never declared here - it existed only as the getattr
+# default inside agents.base_station_corner(), reachable through --set because
+# apply_scenario_config setattr-creates the attribute. Declared now so the module
+# means what it says about every constant being declared and overridable. 0 = NW,
+# which is what the accessor already defaulted to, so this line changes nothing.
+BASE_STATION_CORNER = 0
 # The depot outline colour is #770099, and it lives as an inline literal in both
 # renderers rather than here, exactly like #2b2b2b (burnt), #895e00 (scorched) and
 # #2f4a1a (spared veg): this module holds colour RAMPS and simulation parameters,

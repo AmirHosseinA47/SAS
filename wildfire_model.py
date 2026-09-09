@@ -92,6 +92,42 @@ class PhysicalRescueCommand:
 
 # class WildFireModel holds methods for managing the main logic of the grid, such as the main execution loop,
 # setting agents, methods for checking the state of the grid, etc
+def _base_station_origins(height: int, width: int, size: int) -> list:
+    """Depot origins for the configured set, in ascending bit order.
+
+    MODULE LEVEL ON PURPOSE, not a method. tests/test_base_station.py binds
+    _build_base_station onto a stand-in class exposing only HEIGHT, WIDTH and
+    NUM_AGENTS, so anything _build_base_station reaches for through `self` has to
+    exist on that stand-in too. A module-level function does not, and keeping this
+    one out of the class is what lets those eleven geometry tests keep binding the
+    single method they always bound.
+
+    Pure geometry: reads only the accessors and the grid extent, and draws no RNG.
+    x is the HEIGHT axis and y is the WIDTH axis - the grid is built
+    MultiGrid(HEIGHT, WIDTH), so getting these the wrong way round is silently
+    inert only while the grid is square.
+    """
+    def corner_origin(corner: int) -> tuple:
+        # 0 NW (default), 1 NE, 2 SW, 3 SE - the encoding this feature shipped
+        # with, reused verbatim so a single-depot run is unchanged.
+        return (0 if corner in (0, 2) else height - size,
+                0 if corner in (2, 3) else width - size)
+
+    mask = agents.base_station_depots()
+    if mask == 0:
+        return [corner_origin(agents.base_station_corner())]
+    anchors = {
+        1: corner_origin(0), 2: corner_origin(1),
+        4: corner_origin(2), 8: corner_origin(3),
+        # CENTRAL is centred on (HEIGHT//2, WIDTH//2), the pre-feature UAV spawn
+        # anchor, so the block CONTAINS the old 2x2 cluster and a central arm is a
+        # refinement of the pre-feature spawn rather than a move elsewhere.
+        16: (height // 2 - size // 2, width // 2 - size // 2),
+    }
+    return [anchors[bit] for bit, _name in agents.BASE_STATION_ANCHOR_BITS
+            if mask & bit]
+
+
 class WildFireModel(mesa.Model):
 
     # constructor
@@ -164,15 +200,24 @@ class WildFireModel(mesa.Model):
             (base_x, base_y + 1),
             (base_x + 1, base_y + 1),
         ]
+        # Depot-cost round: decide which depot each unit launches from BEFORE the
+        # spawn loop reads a berth. A no-op with one depot or at spawn split 0.
+        self._assign_depot_homes()
         for a in range(0, self.NUM_AGENTS):
             aux_UAV = agents.UAV(self.unique_agents_id, self)
             aux_UAV.selected_dir = warmup_dirs[a % len(warmup_dirs)]
             if self.base_station is not None:
-                # One dedicated berth per UAV, used both as the spawn cell and as
-                # the docking cell. Distinct berths are what make the return leg
-                # deadlock-free.
+                # One dedicated berth per UAV PER DEPOT, used as the spawn cell at
+                # the home depot and as the docking cell at whichever depot the UAV
+                # returns to. Distinct berths are what make the return leg
+                # deadlock-free, and owning one in every depot is what keeps that
+                # true when the UAV may choose between them.
                 spawn_pos = self.base_station["uav_berths"][a]
                 aux_UAV.rtb_berth = spawn_pos
+                aux_UAV.rtb_berths = tuple(
+                    self.base_station["uav_berths_by_depot"][a]
+                )
+                aux_UAV.rtb_home_depot = int(self.base_station["uav_home"][a])
             else:
                 spawn_pos = base_cluster[a % len(base_cluster)]
             if self.grid.out_of_bounds(spawn_pos):
@@ -180,6 +225,14 @@ class WildFireModel(mesa.Model):
                     max(0, min(base_x, HEIGHT - 1)),
                     max(0, min(base_y, WIDTH - 1)),
                 )
+                # The pre-feature code repaired spawn_pos and left rtb_berth
+                # pointing off the grid - a UAV that returns forever. Unreachable
+                # while the four corners were hardcoded; reachable the moment depot
+                # origins are configurable, so repair both.
+                if self.base_station is not None:
+                    aux_UAV.rtb_berth = spawn_pos
+                    aux_UAV.rtb_berths = (spawn_pos,)
+                    aux_UAV.rtb_home_depot = 0
             self.grid.place_agent(aux_UAV, spawn_pos)
             self.schedule.add(aux_UAV)
             self.unique_agents_id += 1
@@ -564,45 +617,178 @@ class WildFireModel(mesa.Model):
             return None
         height, width = int(self.HEIGHT), int(self.WIDTH)
         size = max(1, min(agents.base_station_size(), height, width))
-        corner = agents.base_station_corner()
-        # 0 NW (default), 1 NE, 2 SW, 3 SE. x is the HEIGHT axis and y is the
-        # WIDTH axis - the grid is built MultiGrid(HEIGHT, WIDTH), so getting
-        # these the wrong way round is silently inert only while the grid is square.
-        origin_x = 0 if corner in (0, 2) else height - size
-        origin_y = 0 if corner in (2, 3) else width - size
-        cells = [
-            (origin_x + i, origin_y + j)
-            for i in range(size)
-            for j in range(size)
-        ]
-        ranked = sorted(
-            cells,
-            key=lambda c: (-min(c[0], c[1], height - 1 - c[0], width - 1 - c[1]), c[0], c[1]),
-        )
+        origins = _base_station_origins(height, width, size)
         n_uavs = int(self.NUM_AGENTS)
         n_ff = int(NUM_FIREFIGHTERS) if agents.base_station_spawn_firefighters() else 0
-        if n_uavs + n_ff > len(ranked):
-            raise ValueError(
-                "base station footprint %dx%d holds %d berths, but %d UAVs + %d "
-                "firefighters were requested; widen BASE_STATION_SIZE rather than "
-                "stacking units on one cell"
-                % (size, size, len(ranked), n_uavs, n_ff)
+
+        depots = []
+        seen: set = set()
+        for origin_x, origin_y in origins:
+            cells = [
+                (origin_x + i, origin_y + j)
+                for i in range(size)
+                for j in range(size)
+            ]
+            # Depot regions must be pairwise DISJOINT. `cells` is a list and the
+            # ranking sorts a list, not a set, so two overlapping regions would put
+            # the same cell in the ranking twice and hand it out as two different
+            # berths - two units on one cell, each costing the other a blocked
+            # first move. Raise rather than dedupe: a caller who asked for
+            # overlapping depots has asked for something meaningless.
+            clash = seen.intersection(cells)
+            if clash:
+                raise ValueError(
+                    "base station depots overlap at %d cell(s), e.g. %s; depot "
+                    "regions must be disjoint" % (len(clash), sorted(clash)[0])
+                )
+            seen.update(cells)
+            ranked = sorted(
+                cells,
+                key=lambda c: (-min(c[0], c[1], height - 1 - c[0], width - 1 - c[1]),
+                               c[0], c[1]),
             )
+            # PER DEPOT, not globally. Under nearest-depot return every unit needs a
+            # berth in every depot, so the capacity constraint is per block; a global
+            # check against the union would be vacuous the moment there is more than
+            # one depot. Ranking per block also preserves the contiguous-prefix
+            # argument that keeps UAV and firefighter berths from colliding - a
+            # single sort over the union INTERLEAVES the blocks and splits the units
+            # between them as an artifact of the (x, y) tie-break.
+            if n_uavs + n_ff > len(ranked):
+                raise ValueError(
+                    "base station footprint %dx%d holds %d berths, but %d UAVs + %d "
+                    "firefighters were requested; widen BASE_STATION_SIZE rather than "
+                    "stacking units on one cell"
+                    % (size, size, len(ranked), n_uavs, n_ff)
+                )
+            depots.append({
+                "origin": (origin_x, origin_y),
+                "size": size,
+                "cells": frozenset(cells),
+                "ranked": tuple(ranked),
+            })
+
+        # One berth per unit PER DEPOT. Distinctness within each depot is what keeps
+        # the return deadlock-free without a claim/release protocol.
+        uav_by_depot = tuple(
+            tuple(d["ranked"][a] for d in depots) for a in range(n_uavs)
+        )
+        ff_by_depot = tuple(
+            tuple(d["ranked"][n_uavs + i] for d in depots) for i in range(n_ff)
+        )
+        # "uav_berths" / "firefighter_berths" / "origin" / "size" / "ranked" stay
+        # exactly what they were - a flat tuple of cells, and scalars, for depot 0 -
+        # so every existing reader (both renderers, the harness, the shipped
+        # geometry tests) keeps working unchanged. _assign_depot_homes rewrites the
+        # two berth tuples to each unit HOME berth once the roles are known; with one
+        # depot, or at BASE_STATION_SPAWN_SPLIT 0, that is a no-op.
         return {
-            "origin": (origin_x, origin_y),
+            "depots": tuple(depots),
+            "origin": depots[0]["origin"],
             "size": size,
-            "cells": frozenset(cells),
-            "ranked": tuple(ranked),
-            "uav_berths": tuple(ranked[:n_uavs]),
-            "firefighter_berths": tuple(ranked[n_uavs:n_uavs + n_ff]),
+            "cells": frozenset(seen),
+            "ranked": depots[0]["ranked"],
+            "uav_berths": tuple(b[0] for b in uav_by_depot),
+            "firefighter_berths": tuple(b[0] for b in ff_by_depot),
+            "uav_berths_by_depot": uav_by_depot,
+            "firefighter_berths_by_depot": ff_by_depot,
+            "uav_home": tuple(0 for _ in range(n_uavs)),
+            "firefighter_home": tuple(0 for _ in range(n_ff)),
         }
 
-    def base_station_contains(self, pos) -> bool:
-        """True when pos is inside the depot footprint. Reporting only."""
+    def _assign_depot_homes(self) -> None:
+        """Choose each unit launch depot, and rewrite the flat berth tuples to it.
+
+        Runs before the spawn loop reads a berth. A NO-OP when there is one depot
+        or when BASE_STATION_SPAWN_SPLIT is 0: every home index is already 0 and
+        every rewritten berth is the one _build_base_station produced, so a
+        single-depot run is byte-identical to the behaviour before this round.
+
+        Split 2 (partition-nearest) homes each SEARCHER at the depot nearest the
+        centroid of its own crosswind lane. NW and SE fall in opposite halves of
+        both possible lane axes, so no wind-blind index rule can be right for both
+        canonical winds; the lane is the only stable home region a UAV owns.
+        TRACKERS AND FIREFIGHTERS STAY AT DEPOT 0: a tracker sector is recomputed
+        every step from the fire bounding box so there is no stable region to
+        match, and firefighters are fire-vulnerable and the second depot burns.
+
+        Deterministic and RNG-free: every input is a config constant, an agent
+        index or the grid extent.
+        """
+        station = getattr(self, "base_station", None)
+        if station is None:
+            return
+        depots = station.get("depots") or ()
+        n_uavs = int(self.NUM_AGENTS)
+        n_ff = len(station.get("firefighter_berths_by_depot") or ())
+        split = agents.base_station_spawn_split()
+        if len(depots) <= 1 or split == 0:
+            return
+        # Local import: the same band function the searcher lane itself uses, so
+        # there is one definition of the arithmetic. Imported here rather than at
+        # module scope to keep wildfire_model free of an import-time dependency on
+        # the adaptation package.
+        from src_extension.adaptation.local_adaptation_generator import (
+            _crosswind_band,
+        )
+
+        uav_home = [0] * n_uavs
+        if split == 1:
+            uav_home = [a % len(depots) for a in range(n_uavs)]
+        elif split == 2:
+            height, width = int(self.HEIGHT), int(self.WIDTH)
+            wind = str(getattr(self, "WIND_DIRECTION", "")
+                       or getattr(cfv, "WIND_DIRECTION", "east"))
+            searchers = [a for a in range(n_uavs)
+                         if self._uav_role_for_index(a, n_uavs) == "victim_searcher"]
+            n_s = len(searchers)
+            for s_idx, a in enumerate(searchers):
+                lane = _crosswind_band(s_idx, n_s, wind, 0, height - 1, 0, width - 1)
+                if lane is None:
+                    # One searcher (the legacy role split): no lane exists, so
+                    # there is no region to match and depot 0 stands. Inert by
+                    # construction rather than by accident.
+                    continue
+                axis, lo, hi = lane
+                mid = (lo + hi) // 2
+                centroid = ((height - 1) // 2, mid) if axis == "y" else (mid, (width - 1) // 2)
+                berths = station["uav_berths_by_depot"][a]
+                # Ties break on the lowest depot index, i.e. ascending bit order.
+                uav_home[a] = min(
+                    range(len(depots)),
+                    key=lambda i: (abs(centroid[0] - berths[i][0])
+                                   + abs(centroid[1] - berths[i][1]), i),
+                )
+
+        station["uav_home"] = tuple(uav_home)
+        station["uav_berths"] = tuple(
+            station["uav_berths_by_depot"][a][uav_home[a]] for a in range(n_uavs)
+        )
+        # Firefighters have no return leg and no region; they stay at depot 0.
+        station["firefighter_home"] = tuple(0 for _ in range(n_ff))
+        station["firefighter_berths"] = tuple(
+            station["firefighter_berths_by_depot"][i][0] for i in range(n_ff)
+        )
+
+    def base_station_contains(self, pos, depot_index=None) -> bool:
+        """True when pos is inside the depot footprint.
+
+        With depot_index None this is the UNION over every depot, which is what it
+        has always meant and what every reporting caller wants. With an index it is
+        scoped to that one depot, which is what the docking fallback needs: against
+        the union a UAV whose own berth is blocked could dock - and at mode 3
+        recharge and re-launch - inside a depot it was never returning to.
+        """
         station = getattr(self, "base_station", None)
         if station is None or pos is None:
             return False
-        return (int(pos[0]), int(pos[1])) in station["cells"]
+        cell = (int(pos[0]), int(pos[1]))
+        if depot_index is None:
+            return cell in station["cells"]
+        depots = station.get("depots") or ()
+        if not 0 <= int(depot_index) < len(depots):
+            return False
+        return cell in depots[int(depot_index)]["cells"]
 
     def _init_managed_victims(self) -> None:
         if not hasattr(self, "managed_victims"):
@@ -745,6 +931,27 @@ class WildFireModel(mesa.Model):
         vs_count = min(vs_count, max(0, n_uavs - ft_count))
         return ft_count, vs_count, False
 
+    def _uav_role_for_index(self, idx: int, n_uavs: int) -> str:
+        """The role of the idx-th UAV in unique_id order.
+
+        Factored out of _assign_uav_roles so the depot-cost round can ask which
+        UAVs are searchers BEFORE the roles have been written to the runtime
+        models - the depot home assignment runs in the spawn loop, and
+        resolve_victim_searcher_uav_ids cannot answer there because it reads
+        managed_uav_states, which _init_runtime_knowledge has not built yet. This
+        is the SINGLE definition of the index-to-role mapping; a second copy of it
+        is exactly the drift this repo has been bitten by, so both callers use
+        this one.
+        """
+        ft_count, vs_count, legacy = self._resolve_uav_role_counts(n_uavs)
+        if legacy:
+            return "victim_searcher" if idx == n_uavs - 1 else "fire_tracker"
+        if idx < ft_count:
+            return "fire_tracker"
+        if idx < ft_count + vs_count:
+            return "victim_searcher"
+        return "fire_tracker"
+
     def _assign_uav_roles(self) -> None:
         uavs = sorted(
             [a for a in self.schedule.agents if type(a) is agents.UAV],
@@ -753,19 +960,11 @@ class WildFireModel(mesa.Model):
         n_uavs = len(uavs)
         if n_uavs == 0:
             return
-        ft_count, vs_count, legacy = self._resolve_uav_role_counts(n_uavs)
         update_role = getattr(self.uav_resource_model, "update_role", None)
         managed_states = getattr(self, "managed_uav_states", None)
         for idx, agent in enumerate(uavs):
             uav_id = str(agent.unique_id)
-            if legacy:
-                role = "victim_searcher" if idx == n_uavs - 1 else "fire_tracker"
-            elif idx < ft_count:
-                role = "fire_tracker"
-            elif idx < ft_count + vs_count:
-                role = "victim_searcher"
-            else:
-                role = "fire_tracker"
+            role = self._uav_role_for_index(idx, n_uavs)
             if callable(update_role):
                 update_role(
                     uav_id,

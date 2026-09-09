@@ -733,12 +733,25 @@ def main() -> int:
         # --- base-station round -------------------------------------------------
         # The depot geometry actually used, so an arm's spawn cells are recoverable
         # from its own output rather than re-derived.
+        # Depot-cost round: the DEPOT SET, recorded inside this field rather than
+        # as a new top-level one. base_station is None whenever BASE_STATION_MODE
+        # is 0, so reshaping it cannot drift the kill-switch identity - a mode-0
+        # arm records None either way. The scalar origin/size are kept as depot-0
+        # aliases so the earlier analyzers still read what they expect.
         "base_station": (
             None if getattr(model, "base_station", None) is None else {
                 "origin": list(model.base_station["origin"]),
                 "size": int(model.base_station["size"]),
                 "uav_berths": [list(c) for c in model.base_station["uav_berths"]],
                 "firefighter_berths": [list(c) for c in model.base_station["firefighter_berths"]],
+                "depots": [list(d["origin"])
+                           for d in (model.base_station.get("depots") or ())],
+                "uav_berths_by_depot": [
+                    [list(c) for c in row]
+                    for row in (model.base_station.get("uav_berths_by_depot") or ())
+                ],
+                "uav_home": list(model.base_station.get("uav_home") or ()),
+                "firefighter_home": list(model.base_station.get("firefighter_home") or ()),
             }
         ),
         # ONE RECORD PER RETURN TRIP, per UAV: trigger step and level, how far the

@@ -246,6 +246,21 @@ class UAV(mesa.Agent):
         # spawn; distinct berths are what make the return leg deadlock-free, since
         # not_UAV_adjacent only ever refuses a move into an occupied cell.
         self.rtb_berth: tuple[int, int] | None = None
+        # Depot-cost round: with more than one depot a UAV owns a berth in EVERY
+        # depot, and returns to the nearest of its own. Owning one berth per depot
+        # is what preserves the invariant the single-depot design rests on - no two
+        # UAVs ever share a berth, whichever depot each one picks - without needing
+        # a claim/release protocol. rtb_berths[i] is this UAV's berth in depot i;
+        # with one depot it is (rtb_berth,) and every path below is bit-identical
+        # to the single-depot behaviour.
+        self.rtb_berths: tuple[tuple[int, int], ...] = ()
+        self.rtb_home_depot = 0
+        # The TARGET is chosen once, at the trigger, and LATCHED for the trip.
+        # Re-running the argmin every step would make a UAV equidistant from two
+        # depots flip its target each step, and _rtb_direction would reverse with
+        # it - the stall sidestep cannot rescue that (see its own note below).
+        self.rtb_target_berth: tuple[int, int] | None = None
+        self.rtb_target_depot: int | None = None
         self.rtb_active = False
         self.rtb_docked = False
         self.rtb_last_pos: tuple[int, int] | None = None
@@ -366,6 +381,33 @@ class UAV(mesa.Agent):
             primary, secondary = y_dir, x_dir
         # A blocked move leaves the position unchanged; taking the other axis
         # breaks the deadlock a memoryless greedy steer would sit in forever.
+        #
+        # KNOWN DEFECT IN THE SHIPPED FEATURE - NOT FIXED, see below.
+        # The sidestep CANNOT FIRE ON A PURE-AXIS APPROACH. When dx == 0 (or
+        # dy == 0) the corresponding direction is None, so `secondary` is None,
+        # the swap puts None in `primary`, and the function falls through to
+        # `if secondary is not None` and returns the ORIGINAL BLOCKED DIRECTION.
+        # The UAV then retries the same refused move forever.
+        # MEASURED at BASE_STATION_MODE = 2 on the base-station round's own
+        # artifacts: all five "en route at 240" legs are the same UAV stuck at
+        # (3,44), one cell outside the depot, for 34 to 66 steps with 37-42
+        # battery in hand, because its berth (3,46) is straight up the y axis and
+        # the cell between them holds a permanently docked UAV. The previous round
+        # reported those five as "still flying home, none failed"; they are
+        # permanently deadlocked. Mode 3 masks it - a docked UAV recharges and
+        # leaves, so the blocker clears - which is why the shipped default has
+        # never been exposed to it, and BASE_STATION_MODE ships at 0 anyway.
+        # ANY FUTURE ROUND THAT FLIPS THE MODE MUST KNOW THIS IS HERE.
+        # The second escape hatch misses the same case: the docking fallback in
+        # _apply_return_to_base requires the UAV to be INSIDE the depot, and a UAV
+        # stalled one cell outside it is not.
+        # TEST GAP: tests/test_base_station.py::test_steering_sidesteps_a_stall
+        # exercises (10,48) -> (4,45), where dx and dy are BOTH non-zero and a
+        # secondary direction therefore exists. The pure-axis case - the only one
+        # where the swap has nothing to swap to - is pinned by
+        # test_stall_sidestep_cannot_fire_on_a_pure_axis_approach, which asserts
+        # the CURRENT broken behaviour so that a fix flips it visibly.
+        # Diagnosed in the depot-cost round; see outputs/depotcost_report.txt.
         stalled = self.rtb_last_pos is not None and self.rtb_last_pos == (x, y)
         if stalled and secondary is not None:
             primary, secondary = secondary, primary
@@ -376,8 +418,52 @@ class UAV(mesa.Agent):
         return int(self.selected_dir)
 
     def _rtb_inside_depot(self, cell: tuple[int, int]) -> bool:
+        """Inside the depot this UAV is CURRENTLY RETURNING TO, not inside any.
+
+        The docking fallback below parks a UAV on whatever depot cell it has
+        reached when its own berth is blocked. Against the union of two depots
+        that would let a UAV dock - and at mode 3 recharge and re-launch - inside
+        a depot it was never flying to, roughly a grid width from where it meant
+        to be. The depot index is passed through so the test is scoped to the
+        latched target; with one depot it is depot 0 and the union, so this is
+        the single-depot behaviour exactly.
+        """
         contains = getattr(self.model, "base_station_contains", None)
-        return bool(contains(cell)) if callable(contains) else False
+        if not callable(contains):
+            return False
+        depot = self.rtb_target_depot
+        if depot is None:
+            return bool(contains(cell))
+        try:
+            return bool(contains(cell, depot))
+        except TypeError:
+            # A model that predates the depot-index parameter (a stand-in in the
+            # tests, or an older checkout under --repo) still answers the union.
+            return bool(contains(cell))
+
+    def _rtb_select_berth(self) -> tuple[int, int] | None:
+        """The nearest of this UAV's own berths, and the depot it belongs to.
+
+        Ties break on the LOWEST DEPOT INDEX, which is ascending bit order, so the
+        choice is a pure function of position and configuration. Sets
+        rtb_target_berth / rtb_target_depot; the caller latches them for the trip.
+        """
+        berths = self.rtb_berths or ((self.rtb_berth,) if self.rtb_berth else ())
+        if not berths or self.pos is None:
+            return None
+        x, y = int(self.pos[0]), int(self.pos[1])
+        best_i, best_d = 0, None
+        for i, b in enumerate(berths):
+            if b is None:
+                continue
+            d = abs(x - int(b[0])) + abs(y - int(b[1]))
+            if best_d is None or d < best_d:
+                best_i, best_d = i, d
+        if best_d is None:
+            return None
+        self.rtb_target_depot = best_i
+        self.rtb_target_berth = (int(berths[best_i][0]), int(berths[best_i][1]))
+        return self.rtb_target_berth
 
     def _rtb_berth_blocked(self, berth: tuple[int, int]) -> bool:
         """True when another UAV is standing on this UAV's berth."""
@@ -402,9 +488,14 @@ class UAV(mesa.Agent):
         mode = base_station_mode()
         if mode < 2:
             return
-        berth = self.rtb_berth
-        if berth is None or self.pos is None:
+        if self.rtb_berth is None or self.pos is None:
             return
+        # While a trip is active the target is the LATCHED one; otherwise the
+        # trigger is tested against the nearest berth from where the UAV is now.
+        # With one depot both are rtb_berth and nothing here changes.
+        berth = self.rtb_target_berth if self.rtb_active else None
+        if berth is None:
+            berth = self._rtb_select_berth() or self.rtb_berth
 
         step = int(getattr(self.model, "evaluation_timesteps_counter", 0))
 
@@ -413,6 +504,8 @@ class UAV(mesa.Agent):
                 self.rtb_docked = False
                 self.rtb_active = False
                 self.rtb_last_pos = None
+                self.rtb_target_berth = None
+                self.rtb_target_depot = None
                 self.rtb_cycles += 1
                 if self.rtb_log:
                     self.rtb_log[-1]["released_step"] = step
@@ -426,10 +519,23 @@ class UAV(mesa.Agent):
                 return
             self.rtb_active = True
             self.rtb_trips += 1
+            # LATCH the target for the whole trip. rtb_target_* were set by the
+            # trigger test above; freezing them here is what stops a UAV that is
+            # equidistant from two depots flipping its destination each step.
+            self.rtb_target_berth = (int(berth[0]), int(berth[1]))
             self.rtb_log.append({
                 "trigger_step": step,
                 "trigger_level": float(self.battery_level),
                 "trigger_distance": abs(here[0] - berth[0]) + abs(here[1] - berth[1]),
+                # Depot-cost round: WHICH depot this trip aimed at. Without it the
+                # instrument cannot attribute a return leg to a depot, which is
+                # the whole point of a multi-depot arm. Inside the per-trip record
+                # rather than in rtb_counters, because rtb_counters is populated at
+                # every mode and a new key there would drift the mode-0 baseline.
+                "target_depot": (0 if self.rtb_target_depot is None
+                                 else int(self.rtb_target_depot)),
+                "target_berth": [int(berth[0]), int(berth[1])],
+                "home_depot": int(self.rtb_home_depot),
                 "arrival_step": None,
                 "arrival_level": None,
                 "dock_cell": None,
@@ -590,6 +696,47 @@ def base_station_corner() -> int:
     except (TypeError, ValueError):
         return 0
     return value if value in (0, 1, 2, 3) else 0
+
+
+# Depot anchors, in ASCENDING BIT ORDER. The bit order IS the depot order, so
+# depot 0 is the first set bit and the set is deterministic. Kept beside the corner
+# accessor because it is the same coordinate convention: x is the HEIGHT axis and
+# y is the WIDTH axis.
+BASE_STATION_ANCHOR_BITS = ((1, "NW"), (2, "NE"), (4, "SW"), (8, "SE"), (16, "CENTRAL"))
+BASE_STATION_DEPOTS_MAX = 31
+
+
+def base_station_depots() -> int:
+    """Bitmask over the five depot anchors; 0 = one depot at BASE_STATION_CORNER.
+
+    RAISES on an unrecognised value instead of falling back. base_station_corner()
+    maps anything outside 0..3 to NW silently, and a silent fallback here would run
+    a two-depot arm as a one-depot arm - the wave would measure the wrong thing
+    with no error anywhere, which is this repo's recorded dead-input defect class.
+    """
+    raw = getattr(cfv, "BASE_STATION_DEPOTS", 0)
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        raise ValueError(
+            "BASE_STATION_DEPOTS must be an int bitmask in 0..%d, got %r"
+            % (BASE_STATION_DEPOTS_MAX, raw)
+        ) from None
+    if not 0 <= value <= BASE_STATION_DEPOTS_MAX:
+        raise ValueError(
+            "BASE_STATION_DEPOTS must be a bitmask in 0..%d (NW 1, NE 2, SW 4, "
+            "SE 8, CENTRAL 16), got %d" % (BASE_STATION_DEPOTS_MAX, value)
+        )
+    return value
+
+
+def base_station_spawn_split() -> int:
+    """0 all at depot 0 / 1 alternate by index / 2 partition-nearest searchers."""
+    try:
+        value = int(getattr(cfv, "BASE_STATION_SPAWN_SPLIT", 0))
+    except (TypeError, ValueError):
+        return 0
+    return value if value in (0, 1, 2) else 0
 
 
 def base_station_spawn_firefighters() -> bool:

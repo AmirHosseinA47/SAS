@@ -141,8 +141,19 @@ class CanvasGrid(VisualizationElement):
         # the victims instead of under them.
         station = getattr(model, "base_station", None)
         if station is not None:
-            origin_x, origin_y = station["origin"]
-            size = int(station["size"])
+            # Depot-cost round: one outline PER DEPOT. The scalar "origin"/"size"
+            # are kept as aliases for depot 0, so a reader that used them still
+            # works - but it would draw only the first depot and the second would
+            # be invisible on the map, which is the silent no-op this loop exists
+            # to prevent.
+            blocks = [(d["origin"], int(d["size"]))
+                      for d in (station.get("depots")
+                                or ({"origin": station["origin"],
+                                     "size": station["size"]},))]
+        else:
+            blocks = []
+        for origin, size in blocks:
+            origin_x, origin_y = origin
             for i in range(size):
                 for j in range(size):
                     on_edge_x = i == 0 or i == size - 1

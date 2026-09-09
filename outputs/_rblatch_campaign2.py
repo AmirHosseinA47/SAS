@@ -191,6 +191,31 @@ def run(seed, params, steps):
     return ev
 
 
+def _parse_value(raw: str):
+    """--set coercion, character for character the harness ladder.
+
+    outputs/_ffr_harness.py:51-65. Duplicated rather than imported because that
+    file is a CLI script with a hard --repo import guard at module scope, not an
+    importable module; the ladder is five lines and a divergence would let an arm
+    mean one thing to the wave and another to the gate. If either copy changes,
+    change both.
+    """
+    text = str(raw).strip()
+    low = text.lower()
+    if low in ("true", "false"):
+        return low == "true"
+    if low in ("none", "null"):
+        return None
+    try:
+        return int(text)
+    except ValueError:
+        pass
+    try:
+        return float(text)
+    except ValueError:
+        return text
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--scenario", default="D")
@@ -198,6 +223,15 @@ def main():
     ap.add_argument("--steps", type=int, default=240)
     ap.add_argument("--seeds", required=True)
     ap.add_argument("--tag", required=True)
+    # Depot-cost round: without this the route_blocked gate can only ever run at
+    # the tree defaults, so an ARMED arm could not be gated at all without editing
+    # the shipped default - which the round is forbidden to do. Purely additive:
+    # with no --set the params dict below is bit-identical to what it was, which is
+    # what keeps the existing e703861 reference shards (tag `rbc`) valid.
+    ap.add_argument("--set", dest="set", action="append", default=[],
+                    metavar="KEY=VALUE",
+                    help="extra apply_scenario_config parameter; same coercion "
+                         "ladder as outputs/_ffr_harness.py")
     a = ap.parse_args()
     preset = BUILTIN_SCENARIOS[a.scenario]
     n = preset["NUM_AGENTS"]
@@ -206,6 +240,18 @@ def main():
               "NUM_FIREFIGHTERS": preset["NUM_FIREFIGHTERS"], "WIND_DIRECTION": a.wind,
               "BATCH_SIZE": 300, "FIRE_SPREAD_MULTIPLIER": 0.75, "PROBABILITY_MAP": False,
               "NUM_FIRE_TRACKERS": ft, "NUM_VICTIM_SEARCHERS": n - ft}
+    # Depot-cost round. With no --set this loop does nothing and `params` is
+    # bit-identical to what it was before the flag existed, which is what keeps the
+    # existing e703861 reference shards (tag `rbc`) comparable. The coercion ladder
+    # is the same one outputs/_ffr_harness.py:_parse_value uses - bool, then
+    # none/null, then int, then float, then str - deliberately identical so an arm
+    # cannot mean one thing to the harness and another to the gate.
+    for item in a.set:
+        if "=" not in item:
+            sys.stderr.write("bad --set %r\n" % item)
+            return 2
+        k, v = item.split("=", 1)
+        params[k.strip()] = _parse_value(v)
     evals = []
     for seed in [int(s) for s in a.seeds.split(",")]:
         ev = run(seed, params, a.steps)

@@ -347,6 +347,30 @@ def _searcher_crosswind_lane(
         idx = ids.index(str(uav_id))
     except ValueError:
         return None
+    return _crosswind_band(idx, n, wind_direction, x_min, x_max, y_min, y_max)
+
+
+def _crosswind_band(
+    idx: int,
+    n: int,
+    wind_direction: str,
+    x_min: int,
+    x_max: int,
+    y_min: int,
+    y_max: int,
+) -> tuple[str, int, int] | None:
+    """The idx-th of n disjoint cross-wind bands, or None when n <= 1.
+
+    Split out of _searcher_crosswind_lane so the band arithmetic has ONE
+    definition. The depot-cost round needs a searcher band at spawn time, before
+    the roles have reached the runtime models and therefore before
+    resolve_victim_searcher_uav_ids can answer; re-deriving the band there would
+    be a second copy of this arithmetic, which is the drift class this repo has
+    been bitten by. It is a pure function of the index, the count, the wind and
+    the bounds - no model, no position, no RNG.
+    """
+    if n <= 1 or idx < 0 or idx >= n:
+        return None
     w = normalize_wind_direction(wind_direction)
     if w in ("east", "west"):
         span = y_max - y_min + 1
