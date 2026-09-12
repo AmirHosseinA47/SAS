@@ -1,0 +1,562 @@
+================================================================================
+DOCKING DEADLOCK - FIX, MEASURED
+branch depot-cost-round   base 9f77178   Python 3.10.11   mesa 1.2.1
+wave: 174 runs, 0 failures, 2026-09-12
+================================================================================
+Design and its evidence: outputs/dockfix_part1.txt
+Every number below:      bash outputs/_df_readout.sh   ->  outputs/_df_readout.txt
+
+================================================================================
+0. VERDICT
+================================================================================
+EVERY GATE ITEM PASSES.
+
+  kill switch proves byte-identity ........ PASS  46/46 runs, two independent arms
+  dcB/808 no longer deadlocks ............. PASS  UAV 2500 docks at step 205
+  zero deadlocked UAVs in any arm ......... PASS  all four arms, both samples
+  rescued does not decrease ............... PASS  it does not change at all
+  drone steps in fire not up materially ... PASS  3 of 4 arms unchanged; worst +0.17pp
+  no NEW test failures .................... PASS  same 8 NAMES, +19 passing
+  route_blocked gate ...................... PASS  the fix is provably inert on it
+
+The defect is closed at both modes. At BASE_STATION_MODE 2 - where it was endemic
+rather than rare - 5 of 13 canonical runs deadlocked permanently and now ZERO do.
+At mode 3 the single recorded deadlock is gone. Mission outcomes are unchanged to
+the unit on every arm and both samples: the fix costs nothing and buys the return
+leg's termination.
+
+SHIPPED ON. BASE_STATION_DOCK_FIX defaults to 2. At the shipped BASE_STATION_MODE
+of 0 none of the new code is reachable, so the shipped configuration is
+byte-identical either way - which is what makes defaulting ON free, and what makes
+defaulting OFF merely a way to carry a known stranding bug behind a flag.
+
+================================================================================
+1. WHAT WAS BUILT
+================================================================================
+ONE TRIGGER, TWO BEHAVIOURS, TWO SWITCHES.
+
+THE TRIGGER. `rtb_stall_steps` - CONSECUTIVE refused steps on a return leg, reset
+by any successful move. Threshold BASE_STATION_RETURN_STALL_LIMIT = 3, DERIVED:
+over every armed run on disk before this round, runs of consecutive refused steps
+are 1 step (184 episodes) or 2 (5), then NOTHING AT ALL between 3 and 8, then 13
+episodes of 9 to 65 steps - every one a stall the UAV never escapes. 3 sits inside
+that empty gap, and a one-step transit produces at most ONE refused step, so it
+cannot reach the limit BY CONSTRUCTION rather than by measured frequency.
+
+MECHANISM 1 - the docking fallback is RE-KEYED, not debounced, not removed.
+Its trigger changes from "is my berth occupied AT THIS INSTANT" to "has this leg
+stopped moving". The old trigger fired on a ONE-STEP TRANSIT - mesa mutates the
+grid during the advance() sweep, so a later-ordered UAV sees it - and permanently
+re-assigned a berth. It was also SILENT where it was needed most, because it asked
+about the BERTH: in all five mode-2 strandings the berth is FREE and stays free.
+A debounce of that predicate would have asked the wrong question more slowly.
+The dock CELL is unchanged: inside the latched depot. Section 5b says why.
+
+MECHANISM 2 - a latched recovery. A leg that has stalled OUTSIDE its depot latches
+the nearest free cell of that depot and steers to it ON EVERY STEP until inside,
+where the ordinary steer and the re-keyed terminator take over. _rtb_direction is
+NOT modified except for its comment: its distance-monotonicity is what bounds the
+moves on a leg and makes a consecutive-stall counter a valid termination variant.
+
+THE WAYPOINT FIX - a separate defect, a separate switch, measured apart.
+BASE_STATION_WAYPOINT_FIX = 1. The mechanism-1 planner waypoint published the UAV's
+HOME berth rather than the berth LATCHED for the trip. Section 4.10.
+
+NO NEW RECORDED FIELD. NO HARNESS CHANGE. The "before" side of every comparison in
+this report was already on disk and cost zero runs.
+
+================================================================================
+2. THE INSTRUMENTS, AND WHY THEY CAN BE TRUSTED
+================================================================================
+Everything is read from fields the harness already recorded:
+  a fallback dock      dock_cell != target_berth
+  an unterminated trip arrival_step is None
+  a stalled UAV        a run of identical positions in uav_steps with
+                       base_state == "returning"
+  drone steps in fire  the per-UAV per-step `burning` flag at uav_actions[i][2]
+
+INSTRUMENT DRIFT: NONE, AND IT IS TESTED RATHER THAN ASSERTED. outputs/
+_ffr_harness.py is untouched, so arms recorded by the depot-cost round are
+directly comparable. The three new agent attributes are invisible to the
+instrument, which serialises an explicit field list and never __dict__.
+
+THE SAME-INSTRUMENT REFERENCE, built BEFORE the wave, not after. The mode-2 claim
+could not be read against the base-station round's own `bsret` artifacts, which
+predate the depot round's additions to `base_station` and `rtb_log` - comparing
+against them would show instrument differences and read them as behaviour, which
+has happened twice in this project. `dfm2ref` is mode 2 with the fix OFF, recorded
+by the current harness. It reproduces bsret EXACTLY: same 5 seeds, same UAV (2502),
+same cell (3,44), same durations (34/36/43/63/66), same batteries. The reference is
+sound, so the comparison against it is readable.
+
+================================================================================
+3. VALIDATION - THE KILL SWITCH, BOTH WAYS
+================================================================================
+Two arms, because one is not enough.
+
+  dfzero   mode 0 at the shipped defaults, fix ON, vs dcoff
+           23 / 23 runs IDENTICAL on all 39 recorded fields
+  dfkill   dcB's configuration + BASE_STATION_DOCK_FIX=0, vs dcB
+           23 / 23 runs IDENTICAL on all 39 recorded fields
+
+dfzero alone would prove little: at mode 0 the changed code never executes.
+dfkill is THE STRONG CONTROL - it runs every changed path at mode 3 with the
+switch off and reproduces the depot round's own dcB field for field.
+
+================================================================================
+4. THE RESULT
+================================================================================
+--------------------------------------------------------------------------------
+4.1 THE PRIMARY GATE - dcB east/half/808
+--------------------------------------------------------------------------------
+  BEFORE, 9f77178   terminal_step=222
+    2500 trigger=168 target=[4,45] arrival=None  dock=None
+    2501 trigger=175 target=[3,45] arrival=205   dock=[3,45]
+    2502 trigger=147 target=[3,46] arrival=203   dock=[4,45]   <-- fallback, a STEAL
+    2503 trigger=165 target=[4,46] arrival=208   dock=[4,46]
+    UAV 2500 final_battery=35.4  final_active=True  cycles=0
+
+  AFTER, fix on     terminal_step=222
+    2500 trigger=168 target=[4,45] arrival=205   dock=[4,45]   <-- ITS OWN BERTH
+    2501 trigger=175 target=[3,45] arrival=207   dock=[3,46]   <-- fallback
+    2502 trigger=147 target=[3,46] arrival=207   dock=[3,45]   <-- fallback
+    2503 trigger=165 target=[4,46] arrival=208   dock=[4,46]
+    UAV 2500 final_battery=93.1  final_active=False  cycles=1
+
+UAV 2500 DOCKS AT STEP 205, at its own berth (4,45). It had been stranded one cell
+short for 37 steps with 35.4 battery in hand; it now returns, recharges and
+relaunches, ending the run at 93.1.
+
+2501 and 2502 SWAP berths through the fallback. That is the design working, not a
+new fault: both terminate, both inside the depot, both recharge and relaunch. It
+is also exactly what Part 1 predicted this seed would do.
+
+--------------------------------------------------------------------------------
+4.2 THE REDEFINED STRANDING GATE - zero, every arm, both samples
+--------------------------------------------------------------------------------
+                  canonical 13                    fresh 10
+  arm     stuck / unarrived  ->  after     stuck / unarrived  ->  after
+  A         0 / 0      0 / 0                 0 / 0      0 / 0
+  B         0 / 0      0 / 0                 1 / 1      0 / 0   <-- the deadlock
+  C         0 / 3      0 / 3                 0 / 0      0 / 0
+  D         0 / 0      0 / 0                 0 / 0      0 / 0
+
+THE 3 "UNARRIVED" IN ARM C ARE NOT DEADLOCKS and the report keeps saying so
+rather than counting them: they trigger at steps 216, 239 and 239 against a
+240-step horizon, are still MOVING at the end (unmoved=1), and end with 40-46
+battery. They are horizon truncation, identical before and after, and treating
+them as failures would be the same category error the old gate made.
+
+--------------------------------------------------------------------------------
+4.3 THE MODE-2 ARM - the strongest single signal in the round
+--------------------------------------------------------------------------------
+  dfm2ref  (fix OFF)  13 runs   stuck 5   unarrived 5
+        east/half/101  2502 at (3,44) for 34 steps, batt 39.6
+        east/half/303  2502 at (3,44) for 36 steps, batt 40.0
+        east/half/404  2502 at (3,44) for 43 steps, batt 37.2
+        east/half/505  2502 at (3,44) for 63 steps, batt 40.8
+        south/half/404 2502 at (3,44) for 66 steps, batt 41.6
+  dfm2fix  (fix ON)   13 runs   stuck 0   unarrived 0
+
+38% of the canonical sample, permanently deadlocked, to ZERO. This is the arm the
+brief did not know about: mechanism 2 is independently fatal and dominates here,
+because in all five of these the stranded UAV's BERTH IS FREE. Mechanism 1 alone
+would not have saved one of them.
+
+--------------------------------------------------------------------------------
+4.4 THE MECHANISM VISIBLE IN THE DATA - consecutive refused steps
+--------------------------------------------------------------------------------
+The sharpest before/after available, and the one that shows the fix working
+rather than merely the symptom absent.
+
+  arm B  BEFORE: 1 step x87, 2 x4, then 9, 11, 11, 13, 13, 15, 37
+         AFTER : 1 step x92, 2 x4, 3 x11, and NOTHING ABOVE 3
+
+  mode 2 BEFORE: 1 x184, 2 x5, then 33, 35, 42, 62, 65
+         AFTER : 1 x23, 3 x5, and NOTHING ABOVE 3
+
+The entire pathological tail is gone, replaced by episodes capped at EXACTLY the
+threshold. In the mode-2 arm there are exactly 5 of them - one per run that used
+to deadlock. The leg stalls, the counter reaches 3, the recovery fires. That the
+cap is exact is the mechanism, not a coincidence.
+
+--------------------------------------------------------------------------------
+4.5 OUTCOMES - seed-matched against 9f77178, canonical 13 + fresh 10
+--------------------------------------------------------------------------------
+  arm   rescued   dead   ff_deaths   never_detected     runs fully identical
+  A     67 -> 67  16->16   5 -> 5       8 -> 8           21 / 23
+  B     67 -> 67  16->16   5 -> 5       8 -> 8           15 / 23
+  C     69 -> 69  16->16  12 ->12       2 -> 2            5 / 23
+  D     68 -> 68  16->16  10 ->10       5 -> 5           22 / 23
+
+RESCUED DOES NOT DECREASE. It does not change at all, on either sample, on any
+arm. Neither does dead, ff_deaths, never_detected, or terminal_step - terminal_step
+is unchanged on every one of the 92 runs.
+
+The only quantity that moves is the return-leg share, which is what a change to
+the return leg should move:
+  arm   trips arrived    return share      mean duration
+  A      90 -> 90      16.81% -> 16.78%    41.2 -> 41.2
+  B      89 -> 90      18.03% -> 17.75%    43.9 -> 43.6
+  C      88 -> 88       8.51% ->  8.97%    21.0 -> 22.2
+  D      92 -> 92      12.39% -> 12.41%    29.7 -> 29.8
+
+ARM B's ARRIVED COUNT GOES 89 -> 90 OF 90. That single number is the deadlock,
+and arm B's return share and mean duration both IMPROVE, because a permanently
+stalled UAV had been accumulating return_steps forever.
+
+--------------------------------------------------------------------------------
+4.6 FALLBACK DOCKS - they do not go to zero, and where they land CHANGES
+--------------------------------------------------------------------------------
+  arm    trips   fallback docks      never arrived
+  A        90     1 ->  2              0 -> 0
+  B        90     6 ->  8              1 -> 0
+  C        91    26 -> 19              3 -> 3   (horizon, see 4.2)
+  D        92     1 ->  2              0 -> 0
+
+Contention is real and the fallback is what resolves it; the gate is stranding,
+not dock count. But the count is the less interesting half, and reporting only it
+would hide a real change. WHERE the docks land, counted directly on dock_cell:
+
+  arm     another UAV's berth   firefighter berth   plain depot cell   OUTSIDE
+  dcA              1                    0                  0              0
+  dcB              5                    1                  0              0
+  dcC              1                    4                 21              0
+  dcD              0                    0                  1              0
+  ----------------------------------------------------------------------------
+  dfA              1                    0                  1              0
+  dfB              8                    0                  0              0
+  dfC             18                    0                  1              0
+  dfD              1                    0                  1              0
+
+NO DOCK CELL IS OUTSIDE A DEPOT FOOTPRINT, before or after, in any arm. That is
+asserted directly on dock_cell rather than inferred, and section 5b is why it
+matters.
+
+BUT DOCKS ONTO ANOTHER UAV'S BERTH RISE FROM 7 TO 28, almost all of it in arm C
+(1 -> 18). This is a genuine behavioural change and it is the one thing in this
+round that looks worse on its face, so it is worth being plain about.
+
+WHY IT HAPPENS. The old trigger fired the INSTANT a berth was occupied, wherever
+the returning UAV happened to be standing - usually a plain cell it was passing
+through, which is why 21 of arm C's 26 docks landed on plain cells. The re-keyed
+trigger fires only after the leg has stopped moving for three steps, and a leg
+stops moving where something is in its way - which, inside a depot, is
+disproportionately a berth. The dock lands closer to the contention because that
+is now what the trigger is measuring.
+
+WHY IT IS BENIGN HERE, AND WHAT WOULD MAKE IT NOT. Displacing a UAV matters only
+if the displaced UAV is then stranded. It is not: stuck is ZERO in every arm on
+both samples (4.2), unarrived is unchanged, every trip that used to arrive still
+arrives, arm B's arrivals go 89 -> 90 of 90, and rescued/dead/ff_deaths/
+never_detected are identical to the unit (4.5). The dcB/808 trace shows the shape
+of it directly - 2501 and 2502 swap berths and BOTH terminate, recharge and
+relaunch. A berth swap is a resolution, not a collision.
+
+What would make it harmful is a displaced UAV with no recovery, which is precisely
+the hole mechanism 2 closes: a displaced unit can now reach the depot from
+outside. The two halves are load-bearing together, and this table is the clearest
+evidence for that - mechanism 1 alone would have moved MORE docks onto berths
+while leaving the displaced units no way back.
+
+--------------------------------------------------------------------------------
+4.7 DRONE STEPS IN FIRE
+--------------------------------------------------------------------------------
+DEFINITION, reused unchanged so the numbers stay comparable across rounds: the
+per-UAV per-step `burning` flag the harness already records at uav_actions[i][2],
+summed over all UAVs and all steps and divided by UAV-steps. This is the same
+definition behind the interior-hazard round's 2.1% canonical / 3.0% fresh. The
+harness already computed it; nothing was redefined.
+
+                canonical 13              fresh 10
+  arm      before -> after            before -> after
+  A        3.06%  -> 3.06%            2.41%  -> 2.41%
+  B        3.75%  -> 3.75%            2.65%  -> 2.64%
+  C        2.27%  -> 2.44%            2.85%  -> 2.79%
+  D        3.52%  -> 3.52%            1.94%  -> 1.94%
+
+Three of four arms are unchanged to the decimal on both samples. The largest move
+anywhere is arm C canonical, +0.17pp - the arm whose docking behaviour changes
+most. Not material.
+
+CONSECUTIVE OCCUPANCY, reported separately because a share cannot distinguish a
+UAV crossing many burning cells once from one sitting on a single burning cell:
+  arm   max streak       episodes >=3      episodes >=5
+  A     13 -> 13          57 -> 57          21 -> 21
+  B     13 -> 13          72 -> 72          25 -> 25
+  C     21 -> 21          50 -> 49          21 -> 23
+  D     18 -> 18          65 -> 65          25 -> 25
+The MAXIMUM is unchanged in every arm. No UAV sits on fire longer than it did.
+UAVs are fire-immune - there is no casualty path - so this is a search-quality
+signal, not a survival one.
+
+--------------------------------------------------------------------------------
+4.8 THE ROUTE_BLOCKED GATE - the fix is provably inert on it
+--------------------------------------------------------------------------------
+Run at the ARMED configuration, where the fix can act, tag `dfrb`.
+
+  _ffr_rbcompare.py --new dfrb --old ihrest
+      rescued 53 -> 48   dead 11 -> 12   ff_deaths 9 -> 6
+      [FAIL] rescued does not decrease on any seed
+      [PASS] recovery pass still recovers units
+      [PASS] no unit left latched as route_blocked at end of run
+
+THAT [FAIL] IS NOT THIS ROUND'S. `ihrest` is the UNARMED shipped-default
+reference; `dfrb` runs mode 3 with the distance regime, so the comparison measures
+ARMING THE BASE STATION - the depot-cost round's already-reported cost. The
+control settles it:
+
+  _ffr_rbcompare.py --new dcrbB --old ihrest        (the same armed config at
+      rescued 53 -> 48   dead 11 -> 12   ff_deaths 9 -> 6    9f77178, fix ABSENT)
+      identical [FAIL]/[PASS]/[PASS]
+
+  _ffr_rbcompare.py --new dfrb --old dcrbB          (fix ON vs fix ABSENT)
+      rescued 48 -> 48 (+0)   dead 12 -> 12 (+0)   ff_deaths 6 -> 6 (+0)
+      [PASS] [PASS] [PASS]    seeds changed: 0
+
+At the file level the four shards differ from dcrbB's on exactly two fields:
+`tag` and `wall_s` - wall-clock time, which varied because these ran alongside
+the wave. Every behavioural field is identical. The fix does not touch this gate.
+
+--------------------------------------------------------------------------------
+4.9 TESTS - the NAME SET, not the count
+--------------------------------------------------------------------------------
+  9f77178          8 failed, 562 passed
+  with the fix     8 failed, 581 passed        (57:59)
+
+THE FAILING NAME SETS ARE EQUAL. Checked as sets, because this project has a
+recorded case where counts matched by coincidence while the sets differed by two:
+no new failure, and nothing that used to fail now passes.
+
+  test_behavior_regression.py::test_descriptive_next_action_uses_target_position
+  test_dashboard_panel.py::test_dashboard_panel_render_returns_string
+  test_firefighter_dispatch_replacement.py::test_no_replacement_available_marks_victim_unreachable_once
+  test_rescue_planner_authority.py::test_no_firefighter_planner_delay_or_unreachable
+  test_uav_sector_assignment.py::test_fire_tracker_still_overridden_by_search_mode_fail_safe
+  test_uav_sector_assignment.py::test_fire_tracker_uavs_receive_different_target_sets
+  test_wind_aware_trajectory_regression.py::test_east_vs_west_trajectories_diverge_over_40_steps
+  test_wind_aware_trajectory_regression.py::test_north_vs_south_trajectories_diverge_over_40_steps
+
++19 passing: the new tests. They include the pure-axis case at BOTH parities (the
+brief and the shipped comment both framed it as dx == 0 only; it is symmetric),
+the one-step transit, the stall witness counting and resetting, the recovery
+being STICKY on a step where the UAV is not stalled, the recovery reaching the
+berth in the recorded mode-2 configuration, a livelock assertion, and - because
+the fallback branch had NO coverage at all before this round - that it fires at
+the limit and never docks outside the depot.
+
+tests/test_base_station.py:483 test_stall_sidestep_cannot_fire_on_a_pure_axis_-
+approach asserted the BROKEN behaviour so a fix would flip it visibly. It is
+REWRITTEN rather than deleted: the steer really does still re-pick the blocked
+direction, deliberately, so the geometry assertion stays and the docstring now
+says why and points at the test that pins the actual fix.
+
+--------------------------------------------------------------------------------
+4.10 THE WAYPOINT FIX - measured separately, as asked
+--------------------------------------------------------------------------------
+Two arms at BASE_STATION_RETURN_MECHANISM=1 with two depots - the only
+configuration where this code is reachable at all - differing ONLY in
+BASE_STATION_WAYPOINT_FIX.
+
+  mission outcomes   dfW0 15/5/2/0   dfW1 15/5/2/0      identical
+  return share       moves on 2 of 5 seeds
+  oscillations INSIDE a depot    dfW0: 1        dfW1: 0
+        dfW0 east/half/303 uid=2501 oscillating between (3,45) and (4,45)
+
+THAT IS THE DEFECT ITSELF: a UAV bouncing between two adjacent BERTHS, which is
+what steering to the HOME berth instead of the LATCHED one produces. It is gone
+with the fix on. Both arms carry one oscillation elsewhere on the map, identical
+in both, which is ordinary mechanism-1 planner behaviour and not attributable
+either way.
+
+This is why it was kept on its own switch: bundled into BASE_STATION_DOCK_FIX it
+would have been unmeasurable, because every other arm in this round runs
+mechanism 2, where the generator returns before this code at
+local_adaptation_generator.py:1986.
+
+================================================================================
+5. WHAT THE ROUND EARNED - three things that are not footnotes
+================================================================================
+--------------------------------------------------------------------------------
+5a. THE RECOVERY BUG THE ROUND CAUGHT IN ITS OWN DESIGN
+--------------------------------------------------------------------------------
+The first written design engaged the recovery ONLY ON STEPS WHERE THE UAV WAS
+STALLED, and let the shipped greedy steer run otherwise. THAT IS PING-PONG WITH
+EXTRA STEPS: the escape step MOVES the UAV, so on the next step it is not stalled,
+the memoryless greedy toward the berth runs, and it walks straight back.
+
+It was invisible because THE PROTOTYPE AND THE PROSE DISAGREED. The sandbox rule
+steered to the latched cell on every step while outside the depot; the code
+written up in the design document gated the same idea on `stalled`. The sandbox
+therefore passed while the design was wrong, and only an adversarial read of the
+prose found it. The lesson is specific: a prototype validates the RULE, not the
+transcription of it, and those are different artifacts.
+
+A SECOND BUG FOLLOWED IT, found by replay rather than by reading. Having latched a
+new target, the first steer toward it was still being handed `stalled=True` - a
+stall recorded against the BERTH. The shipped swap exists to break a deadlock
+against the cell the UAV was refused moving toward; applied to a target it has
+never been refused against, it swaps to the wrong axis, and at (4,44) that axis is
+the blocked one. The stall is relative to a target. `rtb_recovery_steered` records
+which target the previous steer was for, and the stall is carried over only when
+the target is unchanged.
+
+Both are pinned by tests: test_the_recovery_is_sticky_not_stall_gated and
+test_the_recovery_cannot_livelock.
+
+--------------------------------------------------------------------------------
+5b. WHY THE REVIEW'S OWN RECOMMENDATION WAS REJECTED
+--------------------------------------------------------------------------------
+The adversarial review recommended leaving the steer alone and letting the
+terminator dock the UAV on the depot's one-cell DOORSTEP after L stalls. It
+terminates, with a shorter proof, and touches less code. It was rejected on this:
+
+    _update_battery_after_step (agents.py:312) gates the recharge on
+    self.rtb_docked ALONE, with NO POSITIONAL TEST. The harness derives
+    base_state from the same flag, also with no positional test.
+
+So a doorstep dock at mode 3 REFUELS A UAV ON OPEN GROUND, one cell outside the
+depot, and flips its recorded base_state from "returning" to "charging". The
+round's stranding gate counts only UAVs whose final state is "returning".
+A doorstep dock therefore CLEARS THE GATE WITHOUT THE UAV EVER COMING HOME: it
+would have converted TWELVE flagged stalls into twelve unflagged open-ground
+recharges and read as a clean sweep. Replayed, it docks at exactly (4,44) and
+(3,44) - the two cells the gate currently flags.
+
+The half of that recommendation that was RIGHT is adopted and is load-bearing: the
+consecutive-stall trigger, and leaving _rtb_direction distance-monotone.
+
+The premise is pinned by test_recharge_still_has_no_positional_test, so that if a
+positional test is ever added to the recharge, the rejection can be revisited
+rather than silently outliving its reason.
+
+--------------------------------------------------------------------------------
+5c. THE THIRD TIME A GATE ASKED THE WRONG QUESTION
+--------------------------------------------------------------------------------
+After seed 909 counted as a latch when it was a horizon artifact, and after the
+old zero-battery stranding gate scored the dcB deadlock as 0 because the UAV ended
+with 35.4 battery in hand, this round found the third instance BEFORE spending the
+wave rather than after:
+
+    A UAV that MOVES every step while getting nowhere has an unchanged-position
+    count of ZERO. The positional stranding gate - the redefined one, the one
+    that CAUGHT the previous two failures - scores a livelock clean.
+
+This is not hypothetical. The obvious minimal fix for the pure-axis hole ("when
+stalled, do not re-pick a direction the grid already refused") livelocks in
+exactly this way: replayed on the recorded mode-2 configuration it cycles
+(3,44) -> (4,44) -> (3,44) forever, 20 revisits in 40 steps. It is also MORE
+expensive than the freeze it replaces - 2 moves and 1 stall per 3 steps is 0.233
+battery/step against 0.100 - and it puts a MOVING UAV onto cells a frozen one
+never touches. A fix that turned the twelve freezes into twelve livelocks would
+have passed every gate this round started with.
+
+So cycle and oscillation detection are MANDATORY, not optional, and they are
+defined carefully:
+  CYCLE        the leg returns to a cell it had LEFT. Consecutive repeats are
+               collapsed first, because standing still while a stall counter runs
+               is not a cycle - that distinction is the whole test, and getting it
+               wrong is what made the first version of this gate fail its own
+               passing run.
+  OSCILLATION  a 10-frame window inside a leg spent on at most 2 distinct cells
+               while changing cell at least twice.
+
+  RESULT, mechanism-2 arms:        cycles   oscillations
+    before (dcA..dcD, bsret)          0          0
+    after  (dfA..dfD)                 0          0
+    controls (dfzero, dfkill)         0          0
+    mode 2 (dfm2ref, dfm2fix)         0          0
+
+At HEAD the failures are freezes and never cycles, so any non-zero result would
+have been caused by the fix. There is none.
+
+A LIMIT OF THIS GATE, stated rather than buried: it is valid for MECHANISM 2 and
+NOT for mechanism 1. The mechanism-1 arms show 8-11 cycles each, most of them with
+byte-identical traces in BOTH the fixed and unfixed arm - a fire-aware planner
+legitimately backtracks, so a revisit there is not a livelock. That is why 4.10
+counts only oscillations INSIDE A DEPOT, where the planner has no reason to
+backtrack and the signal is attributable.
+
+================================================================================
+6. WHAT IS NOT FIXED
+================================================================================
+1. A RELEASED UAV IS NOT OBLIGED TO LEAVE ITS BERTH. In the dcB/808 trace at HEAD,
+   2502 released at step 216 and never left (4,45), head-on with 2503, each holding
+   what the other wanted - in the ORDINARY movement layer, not the RTB code. This
+   fix removes the usual CAUSE of that pileup (the misplaced dock) without touching
+   not_UAV_adjacent or the planner. It is a different blast radius and a different
+   round. Nothing in this wave shows it persisting, but nothing here forecloses it.
+
+2. THE RECOVERY IS NOT A PATHFINDER. Termination is guaranteed while the latched
+   cell stays free and reachable by monotone greedy steps. If the approach to the
+   LATCHED cell is itself pure-axis and blocked, the UAV re-latches to a different
+   free cell; with at most NUM_AGENTS-1 other UAVs and 25 depot cells there is
+   always another, but that is a property of this configuration, not a theorem. A
+   depot packed to capacity is the case to watch, and the livelock gate is what
+   would catch it going wrong.
+
+3. L = 3 IS DERIVED FROM ONE GEOMETRY over 154 runs. The 3-to-8 gap is clean but it
+   is one campaign. BASE_STATION_RETURN_STALL_LIMIT is a constant precisely so this
+   is adjustable, and the termination guarantee holds for ANY finite L - a wrong L
+   costs latency, not correctness.
+
+4. THE BRIEF EXPECTED dcC TO BE THE STRESS CASE. It was right about contention and
+   wrong about risk. dcC has 26 of the 34 fallback docks but 21 land on plain depot
+   cells; its central depot absorbs contention. The arm that STRANDS is dcB, whose
+   6 docks include 5 onto another UAV's berth. Dock count is not the risk measure -
+   where the dock LANDS is.
+
+5. THE REJECTED ALTERNATIVE REMAINS THE FALLBACK POSITION. If a future round finds
+   the recovery causing exposure or livelock regressions, the doorstep terminator
+   with its dock scoped to the depot INTERIOR is where to go - but it does not
+   terminate on its own and would need the recovery back, so it is a trade to
+   re-open then, not a simplification available now.
+
+================================================================================
+7. FILES CHANGED
+================================================================================
+  common_fixed_variables.py   BASE_STATION_DOCK_FIX, BASE_STATION_RETURN_STALL_LIMIT,
+                              BASE_STATION_WAYPOINT_FIX, with their derivations
+  agents.py                   3 accessors, 3 per-UAV fields, 2 new methods
+                              (_rtb_cell_free, _rtb_recovery_berth), the re-keyed
+                              docking block, the recovery call site, an optional
+                              `stalled` parameter on _rtb_direction (default None =
+                              unchanged), 3 state resets, and the corrected
+                              KNOWN-DEFECT comment - which was wrong about its own
+                              mechanism: the swap never executes, it is guarded by
+                              `secondary is not None`
+  src_extension/adaptation/local_adaptation_generator.py   the waypoint, switched
+  tests/test_base_station.py  19 new tests; :483 rewritten, not deleted
+
+  NOT CHANGED, and this is what keeps the arms comparable:
+  outputs/_ffr_harness.py, wildfire_model.py, and every recorded field.
+
+  New tooling, read-only:
+  outputs/_df_evidence.py   trace/steer/fallback/occupancy/refusals/stalls/
+                            geometry/livelock/burnstreak
+  outputs/_df_sandbox.py    replays the deadlock under 5 candidate rules
+  outputs/_df_arms.py       seed-matched paired comparison; identity over any sample
+  outputs/_df_queue.py      the wave queue, with a case-insensitive tag-prefix check
+  outputs/_df_readout.sh    every number in this report
+
+================================================================================
+8. REPRODUCTION
+================================================================================
+  bash outputs/_df_readout.sh                    every number in this report
+  python outputs/_df_evidence.py --mode all      the Part 1 evidence
+  python outputs/_df_sandbox.py                  the five candidate rules replayed
+  python outputs/_df_queue.py > outputs/_df_queue.txt
+  MAXPAR=8 MINFREE_KB=2500000 bash outputs/_dim_pool.sh outputs/_df_queue.txt
+  bash outputs/_ffr_rbgate.sh dfrb --set BASE_STATION_MODE=3 \
+       --set BASE_STATION_RETURN_MECHANISM=2 --set UAV_RETURN_TO_BASE_RESERVE=0 \
+       --set BASE_STATION_RETURN_MARGIN=39.23
+  python outputs/_ffr_rbcompare.py --new dfrb --old dcrbB
+  MPLBACKEND=Agg ./.venv/Scripts/python.exe -m pytest tests -p no:cacheprovider -q
+
+OPERATIONAL NOTE. The first launch of this wave DIED: `nohup ... &` from the tool
+shell was orphaned when the shell exited, and Git-Bash failed to fork (exit code
+0xC000026B) after 10 runs, completing none. The pool is restartable - it skips any
+run whose output already exists - so the relaunch cost nothing but wall time, and
+the queue was reordered so the arms that decide the gate run FIRST. Second run:
+174 launched, 0 failures.
+================================================================================

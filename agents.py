@@ -264,6 +264,27 @@ class UAV(mesa.Agent):
         self.rtb_active = False
         self.rtb_docked = False
         self.rtb_last_pos: tuple[int, int] | None = None
+        # Dock-fix round. CONSECUTIVE steps of this return leg on which the move
+        # was refused; ANY successful move resets it, so a leg that is making
+        # progress starts over and blocks scattered earlier in the trip cannot
+        # spend the budget. It is its own field rather than a reading of
+        # rtb_last_pos because rtb_last_pos is written BELOW the mechanism gate in
+        # _apply_return_to_base and so is never set under
+        # BASE_STATION_RETURN_MECHANISM 1, while the docking block runs for both.
+        self.rtb_stall_steps = 0
+        # The depot cell this UAV is routing to while its leg is stalled OUTSIDE
+        # the depot; None whenever the recovery is not engaged. LATCHED, and it
+        # owns the steer on EVERY step until the depot is reached. Engaging it
+        # only on stalled steps is a livelock, not a fix: the escape moves the
+        # UAV, so the next step it is not stalled, the unmodified greedy runs and
+        # walks it straight back. See outputs/dockfix_part1.txt section 5a.
+        self.rtb_recovery_cell: tuple[int, int] | None = None
+        # Whether the PREVIOUS steer was toward the recovery cell. The stall is
+        # relative to a target: the swap in _rtb_direction breaks a deadlock
+        # against the cell we were refused moving toward, so carrying it into the
+        # first steer toward a NEW target makes it swap an axis it has never been
+        # refused on - and at (4,44) that is the blocked one.
+        self.rtb_recovery_steered: tuple[int, int] | None = None
         # Mechanism reporting, read by the harness; none of it feeds behaviour.
         # rtb_log carries ONE RECORD PER TRIP, not just the latest, because the
         # round has to account for every return individually - how long it took,
@@ -362,8 +383,13 @@ class UAV(mesa.Agent):
             per_move * distance + base_station_return_margin(),
         )
 
-    def _rtb_direction(self, berth: tuple[int, int]) -> int:
+    def _rtb_direction(self, berth: tuple[int, int], stalled: bool | None = None) -> int:
         """Greedy one-step direction toward the berth, with a stall sidestep.
+
+        `stalled` defaults to None, meaning "work it out from rtb_last_pos as
+        before", so every existing call site and test is unaffected. It is passed
+        explicitly only by the stall recovery, which steers toward a DIFFERENT
+        target and must not inherit a stall recorded against the berth.
 
         Deliberately re-implemented here rather than borrowing the executor's
         _direction_toward: this keeps agents.py free of a src_extension import,
@@ -382,33 +408,47 @@ class UAV(mesa.Agent):
         # A blocked move leaves the position unchanged; taking the other axis
         # breaks the deadlock a memoryless greedy steer would sit in forever.
         #
-        # KNOWN DEFECT IN THE SHIPPED FEATURE - NOT FIXED, see below.
-        # The sidestep CANNOT FIRE ON A PURE-AXIS APPROACH. When dx == 0 (or
-        # dy == 0) the corresponding direction is None, so `secondary` is None,
-        # the swap puts None in `primary`, and the function falls through to
-        # `if secondary is not None` and returns the ORIGINAL BLOCKED DIRECTION.
-        # The UAV then retries the same refused move forever.
-        # MEASURED at BASE_STATION_MODE = 2 on the base-station round's own
-        # artifacts: all five "en route at 240" legs are the same UAV stuck at
-        # (3,44), one cell outside the depot, for 34 to 66 steps with 37-42
-        # battery in hand, because its berth (3,46) is straight up the y axis and
-        # the cell between them holds a permanently docked UAV. The previous round
-        # reported those five as "still flying home, none failed"; they are
-        # permanently deadlocked. Mode 3 masks it - a docked UAV recharges and
-        # leaves, so the blocker clears - which is why the shipped default has
-        # never been exposed to it, and BASE_STATION_MODE ships at 0 anyway.
-        # ANY FUTURE ROUND THAT FLIPS THE MODE MUST KNOW THIS IS HERE.
-        # The second escape hatch misses the same case: the docking fallback in
-        # _apply_return_to_base requires the UAV to be INSIDE the depot, and a UAV
-        # stalled one cell outside it is not.
-        # TEST GAP: tests/test_base_station.py::test_steering_sidesteps_a_stall
-        # exercises (10,48) -> (4,45), where dx and dy are BOTH non-zero and a
-        # secondary direction therefore exists. The pure-axis case - the only one
-        # where the swap has nothing to swap to - is pinned by
-        # test_stall_sidestep_cannot_fire_on_a_pure_axis_approach, which asserts
-        # the CURRENT broken behaviour so that a fix flips it visibly.
-        # Diagnosed in the depot-cost round; see outputs/depotcost_report.txt.
-        stalled = self.rtb_last_pos is not None and self.rtb_last_pos == (x, y)
+        # THE SIDESTEP CANNOT FIRE ON A PURE-AXIS APPROACH, and as of the dock-fix
+        # round that is a DELIBERATE CHOICE rather than an unfixed defect - the
+        # recovery lives one level up, in _apply_return_to_base. When dx == 0 (or
+        # dy == 0) the corresponding direction is None, so `secondary` is None and
+        # the swap below - which is GUARDED by `secondary is not None` and
+        # therefore NEVER EXECUTES - is a no-op; `return primary` then re-issues
+        # the same refused direction.
+        # (The wording here used to say the swap put None in `primary` and the
+        # function fell through to the `secondary` branch. That was wrong about
+        # its own mechanism and right about the outcome, and it mattered: someone
+        # "fixing the None" would have changed nothing at all. The same error is
+        # in outputs/depotcost_report.txt section 5 and in the test docstring.)
+        # The defect is SYMMETRIC - dy == 0 with dx != 0 has the identical shape -
+        # and it is the TERMINAL CONDITION OF EVERY TRIP, not a corner case: the
+        # cell before the berth differs from it in exactly one coordinate, so
+        # every return leg ends on a pure-axis approach.
+        #
+        # THIS FUNCTION IS LEFT MEMORYLESS AND DISTANCE-MONOTONE ON PURPOSE.
+        # Every successful move here reduces the manhattan distance to the berth
+        # by exactly 1, and that is what bounds the number of moves on a leg and
+        # makes a consecutive-stall counter a valid termination variant. Any
+        # in-steer recovery must temporarily INCREASE the distance, and a
+        # memoryless steer that does so is undone by its own next step - the
+        # detour cell is closer-to-berth in the greedy sense the moment the UAV
+        # stands on it, so the steer walks straight back and the pair cycles
+        # forever. That was built, replayed and rejected; see
+        # outputs/_df_sandbox.py rule R1. DO NOT ADD A DETOUR HERE.
+        # MEASURED BEFORE THE FIX, at BASE_STATION_MODE = 2: all five "en route at
+        # 240" legs are the same UAV stuck at (3,44), one cell outside the depot,
+        # for 33 to 65 steps with 37-42 battery in hand. Note what that case is
+        # NOT: its berth (3,46) is FREE and stays free - the cell between them
+        # holds a permanently docked UAV, and at mode 2 a dock is forever. So a
+        # trigger that asks "is my berth taken" is silent there for good, which is
+        # why the terminator in _apply_return_to_base is keyed on this UAV'S OWN
+        # PROGRESS instead. At mode 3 seven more episodes of 9 to 37 steps, one of
+        # which ran to the horizon (dcB east/half/808).
+        # BASE_STATION_MODE ships at 0, where none of this is reachable.
+        # The recovery is _rtb_recovery_berth, called from _apply_return_to_base:
+        # this function stays memoryless and is not the place for it.
+        if stalled is None:
+            stalled = self.rtb_last_pos is not None and self.rtb_last_pos == (x, y)
         if stalled and secondary is not None:
             primary, secondary = secondary, primary
         if primary is not None:
@@ -466,12 +506,85 @@ class UAV(mesa.Agent):
         return self.rtb_target_berth
 
     def _rtb_berth_blocked(self, berth: tuple[int, int]) -> bool:
-        """True when another UAV is standing on this UAV's berth."""
+        """True when another UAV is standing on this UAV's berth.
+
+        Only reached with BASE_STATION_DOCK_FIX = 0 now - it is the OFF-path
+        predicate for the docking fallback, kept so the kill switch has something
+        to switch back to, and used by the tests. Not dead code.
+        """
         try:
             occupants = self.model.grid.get_cell_list_contents([berth])
         except Exception:
             return False
         return any(type(o) is UAV and o is not self for o in occupants)
+
+    def _rtb_cell_free(self, cell: tuple[int, int]) -> bool:
+        """The two tests move() itself applies, in the same order."""
+        try:
+            if self.model.grid.out_of_bounds(cell):
+                return False
+            return bool(self.not_UAV_adjacent(cell))
+        except Exception:
+            return False
+
+    def _rtb_recovery_berth(self, here: tuple[int, int]):
+        """The latched depot cell to steer to instead of the berth, or None.
+
+        A return leg that stalls OUTSIDE its depot has no escape at all in the
+        shipped code: the sidestep in _rtb_direction is structurally dead on a
+        pure-axis approach (one delta is zero, so there is nothing to swap to),
+        and the docking fallback is scoped to the depot interior. Every return leg
+        ends on a pure-axis approach, so this is the terminal condition of every
+        trip. Measured over the depot-cost and base-station artifacts: twelve
+        episodes of 9 to 65 steps, five of them permanent.
+
+        THE LATCH IS THE FIX, AND IT MUST OWN THE STEER ON EVERY STEP. A recovery
+        that engages only on the steps where the UAV is stalled ping-pongs: the
+        escape step moves the UAV, so on the NEXT step it is not stalled, the
+        unmodified greedy toward the berth runs, and it walks straight back. With
+        the target latched the steer is monotone toward a cell that does not move,
+        so the reversal cannot happen. This is the same device the trip target
+        already uses, and for the same stated reason (see rtb_target_berth).
+
+        Re-latching happens only when there is no latch, when the latched cell has
+        been reached, or when it has become occupied - NOT every step, or the
+        target flips and the heading flips with it.
+
+        Returns None - and the caller then steers to the berth exactly as at HEAD
+        - when the fix is off, when the UAV is already inside its target depot,
+        when the leg has not stalled long enough, or when there is no grid to
+        consult (which is how the geometry unit tests drive the steer).
+        """
+        if base_station_dock_fix() < 2:
+            return None
+        if self._rtb_inside_depot(here):
+            self.rtb_recovery_cell = None
+            return None
+        model = getattr(self, "model", None)
+        grid = getattr(model, "grid", None)
+        station = getattr(model, "base_station", None)
+        if grid is None or not station:
+            return None
+        target = self.rtb_recovery_cell
+        if target is not None and target != here and self._rtb_cell_free(target):
+            return target
+        if self.rtb_stall_steps < base_station_return_stall_limit():
+            return None
+        depot = 0 if self.rtb_target_depot is None else int(self.rtb_target_depot)
+        depots = station.get("depots") or ()
+        cells = (depots[depot]["cells"] if depot < len(depots)
+                 else station.get("cells") or ())
+        best = None
+        for cell in sorted(cells):        # ties break on (x, y), so it is a pure
+            if cell == here:              # function of position and occupancy and
+                continue                  # cannot flip on a tie
+            if not self._rtb_cell_free(cell):
+                continue
+            distance = abs(cell[0] - here[0]) + abs(cell[1] - here[1])
+            if best is None or distance < best[0]:
+                best = (distance, cell)
+        self.rtb_recovery_cell = None if best is None else best[1]
+        return self.rtb_recovery_cell
 
     def _apply_return_to_base(self) -> None:
         """Run before move(): trigger, steer, dock and re-launch.
@@ -506,6 +619,10 @@ class UAV(mesa.Agent):
                 self.rtb_last_pos = None
                 self.rtb_target_berth = None
                 self.rtb_target_depot = None
+                # Dock-fix round: per-TRIP state, cleared with the rest of it.
+                self.rtb_stall_steps = 0
+                self.rtb_recovery_cell = None
+                self.rtb_recovery_steered = None
                 self.rtb_cycles += 1
                 if self.rtb_log:
                     self.rtb_log[-1]["released_step"] = step
@@ -519,6 +636,12 @@ class UAV(mesa.Agent):
                 return
             self.rtb_active = True
             self.rtb_trips += 1
+            # Dock-fix round: a new trip starts with no stall history and no
+            # recovery latch. rtb_last_pos is left alone - it is cleared at the
+            # relaunch, and on the very first trip it is None from __init__.
+            self.rtb_stall_steps = 0
+            self.rtb_recovery_cell = None
+            self.rtb_recovery_steered = None
             # LATCH the target for the whole trip. rtb_target_* were set by the
             # trigger test above; freezing them here is what stops a UAV that is
             # equidistant from two depots flipping its destination each step.
@@ -550,11 +673,65 @@ class UAV(mesa.Agent):
         # fallback the returning UAV would oscillate against not_UAV_adjacent
         # until the blocker happened to move. This guarantees the return
         # terminates, which is what "no UAV stranded" actually requires.
+        # THE STALL WITNESS. rtb_last_pos is this leg's position at the previous
+        # step, so `== here` means last step's move was refused. Any successful
+        # move resets the count. Recorded here, above the mechanism gate below, so
+        # it is maintained under BOTH return mechanisms - the docking block runs
+        # for both, and rtb_last_pos alone would never be set under mechanism 1.
+        if base_station_dock_fix() >= 1:
+            if self.rtb_last_pos is not None and self.rtb_last_pos == here:
+                self.rtb_stall_steps += 1
+            else:
+                self.rtb_stall_steps = 0
+
+        # Dock at the assigned berth, or - once this leg has provably STOPPED
+        # MOVING - on the depot cell it is standing on.
+        #
+        # THE FALLBACK IS KEPT, and it is load-bearing. Without it a returning UAV
+        # whose approach is blocked has no recovery at all, and the blocker can be
+        # permanently immovable: at mode 2 the release branch above is
+        # unreachable, so every dock is forever, and a RELEASED UAV is not obliged
+        # to leave its berth either (dcB east/half/808, where 2502 held (4,45)
+        # from step 216 to the horizon, head-on with 2503). "Wait for the blocker
+        # to move" is not a terminating strategy. There is a recorded
+        # configuration (dcA south/half/808) in which deleting this block
+        # deadlocks two UAVs to the horizon.
+        #
+        # WHAT WAS WRONG WITH IT WAS THE TRIGGER, NOT THE FALLBACK. It fired on an
+        # INSTANT of occupancy, and all UAV work runs in advance() where
+        # grid.move_agent mutates the live grid mid-sweep, so a ONE-STEP TRANSIT
+        # by an earlier-ordered UAV was enough to re-assign a berth permanently -
+        # 34 fallback docks on disk, 7 of them onto another UAV's berth, one of
+        # which stranded a third UAV for 37 steps. And it was SILENT where it was
+        # needed most: it asked "is my berth taken", so a UAV boxed in with a FREE
+        # berth never fired it at all, which is every one of the five mode-2
+        # strandings.
+        #
+        # RE-KEYED to consecutive refused steps: a property of this UAV's own
+        # progress and of no other agent's future behaviour, which is the
+        # guarantee this block exists to provide. A one-step transit produces at
+        # most ONE refused step and so cannot reach the limit by construction.
+        #
+        # THE DOCK CELL IS DELIBERATELY NOT WIDENED BEYOND THE DEPOT INTERIOR.
+        # _update_battery_after_step gates the recharge on rtb_docked ALONE with
+        # no positional test, and the harness derives base_state from the same
+        # flag, so a dock on the doorstep would refuel a UAV on open ground AND
+        # relabel it from "returning" to "charging" - clearing the stranding gate
+        # without the UAV ever coming home. See outputs/dockfix_part1.txt 5b.
         docking = here == berth
         if not docking and self._rtb_inside_depot(here):
-            docking = self._rtb_berth_blocked(berth)
+            if base_station_dock_fix() >= 1:
+                docking = self.rtb_stall_steps >= base_station_return_stall_limit()
+            else:
+                docking = self._rtb_berth_blocked(berth)
         if docking:
             self.rtb_docked = True
+            # Dock-fix round: the leg is over, so the recovery latch goes with it.
+            # A docked UAV never moves, so leaving rtb_stall_steps to climb would
+            # be meaningless; it is reset here and at the trigger.
+            self.rtb_stall_steps = 0
+            self.rtb_recovery_cell = None
+            self.rtb_recovery_steered = None
             self.execution_action = "rtb_docked"
             if self.rtb_log:
                 self.rtb_log[-1]["arrival_step"] = step
@@ -567,7 +744,22 @@ class UAV(mesa.Agent):
             # Planner route: the executor already committed a direction from the
             # base waypoint. Overriding it here would mask the mechanism entirely.
             return
-        direction = self._rtb_direction(berth)
+        recovery = self._rtb_recovery_berth(here)
+        if recovery is not None:
+            # Steer to the LATCHED cell, not the berth, and keep doing so on every
+            # step until the depot is reached. The stall is relative to a target -
+            # the swap breaks a deadlock against the cell we were refused moving
+            # toward - so it is only carried over when the target is unchanged.
+            direction = self._rtb_direction(
+                recovery,
+                (self.rtb_recovery_steered == recovery
+                 and self.rtb_last_pos is not None
+                 and self.rtb_last_pos == here),
+            )
+            self.rtb_recovery_steered = recovery
+        else:
+            direction = self._rtb_direction(berth)
+            self.rtb_recovery_steered = None
         self.rtb_last_pos = (int(self.pos[0]), int(self.pos[1]))
         self.selected_dir = direction
         self.execution_direction_applied = True
@@ -777,6 +969,30 @@ def base_station_recharge_release_level() -> float:
         return float(getattr(cfv, "BASE_STATION_RECHARGE_RELEASE_LEVEL", 100.0))
     except (TypeError, ValueError):
         return 100.0
+
+
+def base_station_dock_fix() -> int:
+    """0 off (kill switch) / 1 re-keyed docking fallback / 2 + stall recovery."""
+    try:
+        return max(0, min(2, int(getattr(cfv, "BASE_STATION_DOCK_FIX", 2))))
+    except (TypeError, ValueError):
+        return 2
+
+
+def base_station_return_stall_limit() -> int:
+    """Consecutive refused steps before a return leg counts as stalled."""
+    try:
+        return max(1, int(getattr(cfv, "BASE_STATION_RETURN_STALL_LIMIT", 3)))
+    except (TypeError, ValueError):
+        return 3
+
+
+def base_station_waypoint_fix() -> bool:
+    """True when the mechanism-1 waypoint publishes the LATCHED berth."""
+    try:
+        return int(getattr(cfv, "BASE_STATION_WAYPOINT_FIX", 1)) != 0
+    except (TypeError, ValueError):
+        return True
 
 
 # Orthogonal offsets in a FIXED order for the victim's flee scan. The same four

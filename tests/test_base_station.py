@@ -675,3 +675,479 @@ def test_distance_regime_margin_is_the_derived_one() -> None:
     arrival = margin - 0.30 - 1.10
     assert arrival > 30.0          # LOW_BATTERY_THRESHOLD
     assert arrival > 15.0          # global_analyzer critical_battery_threshold
+
+
+# --- dock-fix round: the docking deadlock -------------------------------------
+#
+# Two independent defects, both reachable only at BASE_STATION_MODE >= 2, both
+# measured on the depot-cost and base-station rounds' own artifacts before this
+# code was written (outputs/dockfix_part1.txt, outputs/_df_evidence.py):
+#
+#   1. the docking fallback fired on an INSTANT of berth occupancy, so a UAV
+#      transiting a berth for ONE STEP - which mesa makes visible to a
+#      later-ordered agent inside the same advance() sweep - permanently
+#      re-assigned that berth. 34 fallback docks on disk, 7 onto another UAV's
+#      berth, one of which stranded a third UAV for 37 steps.
+#   2. a leg stalled OUTSIDE the depot had no escape at all: the sidestep in
+#      _rtb_direction is dead on a pure-axis approach and the fallback is scoped
+#      to the depot interior. Twelve episodes, five of them permanent.
+#
+# These drive the REAL _apply_return_to_base against a grid stub, because both
+# defects are about what happens on the grid over several steps and neither is
+# visible to a pure-geometry test.
+
+class _Grid:
+    """The four things agents.UAV asks of a mesa grid, and nothing else."""
+
+    def __init__(self, width, height):
+        self.width, self.height = width, height
+        self.cells = {}
+
+    def out_of_bounds(self, pos):
+        x, y = int(pos[0]), int(pos[1])
+        return not (0 <= x < self.width and 0 <= y < self.height)
+
+    def get_cell_list_contents(self, cells):
+        return [self.cells[tuple(c)] for c in cells if tuple(c) in self.cells]
+
+    def move_agent(self, agent, pos):
+        self.cells.pop(tuple(agent.pos), None)
+        agent.pos = (int(pos[0]), int(pos[1]))
+        self.cells[agent.pos] = agent
+
+
+class _DepotModel:
+    """A model exposing only the depot geometry the RTB code reads."""
+
+    def __init__(self, grid, origins=((0, 45),), size=5):
+        self.grid = grid
+        self.evaluation_timesteps_counter = 0
+        depots = []
+        every = set()
+        for ox, oy in origins:
+            cells = frozenset((ox + i, oy + j)
+                              for i in range(size) for j in range(size))
+            depots.append({"origin": (ox, oy), "size": size, "cells": cells})
+            every |= cells
+        self.base_station = {"depots": tuple(depots), "size": size,
+                             "cells": frozenset(every)}
+
+    def base_station_contains(self, pos, depot_index=None):
+        cell = (int(pos[0]), int(pos[1]))
+        if depot_index is None:
+            return cell in self.base_station["cells"]
+        depots = self.base_station["depots"]
+        if not 0 <= int(depot_index) < len(depots):
+            return False
+        return cell in depots[int(depot_index)]["cells"]
+
+
+def _blocker(grid, cell):
+    """An EXACT agents.UAV: not_UAV_adjacent tests `type(a) is UAV`, so a
+    subclass would be invisible to it and the block would not block."""
+    other = agents.UAV.__new__(agents.UAV)
+    other.pos = tuple(cell)
+    grid.cells[tuple(cell)] = other
+    return other
+
+
+def _returner(model, pos, berth, depot=0):
+    """A UAV mid-return, with exactly the state _apply_return_to_base reads."""
+    uav = agents.UAV.__new__(agents.UAV)
+    uav.model = model
+    uav.pos = tuple(pos)
+    uav.selected_dir = 0
+    uav.battery_level = 40.0
+    uav.battery_status = "normal"
+    uav.battery_drain_per_step = 0.1
+    uav.battery_drain_per_move = 0.2
+    uav.rtb_berth = tuple(berth)
+    uav.rtb_berths = (tuple(berth),)
+    uav.rtb_home_depot = depot
+    uav.rtb_target_berth = tuple(berth)
+    uav.rtb_target_depot = depot
+    uav.rtb_active = True
+    uav.rtb_docked = False
+    uav.rtb_last_pos = None
+    uav.rtb_stall_steps = 0
+    uav.rtb_recovery_cell = None
+    uav.rtb_recovery_steered = None
+    uav.rtb_trips = 1
+    uav.rtb_cycles = 0
+    uav.rtb_return_steps = 0
+    uav.rtb_charge_steps = 0
+    uav.rtb_log = [{"trigger_step": 0, "arrival_step": None, "arrival_level": None,
+                    "dock_cell": None, "released_step": None,
+                    "released_level": None}]
+    uav.execution_direction_applied = False
+    uav.execution_action = None
+    model.grid.cells[uav.pos] = uav
+    return uav
+
+
+def _drive(uav, steps):
+    """advance() for one UAV: _apply_return_to_base, then move()'s grid test.
+
+    move() itself is not called because it consults the extension pipeline, which
+    is not what these tests are about; the two conditions it applies to the
+    candidate cell - in bounds, and no other UAV there - are applied here.
+    """
+    trail = [tuple(uav.pos)]
+    move_x, move_y = (1, 0, -1, 0), (0, -1, 0, 1)
+    for _ in range(steps):
+        uav._apply_return_to_base()
+        if uav.rtb_docked:
+            break
+        nxt = (uav.pos[0] + move_x[uav.selected_dir],
+               uav.pos[1] + move_y[uav.selected_dir])
+        if not uav.model.grid.out_of_bounds(nxt) and uav.not_UAV_adjacent(nxt):
+            uav.model.grid.move_agent(uav, nxt)
+        trail.append(tuple(uav.pos))
+    return trail
+
+
+def _mode_two_world(monkeypatch, fix=2):
+    """bsret east/half/101 at frame 207, the exact recorded mode-2 deadlock.
+
+    2502 is returning to (3,46). ITS BERTH IS FREE AND STAYS FREE. It is stuck at
+    (3,44) because (3,45) - the only cell on its pure-axis path - holds a UAV
+    docked at mode 2, where the release branch is unreachable, so that blocker
+    provably never moves. That is what makes this the case a berth-occupancy
+    trigger cannot see.
+    """
+    monkeypatch.setattr(cfv, "BASE_STATION_MODE", 2, raising=False)
+    monkeypatch.setattr(cfv, "BASE_STATION_RETURN_MECHANISM", 2, raising=False)
+    monkeypatch.setattr(cfv, "UAV_RETURN_TO_BASE_RESERVE", 60.0, raising=False)
+    monkeypatch.setattr(cfv, "BASE_STATION_DOCK_FIX", fix, raising=False)
+    monkeypatch.setattr(cfv, "BASE_STATION_RETURN_STALL_LIMIT", 3, raising=False)
+    grid = _Grid(50, 50)
+    model = _DepotModel(grid)
+    for cell in ((4, 45), (3, 45), (4, 46)):
+        _blocker(grid, cell)
+    return model, _returner(model, (3, 44), (3, 46))
+
+
+def test_stall_sidestep_cannot_fire_on_a_pure_axis_approach() -> None:
+    """The STEER still re-picks the blocked direction - now by design.
+
+    This test used to assert the broken behaviour so a fix would flip it. The fix
+    deliberately does NOT change _rtb_direction: keeping it distance-monotone is
+    what bounds the number of moves on a leg and makes the consecutive-stall
+    counter a valid termination variant, and an in-steer detour interleaved with
+    a memoryless greedy undoes itself (built, replayed and rejected -
+    outputs/_df_sandbox.py rule R1). So the geometry below is unchanged and the
+    recovery lives one level up, in _apply_return_to_base; the test that pins the
+    fix is test_recovery_reaches_the_berth_in_the_recorded_mode_two_deadlock.
+
+    Note also what the shipped comment used to say about this: that the swap put
+    None in `primary` and the function fell through. It does not. The swap is
+    GUARDED by `secondary is not None` and simply never runs.
+    """
+    uav = _TriggerAgent((3, 44))
+    uav.rtb_last_pos = None
+    assert uav._rtb_direction((3, 46)) == 3, "straight up the y axis"
+    uav.rtb_last_pos = (3, 44)                 # the move was refused; still here
+    assert uav._rtb_direction((3, 46)) == 3, (
+        "the swap has no secondary axis to take, so the steer re-picks the "
+        "blocked direction - deliberately unchanged; the recovery is elsewhere"
+    )
+
+
+def test_the_pure_axis_hole_is_symmetric() -> None:
+    """The shipped comment and the brief both framed it as dx == 0 only."""
+    uav = _TriggerAgent((44, 3))
+    uav.rtb_last_pos = (44, 3)
+    assert uav._rtb_direction((46, 3)) == 0    # dy == 0: +x, re-picked
+    uav = _TriggerAgent((3, 44))
+    uav.rtb_last_pos = (3, 44)
+    assert uav._rtb_direction((3, 46)) == 3    # dx == 0: +y, re-picked
+
+
+def test_explicit_stalled_argument_does_not_disturb_the_default() -> None:
+    """The recovery passes `stalled` explicitly; no other caller may see a change."""
+    uav = _TriggerAgent((10, 48))
+    uav.rtb_last_pos = (10, 48)
+    assert uav._rtb_direction((4, 45)) == 1              # inferred: stalled
+    assert uav._rtb_direction((4, 45), True) == 1        # same, explicit
+    assert uav._rtb_direction((4, 45), False) == 2       # as if it had moved
+
+
+def test_recovery_reaches_the_berth_in_the_recorded_mode_two_deadlock(monkeypatch) -> None:
+    """THE PRIMARY UNIT GATE for mechanism 2.
+
+    At HEAD this UAV re-picks +y into a permanently docked blocker for the rest of
+    the run - 33 to 65 steps across the five recorded mode-2 legs. With the
+    recovery it routes around and reaches ITS OWN BERTH.
+    """
+    model, uav = _mode_two_world(monkeypatch)
+    trail = _drive(uav, 12)
+    assert uav.rtb_docked, "the leg must terminate; trail was %s" % (trail,)
+    assert uav.rtb_log[-1]["dock_cell"] == (3, 46), (
+        "and it must terminate AT ITS OWN BERTH, which was free all along; "
+        "trail was %s" % (trail,)
+    )
+    assert model.base_station_contains(uav.pos, 0)
+
+
+def test_head_behaviour_is_a_permanent_freeze_with_the_switch_off(monkeypatch) -> None:
+    """The same world with BASE_STATION_DOCK_FIX = 0 must still deadlock.
+
+    This is the kill switch doing its job, and it is also the proof that the test
+    above is measuring the fix rather than an artefact of the stub.
+    """
+    _model, uav = _mode_two_world(monkeypatch, fix=0)
+    trail = _drive(uav, 20)
+    assert not uav.rtb_docked
+    assert set(trail) == {(3, 44)}, "frozen on one cell, as at 9f77178"
+
+
+def test_the_recovery_cannot_livelock(monkeypatch) -> None:
+    """A UAV that MOVES every step while getting nowhere is invisible to a
+    "position unchanged for N steps" stall gate - a fix that turned freezes into
+    cycles would have scored a clean sweep on it. The obvious minimal fix does
+    exactly that (outputs/_df_sandbox.py rule R1), so it is asserted against.
+    """
+    _model, uav = _mode_two_world(monkeypatch)
+    trail = _drive(uav, 20)
+    # A LIVELOCK IS A RETURN TO A CELL THE UAV HAS LEFT, which is not the same
+    # thing as standing still: the leg legitimately holds position while the
+    # stall counter reaches the limit, and those repeats are consecutive. Collapse
+    # consecutive runs first, then no cell may appear twice.
+    visited = [cell for i, cell in enumerate(trail)
+               if i == 0 or cell != trail[i - 1]]
+    assert len(visited) == len(set(visited)), (
+        "returned to a cell it had left - that is a cycle, not a stall: %s"
+        % (trail,)
+    )
+
+
+def test_the_recovery_is_sticky_not_stall_gated(monkeypatch) -> None:
+    """Engaging only on stalled steps is ping-pong with extra steps.
+
+    The escape step MOVES the UAV, so on the next step it is not stalled; if the
+    latch stops steering there the memoryless greedy toward the berth runs and
+    walks it straight back. The latch must own the steer on every step until the
+    depot is reached. Asserted directly: after the UAV has moved, the recovery
+    still returns the latched cell.
+    """
+    _model, uav = _mode_two_world(monkeypatch)
+    move_x, move_y = (1, 0, -1, 0), (0, -1, 0, 1)
+    for _ in range(6):
+        uav._apply_return_to_base()
+        nxt = (uav.pos[0] + move_x[uav.selected_dir],
+               uav.pos[1] + move_y[uav.selected_dir])
+        moved = (not uav.model.grid.out_of_bounds(nxt)
+                 and uav.not_UAV_adjacent(nxt))
+        if moved:
+            uav.model.grid.move_agent(uav, nxt)
+        if moved and uav.rtb_recovery_cell is not None:
+            break
+    assert uav.rtb_recovery_cell is not None, "the latch never engaged"
+    assert uav.rtb_last_pos != tuple(uav.pos), "precondition: it moved"
+    assert uav._rtb_recovery_berth(tuple(uav.pos)) == uav.rtb_recovery_cell, (
+        "the latch must still steer on a step where the UAV is NOT stalled"
+    )
+
+
+def test_recovery_is_inert_inside_the_depot(monkeypatch) -> None:
+    """Inside the depot the berth is the target again and the terminator owns it.
+
+    An earlier draft let the recovery keep re-latching inside the footprint and
+    it walked the UAV back out.
+    """
+    monkeypatch.setattr(cfv, "BASE_STATION_MODE", 3, raising=False)
+    monkeypatch.setattr(cfv, "BASE_STATION_DOCK_FIX", 2, raising=False)
+    grid = _Grid(50, 50)
+    model = _DepotModel(grid)
+    _blocker(grid, (3, 45))
+    uav = _returner(model, (2, 45), (3, 46))
+    uav.rtb_stall_steps = 99
+    uav.rtb_recovery_cell = (0, 49)
+    assert uav._rtb_recovery_berth((2, 45)) is None
+    assert uav.rtb_recovery_cell is None, "and the latch is dropped on entry"
+
+
+def test_recovery_is_inert_without_a_grid(monkeypatch) -> None:
+    """Which is what keeps the pure-geometry steering tests meaningful."""
+    monkeypatch.setattr(cfv, "BASE_STATION_MODE", 3, raising=False)
+    monkeypatch.setattr(cfv, "BASE_STATION_DOCK_FIX", 2, raising=False)
+    uav = _TriggerAgent((3, 44))
+    uav.rtb_stall_steps = 99
+    uav.rtb_target_depot = 0
+    uav.rtb_recovery_cell = None
+
+    class _NoGrid:
+        grid = None
+        base_station = None
+
+        def base_station_contains(self, _pos, _depot=None):
+            return False
+
+    uav.model = _NoGrid()
+    assert uav._rtb_recovery_berth((3, 44)) is None
+
+
+def test_a_one_step_transit_never_re_assigns_a_berth(monkeypatch) -> None:
+    """MECHANISM 1, on the geometry that produced the recorded deadlock.
+
+    dcB east/half/808 frame 202: 2501 stands on 2502's berth (3,46) for exactly
+    one step, in transit to its own berth (3,45). 2502 is inside the depot at
+    (4,45) - which is 2500's berth. At HEAD it docked there permanently and
+    stranded 2500 for 37 steps.
+    """
+    monkeypatch.setattr(cfv, "BASE_STATION_MODE", 3, raising=False)
+    monkeypatch.setattr(cfv, "BASE_STATION_RETURN_MECHANISM", 2, raising=False)
+    monkeypatch.setattr(cfv, "BASE_STATION_DOCK_FIX", 2, raising=False)
+    monkeypatch.setattr(cfv, "BASE_STATION_RETURN_STALL_LIMIT", 3, raising=False)
+    grid = _Grid(50, 50)
+    model = _DepotModel(grid)
+    _blocker(grid, (3, 46))                  # the transiting UAV, this step only
+    uav = _returner(model, (4, 45), (3, 46))
+    uav._apply_return_to_base()
+    assert not uav.rtb_docked, (
+        "a one-step transit must not re-assign a berth; it did at 9f77178"
+    )
+    assert uav.rtb_log[-1]["dock_cell"] is None
+
+
+def test_the_old_trigger_still_docks_with_the_switch_off(monkeypatch) -> None:
+    """The same transit, at BASE_STATION_DOCK_FIX = 0, must still misdock -
+    otherwise the test above is not measuring the fix."""
+    monkeypatch.setattr(cfv, "BASE_STATION_MODE", 3, raising=False)
+    monkeypatch.setattr(cfv, "BASE_STATION_RETURN_MECHANISM", 2, raising=False)
+    monkeypatch.setattr(cfv, "BASE_STATION_DOCK_FIX", 0, raising=False)
+    grid = _Grid(50, 50)
+    model = _DepotModel(grid)
+    _blocker(grid, (3, 46))
+    uav = _returner(model, (4, 45), (3, 46))
+    uav._apply_return_to_base()
+    assert uav.rtb_docked
+    assert uav.rtb_log[-1]["dock_cell"] == (4, 45), "on another UAV's berth"
+
+
+def test_the_stall_witness_counts_and_resets(monkeypatch) -> None:
+    """L-1 refused steps do not dock; L does; one successful move resets it."""
+    monkeypatch.setattr(cfv, "BASE_STATION_MODE", 3, raising=False)
+    monkeypatch.setattr(cfv, "BASE_STATION_RETURN_MECHANISM", 2, raising=False)
+    monkeypatch.setattr(cfv, "BASE_STATION_DOCK_FIX", 1, raising=False)
+    monkeypatch.setattr(cfv, "BASE_STATION_RETURN_STALL_LIMIT", 3, raising=False)
+    grid = _Grid(50, 50)
+    model = _DepotModel(grid)
+    _blocker(grid, (3, 46))
+    uav = _returner(model, (3, 45), (3, 46))
+    for expected in (0, 1, 2):
+        uav._apply_return_to_base()
+        assert uav.rtb_stall_steps == expected
+        assert not uav.rtb_docked
+        uav.rtb_last_pos = tuple(uav.pos)      # the move was refused
+    uav._apply_return_to_base()
+    assert uav.rtb_docked, "the third consecutive refusal reaches the limit"
+    # and a successful move resets it
+    uav2 = _returner(_DepotModel(_Grid(50, 50)), (3, 40), (3, 46))
+    uav2._apply_return_to_base()
+    uav2.rtb_last_pos = tuple(uav2.pos)
+    uav2._apply_return_to_base()
+    assert uav2.rtb_stall_steps == 1
+    uav2.rtb_last_pos = (9, 9)                 # i.e. it moved
+    uav2._apply_return_to_base()
+    assert uav2.rtb_stall_steps == 0
+
+
+def test_the_terminator_never_docks_outside_the_depot(monkeypatch) -> None:
+    """The rejected alternative docked on the DOORSTEP. It must not.
+
+    _update_battery_after_step gates the recharge on rtb_docked alone with no
+    positional test, and the harness derives base_state from the same flag, so a
+    dock one cell outside the footprint would refuel a UAV on open ground AND
+    relabel a stranding as a charge - clearing the round's own stranding gate
+    without the UAV ever coming home.
+    """
+    monkeypatch.setattr(cfv, "BASE_STATION_MODE", 3, raising=False)
+    monkeypatch.setattr(cfv, "BASE_STATION_RETURN_MECHANISM", 2, raising=False)
+    monkeypatch.setattr(cfv, "BASE_STATION_DOCK_FIX", 1, raising=False)   # no recovery
+    monkeypatch.setattr(cfv, "BASE_STATION_RETURN_STALL_LIMIT", 3, raising=False)
+    grid = _Grid(50, 50)
+    model = _DepotModel(grid)
+    _blocker(grid, (4, 45))
+    uav = _returner(model, (4, 44), (4, 45))   # the doorstep cell, outside
+    _drive(uav, 15)
+    assert not uav.rtb_docked, "it must NOT dock on the doorstep"
+    assert not model.base_station_contains((4, 44), 0)
+
+
+def test_recharge_still_has_no_positional_test() -> None:
+    """The premise of the test above, pinned so it cannot rot silently.
+
+    If a positional test is ever added to _update_battery_after_step, the
+    doorstep-dock alternative becomes safe and section 5b of
+    outputs/dockfix_part1.txt should be revisited.
+    """
+    import inspect
+    src = inspect.getsource(agents.UAV._update_battery_after_step)
+    assert "rtb_docked" in src
+    assert "base_station_contains" not in src
+    assert "rtb_berth" not in src
+
+
+# --- dock-fix round: the mechanism-1 planner waypoint -------------------------
+#
+# A SEPARATE defect behind a SEPARATE switch, so the round can attribute an
+# outcome to it independently. It published the HOME berth rather than the berth
+# LATCHED for the trip; with one depot the two are equal and it is inert, which
+# is every arm measured so far.
+
+def test_waypoint_publishes_the_latched_berth(monkeypatch) -> None:
+    monkeypatch.setattr(cfv, "BASE_STATION_WAYPOINT_FIX", 1, raising=False)
+    uav = _TriggerAgent((10, 10))
+    uav.rtb_berth = (4, 45)                    # home
+    uav.rtb_target_berth = (24, 24)            # latched for THIS trip
+    assert agents.base_station_waypoint_fix() is True
+    chosen = uav.rtb_target_berth or uav.rtb_berth
+    assert chosen == (24, 24)
+
+
+def test_waypoint_fix_is_inert_with_one_depot(monkeypatch) -> None:
+    """Which is why every arm measured before this round could not see it."""
+    monkeypatch.setattr(cfv, "BASE_STATION_WAYPOINT_FIX", 1, raising=False)
+    uav = _TriggerAgent((10, 10))
+    uav.rtb_berth = (4, 45)
+    uav.rtb_target_berth = (4, 45)
+    assert (uav.rtb_target_berth or uav.rtb_berth) == uav.rtb_berth
+
+
+def test_waypoint_fix_switch_reads_the_module_at_call_time(monkeypatch) -> None:
+    monkeypatch.setattr(cfv, "BASE_STATION_WAYPOINT_FIX", 0, raising=False)
+    assert agents.base_station_waypoint_fix() is False
+    monkeypatch.setattr(cfv, "BASE_STATION_WAYPOINT_FIX", 1, raising=False)
+    assert agents.base_station_waypoint_fix() is True
+
+
+# --- dock-fix round: the kill switches ----------------------------------------
+
+def test_dock_fix_accessors_read_the_module_at_call_time(monkeypatch) -> None:
+    for value in (0, 1, 2):
+        monkeypatch.setattr(cfv, "BASE_STATION_DOCK_FIX", value, raising=False)
+        assert agents.base_station_dock_fix() == value
+    monkeypatch.setattr(cfv, "BASE_STATION_RETURN_STALL_LIMIT", 7, raising=False)
+    assert agents.base_station_return_stall_limit() == 7
+
+
+def test_dock_fix_accessors_survive_junk_and_clamp(monkeypatch) -> None:
+    monkeypatch.setattr(cfv, "BASE_STATION_DOCK_FIX", "nonsense", raising=False)
+    assert agents.base_station_dock_fix() == 2
+    monkeypatch.setattr(cfv, "BASE_STATION_DOCK_FIX", 9, raising=False)
+    assert agents.base_station_dock_fix() == 2
+    monkeypatch.setattr(cfv, "BASE_STATION_DOCK_FIX", -3, raising=False)
+    assert agents.base_station_dock_fix() == 0
+    monkeypatch.setattr(cfv, "BASE_STATION_RETURN_STALL_LIMIT", 0, raising=False)
+    assert agents.base_station_return_stall_limit() == 1
+
+
+def test_dock_fix_shipped_defaults() -> None:
+    """DEFAULT ON. At BASE_STATION_MODE 0 none of it is reachable, so the shipped
+    configuration is untouched either way; shipping it off would mean carrying a
+    known stranding bug behind a flag nobody remembers to flip."""
+    assert cfv.BASE_STATION_DOCK_FIX == 2
+    assert cfv.BASE_STATION_RETURN_STALL_LIMIT == 3
+    assert cfv.BASE_STATION_WAYPOINT_FIX == 1
+    assert cfv.BASE_STATION_MODE == 0

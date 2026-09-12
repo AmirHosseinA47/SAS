@@ -1,0 +1,457 @@
+
+==============================================================
+1a. KILL SWITCH - mode 0, fix ON, against this round's own dcoff
+==============================================================
+The shipped configuration. At BASE_STATION_MODE 0 none of the new code is
+reachable, so defaulting the fix ON must change nothing here.
+IDENTITY  dfzero vs dcoff  sample=both
+  23 / 23 runs IDENTICAL on all 39 fields   (missing files: 0)
+
+==============================================================
+1b. KILL SWITCH - THE STRONG CONTROL: dcB's config with the switch OFF
+==============================================================
+dfzero alone does not prove the switch works, because at mode 0 the changed
+code never executes. This arm runs every changed path with DOCK_FIX=0 and
+must reproduce _ffr_dcB_* field for field.
+IDENTITY  dfkill vs dcB  sample=both
+  23 / 23 runs IDENTICAL on all 39 fields   (missing files: 0)
+
+==============================================================
+2. THE PRIMARY GATE - dcB east/half/808
+==============================================================
+At 9f77178: UAV 2500 never arrives, sits at (4,44) for 38 steps with 35.4
+battery. Below is the same seed with the fix on.
+  BEFORE, 9f77178   terminal_step=222
+    2500 trigger=168  target=[4, 45]  arrival=None  dock=None    
+    2501 trigger=175  target=[3, 45]  arrival=205   dock=[3, 45] 
+    2502 trigger=147  target=[3, 46]  arrival=203   dock=[4, 45]   <-- fallback
+    2503 trigger=165  target=[4, 46]  arrival=208   dock=[4, 46] 
+    UAV 2500 final_battery=35.4 final_active=True cycles=0
+
+  AFTER, fix on   terminal_step=222
+    2500 trigger=168  target=[4, 45]  arrival=205   dock=[4, 45] 
+    2501 trigger=175  target=[3, 45]  arrival=207   dock=[3, 46]   <-- fallback
+    2502 trigger=147  target=[3, 46]  arrival=207   dock=[3, 45]   <-- fallback
+    2503 trigger=165  target=[4, 46]  arrival=208   dock=[4, 46] 
+    UAV 2500 final_battery=93.1 final_active=False cycles=1
+
+
+==============================================================
+3. THE REDEFINED STRANDING GATE - positional, not battery
+==============================================================
+BEFORE, at 9f77178:
+STRANDING  sample=canonical   stuck threshold = 10 steps without moving
+  arm       runs zero-batt     stuck unarrived
+  dcA         13         0         0         0
+  dcB         13         0         0         0
+  dcC         13         0         0         3
+  dcD         13         0         0         0
+
+STRANDING  sample=fresh   stuck threshold = 10 steps without moving
+  arm       runs zero-batt     stuck unarrived
+  dcA         10         0         0         0
+  dcB         10         0         1         1
+        east/half/808 2500 at (4, 44) for 38 steps batt 35.4
+  dcC         10         0         0         0
+  dcD         10         0         0         0
+
+AFTER, with the fix on:
+STRANDING  sample=canonical   stuck threshold = 10 steps without moving
+  arm       runs zero-batt     stuck unarrived
+  dfA         13         0         0         0
+  dfB         13         0         0         0
+  dfC         13         0         0         3
+  dfD         13         0         0         0
+
+STRANDING  sample=fresh   stuck threshold = 10 steps without moving
+  arm       runs zero-batt     stuck unarrived
+  dfA         10         0         0         0
+  dfB         10         0         0         0
+  dfC         10         0         0         0
+  dfD         10         0         0         0
+
+==============================================================
+4. THE MODE-2 ARM - the strongest single signal in the round
+==============================================================
+5 of these 13 runs deadlock permanently with the fix off.
+STRANDING  sample=canonical   stuck threshold = 10 steps without moving
+  arm       runs zero-batt     stuck unarrived
+  dfm2ref     13         0         5         5
+        east/half/101 2502 at (3, 44) for 34 steps batt 39.6
+        east/half/303 2502 at (3, 44) for 36 steps batt 40.0
+        east/half/404 2502 at (3, 44) for 43 steps batt 37.2
+        east/half/505 2502 at (3, 44) for 63 steps batt 40.8
+        south/half/404 2502 at (3, 44) for 66 steps batt 41.6
+  dfm2fix     13         0         0         0
+
+==============================================================
+5. THE LIVELOCK GATE - what a positional stall gate structurally cannot see
+==============================================================
+A UAV that MOVES every step while getting nowhere has an unchanged-position
+count of ZERO. At HEAD cycles and oscillations are zero in every arm, so any
+non-zero result here is caused by the fix.
+BEFORE:
+LIVELOCK GATE  freeze >= 3 frames / cycle / oscillation in a 10-frame window
+  A CYCLE or an OSCILLATION is invisible to the positional stranding
+  gate, because the UAV keeps moving. At HEAD both are zero: the
+  recorded failures are freezes. Any non-zero result is caused by a fix.
+
+  arm        runs  freezes   cycles  oscillations
+  dcA          23        1        0             0
+  dcB          23       11        0             0
+  dcC          23        0        0             0
+  dcD          23        1        0             0
+
+  no cycles and no oscillations.
+
+LIVELOCK GATE  freeze >= 3 frames / cycle / oscillation in a 10-frame window
+  A CYCLE or an OSCILLATION is invisible to the positional stranding
+  gate, because the UAV keeps moving. At HEAD both are zero: the
+  recorded failures are freezes. Any non-zero result is caused by a fix.
+
+  arm        runs  freezes   cycles  oscillations
+  bsret        13        5        0             0
+
+  no cycles and no oscillations.
+AFTER:
+LIVELOCK GATE  freeze >= 3 frames / cycle / oscillation in a 10-frame window
+  A CYCLE or an OSCILLATION is invisible to the positional stranding
+  gate, because the UAV keeps moving. At HEAD both are zero: the
+  recorded failures are freezes. Any non-zero result is caused by a fix.
+
+  arm        runs  freezes   cycles  oscillations
+  dfA          23        2        0             0
+  dfB          23       15        0             0
+  dfC          23       20        0             0
+  dfD          23        3        0             0
+  dfW0          5        0       11             2
+  dfW1          5        0        8             1
+  dfkill       23       11        0             0
+  dfm2fix      13        5        0             0
+  dfm2ref      13        5        0             0
+  dfzero       23        0        0             0
+
+  every cycle or oscillation found:
+    CYCLE       dfW0     _ffr_dfW0_east_half_101.json           uid=2500 [(18, 19), (19, 19), (18, 19), (19, 19), (18, 19), (18, 18), (17, 18), (18, 18), (18, 19), (18, 20), (19, 20), (19, 21)]
+    CYCLE       dfW0     _ffr_dfW0_east_half_101.json           uid=2501 [(36, 47), (37, 47), (38, 47), (39, 47), (38, 47), (37, 47), (36, 47), (35, 47), (34, 47), (33, 47), (32, 47), (31, 47)]
+    CYCLE       dfW0     _ffr_dfW0_east_half_101.json           uid=2502 [(24, 9), (24, 8), (23, 8), (23, 7), (23, 6), (24, 6), (24, 5), (25, 5), (26, 5), (26, 4), (25, 4), (25, 3)]
+    OSCILLATION dfW0     _ffr_dfW0_east_half_101.json           uid=2502 [(22, 3), (21, 3), (22, 3), (21, 3), (22, 3), (21, 3), (22, 3), (21, 3), (22, 3), (21, 3)]
+    CYCLE       dfW0     _ffr_dfW0_east_half_202.json           uid=2500 [(35, 21), (34, 21), (34, 22), (33, 22), (32, 22), (31, 22), (30, 22), (29, 22), (28, 22), (27, 22), (26, 22), (26, 23)]
+    CYCLE       dfW0     _ffr_dfW0_east_half_202.json           uid=2502 [(7, 7), (8, 7), (9, 7), (10, 7), (11, 7), (12, 7), (13, 7), (14, 7), (15, 7), (16, 7), (17, 7), (18, 7)]
+    CYCLE       dfW0     _ffr_dfW0_east_half_303.json           uid=2501 [(48, 41), (47, 41), (46, 41), (45, 41), (44, 41), (43, 41), (42, 41), (41, 41), (41, 40), (41, 39), (42, 39), (41, 39)]
+    OSCILLATION dfW0     _ffr_dfW0_east_half_303.json           uid=2501 [(3, 45), (3, 45), (4, 45), (3, 45), (4, 45), (3, 45), (4, 45), (3, 45), (4, 45), (3, 45)]
+    CYCLE       dfW0     _ffr_dfW0_east_half_404.json           uid=2500 [(1, 49), (0, 49), (0, 48), (0, 49), (1, 49), (0, 49), (1, 49), (2, 49), (3, 49), (4, 49), (3, 49), (4, 49)]
+    CYCLE       dfW0     _ffr_dfW0_east_half_404.json           uid=2501 [(35, 13), (35, 14), (35, 15), (35, 16), (35, 17), (35, 18), (35, 19), (35, 20), (35, 21), (34, 21), (33, 21), (32, 21)]
+    CYCLE       dfW0     _ffr_dfW0_east_half_404.json           uid=2502 [(24, 10), (24, 9), (25, 9), (26, 9), (26, 8), (26, 7), (27, 7), (28, 7), (28, 6), (28, 5), (28, 4), (28, 3)]
+    CYCLE       dfW0     _ffr_dfW0_east_half_404.json           uid=2503 [(26, 34), (25, 34), (24, 34), (23, 34), (22, 34), (21, 34), (20, 34), (19, 34), (18, 34), (17, 34), (16, 34), (15, 34)]
+    CYCLE       dfW0     _ffr_dfW0_east_half_505.json           uid=2503 [(34, 35), (33, 35), (32, 35), (31, 35), (30, 35), (29, 35), (28, 35), (27, 35), (26, 35), (25, 35), (24, 35), (23, 35)]
+    CYCLE       dfW1     _ffr_dfW1_east_half_101.json           uid=2500 [(18, 19), (19, 19), (18, 19), (19, 19), (18, 19), (18, 18), (17, 18), (18, 18), (18, 19), (18, 20), (19, 20), (19, 21)]
+    CYCLE       dfW1     _ffr_dfW1_east_half_101.json           uid=2501 [(36, 47), (37, 47), (38, 47), (39, 47), (38, 47), (37, 47), (36, 47), (35, 47), (34, 47), (33, 47), (32, 47), (31, 47)]
+    CYCLE       dfW1     _ffr_dfW1_east_half_101.json           uid=2502 [(24, 9), (24, 8), (23, 8), (23, 7), (23, 6), (24, 6), (24, 5), (25, 5), (26, 5), (26, 4), (25, 4), (25, 3)]
+    OSCILLATION dfW1     _ffr_dfW1_east_half_101.json           uid=2502 [(22, 3), (21, 3), (22, 3), (21, 3), (22, 3), (21, 3), (22, 3), (21, 3), (22, 3), (21, 3)]
+    CYCLE       dfW1     _ffr_dfW1_east_half_404.json           uid=2500 [(1, 49), (0, 49), (0, 48), (0, 49), (1, 49), (0, 49), (1, 49), (2, 49), (3, 49), (4, 49), (3, 49), (4, 49)]
+    CYCLE       dfW1     _ffr_dfW1_east_half_404.json           uid=2501 [(35, 13), (35, 14), (35, 15), (35, 16), (35, 17), (35, 18), (35, 19), (35, 20), (35, 21), (35, 20), (35, 19), (35, 18)]
+    CYCLE       dfW1     _ffr_dfW1_east_half_404.json           uid=2502 [(24, 10), (24, 9), (25, 9), (26, 9), (26, 8), (26, 7), (27, 7), (28, 7), (28, 6), (28, 5), (28, 4), (28, 3)]
+    CYCLE       dfW1     _ffr_dfW1_east_half_404.json           uid=2503 [(26, 34), (25, 34), (24, 34), (23, 34), (22, 34), (21, 34), (20, 34), (19, 34), (18, 34), (17, 34), (16, 34), (15, 34)]
+    CYCLE       dfW1     _ffr_dfW1_east_half_505.json           uid=2503 [(34, 35), (33, 35), (32, 35), (31, 35), (30, 35), (29, 35), (28, 35), (27, 35), (26, 35), (25, 35), (24, 35), (23, 35)]
+
+==============================================================
+6. FALLBACK DOCKS - before and after, and WHERE they land
+==============================================================
+The count will not go to zero and should not: contention is real. What must
+go to zero is stranding, and no dock may land outside the depot footprint.
+FALLBACK DOCKS  counted from EXISTING recorded fields only
+  a fallback dock is        dock_cell != target_berth
+  a trip that never ended is  arrival_step is None
+
+  arm       runs   trips   fallback docks   never arrived unclassifiable
+  dcA         23      90                1               0              -
+  dcB         23      90                6               1              -
+  dcC         23      91               26               3              -
+  dcD         23      92                1               0              -
+
+  'unclassifiable' are trips recorded before target_berth existed
+  (the pre-depot-round schema); they are excluded, not assumed clean.
+
+FALLBACK DOCKS  counted from EXISTING recorded fields only
+  a fallback dock is        dock_cell != target_berth
+  a trip that never ended is  arrival_step is None
+
+  arm       runs   trips   fallback docks   never arrived unclassifiable
+  dfA         23      90                2               0              -
+  dfB         23      90                8               0              -
+  dfC         23      91               19               3              -
+  dfD         23      92                2               0              -
+
+  'unclassifiable' are trips recorded before target_berth existed
+  (the pre-depot-round schema); they are excluded, not assumed clean.
+
+==============================================================
+7. CONSECUTIVE-REFUSAL RUN LENGTHS - the sharpest before/after available
+==============================================================
+BEFORE: 13 episodes of 9-65 steps, nothing between 3 and 8.
+CONSECUTIVE REFUSED STEPS on a return leg, every armed run
+  A returning UAV whose position is unchanged from the previous frame
+  had its move refused. These are the run lengths of that condition.
+
+    1 steps :   157   (cumulative  92.35%)
+    2 steps :     5   (cumulative  95.29%)
+    9 steps :     1   (cumulative  95.88%)
+   10 steps :     1   (cumulative  96.47%)
+   11 steps :     2   (cumulative  97.65%)
+   13 steps :     2   (cumulative  98.82%)
+   15 steps :     1   (cumulative  99.41%)
+   37 steps :     1   (cumulative 100.00%)
+  total episodes: 170
+
+  lengths seen between 3 and 8: NONE - the distribution is bimodal
+  episodes reaching >= 2 consecutive refusals: 13 (7.65%)
+  episodes reaching >= 3 consecutive refusals: 8 (4.71%)
+  episodes reaching >= 4 consecutive refusals: 8 (4.71%)
+
+  A one-step transit through a berth produces at most ONE refused step,
+  so a limit of 3 cannot be reached by one.
+  Episodes longer than the limit: [9, 10, 11, 13, 15, 37].
+  Each of those is a stall the UAV never recovers from on its own -
+  the signature the fix exists to remove.
+AFTER:
+CONSECUTIVE REFUSED STEPS on a return leg, every armed run
+  A returning UAV whose position is unchanged from the previous frame
+  had its move refused. These are the run lengths of that condition.
+
+    1 steps :   171   (cumulative  80.66%)
+    2 steps :     7   (cumulative  83.96%)
+    3 steps :    34   (cumulative 100.00%)
+  total episodes: 212
+
+  lengths seen between 3 and 8: [3]
+  episodes reaching >= 2 consecutive refusals: 41 (19.34%)
+  episodes reaching >= 3 consecutive refusals: 34 (16.04%)
+  episodes reaching >= 4 consecutive refusals: 0 (0.00%)
+
+  A one-step transit through a berth produces at most ONE refused step,
+  so a limit of 3 cannot be reached by one.
+  NO EPISODE EXCEEDS 4 STEPS. Every stall is capped at the limit and
+  then recovered, which is the fix working: the leg stalls, the
+  counter reaches the threshold, and the recovery or the terminator
+  fires instead of the UAV sitting there to the horizon.
+
+==============================================================
+8. OUTCOMES - seed-matched, each arm against its 9f77178 twin
+==============================================================
+---- dfA vs dcA ----
+PAIRED  dfA (new) against dcA (old)  sample=both
+  seed-matched. A row appears only when something DIFFERS.
+
+  south/half/606       return_share 18.02%->17.08%
+  south/half/808       return_share 18.85%->19.17%
+
+  21 of 23 runs identical on all of them   (missing files: 0)
+  runs moved, per quantity: return_share 2
+
+  TOTALS                 rescued               dead firefighter_deaths     never_detected
+  dcA                         67                 16                  5                  8
+  dfA                         67                 16                  5                  8
+
+---- dfB vs dcB ----
+PAIRED  dfB (new) against dcB (old)  sample=both
+  seed-matched. A row appears only when something DIFFERS.
+
+  east/half/202        return_share 18.96%->18.44%
+  east/half/404        return_share 14.79%->15.31%
+  south/half/101       return_share 14.17%->13.85%
+  south/half/303       return_share 21.25%->20.73%
+  south/half/404       return_share 12.92%->12.19%
+  east/half/808        return_share 21.04%->17.92%
+  south/half/606       return_share 19.69%->18.75%
+  south/half/909       return_share 12.81%->12.08%
+
+  15 of 23 runs identical on all of them   (missing files: 0)
+  runs moved, per quantity: return_share 8
+
+  TOTALS                 rescued               dead firefighter_deaths     never_detected
+  dcB                         67                 16                  5                  8
+  dfB                         67                 16                  5                  8
+
+---- dfC vs dcC ----
+PAIRED  dfC (new) against dcC (old)  sample=both
+  seed-matched. A row appears only when something DIFFERS.
+
+  east/half/202        return_share 8.33%->8.96%
+  east/half/303        return_share 8.02%->8.33%
+  east/half/404        return_share 10.31%->10.42%
+  east/half/505        return_share 9.69%->10.94%
+  south/half/101       return_share 10.73%->11.88%
+  south/half/202       return_share 9.27%->10.21%
+  south/half/303       return_share 5.42%->6.67%
+  south/half/404       return_share 7.71%->7.92%
+  south/half/505       return_share 6.25%->6.88%
+  east/def/101         return_share 7.50%->7.71%
+  east/def/303         return_share 12.40%->12.92%
+  east/half/606        return_share 9.38%->10.00%
+  east/half/808        return_share 9.48%->10.10%
+  east/half/909        return_share 6.77%->7.40%
+  south/half/707       return_share 8.02%->8.75%
+  south/half/808       return_share 7.19%->7.40%
+  south/half/909       return_share 10.10%->10.31%
+  south/half/1010      return_share 8.23%->8.65%
+
+  5 of 23 runs identical on all of them   (missing files: 0)
+  runs moved, per quantity: return_share 18
+
+  TOTALS                 rescued               dead firefighter_deaths     never_detected
+  dcC                         69                 16                 12                  2
+  dfC                         69                 16                 12                  2
+
+---- dfD vs dcD ----
+PAIRED  dfD (new) against dcD (old)  sample=both
+  seed-matched. A row appears only when something DIFFERS.
+
+  east/half/303        return_share 14.69%->15.31%
+
+  22 of 23 runs identical on all of them   (missing files: 0)
+  runs moved, per quantity: return_share 1
+
+  TOTALS                 rescued               dead firefighter_deaths     never_detected
+  dcD                         68                 16                 10                  5
+  dfD                         68                 16                 10                  5
+
+
+==============================================================
+8b. OUTCOMES - totals, canonical and fresh
+==============================================================
+OUTCOMES  sample=both
+  (terminal_step is not summable - it is None when the victims never
+   all reach a terminal state - so it is reported as resolved/total
+   and the mean step among the runs that did resolve.)
+  arm       runs   rescued      dead never_det unreachab geographi horizon_u candidate firefight burnt_cel
+  dcA         23        67        16         8         8         0         0         1         5     27049  term 22/23  mean 176.1
+  dfA         23        67        16         8         8         0         0         1         5     27049  term 22/23  mean 176.1
+
+  DELTAS against dcA
+  dfA                   +0        +0        +0        +0        +0        +0        +0        +0        +0
+
+OUTCOMES  sample=both
+  (terminal_step is not summable - it is None when the victims never
+   all reach a terminal state - so it is reported as resolved/total
+   and the mean step among the runs that did resolve.)
+  arm       runs   rescued      dead never_det unreachab geographi horizon_u candidate firefight burnt_cel
+  dcB         23        67        16         8         8         0         0         1         5     27049  term 22/23  mean 176.1
+  dfB         23        67        16         8         8         0         0         1         5     27049  term 22/23  mean 176.1
+
+  DELTAS against dcB
+  dfB                   +0        +0        +0        +0        +0        +0        +0        +0        +0
+
+OUTCOMES  sample=both
+  (terminal_step is not summable - it is None when the victims never
+   all reach a terminal state - so it is reported as resolved/total
+   and the mean step among the runs that did resolve.)
+  arm       runs   rescued      dead never_det unreachab geographi horizon_u candidate firefight burnt_cel
+  dcC         23        69        16         2         4         2         0         3        12     27049  term 21/23  mean 174.4
+  dfC         23        69        16         2         4         2         0         3        12     27049  term 21/23  mean 174.4
+
+  DELTAS against dcC
+  dfC                   +0        +0        +0        +0        +0        +0        +0        +0        +0
+
+OUTCOMES  sample=both
+  (terminal_step is not summable - it is None when the victims never
+   all reach a terminal state - so it is reported as resolved/total
+   and the mean step among the runs that did resolve.)
+  arm       runs   rescued      dead never_det unreachab geographi horizon_u candidate firefight burnt_cel
+  dcD         23        68        16         5         6         0         0         2        10     27049  term 21/23  mean 162.0
+  dfD         23        68        16         5         6         0         0         2        10     27049  term 21/23  mean 162.0
+
+  DELTAS against dcD
+  dfD                   +0        +0        +0        +0        +0        +0        +0        +0        +0
+
+==============================================================
+9. DRONE STEPS IN FIRE - UAV-steps on a burning cell / total UAV-steps
+==============================================================
+The definition the interior-hazard round used (2.1% canonical, 3.0% fresh),
+read from the per-UAV per-step 'burning' flag the harness already records at
+uav_actions[i][2]. UAVs are fire-immune: this is a search-quality signal.
+BEFORE:
+EXPOSURE  sample=canonical   UAV-steps on a burning cell / in smoke
+  arm       runs   burning     smoke
+  dcA         13     3.06%     2.80%
+  dcB         13     3.75%     3.56%
+  dcC         13     2.27%     1.96%
+  dcD         13     3.52%     3.71%
+  dcoff       13     1.44%     1.50%
+
+EXPOSURE  sample=fresh   UAV-steps on a burning cell / in smoke
+  arm       runs   burning     smoke
+  dcA         10     2.41%     2.45%
+  dcB         10     2.65%     2.56%
+  dcC         10     2.85%     1.99%
+  dcD         10     1.94%     2.27%
+  dcoff       10     2.01%     1.58%
+AFTER:
+EXPOSURE  sample=canonical   UAV-steps on a burning cell / in smoke
+  arm       runs   burning     smoke
+  dfA         13     3.06%     2.80%
+  dfB         13     3.75%     3.52%
+  dfC         13     2.44%     1.96%
+  dfD         13     3.52%     3.71%
+  dfzero      13     1.44%     1.50%
+
+EXPOSURE  sample=fresh   UAV-steps on a burning cell / in smoke
+  arm       runs   burning     smoke
+  dfA         10     2.41%     2.45%
+  dfB         10     2.64%     2.59%
+  dfC         10     2.79%     1.99%
+  dfD         10     1.94%     2.27%
+  dfzero      10     2.01%     1.58%
+
+Consecutive burning-cell occupancy (a UAV sitting still on fire):
+BURNING-CELL STREAKS  consecutive steps a UAV stands on a burning cell
+  arm        runs       max       >=3       >=5
+  dcA          23        13        57        21
+  dcB          23        13        72        25
+  dcC          23        21        50        21
+  dcD          23        18        65        25
+BURNING-CELL STREAKS  consecutive steps a UAV stands on a burning cell
+  arm        runs       max       >=3       >=5
+  dfA          23        13        57        21
+  dfB          23        13        72        25
+  dfC          23        21        49        23
+  dfD          23        18        65        25
+
+==============================================================
+10. THE WAYPOINT FIX - measured SEPARATELY, mechanism 1 + two depots
+==============================================================
+Unreachable under mechanism 2, so no arm above is confounded by it.
+PAIRED  dfW1 (new) against dfW0 (old)  sample=waypoint
+  seed-matched. A row appears only when something DIFFERS.
+
+  east/half/202        return_share 20.94%->13.96%
+  east/half/303        return_share 19.17%->15.52%
+
+  3 of 5 runs identical on all of them   (missing files: 0)
+  runs moved, per quantity: return_share 2
+
+  TOTALS                 rescued               dead firefighter_deaths     never_detected
+  dfW0                        15                  5                  2                  0
+  dfW1                        15                  5                  2                  0
+
+STRANDING  sample=canonical   stuck threshold = 10 steps without moving
+  arm       runs zero-batt     stuck unarrived
+  dfW0         5         0         0         9
+  dfW1         5         0         0         6
+
+==============================================================
+11. MECHANISM - the return leg, before and after
+==============================================================
+MECHANISM  sample=both   (the metric this round exists to move is the
+           return-leg share of UAV-steps, against 17.5%)
+  arm       runs  trips arrived   mean d mean dur  return % charge % arr batt
+  dcA         23     90      90     41.0     41.2    16.81%    4.57%     47.5
+  dfA         23     90      90     41.0     41.2    16.78%    4.57%     47.5
+  dcB         23     90      89     42.1     43.9    18.03%    5.24%     38.7
+  dfB         23     90      90     42.1     43.6    17.75%    5.30%     38.7
+  dcC         23     91      88     21.4     21.0     8.51%    5.18%     39.0
+  dfC         23     91      88     21.4     22.2     8.97%    5.18%     38.8
+  dcD         23     92      92     29.4     29.7    12.39%    5.42%     38.8
+  dfD         23     92      92     29.4     29.8    12.41%    5.42%     38.8
+
+DF_READOUT_COMPLETE 2026-09-12 19:49:22

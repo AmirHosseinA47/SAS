@@ -2001,7 +2001,18 @@ class LocalAdaptationSpaceGenerator:
                 break
         if agent is None:
             return []
+        # Dock-fix round, separate switch and separate defect from the docking
+        # deadlock. This published the HOME berth, not the berth LATCHED for the
+        # current trip. With one depot the two are the same value and this is
+        # inert - which is every arm measured before now. With two or more depots
+        # and BASE_STATION_RETURN_MECHANISM = 1 it steers a UAV to a berth the
+        # docking logic is not scoped to (_rtb_inside_depot tests the LATCHED
+        # depot), so the trip cannot terminate. Kept switchable, and measured
+        # apart from BASE_STATION_DOCK_FIX, so an outcome can be attributed to one
+        # or the other rather than to the pair.
         berth = getattr(agent, "rtb_berth", None)
+        if agents_module.base_station_waypoint_fix():
+            berth = getattr(agent, "rtb_target_berth", None) or berth
         if berth is None or getattr(agent, "pos", None) is None:
             return []
         if not getattr(agent, "rtb_active", False) or getattr(agent, "rtb_docked", False):

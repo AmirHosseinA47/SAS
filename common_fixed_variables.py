@@ -340,6 +340,52 @@ UAV_RETURN_TO_BASE_RESERVE = 60.0
 BASE_STATION_RETURN_MARGIN = 5.0
 BASE_STATION_RECHARGE_PER_STEP = 5.0
 BASE_STATION_RECHARGE_RELEASE_LEVEL = 100.0
+
+# BASE_STATION_DOCK_FIX - the docking-deadlock fix, added by the dock-fix round.
+# An ordinal ladder like BASE_STATION_MODE, so the two independent halves can be
+# ATTRIBUTED rather than only measured as a bundle:
+#   0  off. Every path behaves exactly as at 9f77178. THE KILL SWITCH, and the
+#      arm that proves byte-identity.
+#   1  + the docking fallback is RE-KEYED from "is my berth occupied at this
+#      instant" to "has this leg stopped moving for BASE_STATION_RETURN_STALL_-
+#      LIMIT consecutive steps". The old trigger fired on a ONE-STEP TRANSIT
+#      through a berth - mesa mutates the grid during the advance sweep, so a
+#      later-ordered UAV sees it - and permanently re-assigned that berth. It was
+#      also silent where it was needed most: it asked about the BERTH, so a UAV
+#      boxed in with a FREE berth never fired it at all, which is every one of
+#      the five measured mode-2 strandings.
+#   2  + a leg that has stalled OUTSIDE its depot latches the nearest free depot
+#      cell and steers to it until it is inside, where the re-keyed terminator
+#      takes over. Without this the pure-axis approach has no escape at all: the
+#      sidestep in _rtb_direction is structurally dead when one delta is zero,
+#      and the fallback is scoped to the depot interior.
+# Shipped at 2. At BASE_STATION_MODE 0 - the shipped default - none of this code
+# is reachable, so the shipped configuration is untouched at any value.
+# Derivation, evidence and the two rejected alternatives: outputs/dockfix_part1.txt.
+BASE_STATION_DOCK_FIX = 2
+
+# BASE_STATION_RETURN_STALL_LIMIT - consecutive steps on which a returning UAV's
+# move must be refused before its leg counts as stalled.
+# DERIVED, not tuned. Over every armed run of the depot-cost and base-station
+# rounds, runs of consecutive refused steps on a return leg are 1 step (184
+# episodes) or 2 steps (5), then NOTHING AT ALL between 3 and 8, then 13 episodes
+# of 9 to 65 steps - every one of them a stall the UAV never escapes on its own.
+# 3 sits inside that empty gap. A one-step transit through a berth produces at
+# most ONE refused step and so cannot reach 3 by construction, not merely as a
+# matter of measured frequency.
+BASE_STATION_RETURN_STALL_LIMIT = 3
+
+# BASE_STATION_WAYPOINT_FIX - separate switch, separate defect, measured apart.
+# The mechanism-1 planner waypoint published the UAV's HOME berth rather than the
+# berth LATCHED for the current trip. With one depot the two are the same value
+# and this is inert; with two or more and BASE_STATION_RETURN_MECHANISM = 1 it
+# steers a UAV to a berth the docking logic is not scoped to, and the trip cannot
+# terminate. It is deliberately NOT folded into BASE_STATION_DOCK_FIX: every arm
+# of this round runs mechanism 2, where this code is unreachable, so bundling the
+# two would make it impossible to attribute an outcome to either.
+#   0  off - publishes rtb_berth, as shipped.
+#   1  publishes the latched rtb_target_berth, falling back to rtb_berth.
+BASE_STATION_WAYPOINT_FIX = 1
 # BASE_STATION_CORNER was never declared here - it existed only as the getattr
 # default inside agents.base_station_corner(), reachable through --set because
 # apply_scenario_config setattr-creates the attribute. Declared now so the module
