@@ -1,0 +1,78 @@
+dcd4loss - WHY dcD LOSES RESCUES ON FOUR SEEDS - PRE-DECLARATION
+2026-09-13. Diagnosis only: no source change, no default flipped, nothing fixed.
+Branch depot-cost-round, HEAD 9d91156 (on 8414add). Tracked tree clean; untracked:
+the dcd4rb pool leftovers (_dcd4rb_state.txt, two _dcd4rb_hb_*.stop).
+Interpreter .venv/Scripts/python.exe: 3.10.11, mesa 1.2.1 (same as dcd4rb / the 41).
+
+WHAT WAS ALREADY SEEN BEFORE THIS FILE WAS WRITTEN (stated so it is not mistaken
+for a prediction):
+  - evals of drhZ / drhD / drhK / dcA / dcB / dcC / dfA / dfC / bs* on the four tuples
+  - fire_digests are identical, all 240 steps, across every one of those arms on
+    all four tuples (the fire does not depend on the agents)
+  - D's first return trigger per tuple (rtb_log): east/707 163, south/101 168,
+    south/202 167, south/404 167; dcA and bsret first return 134
+  - dcA vs bsspawn (MODE 1, NW): uav_steps identical to step 134, ff_steps and
+    eval identical over all 240 steps, on south 101/202/404
+  - stdout of D and Z south/404 (detection and dispatch lines)
+
+THE FOUR LOSSES (dcd4_rbgate_report.txt 2.1): east/707 4->2, south/101 3->2,
+south/202 4->3, south/404 4->3 (Z -> D, harness evals == shard evals).
+
+NEW RUNS - the four tuples only, two ablation arms, 8 runs, harness
+outputs/_ffr_harness.py --uav-actions, 240 steps, roles half:
+  dlS  D's six --set values with BASE_STATION_MODE=1 instead of 3.
+       = spawn at D's depots (NW+SE, SPLIT 2) with NO return, NO recharge, and the
+       reserve/margin unreachable. The ONLY increment over Z is the spawn.
+  dlF  dlS plus --set BASE_STATION_SPAWN_FIREFIGHTERS=0.
+       = UAVs spawn at D's depots, firefighters spawn where mode 0 puts them.
+Z counterparts are NOT re-run: drhZ is on disk and was verified identical to dfzero /
+rbc / ihrest in the dcd4rb round at this interpreter, and nothing in the source has
+changed since (HEAD only added outputs).
+
+CONTROLS ON THE NEW RUNS (read before any outcome):
+  C1  dlS uav_steps, ff_steps, ff_bind_steps, victim_steps identical to drhD from
+      step index 0 up to (not including) the first index at which any drhD UAV has a
+      non-empty base_state. Non-blind: they must DIFFER somewhere after it, unless
+      the returning UAVs' diverted steps change nothing recorded (reported if so).
+  C2  dlF uav_steps[0] == drhD uav_steps[0]; dlF ff_steps[0] == drhZ ff_steps[0].
+  C3  fire_digests of dlS and dlF identical to drhZ on all 240 steps.
+  A failed C1/C2/C3 voids that arm's reading.
+
+READING RULES (per tuple, per lost victim v = rescued in Z, not rescued in D):
+  R1  RETURN LEG / RECHARGE / RESERVE implicated on v  iff  v is rescued in dlS.
+      If v is lost in dlS too, the MODE 2/3 increments are not necessary for the
+      loss of v: the spawn change alone is sufficient.
+  R2  If v is lost in dlS:
+        v rescued in dlF  -> the FIREFIGHTER spawn is necessary for the loss (with
+                             UAV spawn held at D's): dispatch / timing side.
+        v lost in dlF     -> UAV spawn alone (firefighters at mode-0 spawn) is
+                             sufficient: detection / search side.
+      These are sufficiency / necessity statements for THIS tuple, not rates.
+  R3  If dlS rescues a victim that D and Z both lose or changes a victim other
+      than v, it is reported, not used to relabel v.
+  R4  Only if R1 fires on some tuple: a MODE=2 run (return, no recharge) of THAT
+      tuple only may be added to separate return from recharge. Declared here; not
+      run otherwise.
+
+TRACE DEFINITIONS (Part 1, existing artifacts):
+  detection step   the "[Victim Detection] step=N UAV-u detected v" stdout line,
+                   printed at the decision site (wildfire_model.py
+                   _detect_victims_in_uav_radius, first detection only)
+  dispatch         "[Dispatch] FF-f assigned to v" stdout line + the harness
+                   assigns / planner / unassigns records (step, ff, reason)
+  death / write-off  "[Casualty]" / victim_dead RescueEvent / victim_steps status
+  per-step index   harness lists are 0-indexed; the step each index corresponds
+                   to is established from a detection line vs the victim_steps
+                   status change before any step number is quoted
+  first divergence per recorded stream (uav_steps, uav_actions, partition_steps,
+                   ff_steps, ff_bind_steps, victim_steps), D vs Z, first index
+                   that differs, and what differs.
+  Classification (brief item 2): the traces supply the chain; R1/R2 supply the
+  causal test. A loss is (d) CASCADE, not a direct (a)/(b)/(c), when v's own
+  detection AND its first dispatch happen no later in D than in Z, and the loss
+  runs through an intermediate difference (another victim served first, a unit
+  killed or reassigned).
+
+INDEPENDENCE: all four tuples are canonical/fresh tuples (rbgate-sample-overlap);
+south 101/202/404 share seed, ignition and fuel with east 101/202/404 in the same
+18. Four losses on four tuples are four observations, not a rate.
