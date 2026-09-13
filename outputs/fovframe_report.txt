@@ -1,0 +1,447 @@
+================================================================================
+DRONE FOV FRAME (DISPLAY-ONLY) - PART 3: REPORT
+observation radius as a frame on the dashboard - built, measured, gated
+================================================================================
+Repo      : /home/user/SAS   (the brief says E:\Projects\SAS; this round ran in
+            the Linux container against the same tree and the same HEAD)
+Branch    : claude/drone-fov-frame-dashboard-u7rzg4
+            The brief said to expect `depot-cost-round`. Both refs existed and
+            BOTH pointed at 7f951cb, so the checkout asked for is the checkout
+            used. Work went to the session's designated branch.
+Base      : 7f951cb "Docking deadlock: FIXED at both modes..."
+Commits   : 8a4f960  Part 1 design
+            f285c75  Part 1, third overlap arm
+            9a85987  Part 2 implementation
+            aae64e9  Part 3 gate instruments
+            6166418  Part 3 control results
+            (this report)
+Runtime   : sys.version 3.11.15 (main, Mar  3 2026) [GCC 13.3.0]
+            mesa.__version__ 1.2.1      - both confirmed and printed
+Files     : serve_dashboard.py                                  +166 / -9
+            src_extension/dashboard/dashboard_state_builder.py   +50 / -0
+            Canvas_Grid_Visualization.py                         UNTOUCHED
+            No simulation source file was modified.
+
+--------------------------------------------------------------------------------
+GATE
+--------------------------------------------------------------------------------
+  [PASS] simulation provably unchanged, with the positive control firing
+  [PASS] frames visible and distinguishable from every existing palette entry
+  [PASS] no NEW test failures
+
+  Everything below is measured in this container at these commits. Where a
+  number came out differently from the brief's expectation, the brief's figure
+  is quoted alongside it rather than quietly replaced.
+
+--------------------------------------------------------------------------------
+1. WHAT SHIPPED
+--------------------------------------------------------------------------------
+All five decisions were implemented as confirmed. One is worth restating because
+it is the opposite of the usual instinct: the firefighter got NO frame.
+
+1.1  UAV OBSERVATION FRAME - the exact 17x17, on the dashboard only
+     One snapped strokeRect per UAV around the TRUE Chebyshev block the UAV
+     observes: cells [x-R, x+R] x [y-R, y+R], 289 cells at R = 8. That 289 is
+     also N_OBSERVATIONS (common_fixed_variables.py:476-477) and the DQN's input
+     width, so the square is the model's own canonical observation shape, not an
+     approximation of a disc.
+     Clamped to the non-torus grid. Clamping is load-bearing, not defensive: an
+     edge-clipped block occurs on 31.7% (seed 101) and 39.6% (seed 202) of the
+     240 steps in a real run.
+     Inserted at serve_dashboard.py:704, after the depot overlay and before the
+     trails loop - the only slot where the overlay is visible over terrain yet
+     can occlude no unit marker and no assignment line.
+
+1.2  VICTIM FLEE RADIUS - a manhattan diamond, per the maintainer's ruling
+     VICTIM_FLEE_TRIGGER_DISTANCE = 3, drawn as the exact cell set |dx|+|dy| <= 3
+     (25 cells, rows 1/3/5/7/5/3/1) emitted edge-by-edge as a staircase. Not a
+     square - a square of the same half-width puts 24 of its 49 cells outside the
+     real range with corners at manhattan 6, double the trigger. Not a smooth
+     diamond either: that would slice cells and reintroduce a smaller version of
+     the same error.
+     Radius reads through the model's own accessor, so <= 0 kills the overlay
+     with the feature. Per-victim `flee` mirrors Victim.advance()'s guards G3
+     (terminal status) and G4 (firefighter custody), so a dead, rescued or
+     in-custody victim draws nothing - the rule does not run for it. Verified
+     live: at step 30 of seed 101, four of five victims draw a diamond and the
+     fifth does not.
+
+1.3  FIREFIGHTER - no frame, a column instead
+     nearest_fire_dist, which the model already computes every step and discards
+     into movement_reason.key_factors, is now a "fire d" column in the
+     firefighter table. Manhattan cells to the nearest ACTIVELY BURNING cell,
+     dash when off-grid or when nothing is burning. Coloured red at <= 1 and
+     amber at <= 3, the two thresholds that actually gate the unit's retreat.
+     No shape is drawn, because rescue is same-cell (radius 0), dispatch is
+     unbounded, and the one real range is state-dependent (3 idle / 1 assigned)
+     and manhattan. A frame would have asserted a sensing capability the model
+     does not have.
+
+1.4  COLOUR - two-tone, which keeps the exemplar's black and fixes it
+     A 1px #FFFFFF core inside a #000000 casing, on the Math.round(k*cs)+0.5
+     half-pixel convention the gridlines already use.
+
+1.5  MESA - untouched, and the difference is stated not hidden
+     Canvas_Grid_Visualization.py:111-127 keeps its 19x19 ring, its four open
+     corners and its 0.5-cell overshoot. The two surfaces now differ by one ring
+     BY DECISION. The mesa frame's real defect (the second `if` at :124 should be
+     `elif`, which is why its corners render open) is left in place and recorded;
+     the string h/w there is NOT a defect and was left alone on evidence.
+
+--------------------------------------------------------------------------------
+2. SIMULATION PROVABLY UNCHANGED
+--------------------------------------------------------------------------------
+Instrument: outputs/_sc_control.py, unmodified, the scorched round's own control.
+Three combos at seed 101, 240 steps, both arms on THIS interpreter:
+    D/east/half, D/south/half, D/east/default
+PRE arm ran in a git worktree at 7f951cb; POST arm on the patched tree.
+Comparator: outputs/_fov_compare.py -> outputs/_fov_gate.txt.
+
+EVERY FIELD IDENTICAL, EVERY COMBO:
+
+  field                        east/default        east/half        south/half
+  stdout_sha256                IDENTICAL           IDENTICAL        IDENTICAL
+  stdout_lines / stdout_len    IDENTICAL           IDENTICAL        IDENTICAL
+  raw stdout BYTE diff         3356 B IDENTICAL    3913 B IDENT.    4084 B IDENT.
+  agent_positions_sha256       IDENTICAL           IDENTICAL        IDENTICAL
+  agent_positions (full list)  9 entries IDENT.    40 IDENT.        53 IDENT.
+  firemap_sha256               IDENTICAL           IDENTICAL        IDENTICAL
+  scorchmap_sha256             IDENTICAL           IDENTICAL        IDENTICAL
+  eval (whole dict)            IDENTICAL           IDENTICAL        IDENTICAL
+  residue / ground_counts      IDENTICAL           IDENTICAL        IDENTICAL
+  leftover_pending             IDENTICAL           IDENTICAL        IDENTICAL
+
+The brief asked for SHA-256 on each of stdout, positions, fire digest and the
+evaluation dict PLUS a raw diff. All five are above; the position list is
+compared in full, not only by hash, and the stdout comparison is a byte
+comparison of the dumped files, not only their digests.
+
+--------------------------------------------------------------------------------
+3. THE POSITIVE CONTROL - the brief's instrument would have proved nothing
+--------------------------------------------------------------------------------
+This is the most important result of the round, and it is a correction.
+
+The brief required "the cell-colour digest (or its equivalent) MUST differ, with
+exact accounting of which cells changed. Without it, 'identical simulation' could
+mean the change was never exercised."
+
+THE CELL-COLOUR DIGEST CANNOT DIFFER HERE. serve_dashboard.py:117-119 populates
+`cells` inside a loop that skips every non-Fire agent, and the muting pass at
+:148-159 iterates fire_cells only. No UAV, victim or firefighter can contribute a
+byte. Measured on a real run: len(cells) == 2500 == the number of Fire agents
+exactly, with UAVs on the grid. A dashboard FOV overlay is drawn in JS from the
+uavs/victims payload, after the cells fill.
+
+So the brief's control would have read IDENTICAL - which is precisely the "the
+change was never exercised" signal it exists to prevent. Used as specified it
+produces a false negative that looks like a failed positive control.
+
+WHAT WAS DONE INSTEAD:
+
+  cellcolor_sha256   DEMOTED to a NEGATIVE control, and it is IDENTICAL on all
+                     three combos (34dc6786 / 34dc6786 / ee573808). This round
+                     touches a renderer but no cell decider, so identical is the
+                     correct result. The demotion has direct precedent, quoted
+                     rather than invented: outputs/_rh_control.py:26-28 records
+                     the mirror-image case.
+
+  LAYER A, payload   fovpayload_sha256  36aca69d -> ccc56bd6, DIFFERS.
+                     publishes_fov_radius  pre False -> post True
+                     publishes_flee        pre False -> post True
+                     publishes_ffdist      pre False -> post True
+                     Absence pre-patch is what makes it a valid "before".
+
+  LAYER C, pixels    The decisive one. The SHIPPED drawMap is sliced out of
+                     serve_dashboard.py (not reimplemented), given the four
+                     globals it reads, fed one captured frame, and rendered in
+                     headless Chromium at 7f951cb and at HEAD.
+                       digest  552b0029 -> d47d8f79
+                       10,189 of 313,600 pixels changed (3.2490%)
+                       gained #000000 x6536 (casing), #ffffff x3318 (core),
+                       remainder antialias blends
+
+EXACT ACCOUNTING, which is what the brief actually asked for. Rather than assert
+"the digest moved", outputs/_fov_pixelaudit.py recomputes the intended geometry
+independently in Python and checks TWO-WAY containment against the measured
+pixel diff:
+
+  A. every CHANGED pixel lies on a predicted stroke   -> no stray repaint
+  B. every predicted stroke has changed pixels        -> nothing silently missing
+
+  case            segments  changed  on-geometry  STRAY  SILENT   result
+  nominal              124   10,189       10,189      0       0   PASS
+  edge-clipped          58    5,266        5,266      0       0   PASS
+
+Zero stray pixels means the delta is EXACTLY the overlay: nothing else on the
+canvas moved. Zero silent segments means every stroke the patch intends actually
+painted. A is the falsifiable half - one off-geometry pixel would mean the patch
+moved something it should not have.
+
+The edge-clipped case is a synthetic arm with UAVs parked at three corners and an
+edge and victims against the boundary, because clipping fires on 31-40% of real
+steps and the nominal frame did not exercise it.
+
+--------------------------------------------------------------------------------
+4. FRAMES VISIBLE AND DISTINGUISHABLE
+--------------------------------------------------------------------------------
+4.1  Black, the exemplar's colour, FAILS on this palette - two independent ways
+     dE2000 = 0.0000, in every vision condition, against five distinct semantic
+     marks at six code sites: dead victim (serve_dashboard.py:77), dead
+     firefighter (:176), the UAV role-colour fallback (:72), the UAV marker's own
+     stroke (:718), the gridline base (:682) and BLACK_AND_WHITE_COLORS[10].
+     And 63.40% of the 23,572 frame cells a real run produces sit on ground where
+     black gives under WCAG 3:1 - worst 1.48:1 on burnt #2b2b2b.
+
+4.2  No flat colour fixes it
+     An exhaustive sweep of 140,608 sRGB values, scored as the worst case over
+     {normal, protanopia, deuteranopia, tritanopia, achromatic}, tops out at
+     2.73 dE2000 against the 50 nominal co-occurring colours and 1.03 against the
+     239 effective ones. Both at or below the JND. An independent second
+     implementation over 14 named candidates agrees: best flat candidate 1.74.
+     Cause, measured: this palette holds three complete luminance ramps
+     (VEGETATION 12, FIRE 12, BLACK_AND_WHITE 11) and so occupies 50 distinct L*
+     values across the full 0-100 range at a mean spacing of 2.04. There is no
+     free luminance slot. A filled area can escape into chroma - that is how
+     #895e00 won the scorched round at 27.34 - but a 2.24px line at ~8.8 cycles/deg
+     is past useful chromatic sensitivity and is detected on luminance alone.
+
+4.3  The two-tone, and why it is not just "better"
+     worst-case vs the 50 nominal colours     38.37 dE2000   (14.0x the ceiling)
+     worst-case vs the 239 effective colours  36.55 dE2000   (35.5x)
+     worst-case in probability mode           40.32 dE2000
+     internal contrast core vs casing        100.00 dE2000 / 21.00:1
+     min best-tone WCAG over real frame cells  4.79:1
+     frame cells below WCAG 3:1                0.00%   (black: 63.40%)
+     The guarantee is palette-INDEPENDENT: for any background lightness in
+     [0,100] the better tone is at least 50.0 L* away. It therefore survives the
+     dead #2f4a1a mute being repaired, a new scenario palette, or another ground
+     state being added - which no palette-derived single colour would.
+
+4.4  Confirmed visually, not only numerically
+     outputs/_fov_beforeafter.png   side-by-side, same frame, real drawMap at
+                                    7f951cb and at HEAD
+     outputs/_fov_render_clip.png   three corners and an edge, all closing along
+                                    the map boundary rather than vanishing
+     outputs/_fov_render_probmode.png  probability mode: the black casing carries
+                                    the mark on the 88.5%-white ground, and where
+                                    a frame crosses the dark high-probability
+                                    region the white core takes over. No probMode
+                                    suppression is needed, as predicted.
+     outputs/_fov_live_map.png      the REAL server driven end to end in headless
+                                    Chromium - not drawMap in isolation. Legend
+                                    shows "UAV observed area (17x17)" and "victim
+                                    flee radius (3, manhattan)"; the firefighter
+                                    table shows the fire-d column with live values
+                                    (2 / 29 / 24). One console error, a
+                                    pre-existing /favicon.ico 404 - this diff
+                                    touches zero routing lines.
+     The legend chip is two-tone (#FFFFFF on a 2px #000000 border), following the
+     precedent already in the file: the prob-mode "high" swatch is bordered for
+     the same reason.
+
+--------------------------------------------------------------------------------
+5. NO NEW TEST FAILURES - the NAME SET, not the count
+--------------------------------------------------------------------------------
+Both arms run in full, in default order, on this machine, concurrently so they
+share identical conditions.
+
+  PRE  (7f951cb worktree)   8 failed, 581 passed, 5 warnings in 2575.31s (42:55)
+  POST (patched)            8 failed, 581 passed, 5 warnings in 2609.86s (43:29)
+
+  NEW failures (post - pre) : 0
+  Newly passing (pre - post): 0
+  SETS EQUAL
+
+THE SET, reported because a count is not evidence in this project:
+    test_behavior_regression.py::test_descriptive_next_action_uses_target_position
+    test_dashboard_panel.py::test_dashboard_panel_render_returns_string
+    test_firefighter_dispatch_replacement.py::test_no_replacement_available_marks_victim_unreachable_once
+    test_rescue_planner_authority.py::test_no_firefighter_planner_delay_or_unreachable
+    test_uav_sector_assignment.py::test_fire_tracker_still_overridden_by_search_mode_fail_safe
+    test_uav_sector_assignment.py::test_fire_tracker_uavs_receive_different_target_sets
+    test_wind_aware_trajectory_regression.py::test_east_vs_west_trajectories_diverge_over_40_steps
+    test_wind_aware_trajectory_regression.py::test_north_vs_south_trajectories_diverge_over_40_steps
+
+TWO CORRECTIONS TO THE BRIEF'S EXPECTATION.
+
+(i) "8 failed plus whatever the dock fix added" - the dock fix added NOTHING to
+    the failing set. 7f951cb added tests/test_base_station.py, 476 lines and 19
+    PASSING tests, and zero failures. The baseline was and is 8.
+
+(ii) THE RECORDED HAZARD RECURRED, AND THIS IS THE THIRD TIME COUNTS HAVE AGREED
+     WHILE SETS DIFFERED. Between the scorched round (outputs/_sc_pytest_PRE.txt)
+     and 7f951cb (outputs/_df_pytest.log) both counts read 8 while the membership
+     changed by one swap:
+         OUT  test_wind_aware_victim_search.py::test_victim_search_wind_aware_action_when_downwind_exists
+         IN   test_wind_aware_trajectory_regression.py::test_east_vs_west_trajectories_diverge_over_40_steps
+     Had this round compared counts it would have reported "8 = 8, unchanged" and
+     been telling the maintainer nothing. It compares sets.
+
+A REASSURANCE THAT WAS NOT GUARANTEED. Despite the platform drift in section 7,
+the failing NAME SET measured here on Linux / 3.11.15 is identical to the set
+recorded on Windows / 3.10.11 in outputs/_df_pytest.log. `--collect-only` also
+gives 589 = 8 + 581 exactly, so the test SET is the same item-for-item. The prior
+round's observation that the set only reproduces under the FULL suite in default
+order (7 failed / 2 passed in isolation) is confirmed - both arms here were full
+runs.
+
+Runtime note: 42:55 and 43:29, against the brief's ~37 min. That figure is the
+scorched round's 435-test suite; this suite is 589. pytest was not installed for
+python3 in this container and there is no .venv, so pytest 9.1.1 was installed to
+run the gate - a different major version from the one that produced the recorded
+baseline.
+
+--------------------------------------------------------------------------------
+6. ROUTE_BLOCKED GATE - EXPLICITLY NOT REQUIRED
+--------------------------------------------------------------------------------
+Stated outright, as the brief asked, rather than left to inference.
+
+The route_blocked gate (outputs/_ffr_rbcompare.py over the _rblatch_camp2_*
+18-seed shards, three assertions, ~1h17m wall) is NOT required for this round,
+on the exemption 3b1ffbf established and quoted verbatim from
+outputs/scorchedcolour_report.txt:301-325:
+
+    "The gate campaign inputs are the simulation source files. This round
+     changed four files: two renderers, one HTML panel label, and one test. None
+     of them is on any simulation code path... The gate therefore has
+     byte-identical inputs to HEAD a89a2ab and cannot move."
+
+SCOPED PRECISELY, because the loose version of the claim is false. It is NOT
+true that "serve_dashboard.py is off the harness path" - evaluate_scenarios.py:31
+and evaluate_extended_metrics.py:25 both import from it. The correct claim is the
+scorched round's: ZERO DIFF LINES IN _build_evaluation OR ANYTHING IT CALLS.
+Verified mechanically: `git diff 7f951cb HEAD -- serve_dashboard.py` matches zero
+lines touching _build_evaluation, _cell_color, _unreachable_cause_of, _fire_color
+or _veg_color. The changed hunks are _slim_panel, _capture_frame, _start and the
+HTML/JS blob only.
+
+Section 2 also proves it empirically rather than by argument: _sc_control.py:30
+imports _build_evaluation from the patched file, and the eval dict came back
+identical on all three combos.
+
+3b1ffbf's forward obligation - "the next round that touches simulation source
+must run the gate again" - was already discharged by 7f951cb
+(outputs/_df_rbgate.log, RBGATE_EXIT=0), so this round inherits a clean gate
+rather than an outstanding one. Saving: ~1h17m.
+
+--------------------------------------------------------------------------------
+7. TWO THINGS THAT WENT WRONG, AND WHAT THEY COST
+--------------------------------------------------------------------------------
+7.1  THE GATE READ "FAIL" ON ITS FIRST RUN, AND THE INSTRUMENT WAS AT FAULT
+     _sc_control.py writes its JSON only once, at the very end of all three
+     combos. The repo already ships _sc_control_pre.json and
+     _sc_control_post.json, committed at 3b1ffbf. A first run of the comparator,
+     fired while both arms were still in flight, therefore read THOSE files - and
+     reported FAIL on the negative control, correctly, because in that round
+     cellcolor was the POSITIVE control and was required to differ.
+     Nothing was wrong with the patch. The wait condition was wrong: it tested
+     for files that already existed.
+     Fixed twice over. This round's artifacts are written under distinct tags
+     (_sc_control_fovpre / _sc_control_fovpost) so they cannot collide with a
+     previous round's, and _fov_compare.py now prints the age and provenance of
+     both inputs and refuses to run on anything older than the patch. 3b1ffbf's
+     committed artifacts were restored untouched after the run overwrote them.
+     Recorded because the failure mode is the repo's own documented
+     instrument-drift hazard, and this time it was caught by the result looking
+     wrong rather than by checking the instrument first.
+
+7.2  THE COMMITTED CONTROL ARTIFACTS DO NOT REPRODUCE IN THIS CONTAINER
+     Running the SAME combo and seed as 3b1ffbf's recorded post arm gives a
+     different stdout here: 99 diff lines for D/east/half alone - victim
+     detections at different steps (16 -> 15, 19 -> 17), different monitoring
+     values (avg_norm_ig 0.7713 -> 0.7749, uncertain_cells 1539 -> 1480), and a
+     firefighter casualty at (44,40) that does not occur here at all.
+     THIS IS THE ENVIRONMENT, NOT THE PATCH, and section 2 proves it: the pre arm
+     (unpatched, this interpreter) is byte-identical to the post arm (patched,
+     same interpreter) on every field. The delta against the committed file is
+     therefore 100% platform and 0% patch.
+     The diff is preserved at outputs/_fov_platform_drift.diff.
+     CONSEQUENCE FOR FUTURE ROUNDS, and the reason this is in the report rather
+     than a footnote: byte identity in this container must ALWAYS be measured
+     pre vs post on one interpreter. Comparing a future post run against the
+     committed Windows-era digests would read as catastrophic and would be wrong
+     - the same shape of false alarm already recorded at e703861.
+
+--------------------------------------------------------------------------------
+8. WHAT THE FRAME DOES AND DOES NOT CLAIM
+--------------------------------------------------------------------------------
+Carried forward from Part 1 because the brief's framing would have made this
+report inaccurate, and because it is the sentence a reader of the dashboard needs.
+
+    The square frame is the EXACT footprint of the UAV's cell/fire observation -
+    Chebyshev radius 8, 289 cells, the same 289 that is the DQN's input width.
+    It is ALSO the exact bounding box of a separate, narrower test: victim
+    detection is Euclidean over 197 cells. For that one purpose the frame
+    overstates by 92 cells, 31.83%, all of them in the corners (4 at ring 6, 28
+    at ring 7, 60 at ring 8).
+
+The brief's instruction to state "the frame shows the bounding box, not the true
+footprint" is therefore only half right, and was not adopted as written: it is a
+true footprint for the primary consumer and a bounding box for the secondary one.
+Nor is the square a UI convention approximating a disc - README.md:139 says
+"technically it is not a radius, since observed areas have square shapes".
+
+Four of the brief's premises were corrected on evidence in Part 1 and all four
+are carried here: the ring is not an off-by-one (1.5 / Part 1 section 1); the
+square is exact for Chebyshev sensing (this section); firefighters and victims
+needed different answers from the one requested (1.2, 1.3); and black fails on
+this palette (4.1).
+
+--------------------------------------------------------------------------------
+9. NOT DONE, AND WHY
+--------------------------------------------------------------------------------
+  * Canvas_Grid_Visualization.py left untouched per decision 1, so the mesa
+    surface keeps its 19x19 ring, its four open corners (the `if` at :124 should
+    be `elif`) and its 0.5-cell overshoot. The one-ring difference between the
+    two surfaces is by decision and is recorded here rather than discovered later.
+  * The mesa PANEL (src_extension/dashboard/live_dashboard_panel.py) does not
+    carry the fire-d column. The brief scoped this round to serve_dashboard.py
+    and main.py; dashboard_state_builder.py was unavoidable because that is where
+    firefighter_view is built, but widening to a third display file was not.
+    The mesa panel therefore shows one fewer column than the web dashboard.
+  * The uav_executor dead input is RECORDED, NOT FIXED, per decision 5. Four
+    sites - uav_executor.py:637-641, 1158-1162, 1786-1790, 4336-4340 - read
+    getattr(model, "UAV_OBSERVATION_RADIUS", getattr(model, "observation_radius",
+    8)) against attributes that exist nowhere in the tree, so they resolve to the
+    hardcoded literal 8 and would not follow a config change. This is the TENTH
+    instance of the defect class documented at common_fixed_variables.py:461-472.
+    It is simulation source; touching it would have forfeited the display-only
+    gate exemption. It needs its own round.
+  * No victim-detection disc overlay. The 92-cell corner discrepancy in section 8
+    is documented, not drawn; a second overlay was not requested.
+
+--------------------------------------------------------------------------------
+APPENDIX - ARTIFACTS
+--------------------------------------------------------------------------------
+instruments
+  _fov_capture.py          dump one real dashboard frame to JSON
+  _fov_render.py           render a frame through the SHIPPED drawMap, headless
+  _fov_pixelaudit.py       two-way containment audit of the pixel delta
+  _fov_payload.py          layer-A overlay payload digest
+  _fov_beforeafter_png.py  side-by-side composite
+  _fov_compare.py          the gate (staleness-guarded)
+  _fov_testsets.py         pytest failing NAME SET comparison
+
+results
+  _fov_gate.txt                  the gate, full output
+  _fov_testsets.txt              the name-set comparison
+  _fov_pytest_pre.log            8 failed / 581 passed, 42:55
+  _fov_pytest_post.log           8 failed / 581 passed, 43:29
+  _sc_control_fovpre.json        pre arm, 3 combos, 240 steps
+  _sc_control_fovpost.json       post arm, same
+  _sc_control_fovpre_*.stdout.txt / _sc_control_fovpost_*.stdout.txt
+  _fov_pixelaudit_r30.json       nominal:      10189/10189, 0 stray
+  _fov_pixelaudit_clip.json      edge-clipped:  5266/5266,  0 stray
+  _fov_payload_pre.json / _fov_payload_post.json
+  _fov_platform_drift.diff       section 7.2
+
+images
+  _fov_beforeafter.png     before/after, real drawMap both sides
+  _fov_render_pre.png / _fov_render_post.png
+  _fov_render_clip.png     three corners and an edge
+  _fov_render_probmode.png probability mode
+  _fov_live_map.png        the real server, driven end to end
+
+Playwright needed executable_path="/opt/pw-browsers/chromium": it pins Chromium
+revision 1234 and this image carries 1194. Chromium 141.0.7390.37 was used.
+The pre-arm git worktree at 7f951cb was removed after the run.
