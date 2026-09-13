@@ -1,0 +1,1063 @@
+================================================================================
+DRONE FOV FRAME (DISPLAY-ONLY) - PART 1: DESIGN
+draw each drone's observation radius as a square frame on the dashboard
+================================================================================
+Repo      : /home/user/SAS   (the brief says E:\Projects\SAS; this round runs in
+            the Linux container, same tree, same HEAD)
+Branch    : claude/drone-fov-frame-dashboard-u7rzg4
+            DISCREPANCY, benign: the brief said to expect `depot-cost-round`.
+            Both refs exist and BOTH point at 7f951cb, so the checkout the brief
+            asked for is the checkout in use. Work proceeds on the session's
+            designated branch.
+HEAD      : 7f951cb "Docking deadlock: FIXED at both modes, shipped ON, every
+            gate item passes" - confirmed, working tree clean.
+Runtime   : sys.version 3.11.15 (main, Mar  3 2026) [GCC 13.3.0]
+            mesa.__version__ 1.2.1  (confirmed, printed)
+            DISCREPANCY: the brief specifies Python 3.10 and prior rounds ran
+            3.10.11 on Windows. This container has 3.11.15 and no .venv; mesa,
+            matplotlib, pytest and playwright had to be pip-installed. Nothing
+            in this design depends on the minor version, but Part 3's byte
+            identity is measured PRE vs POST *on this interpreter*, never
+            against a Windows-recorded digest. Cross-interpreter comparison is
+            not claimed and must not be.
+Horizon   : 240 steps for the control; the dashboard's own default is 80 steps,
+            seed 42 (serve_dashboard.py:523,525).
+Scope     : DESIGN ONLY. No source file modified. `git status --porcelain` is
+            clean. Probes live in the session scratchpad, not in the repo.
+            .claude/worktrees/** excluded from every search.
+
+All file:line references are to the checkout at 7f951cb.
+
+--------------------------------------------------------------------------------
+EXECUTIVE SUMMARY
+--------------------------------------------------------------------------------
+The feature is small and the dashboard half is genuinely ~10 lines, as the prior
+round estimated. But four of the brief's premises are wrong, and one of them
+would have silently produced a validation that proved nothing.
+
+1. THE RING IS NOT AN OFF-BY-ONE, AND IT IS NOT A TIGHT BOUND EITHER. The mesa
+   ring sits at Chebyshev exactly 9; the observed set is Chebyshev <= 8; the
+   intersection is EMPTY (verified at all 2500 grid positions). Its interior is
+   exactly the 289-cell FOV. So it is a border drawn strictly OUTSIDE the
+   observed area - deliberate in effect, and forced given centred cell rects.
+   But the bar is drawn at the ring cell's CENTRE, so the visible line lands 0.5
+   cell beyond the true edge: an 18.0-cell span for a 17-cell footprint, a 12.1%
+   area overstatement, with four OPEN corners. Section 1.
+
+2. THE SQUARE IS EXACT, NOT AN APPROXIMATION - the brief has this backwards.
+   Cell/fire observation is Chebyshev (moore=True), returning precisely the
+   17x17 = 289-cell square. The brief's "detection is Euclidean, so a square is
+   an approximation of a circular region" describes only VICTIM detection, a
+   second and narrower consumer: Euclidean dist <= 8 over 197 cells. The square
+   is the EXACT footprint for fire observation AND the EXACT bounding box of the
+   victim disc. It overstates victim detection by 92 cells (31.83%), all of them
+   in the four corners. Section 2.
+
+3. BUILD NOTHING FOR THE FIREFIGHTER; FOR THE VICTIM, NOT A SQUARE. Rescue is
+   SAME-CELL (radius 0), dispatch is unbounded, and the one real firefighter
+   range is state-dependent (3 idle / 1 assigned) and Manhattan. The victim has
+   exactly one real radius, VICTIM_FLEE_TRIGGER_DISTANCE = 3 - but it is a
+   MANHATTAN DIAMOND, and the square the brief asks for would put 24 of its 49
+   cells (49%) outside the actual range. Section 3.
+
+4. BLACK FAILS, AND SO DOES EVERY OTHER FLAT COLOUR. Black is dE2000 = 0.0000
+   against five distinct semantic marks at six code sites, and leaves 63.40% of
+   real frame cells below WCAG 3:1. An exhaustive sweep of 140,608 sRGB values
+   puts a hard ceiling of 2.73 dE2000 on ANY single opaque colour - below the
+   just-noticeable difference. The palette contains three full luminance ramps
+   and has no free luminance slot. The answer is a TWO-TONE casing (white core,
+   black casing): 38.37 dE2000 worst-case, 14x the single-colour ceiling.
+   Section 4.
+
+5. THE BRIEF'S POSITIVE CONTROL IS THE WRONG INSTRUMENT, AND WOULD HAVE PASSED
+   BY LOOKING LIKE A FAILURE. `cells` is built inside a Fire-only loop; no UAV
+   can contribute a byte. A cell-colour digest over a dashboard FOV overlay is
+   guaranteed IDENTICAL - which is precisely the "the change was never
+   exercised" reading the brief wants to rule out. cellcolor must be DEMOTED to
+   a negative control and replaced by a three-layer instrument ending in a
+   rendered-pixel digest. Section 7.
+
+ONE FURTHER CORRECTION, TO THE BRIEF'S TEST BASELINE. It is not "8 plus whatever
+the dock fix added": the dock fix added 19 PASSING tests and ZERO failures. The
+baseline is 8 failed / 581 passed / 5 warnings. And the failing NAME SET is NOT
+the scorched round's set - the counts both read 8 while one name swapped out and
+another swapped in. That is the exact coincidence the brief warned about, and it
+has happened again between these two rounds. Section 7.4.
+
+FIVE DECISIONS FOR THE MAINTAINER are collected in Section 8. The one that must
+be settled before any code is written is 19-vs-17 (8.1).
+
+================================================================================
+1. THE EXISTING MESA-SURFACE FOV RENDERING
+================================================================================
+
+1.1  QUOTED IN FULL
+--------------------------------------------------------------------------------
+Canvas_Grid_Visualization.py:97-127, verbatim, the whole render method up to and
+including the frame block (line numbers added):
+
+     97      def render(self, model):
+     98          grid_state = defaultdict(list)
+     99          for x in range(model.grid.width):
+    100              for y in range(model.grid.height):
+    101                  cell_objects = model.grid.get_cell_list_contents([(x, y)])
+    102                  for obj in cell_objects:
+    103                      portrayal = self.portrayal_method(obj)
+    104                      if portrayal:
+    105                          portrayal["y"] = y
+    106                          portrayal["x"] = x
+    107                          # To avoid throwing "KeyError: 'Layer'" when prob or flag burning maps are shown,
+    108                          # so UAV won't get its "Layer" attribute in the "portrayal_method(obj)", NUM_AGENTS must
+    109                          # be set to 0.
+    110                          grid_state[portrayal["Layer"]].append(portrayal)
+    111                          if type(obj) is UAV:
+    112                              limit = UAV_OBSERVATION_RADIUS + 1
+    113                              for i in range (- limit, limit + 1):
+    114                                  for j in range (- limit, limit + 1):
+    115                                      if i == -limit or i == limit or j == -limit or j == limit:
+    116                                          if not model.grid.out_of_bounds((x + i, y + j)):
+    117                                              portrayal_aux = self.portrayal_method(obj)
+    118                                              portrayal_aux["x"] = x + i
+    119                                              portrayal_aux["y"] = y + j
+    120                                              portrayal_aux["Color"] = "Black"
+    121                                              if i == -limit or i == limit:
+    122                                                  portrayal_aux["h"] = "1"
+    123                                                  portrayal_aux["w"] = "0.2"
+    124                                              if j == -limit or j == limit:
+    125                                                  portrayal_aux["h"] = "0.2"
+    126                                                  portrayal_aux["w"] = "1"
+    127                                              grid_state[portrayal_aux["Layer"]].append(portrayal_aux)
+
+The UAV portrayal it copies, main.py:97-105:
+
+     97      portrayal.update(
+     98          {
+     99              "Color": color,
+    100              "stroke_color": color,
+    101              "Layer": 1,
+    102              "h": 0.8,
+    103              "w": 0.8,
+    104          }
+    105      )
+
+1.2  IS THE RING ONE CELL TOO LARGE?
+--------------------------------------------------------------------------------
+Measured, exhaustively:
+
+  UAV_OBSERVATION_RADIUS      = 8              (common_fixed_variables.py:475)
+  limit                       = 9              (:112)
+  observed set                = Chebyshev <= 8 = 289 cells (17x17)
+  ring set                    = Chebyshev == 9 =  72 cells (19x19 perimeter)
+  ring INTERSECT observed     = 0 cells        <-- verified at all 2500 positions
+  interior of the ring        = 289 cells      = exactly the observed set
+  ring at limit = 8 instead   = 64 cells, ALL 64 inside the observed set
+
+So the ring does NOT paint over wrong cells. It is a border drawn on the cells
+immediately outside the footprint, and what it encloses is exactly the FOV. In
+CELL terms it is correct, not off-by-one.
+
+In PIXEL terms it overstates. GridDraw.js defaults xAlign/yAlign to 0.5
+(/usr/local/lib/python3.11/dist-packages/mesa/visualization/templates/js/
+GridDraw.js:81-82), so each bar is centred in its ring cell - half a cell beyond
+the FOV boundary. At the mesa surface's 10 px cells (main.py:115: 10*WIDTH over
+WIDTH cells):
+
+  true FOV block, x            170.0 .. 340.0 px
+  right vertical bar           344.0 .. 346.0 px      -> 4.0 px of daylight
+  left/right bar centrelines   165.0 and 345.0        -> 180.0 px = 18.0 cells
+
+An 18.0-cell span for a 17-cell footprint: 324 vs 289 cell-areas, a 12.1%
+overstatement for any viewer who reads the drawn line as the bound.
+
+1.3  DELIBERATE, OR AN OFF-BY-ONE? - VERDICT
+--------------------------------------------------------------------------------
+VERDICT: INTENTIONAL-BY-CONSTRAINT in its radius choice, CARELESS in execution.
+It is not a bug to be "fixed" by moving the ring inward, and the dashboard
+should match its INTENT (a border that occludes nothing) rather than its
+PIXELS (a border 0.5 cell out with open corners).
+
+For deliberate:
+  - radius+1 is the smallest limit at which a CENTRED bar occludes no observed
+    cell. At limit=8 the bar would cover the outer 20% of all 64 outermost
+    observed cells - hiding the terrain the frame exists to advertise.
+  - The observed area really is square, and the repo says so in prose:
+    README.md:139 - "technically it is not a radius, since observed areas have
+    square shapes". So the square is not a UI convention approximating a disc;
+    for fire observation it is the true shape (Section 2).
+  - README.md:28-30 describes the file as "a Mesa class, modified for making UAV
+    observation areas visible on the graphical web interface."
+
+For careless:
+  - Lines 111-127 carry no comment at all (measured: zero '#' in that range).
+  - The only commit touching them is a4a01b4, a squashed whole-file import whose
+    message is just "Add core project files and update README" - it states no
+    intent. (Note: a4a01b4 is the repo's SECOND commit, so git can establish
+    "byte-identical since the first code commit" but cannot by itself separate
+    upstream-verbatim from extension-modified-before-import. The upstream
+    attribution rests on README.md:28-30, not on git.)
+  - The four corners render OPEN (1.4).
+  - w/h are strings where the very same portrayal dict uses numeric 1 and 0.8.
+  - stroke_color is never overridden, so the bars are not actually black (1.5).
+
+ONE CORRECTION TO MY OWN FIRST READING, recorded because it changes the argument:
+radius+1 is forced only if bars must be CENTRED. mesa 1.2.1 does support
+per-portrayal xAlign/yAlign, and clamps them to [w/2, 1-w/2] = [0.1, 0.9] for
+w=0.2 - so limit=9 with xAlign 0.1/0.9 would put the bar's inner edge exactly on
+the FOV boundary, tight and still non-occluding. The mesa surface could be exact.
+It simply is not.
+
+1.4  THE TWO ALLEGED FLAWS - ONE CONFIRMED, ONE REFUTED
+--------------------------------------------------------------------------------
+The prior round (outputs/basestation_part1.txt section 6.5) alleged two.
+
+(a) STRING h/w "work only by JavaScript coercion"  -> REFUTED as a defect.
+    Every operator mesa applies to w/h is *, / or - (GridDraw.js:90-91, 210-211,
+    219-220, 223-224), all numeric-coercing; clamp() guarantees a numeric
+    alignment before the later +. Verified in node against the real arithmetic:
+    w="0.2" gives dx=2 (typeof number), w/2=0.1, x0=164 - identical to the
+    numeric case across a 560-case sweep. It is a style inconsistency, not a
+    flaw, and needs no fix.
+
+(b) NOTCHED CORNERS  -> CONFIRMED, with the exact shape.
+    Lines 121-123 and 124-126 are two independent `if`s mutating ONE dict, and
+    the j-branch runs second. At a corner both fire, so the corner cell keeps
+    h="0.2", w="1" - a HORIZONTAL bar, and no vertical bar. Measured w/h
+    histogram over a real render: 114 x ("1","0.2") + 102 x ("0.2","1") = 38 + 34
+    per UAV, i.e. top/bottom rows 19 cells wide but left/right columns only 17
+    cells tall. The frame is an OPEN rectangle with four gaps of 4.0 px - twice
+    the 2.0 px bar thickness. The one-word fix is `elif` at line 124.
+
+A third defect, not previously recorded: outputs/basestation_part1.txt:1159 cites
+"agents.py:294-299" for the FOV. That range is return-to-base counters. The FOV
+read is agents.py:355-367.
+
+1.5  THE FRAME IS NOT BLACK
+--------------------------------------------------------------------------------
+Line 120 overrides "Color" only. "stroke_color" survives from main.py:100 as the
+UAV's ROLE colour, and GridDraw.js:78 only defaults stroke_color when it is
+absent; :228-230 then strokes the rect in it before filling. Measured frame
+portrayal on a live model:
+
+  {'Shape':'rect','Filled':True,'h':'0.2','w':'1','Layer':1,
+   'Color':'Black','stroke_color':'#FF00FF','x':16,'y':16}
+
+Measured stroke_color counter over 216 bars: {'#FF00FF': 144, '#00FFFF': 72},
+matching roles [fire_tracker, fire_tracker, victim_searcher]. On a 2.0-2.24 px
+bar a 1 px stroke on each side is most of the visible width.
+
+So "the base exemplar draws a black square" is right in intent and wrong in two
+details: the square is OPEN at the corners, and it is not black - it is
+black-cored with role-coloured edging, by accident.
+
+1.6  MEASURED PORTRAYAL COUNT, AND CLIPPING
+--------------------------------------------------------------------------------
+At spawn: layer 0 = 2500 ground, layer 1 = 219 (216 frame bars + 3 UAV bodies),
+layer 3 = 8. The prior round's 216 is CONFIRMED - 3 UAVs x 72.
+
+But "no clipping" is true only at spawn. The UAVs spawn clustered at (25,25),
+(26,25), (25,26), 9+ cells from every edge. Over a longer run the frame count
+falls to 174-216, first clipping around step 64. My own independent measurement
+over the full 240-step horizon:
+
+  seed 101, 240 steps : >=1 UAV FOV block clipped by a grid edge on  76/240 steps = 31.7%
+  seed 202, 240 steps : >=1 UAV FOV block clipped by a grid edge on  95/240 steps = 39.6%
+
+Clipping is the normal case over a full run, not an edge case. The out_of_bounds
+guard at :116 is live, and the dashboard MUST clamp or it will draw off-grid.
+
+================================================================================
+2. UAV_OBSERVATION_RADIUS AND HOW DETECTION ACTUALLY USES IT
+================================================================================
+
+2.1  THE CONSTANT
+--------------------------------------------------------------------------------
+common_fixed_variables.py:475-477
+
+    UAV_OBSERVATION_RADIUS = 8
+    side = ((UAV_OBSERVATION_RADIUS * 2) + 1)          # = 17
+    N_OBSERVATIONS = side * side                       # = 289
+
+N_OBSERVATIONS is the DQN state-vector width, printed at main.py:112 and :137.
+The learning agent's observation is literally 289 slots - one per Chebyshev cell.
+That is independent, in-model confirmation that the canonical observation shape
+here is the 17x17 SQUARE, not a disc.
+
+2.2  THE CONSUMERS, CLASSIFIED BY METRIC
+--------------------------------------------------------------------------------
+  agents.py:355-362  surrounding_states()
+      get_neighborhood(self.pos, moore=self.moore, include_center=True,
+                       radius=UAV_OBSERVATION_RADIUS)
+      self.moore = True, set unconditionally at agents.py:232 and never
+      reassigned.  -> CHEBYSHEV. Measured 289 cells, set-equal to the full 17x17
+      block. (moore=False would give 145 - so square-vs-diamond is settled, not
+      assumed.)
+
+  src_extension/monitoring/local_uav_monitor.py:53-61  _visible_cells()
+      identical call, identical cell set.  -> CHEBYSHEV.
+
+  wildfire_model.py:1287-1288  _detect_victims_in_uav_radius()
+      dist = ((px - vx) ** 2 + (py - vy) ** 2) ** 0.5
+      if dist <= UAV_OBSERVATION_RADIUS:
+      -> EUCLIDEAN. Measured 197 integer cells.
+
+  common_fixed_variables.py:476-477  side / N_OBSERVATIONS  -> CHEBYSHEV (derived).
+
+  src_extension/execution/uav_executor.py:637-641, 1158-1162, 1786-1790, 4336-4340
+      NOT CONSUMERS. Each reads
+        getattr(model, "UAV_OBSERVATION_RADIUS", getattr(model, "observation_radius", 8))
+      Neither attribute exists anywhere in the tree - `observation_radius` appears
+      only on those four fallback lines themselves. Measured: hasattr False at
+      class and instance level for both names; the expression resolves to the
+      HARDCODED LITERAL 8. Changing the config constant would not move them.
+      Separately, they score Euclidean UAV-to-UAV DISPERSION (a mutual-separation
+      penalty inside direction scoring), never sensing - so they are irrelevant
+      to the frame even if the dead input were repaired.
+      This is a TENTH instance of the dead-input defect class the repo documents
+      at common_fixed_variables.py:461-472. Out of scope here; flagged in 8.5.
+
+2.3  THE EXACT GEOMETRY - WHAT THE FRAME DOES AND DOES NOT REPRESENT
+--------------------------------------------------------------------------------
+  Chebyshev square  (fire/cell observation)   289 cells   17x17
+  Euclidean disc    (victim detection)        197 cells   bounding box 17x17
+  square - disc                                92 cells
+  overstatement of victim detection            92/289 = 31.83% of the frame
+  disc as a fraction of the square            197/289 = 68.17%
+
+The 92 mismatched cells lie entirely in the outer three Chebyshev rings and in
+the corner regions: 4 at ring 6, 28 at ring 7, 60 at ring 8. Rings 0-5 are
+identical under both metrics.
+
+CORRECTING THE BRIEF. The brief says: "Detection is Euclidean (dist <= radius)
+and iterates EVERY UAV with no role filter - so a square frame is an
+approximation of a circular region. State that explicitly: the frame shows the
+bounding box, not the true footprint."
+
+That is right about victim detection and wrong as a general statement. The
+honest sentence, which this design adopts:
+
+    The square frame is the EXACT footprint of the UAV's cell/fire observation
+    (Chebyshev radius 8, 289 cells - the same 289 that is the DQN's input
+    width). It is ALSO the exact bounding box of the separate, narrower victim
+    detection test, which is Euclidean over 197 cells; for that one purpose the
+    frame overstates by 92 corner cells, 31.83%.
+
+So the brief's instruction to say "bounding box, not true footprint" would
+itself be inaccurate if applied to the frame as a whole. It is a true footprint
+for the primary consumer and a bounding box for the secondary one.
+
+Is the exemplar's box a UI convention rather than the real bound? NO - and this
+is worth stating plainly because the brief allows for it. README.md:139 says
+"technically it is not a radius, since observed areas have square shapes". The
+square is the model's real observation shape. The only convention in the mesa
+rendering is the +1 offset and the centred bar (Section 1.2).
+
+2.4  ROLE FILTER, AND DOCKED UAVs
+--------------------------------------------------------------------------------
+"Iterates EVERY UAV with no role filter" - CONFIRMED. wildfire_model.py:1261 is
+a bare type test:
+
+    uav_agents = [a for a in self.schedule.agents if type(a) is agents.UAV]
+
+The only short-circuits (1266-1284) filter the VICTIM (dead / cancelled /
+rescued / unreachable / no position), never the UAV. Roles exist but govern
+sector assignment and planning, never sensing; role does appear later in the
+method (1315-1335) but only to attribute a detection that has already happened.
+Note for any role-coloured design: the Mesa UAV agent carries NO role attribute
+at all - role lives on managed_uav_states and must be joined by id.
+
+DOCKED UAVs STILL DETECT - measured, not inferred. With rtb_docked = True forced
+on a UAV at (25,25) and a victim at (28,25), _detect_victims_in_uav_radius()
+detected it. A docked UAV is never removed from the grid, keeps a valid pos, only
+declines to MOVE (agents.py:780-782), and its local monitor still runs every step.
+So the frame must NOT be suppressed when docked - suppressing it would
+misrepresent the model.
+
+In any case the branch is unreachable by default: BASE_STATION_MODE = 0
+(common_fixed_variables.py:335), _build_base_station returns None at
+wildfire_model.py:616-617, and _apply_return_to_base returns before any state
+write at agents.py:600-601 when mode < 2. Measured: no UAV docks in 120 steps
+even forced to mode 3. See 5.4.
+
+================================================================================
+3. FRAMES AROUND FIREFIGHTERS AND VICTIMS
+================================================================================
+The maintainer also asked for a frame around firefighters and victims. Neither
+observes anything. Here is what each range actually is. No radius is invented.
+
+3.1  FIREFIGHTER - RECOMMENDATION: BUILD NOTHING
+--------------------------------------------------------------------------------
+THE RESCUE CONDITION IS SAME-CELL. agents.py:1503-1504:
+
+    if self.pos == self.target_pos:
+        self.exiting = True
+
+target_pos is refreshed to the bound victim's LIVE cell at the top of every
+advance (agents.py:1416-1454, called at :1461), so this is a genuine co-location
+test, not a stale waypoint. RADIUS 0. A frame cannot draw a radius of zero, and
+the firefighter's own 0.7-cell marker already occupies exactly that cell.
+
+THERE IS NO DISPATCH RADIUS. src_extension/planning/rescue_planner.py:646-652
+picks the nearest available firefighter by argmin over Manhattan distance with
+NO cutoff of any kind. Measured dispatch distances up to 73 cells. There is no
+reachability cap either: the route test (agents.py:2034-2068) is an unbounded
+BFS over the whole grid.
+
+A REAL STANDOFF EXISTS BUT CANNOT BE ONE FRAME. IDLE_RETREAT_SAFETY_BUFFER = 3
+(agents.py:1329) applies when the firefighter is idle (agents.py:1696-1700);
+when assigned, the test drops to adjacency / distance <= 1 (agents.py:1702-1704).
+So it is 3 idle, 1 assigned - state-dependent, so no single frame radius is
+correct. It is also Manhattan, and it describes where the FIRE is, not anything
+the firefighter senses. And it is not scenario-overridable at all:
+apply_scenario_config setattrs only the cfv and wf modules
+(local_adaptation_generator.py:270-273), never `agents`, so a frame built on it
+would hard-code 3 forever - the same dead-input trap as 2.2.
+
+Constants a keyword grep would wrongly attribute: SECURITY_DISTANCE = 10 is
+UAV-to-UAV spacing; STANDOFF_MIN/MAX/IDEAL are UAV-side; FF_RESCUE_ABSENCE_MIN/
+MAX_STEPS are durations in steps, not cell radii; IDLE_RETREAT_MAX_CELLS = 6 is
+a leash on a remembered origin cell, not a radius around the unit.
+
+VERDICT (b): no radius exists that a frame could honestly mean. A frame here
+would be a pure MARKER - and it would be the FOURTH marker this entity already
+carries (0.7-cell status rect, dashed assignment line, walked trail).
+
+IF the maintainer wants firefighter information on the map, the honest artefact
+is not geometry. `nearest_fire_dist` is already computed every step and thrown
+away (agents.py:1481-1487, 1524-1528). Surface it as one more column in the
+existing firefighter table (serve_dashboard.py:746-747): one payload field, zero
+new geometry, and it states the thing a frame could only gesture at.
+
+3.2  VICTIM - ONE REAL RADIUS, BUT NOT A SQUARE
+--------------------------------------------------------------------------------
+VICTIM_FLEE_TRIGGER_DISTANCE = 3 (common_fixed_variables.py:142) IS a genuine
+radius centred on the victim. Spec at :122-126: "A victim holds its cell until
+the nearest ACTIVELY BURNING cell is within VICTIM_FLEE_TRIGGER_DISTANCE
+(manhattan)". Live at agents.py:1070+. It fires on a measured 16.1% of victim
+steps. A region around a victim at r=3 really does mean "the distance at which
+it flees from fire" - the brief's reading is right on meaning.
+
+BUT IT IS A MANHATTAN DIAMOND. A square of half-width 3 has 49 cells; the
+diamond has 25. 24 of the square's 49 cells (49%) are outside the actual range,
+and its corners sit at Manhattan 6 - double the trigger. Drawing the requested
+square here would misstate the rule by a factor of two at the corners.
+
+NOT candidates, for the record:
+  - VICTIM_FLEE_MAX_DISPLACEMENT = 6 is a leash on `leash_anchor`, which
+    measurably diverges from the victim's own cell (27.6% of advance calls, by
+    up to 15 cells) precisely when the leash binds. A frame around the victim
+    marker cannot mean it.
+  - The detection radius is centred on the UAV and Euclidean; drawing it around
+    a victim would duplicate the UAV frame in the wrong shape and place.
+
+VERDICT (a) with a shape correction. If geometry is wanted, it must be a
+Manhattan diamond at r=3, read through the accessor at draw time (an accessor
+already exists) so the kill switch stays live, and suppressed for terminal
+victims and victims in firefighter custody, for whom the rule does not run.
+
+MY RECOMMENDATION: do not draw the diamond. At 5 victims it is five 25-cell
+overlays on a map that already carries five full-cell status circles - and the
+victim circle's diameter is exactly one cell (serve_dashboard.py:716), so
+anything at r<=1 fuses with it. The same information at a fraction of the ink:
+add a thin ring or colour shift to the EXISTING victim circle whenever the
+trigger condition holds. That encodes "in danger / fleeing", a boolean the
+current five-status colour map genuinely does not carry - and which is what an
+operator scanning the map actually needs. Offer both; recommend the ring.
+
+3.3  WHY THE UAV PRECEDENT DOES NOT TRANSFER
+--------------------------------------------------------------------------------
+The UAV frame is a square because the UAV's observation set IS a Chebyshev
+square. Every firefighter and victim range in this model is Manhattan. So "the
+mesa surface already draws such a frame" is true but is not a reusable precedent
+for either entity. Canvas_Grid_Visualization.py:111 special-cases
+`type(obj) is UAV` and nothing else - correctly.
+
+================================================================================
+4. PALETTE
+================================================================================
+Methodology mirrors the scorched-colour round (3b1ffbf). CIEDE2000 and the CVD
+simulations were written from scratch - no colour library is installed. The
+implementation was validated against 17 Sharma et al. reference pairs (worst
+absolute error 4.2e-05) and reproduces outputs/scorchedcolour_part1.txt section
+2.2 to the digit. Two independent implementations were run (mine and a second
+agent's) and agree.
+
+4.1  THE CO-OCCURRING SET
+--------------------------------------------------------------------------------
+50 distinct nominal colours (the scorched round faced 37; this round is a
+superset because it must also survive probability mode and the depot):
+
+  VEGETATION_COLORS  12   #414141 #9eff89 #85e370 #72d05c #62c14c #459f30
+                          #389023 #2f831b #236f11 #1c630b #175808 #124b05
+  FIRE_COLORS        12   #414141(shared) #d8d675 #eae740 #fefa01 #fed401
+                          #feaa01 #fe7001 #fe5501 #fe3e01 #fe2f01 #fe2301 #fe0101
+  SMOKE_COLORS        1   #ababab
+  burnt / scorched    2   #2b2b2b / #895e00
+  spared-veg mute     1   #2f4a1a          (see the premise correction below)
+  canvas ground       -   #1c630b          (duplicate of VEGETATION_COLORS[9])
+  BLACK_AND_WHITE    11   #ffffff .. #000000   (probability mode)
+  UAV role colours    6   #00FFFF #FF00FF #0066CC #FF8C00 #888888 #000000
+  victim statuses     5   #FFFF00 #FFA500 #00AAFF #00AAFF #000000
+  firefighter         2   #00FFCC / #000000
+  depot               1   #770099 (plus a 0.22-alpha fill)
+  assignment lines    1   rgba(255,215,90,*)
+  trails              2   rgba(0,255,204,0.35), rgba(120,170,255,0.30)
+  gridlines           1   rgba(0,0,0,0.18)
+
+Resolving alpha compositing expands this to 239 effective on-screen values.
+
+TWO PREMISE CORRECTIONS the brief's colour list implies:
+  - #2f4a1a (spared-vegetation mute) is DEAD CODE at HEAD and has never been
+    painted. serve_dashboard.py:126 writes every Fire cell unconditionally, so
+    the mute pass's first guard at :149 (`if key in cells: continue`) is always
+    true. Measured over a 120-step run: 300,000 cell colours emitted, ZERO
+    #2f4a1a, only 17 distinct ground colours live. It is retained in the
+    evaluation as a latent constraint, not as a live background. (Recorded as
+    still-dead three rounds after outputs/scorchedcolour_report.txt 4.1 first
+    noted it.)
+  - Probability mode is not "greys on white": it is 88.5% BARE WHITE (measured
+    mean 288 of 2500 cells above the pv >= 0.12 publish gate). All 13 overlay
+    marks are still drawn there. So a frame in probMode predominantly sits on
+    L* = 100 - the opposite luminance regime from normal mode's dark ground.
+    Any single colour tuned to one mode fails in the other.
+
+THE FRAME'S ACTUAL BACKGROUND, measured over a real run rather than assumed
+(23,572 on-grid perimeter slots): 76.90% of frame cells land on the four dark
+jungle greens (L* 27.2-48.2), 11.75% on smoke #ababab, 4.43% on burnt #2b2b2b,
+2.77% on scorched, ~3.5% on the fire ramp. 9.1% of the perimeter clips off-grid.
+
+4.2  BLACK FAILS - TWO INDEPENDENT FAILURES
+--------------------------------------------------------------------------------
+FAILURE 1, SEVERE (exact identity). dE2000 = 0.0000, in every vision condition,
+against five distinct semantic entities at six code sites:
+
+  dead victim              serve_dashboard.py:77   main.py:24
+  dead firefighter         serve_dashboard.py:176  main.py:36
+  UAV role fallback        serve_dashboard.py:72   main.py:96   ("Black")
+  the UAV marker's OWN stroke                      serve_dashboard.py:718
+  gridline base colour                             serve_dashboard.py:682
+  BLACK_AND_WHITE_COLORS[10], darkest prob cell    cfv:491, JS BW at :579
+
+This is not "close to" - it is the same value. A black frame passing over a dead
+victim is indistinguishable from it.
+
+FAILURE 2, SEVERE at thin-line scale (contrast). 63.40% of the 23,572 measured
+frame cells sit on ground where black gives less than WCAG 3:1:
+
+  #124b05  20.32% of frame cells   2.03:1   FAIL
+  #175808  19.49%                  2.44:1   FAIL
+  #1c630b  18.80%                  2.84:1   FAIL
+  #2b2b2b   4.43%                  1.48:1   FAIL   <- worst; burnt ground
+  #414141   0.36%                  2.06:1   FAIL
+
+Only smoke (9.14:1), #2f831b (4.38:1), scorched (3.67:1) and the fire ramp pass.
+
+IN FAIRNESS TO BLACK: by the scorched round's own headline metric - worst-case
+dE2000 with exact identities excluded - black scores 5.52, the best of any single
+candidate. But that metric was built for FILLED AREAS discriminated at a
+distance. It does not see exact identity, and it does not see the luminance
+contrast a 2.24 px line actually lives on. Black is the right answer to a
+question this feature is not asking.
+
+4.3  NO SINGLE OPAQUE COLOUR WORKS
+--------------------------------------------------------------------------------
+This is the finding that decides the section, and it is the same shape as the
+scorched round's - the conventional answer collapses under achromatic vision -
+but stronger, because here EVERY flat answer collapses.
+
+An exhaustive sweep of 140,608 sRGB values, each scored as
+  min over all backgrounds of dE2000, taken at the WORST of
+  {normal, protanopia, deuteranopia, tritanopia, achromatic}
+returns a hard ceiling:
+
+  best worst-case vs the 50 nominal colours    2.73 dE2000   (near #00004b)
+  best worst-case vs the 239 effective colours 1.03 dE2000   (near #000050)
+
+Both are at or below the large-patch just-noticeable difference. My own
+independent sweep over 14 named candidates agrees: the best flat candidate
+(Silver #C0C0C0) scores 1.74 worst-case across colour + greyscale + all three
+CVD types; black and magenta score 0.00 (exact collisions with #000000 and the
+fire_tracker role colour respectively); white scores 0.00 against the probMode
+canvas.
+
+THE STRUCTURAL CAUSE, measured: this palette contains THREE COMPLETE LUMINANCE
+RAMPS (VEGETATION 12, FIRE 12, BLACK_AND_WHITE 11). The 50 colours therefore
+occupy 50 distinct L* values spanning the full 0-100 range at a mean spacing of
+2.04 L*, with a largest gap of only 9.26. There is no free luminance slot to put
+a frame in.
+
+A FILLED AREA can escape into the chroma dimension - that is exactly how #895e00
+won the scorched round at 27.34 dE. A 2.24 px LINE cannot. At the dashboard's
+cs = 11.2 px the bar is 0.59 mm at 96 dpi, about 3.4 arcmin, a fundamental near
+8.8 cycles/deg - past the useful sensitivity of the chromatic channels. The line
+is detected on LUMINANCE alone, and on luminance this palette is saturated.
+The hue gap the brief asked me to look for is real (the largest is 71.7 degrees)
+and worthless: #ff1493, dead centre of it, scores 16.59 in normal vision and
+0.63 worst-case / 0.00 effective.
+
+4.4  THE RECOMMENDATION: A TWO-TONE CASING
+--------------------------------------------------------------------------------
+RECOMMEND: a 1 px #FFFFFF core inside a #000000 casing - drawn as two strokes of
+the same rectangle path, lineWidth 3 in #000000 then lineWidth 1 in #FFFFFF, on
+the Math.round(k*cs)+0.5 half-pixel convention the gridlines already use at
+serve_dashboard.py:683-684.
+
+The figure of merit for a two-tone mark is: for every background b, the line is
+visible if EITHER tone separates, so score(b) = max(dE(t1,b), dE(t2,b)), and the
+result is the minimum over b, taken at the worst vision condition.
+
+  worst-case vs the 50 nominal colours      38.37 dE2000   (14.0x the flat ceiling)
+  worst-case vs the 239 effective colours   36.55 dE2000   (35.5x)
+  worst-case in probability mode            40.32 dE2000
+  internal contrast (core vs casing)       100.00 dE2000 / 21.00:1 / dL* = 100
+  min best-tone WCAG over real frame cells   4.79:1
+  frame cells below WCAG 3:1                 0.00%   (against 63.40% for black)
+
+My own independent computation of the same scheme against the 50-colour union
+gives 40.32 worst-case across colour, greyscale and all three CVD types, versus
+1.74 for the best flat colour - agreeing with the above to within the difference
+in background sets.
+
+AND IT CARRIES A GUARANTEE NO PALETTE-DERIVED COLOUR CAN. For ANY background
+lightness in [0,100], the better of black and white is at least 50.0 L* away -
+minimum best-tone contrast 4.61:1 over the entire grey axis. This holds no matter
+what colours the palette gains later. That is why it survives the dead #2f4a1a
+mute being repaired, a new scenario palette, or another ground state being added.
+
+REJECTED, WITH NUMBERS:
+  1. BLACK (the exemplar)      - 0.0000 against five semantic marks; 63.40% of
+                                 frame cells below 3:1.
+  2. WHITE                     - 0.0000 against BW[0] and the probMode canvas;
+                                 1.11:1 against #fefa01.
+  3. EVERY high-chroma hue     - ceiling 2.73 dE. The normal-vision winner
+                                 #990033 scores 25.97 and collapses to 0.34
+                                 achromatic. This is precisely the failure for
+                                 which the scorched round rejected #66301c.
+  4. ROLE-COLOURED CORE        - collapses to 0.00 internal contrast for the
+                                 "Black" role fallback (the one role for which
+                                 the operator has no other cue), and is weak at
+                                 17.56 for relay #0066cc. See also 5.3.
+  5. DASHING AS THE FIX        - zero visibility gain: a dash alternates the same
+                                 colour with bare background, so black-dashed on
+                                 burnt is the same 1.48:1. And the dash signature
+                                 is already owned by assignment lines
+                                 (setLineDash([5,4]) at :712).
+
+TWO IMPLEMENTATION CONSTRAINTS, both load-bearing:
+  - PIXEL ALIGNMENT IS NOT COSMETIC. At an unaligned alpha=0.5 pixel straddle,
+    23.59% of frame cells drop below 3:1 (worst #2f831b at 2.40:1); all of them
+    pass at alpha=1.0 (#2f831b 4.79:1). cs = 560/50 = 11.2, and measured, only
+    multiples of 5 land on integer pixels - 80% of cell edges are fractional. Use
+    the existing Math.round(k*cs)+0.5 idiom.
+  - THE LEGEND NEEDS A TWO-TONE CHIP. setLegend at serve_dashboard.py:657-659
+    emits `<i class="sw" style="background:#RRGGBB">` swatches. A flat chip would
+    misdescribe the mark. There is already an in-file precedent for exactly the
+    fix: the probability-mode "high" swatch is written
+    `style="background:#000000;border:1px solid #444"` (:658) - a bordered chip,
+    added for the same reason (a black swatch is invisible on a dark chip
+    background). The FOV chip inverts it: `background:#FFFFFF;border:2px solid
+    #000000`.
+
+NOTE ON THE EXEMPLAR. This keeps the exemplar's black - as the casing. The frame
+still reads as a dark square around each UAV; the white core only stops it
+vanishing into dead agents, burnt ground and the prob map's dark end. The
+supervisor's requirement is honoured, not overridden.
+
+================================================================================
+5. OVERLAP
+================================================================================
+
+5.1  OVERLAP IS THE NORMAL STATE, NOT AN EDGE CASE
+--------------------------------------------------------------------------------
+Measured independently, twice, at the full 240-step horizon (my probe, params
+NUM_AGENTS=3 / NUM_FIRE_TRACKERS=1 / NUM_VICTIM_SEARCHERS=2 / NUM_VICTIMS=4 /
+NUM_FIREFIGHTERS=2, wind east - stated exactly because the fraction moves with
+them, though the conclusion does not):
+
+  seed 101, 240 steps:
+     >=1 overlapping FOV pair (17x17, cheb <= 16)   204/240 = 85.0%
+     >=1 overlapping RING pair (19x19, cheb <= 18)  229/240 = 95.4%
+     all three pairs overlapping                     15/240 =  6.2%
+     max mutually overlapping frames                       3 of 3
+  seed 202, 240 steps:
+     >=1 overlapping FOV pair                       212/240 = 88.3%
+     >=1 overlapping RING pair                      220/240 = 91.7%
+     all three pairs overlapping                     10/240 =  4.2%
+
+A second, independent probe over 60-step windows across four seed/wind/UAV-count
+arms found 0.97-1.00, with 60/60 at seed 101 and all five frames mutually
+overlapping at some step in the 5-UAV scenario. And at step 0 the three UAVs
+spawn one cell apart at (25,25),(26,25),(25,26) (wildfire_model.py:195-202,
+:222), so the very first painted frame - which the dashboard renders immediately
+on Run (serve_dashboard.py:394, :631) - is three near-identical stacked frames.
+
+The exact percentage moves with parameters and horizon; the conclusion does not.
+Overlap is the design centre. The design must look correct when frames cross,
+because they almost always cross.
+
+5.2  PER-UAV, NOT MERGED
+--------------------------------------------------------------------------------
+DECISION: draw one outline PER UAV and let them overlap. Reject the merged union.
+
+  - A merged union buys only 26% less line (measured: 150.8 vs a constant 204
+    cell-edge units) while destroying per-UAV identity, because the union is a
+    SINGLE CONNECTED BLOB on 62% of steps (37/60; 2 components on 23/60).
+    At spawn, three UAVs would produce a 72-edge outline essentially
+    indistinguishable from one UAV's 68-edge frame.
+  - It costs a marching-squares pass over ~870 cells per animation frame instead
+    of three strokeRect calls.
+  - Per-UAV frames preserve the one thing an operator cannot recover any other
+    way: HOW MANY sensors cover a given cell. That is the actual operational
+    question a coverage overlay answers.
+
+5.3  BUT NOT PER-ROLE COLOUR
+--------------------------------------------------------------------------------
+Colouring each frame by its UAV's role is tempting - it is even what mesa ships
+by accident (1.5) - and it is measurably wrong. Each role's colour has its WORST
+contrast on exactly the terrain that role operates over:
+
+  fire_tracker      #FF00FF  on hot fire #fe0101       contrast 1.08  (1.00 = invisible)
+  victim_searcher   #00FFFF  on light vegetation       contrast 1.04
+  relay             #0066CC  worst-case dE             17.56 (weak)
+  role fallback     #000000  internal contrast          0.00 / 1.00:1
+
+A role-coloured frame would disappear precisely when it matters. Identity is
+already carried by the UAV's own role-coloured marker at the centre of its frame
+(serve_dashboard.py:717). If per-frame identity is ever genuinely needed, a small
+role-coloured tick at one corner costs no legibility - but I do not recommend
+building it now.
+
+5.4  DOCKED UAVs - NO SUPPRESSION RULE
+--------------------------------------------------------------------------------
+The prior round asked whether the frame should be suppressed for a docked UAV.
+DECISION: NO, on three independent grounds.
+
+  - It would be WRONG: a docked UAV measurably still detects (2.4).
+  - It would be DEAD CODE: BASE_STATION_MODE = 0 ships as the default, no depot
+    is built, and even forced to mode 3 no UAV docks within 120 steps against an
+    80-step default horizon.
+  - It would need new plumbing: fr.uavs carries only {id, x, y, color}
+    (serve_dashboard.py:161-163); the docked flag would have to be added or
+    joined from the panel by id, for zero measured benefit.
+
+The clutter that rule was meant to fix IS real, but its cause is the mode-0 SPAWN
+CLUSTER, not docking. If suppression is ever wanted, key it on CO-LOCATION (skip
+a frame whose centre is within Chebyshev 2 of an already-drawn one) - the
+condition that actually fires - and docking falls out of it for free. I recommend
+accepting the launch cluster instead: it is self-resolving within ~8 steps and
+LAUNCH_GRACE_STEPS already tells the operator that phase is special.
+
+5.5  OCCLUSION - WHAT A FRAME HIDES
+--------------------------------------------------------------------------------
+MESA (measured with the real CanvasGrid.render). Layer keys returned are
+[0, 1, 3] - ground 0, UAV + frame bars 1, victims/firefighters 3 (layer 2 is the
+depot, empty at BASE_STATION_MODE 0). CanvasModule.js iterates layers in
+ascending numeric order. So:
+  - a frame bar DOES cover ground (layer 0);
+  - it does NOT cover victims or firefighters (layer 3, drawn above);
+  - it DOES cover another UAV's marker (same layer 1) - the winner within a
+    layer is insertion order, i.e. the UAV later in (x, then y) ascending order,
+    because render() iterates x outer, y inner.
+  - mesa additionally repaints #eee gridlines over the finished frame.
+
+DASHBOARD. Immediate-mode canvas, so statement order IS z-order. drawMap
+(serve_dashboard.py:675-719) runs: ground fill :676-680, gridlines :682-685,
+depot overlay :698-703, px/py helpers :704, trails :706-709, assignment lines
+:711-714, firefighters :715, victims :716, UAVs :717-718.
+
+INSERT THE FRAME AT :704 - after the depot loop closes, before the trails loop.
+That puts it above ground, gridlines and the depot (so it is visible, and its
+colour is not tinted 22% violet by the depot fill) and below every trail,
+assignment line and unit marker (so it can occlude no unit and no assignment
+relationship).
+
+WHAT IT CAN THEN OBSCURE: a 0.24-0.30% sliver of ground per UAV, and nothing
+else. A cell-BOUNDARY stroke occludes no marker even at exact coincidence,
+because every marker is inset from its cell edge: UAV 0.8 cell at +0.1
+(:717), firefighter 0.7 at +0.15 (:715), victim a circle inscribed exactly in
+the cell (:716). For contrast, any FILLED/translucent treatment would cover
+11.6% of the canvas per UAV. NEVER FILL.
+
+================================================================================
+6. THE PROPOSED DESIGN
+================================================================================
+Display-only. No simulation logic. Two files, and the second is optional.
+
+6.1  serve_dashboard.py - THE DASHBOARD FRAME  (the feature)
+--------------------------------------------------------------------------------
+(a) PAYLOAD - one integer, once per session, not per frame.
+    fr.uavs already carries {id, x, y, color} (:161-163), so the only new datum
+    is the radius, and it is a constant. Publish it in the /start response
+    (:395-396) beside width/height, read through the cfv MODULE HANDLE at call
+    time exactly as W and H already are at :391-392:
+
+        R = int(getattr(cfv, "UAV_OBSERVATION_RADIUS", 8))
+
+    Cost: one integer per session, against the prior round's estimate of three
+    {x,y,r} descriptors per frame. Reading via the module handle (not the star
+    import) is the repo's documented convention and keeps the value live if the
+    constant is ever added to the scenario override set.
+
+    DO NOT put the frame into `cells`. The prior round recorded the trap and it
+    is worth repeating: that would cost 216 perimeter entries or 867 filled,
+    overwriting up to 34.7% of the map's fire state.
+
+(b) GEOMETRY - one snapped strokeRect per UAV at the TRUE 17x17 bounds, clamped.
+    Inserted at :704, following the depot overlay's idiom at :700-701:
+
+        x0 = Math.round((u.x - R)     * cs) + 0.5
+        x1 = Math.round((u.x + R + 1) * cs) + 0.5
+        y0 = Math.round((H - 1 - u.y - R)     * cs) + 0.5
+        y1 = Math.round((H - 1 - u.y + R + 1) * cs) + 0.5
+    each clamped to [0, W*cs] / [0, H*cs] because the grid is non-torus
+    (MultiGrid(HEIGHT, WIDTH, False), wildfire_model.py:169). Clamping is
+    load-bearing, not defensive: it fires on 31.7-39.6% of steps (1.6).
+
+    Note the y mirror follows drawMap's existing convention. The pre-existing
+    x/y axis swap between the model and the renderer (documented in the comment
+    at :689-696) is inert while the grid is square and is not touched here.
+
+(c) COLOUR - two strokes of the same path: lineWidth 3 #000000, then lineWidth 1
+    #FFFFFF (Section 4.4).
+
+(d) LEGEND - a two-tone chip at :657-659, or the legend misdescribes the mark.
+
+This is the ~10 lines the prior round estimated, and the dashboard gets a strictly
+BETTER frame than mesa's: exact 17x17, closed corners, zero occlusion - because
+canvas can stroke on a cell boundary, which a mesa cell rect cannot.
+
+6.2  Canvas_Grid_Visualization.py - OPTIONAL, AND I RECOMMEND NOT TOUCHING IT
+--------------------------------------------------------------------------------
+The mesa frame has three real defects: open corners (:124 needs `elif`), the
+0.5-cell overshoot (xAlign/yAlign 0.1/0.9 - and note the pairing INVERTS between
+axes because GridDraw.js:71 mirrors y), and the unoverridden stroke_color (:120).
+
+RECOMMENDATION: leave all three. docs/04_clean_separation_table.md:39 and
+src_extension/ARCHITECTURE_BOUNDARIES.md:40 both say the original simulator
+stays unchanged, and Canvas_Grid_Visualization.py:111-127 is upstream code. The
+consequence - the two surfaces visibly differ by one ring - must be stated in
+the report rather than left to be discovered. This is decision 8.1.
+
+6.3  WHAT IS NOT BUILT
+--------------------------------------------------------------------------------
+  - No firefighter frame (3.1).
+  - No victim frame; a victim "in danger" ring is offered as an alternative (3.2).
+  - No docked-UAV suppression (5.4).
+  - No merged union (5.2), no per-role colour (5.3), no fill (5.5).
+  - The uav_executor dead input is NOT repaired here (2.2) - it is simulation
+    source, and touching it would forfeit the display-only gate exemption.
+
+================================================================================
+7. PART 3 VALIDATION PLAN (stated now, so Part 2 cannot drift from it)
+================================================================================
+
+7.1  THE CONTROL RUN
+--------------------------------------------------------------------------------
+Reuse outputs/_sc_control.py unmodified - the scorched round's own instrument.
+Three combos at seed 101 (D/east/half, D/south/half, D/east/default), 240 steps:
+
+    MPLBACKEND=Agg python3 outputs/_sc_control.py pre  240
+    MPLBACKEND=Agg python3 outputs/_sc_control.py post 240
+    python3 outputs/_sc_compare.py            # exits non-zero on gate failure
+
+Budget ~74 min (measured 3.07 s/step here). NOT the 13-run canonical set and NOT
+_vm_analyze.py's 22 IDENTITY_FIELDS (:40-47, not :40-48) - those consume
+_ffr_harness.py shards a display-only round does not produce. They are cited as
+the standard this round is exempt from, not as the instrument.
+
+7.2  THE FOUR IDENTITY ARTEFACTS - all must be IDENTICAL
+--------------------------------------------------------------------------------
+All four already exist in the harness:
+  stdout        stdout_sha256, stdout_lines, stdout_len, plus a RAW BYTE DIFF of
+                the dumped _sc_control_<tag>_<combo>.stdout.txt files
+  positions     agent_positions_sha256 AND the full agent_positions list
+  fire digest   firemap_sha256, plus scorchmap_sha256 and ground_counts
+  evaluation    the whole eval dict from _build_evaluation, plus leftover_pending
+
+7.3  THE POSITIVE CONTROL - THE BRIEF'S INSTRUMENT IS WRONG AND MUST BE REPLACED
+--------------------------------------------------------------------------------
+The brief requires "the cell-colour digest (or its equivalent) MUST differ".
+The cell-colour digest CANNOT differ, by construction:
+
+  serve_dashboard.py:117-119   for c in model.schedule.agents:
+                                   if type(c).__name__ != "Fire": continue
+  the sole write is :126       cells["%d,%d" % (x, y)] = col
+  the muting pass at :148-159  iterates fire_cells only
+
+No UAV can contribute a byte. Measured on a real run: len(cells) == 2500 ==
+number of Fire agents exactly, with 4 UAVs on the grid. A dashboard FOV overlay
+is drawn in JS from fr.uavs, after the cells fill. So cellcolor_sha256 would read
+IDENTICAL pre/post - which is exactly the "the change was never exercised"
+reading the brief is trying to rule out. Using it as specified would produce a
+false negative that looks like a failed positive control.
+
+REPLACEMENT - cellcolor is DEMOTED to a NEGATIVE control (must be identical).
+That demotion has direct precedent in this repo, quotable rather than invented:
+outputs/_rh_control.py:26-28 - "cellcolor kept from #9-A2, but here it is a
+NEGATIVE control ... In #9-A2 it was the positive control and was required to
+differ." This round is the mirror image: it touches a renderer but not the cell
+decider, so cellcolor must be identical AND new digests must differ.
+
+Three new digests, all of which MUST differ:
+  A. fovpayload_sha256 over the new radius/descriptor in the frame payload.
+     Moves by construction: measured, the shipped uavs entries carry exactly
+     ['color','id','x','y'] and no r/radius key.
+  B. A mesa portrayal digest over CanvasGrid.render's grid_state - count, Layer
+     as a strict int, and the exact ring cell set. Baseline: 216 portrayals for
+     3 UAVs at layer 1. (If 6.2 is adopted and mesa is left alone, this layer is
+     the NEGATIVE control for the mesa surface instead - it must be identical.)
+  C. THE DECISIVE ONE - a RENDERED-PIXEL digest. Slice drawMap out of
+     serve_dashboard.py (:675 to the next `function render`), supply its four
+     globals from :579-582, feed one captured frame, render pre and post in
+     headless Chromium, sha256 the canvas pixels, and diff the pixel sets.
+     This was validated end-to-end during design on a real captured frame: the
+     digest moved, 2926 of 313,600 pixels changed, and the ANALYTICALLY PREDICTED
+     perimeter pixel set matched the measured one EXACTLY - 2926 predicted, 2926
+     measured, zero unexplained in either direction. That equality is the "exact
+     accounting of which cells changed" the brief demands, transposed to pixels,
+     and it is a stronger claim than the scorched round could make.
+
+Playwright works but NOT out of the box: it wants Chromium revision 1234 and
+/opt/pw-browsers has 1194. Pass executable_path="/opt/pw-browsers/chromium".
+No HTTP server and no second model run are needed.
+
+7.4  THE TEST BASELINE - THE BRIEF IS WRONG TWICE, AND THE RECORDED HAZARD RECURRED
+--------------------------------------------------------------------------------
+The brief says "it should be 8 failed plus whatever the dock fix added".
+
+WRONG (i): the dock fix added NO failures. 7f951cb added tests/test_base_station.py
+(476 lines, 19 passing tests) and zero new failures.
+
+THE ACTUAL BASELINE, from outputs/_df_pytest.log:616 (the log 7f951cb itself added):
+
+    8 failed, 581 passed, 5 warnings in 3479.99s (0:57:59)
+
+THE FAILING NAME SET at HEAD 7f951cb (_df_pytest.log:608-615):
+
+    tests/test_behavior_regression.py::test_descriptive_next_action_uses_target_position
+    tests/test_dashboard_panel.py::test_dashboard_panel_render_returns_string
+    tests/test_firefighter_dispatch_replacement.py::test_no_replacement_available_marks_victim_unreachable_once
+    tests/test_rescue_planner_authority.py::test_no_firefighter_planner_delay_or_unreachable
+    tests/test_uav_sector_assignment.py::test_fire_tracker_uavs_receive_different_target_sets
+    tests/test_uav_sector_assignment.py::test_fire_tracker_still_overridden_by_search_mode_fail_safe
+    tests/test_wind_aware_trajectory_regression.py::test_north_vs_south_trajectories_diverge_over_40_steps
+    tests/test_wind_aware_trajectory_regression.py::test_east_vs_west_trajectories_diverge_over_40_steps
+
+WRONG (ii), AND THIS IS THE ONE THAT MATTERS: this is NOT the scorched round's
+set. Diffed against outputs/_sc_pytest_PRE.txt, both counts read 8 while the
+membership changed by one swap:
+
+    OUT  test_wind_aware_victim_search.py::test_victim_search_wind_aware_action_when_downwind_exists
+    IN   test_wind_aware_trajectory_regression.py::test_east_vs_west_trajectories_diverge_over_40_steps
+
+The brief warned that "this project has a recorded case where counts matched by
+coincidence while sets differed by two." It has now happened again, between the
+scorched round and HEAD, differing by one. Part 3 will report the NAME SET.
+
+TWO OPERATIONAL WARNINGS:
+  - The set only reproduces under the FULL suite in default order. Running the
+    eight names in isolation on this checkout gives 7 failed / 2 passed -
+    east_vs_west PASSES in isolation here while the Windows full-suite record has
+    it failing. A targeted subset run is NOT a valid baseline.
+  - Budget ~58 min per run, not the brief's ~37 (that figure is the scorched
+    round's 435-test suite; the suite is now 589). `--collect-only` here gives
+    589 = 8 + 581 exactly, so the test SET matches the recorded baseline
+    item-for-item even though the interpreter and OS differ.
+
+7.5  ROUTE_BLOCKED GATE - EXPLICITLY NOT REQUIRED
+--------------------------------------------------------------------------------
+Stated explicitly, as the brief asks, rather than left to inference.
+
+The route_blocked gate is outputs/_ffr_rbcompare.py over the _rblatch_camp2_*
+18-seed shards, asserting three items (rescued does not decrease on any seed;
+the recovery pass still recovers units; no unit left latched at end of run). It
+consumes 18 full simulation runs per arm; the dock-fix wave took 1h17m wall.
+
+IT IS NOT REQUIRED HERE, on the exemption 3b1ffbf established
+(outputs/scorchedcolour_report.txt:301-325, quoted verbatim):
+
+    "The gate campaign inputs are the simulation source files. This round
+     changed four files: two renderers, one HTML panel label, and one test. None
+     of them is on any simulation code path... The gate therefore has
+     byte-identical inputs to HEAD a89a2ab and cannot move."
+
+SCOPE THE CLAIM PRECISELY. Do NOT say "serve_dashboard.py is off the harness
+path" - it is not: evaluate_scenarios.py:31 and evaluate_extended_metrics.py:25
+both import from it. Say what the scorched round said: ZERO DIFF LINES IN
+_build_evaluation OR ANYTHING IT CALLS. The control run in 7.1 proves this
+empirically anyway, because _sc_control.py:30 imports _build_evaluation from the
+patched file.
+
+3b1ffbf also recorded a forward obligation - "the next round that touches
+simulation source must run the gate again" - and it was already discharged by
+7f951cb (outputs/_df_rbgate.log, RBGATE_EXIT=0). This round therefore inherits a
+clean gate rather than an outstanding one. Saving: ~1h17m.
+
+7.6  BEFORE/AFTER IMAGE
+--------------------------------------------------------------------------------
+Do NOT reuse outputs/_sc_beforeafter_png.py as-is. It paints per-cell from a
+ground-state dump (outputs/_sc_ground.json records Fire agents only) and has no
+concept of an overlay - it would render two IDENTICAL panels for this change.
+
+Take the image from the same headless render as 7.3C: one process, two
+screenshots of the real drawMap, composited side by side with Pillow (12.3.0
+installed). One mechanism serves both the positive control and the image.
+
+7.7  THE GATE
+--------------------------------------------------------------------------------
+  [ ] simulation provably unchanged: 7.2's four artefacts identical across all
+      three combos, plus cellcolor_sha256 identical as the negative control
+  [ ] positive control fires: 7.3 A and C both differ, with the pixel set
+      accounted for exactly
+  [ ] frames visible and distinguishable from every palette entry: the 4.4
+      numbers, restated against the shipped colour
+  [ ] no NEW test failures: the 7.4 NAME SET unchanged, reported as a set
+  [ ] before/after image produced
+
+================================================================================
+8. DECISIONS FOR THE MAINTAINER
+================================================================================
+8.1  19-vs-17. MUST BE SETTLED BEFORE ANY CODE. I recommend the dashboard draws
+     the TRUE 17x17 boundary and mesa is left alone (6.2), which makes the two
+     surfaces visibly differ by one ring. The alternative is copying mesa's
+     19x19 for parity, which knowingly overstates the sensed area by 72 cells.
+     Confirm, or overturn.
+
+8.2  THE FRAME COLOUR. I am not shipping the exemplar's plain black; it measures
+     0.0000 against five semantic marks and fails contrast on 63.40% of real
+     frame cells. Two-tone white-on-black keeps the exemplar's look and fixes
+     both. Confirm.
+
+8.3  FIREFIGHTER FRAME: I am declining to build one, on evidence (3.1). If the
+     maintainer wants firefighter information on the map, I recommend the
+     nearest_fire_dist table column instead.
+
+8.4  VICTIM FRAME: not as a square - the range is a Manhattan diamond (3.2).
+     Choose: (a) the honest diamond at r=3, (b) my recommendation, an "in danger"
+     ring on the existing victim circle, or (c) nothing.
+
+8.5  THE uav_executor DEAD INPUT (2.2) is a tenth instance of a documented defect
+     class, found in passing. It is simulation source and is NOT fixed here.
+     Should it be filed as its own round?
+
+--------------------------------------------------------------------------------
+APPENDIX A - WHAT WAS MEASURED, AND HOW
+--------------------------------------------------------------------------------
+Every number above is either a file:line quotation or a measurement taken in
+this container at 7f951cb. Nothing was modified in the repo; `git status
+--porcelain` is clean. Probes were written to the session scratchpad only:
+  _fov_overlap.py   240-step overlap and edge-clipping frequency, seeds 101/202
+  _fov_palette.py   CIEDE2000 + greyscale + protan/deutan/tritan, flat and
+                    two-tone candidates against the 50-colour union
+plus the design workflow's own probes (geometry, portrayal counts, stroke_color,
+docked detection, headless drawMap render, pytest collection).
+
+Independent cross-checks performed on the load-bearing claims: 62 adversarial
+verifications ran against the six investigation dimensions. 20 of them, all on
+the Part 3 baseline dimension, could not complete (session usage limit); those
+baseline claims were therefore re-verified by hand instead - the test name set
+and its diff against the scorched round, the existence and content of
+_sc_control.py / _sc_compare.py / _rh_control.py, the _rh_control.py:26-28
+negative-control precedent, and the Fire-only construction of `cells`. Both
+refuted-and-corrected findings and confirmations are folded into the sections
+above; where my own first reading was wrong (the claim that mesa cannot draw a
+tight border - it can, via xAlign) the correction is recorded in place at 1.3.
