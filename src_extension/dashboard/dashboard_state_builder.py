@@ -41,6 +41,32 @@ def _coords(value: Any) -> list[float] | None:
     return None
 
 
+def _nearest_fire_dist(
+    marker: Any, pos: list[float] | None, fire_cells: set[tuple[int, int]]
+) -> int | None:
+    """Manhattan cells to the nearest ACTIVELY BURNING cell, or None if unknown.
+
+    Delegates to the firefighter's own `_min_fire_distance` so the metric cannot
+    drift from the one that actually gates its retreat (agents.py:1723-1729);
+    falls back to the same arithmetic if the marker does not expose it. Returns
+    None for an off-grid unit (feature 1 hand-over) and for the model's own
+    "no fire anywhere" sentinel of 999, so the table renders a dash rather than
+    a number that would read as a real distance.
+    """
+    if pos is None:
+        return None
+    cell = (int(pos[0]), int(pos[1]))
+    fn = getattr(marker, "_min_fire_distance", None)
+    if callable(fn):
+        dist = fn(cell, fire_cells)
+    elif fire_cells:
+        dist = min(abs(cell[0] - fx) + abs(cell[1] - fy) for fx, fy in fire_cells)
+    else:
+        return None
+    dist = int(dist)
+    return None if dist >= 999 else dist
+
+
 @dataclass
 class DashboardStateBuilder:
     """Assembles structured, JSON-safe dashboard state from a live model snapshot."""
@@ -269,6 +295,29 @@ class DashboardStateBuilder:
         rows: list[dict[str, Any]] = []
         markers = getattr(model, "firefighter_marker_agents", None) or {}
         managed = getattr(model, "managed_firefighters", None) or {}
+        # FOV-frame round: publish nearest_fire_dist, which the model already
+        # computes every step and throws away into movement_reason.key_factors
+        # (agents.py:1485,1497,1535,1588,1614). It is surfaced here INSTEAD of a
+        # frame around the firefighter: the unit senses nothing, its rescue
+        # condition is same-cell (agents.py:1503-1504) and its only real range is
+        # state-dependent (3 idle / 1 assigned), so a drawn radius would imply a
+        # sensing capability the model does not have. See outputs/fovframe_part1.txt
+        # section 3.1.
+        #
+        # Pure read: `burning` is a plain attribute (agents.py is_burning) and
+        # _min_fire_distance is arithmetic over it. No RNG, no state write. The
+        # burning set is built ONCE per step here rather than per firefighter,
+        # because get_dashboard_state() is on the evaluation harness's per-step
+        # path (evaluate_scenarios.py:141).
+        fire_cells: set[tuple[int, int]] = set()
+        for agent in getattr(getattr(model, "schedule", None), "agents", ()) or ():
+            if type(agent).__name__ != "Fire":
+                continue
+            if not getattr(agent, "burning", False):
+                continue
+            apos = getattr(agent, "pos", None)
+            if apos is not None:
+                fire_cells.add((int(apos[0]), int(apos[1])))
         for ff_id, marker in markers.items():
             managed_state = managed.get(ff_id)
             pos = _coords(getattr(marker, "pos", None))
@@ -294,6 +343,7 @@ class DashboardStateBuilder:
                     "status": status,
                     "off_grid": bool(getattr(marker, "off_grid", False)),
                     "return_step": getattr(marker, "absent_until_step", None),
+                    "nearest_fire_dist": _nearest_fire_dist(marker, pos, fire_cells),
                 }
             )
         rows.sort(key=lambda r: r["id"])

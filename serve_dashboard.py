@@ -97,7 +97,11 @@ def _slim_panel(p):
                             for u in p.get("uav_status_view", [])],
         "victim_view": [{k: v.get(k) for k in ["id", "position", "status", "detected", "assigned_firefighter"]}
                         for v in p.get("victim_view", [])],
-        "firefighter_view": [{k: f.get(k) for k in ["id", "position", "alive", "assigned", "route_blocked", "status"]}
+        # nearest_fire_dist is in this whitelist deliberately: a field missing from
+        # it is dropped with no error, no warning and no test failure - the browser
+        # simply renders nothing. See outputs/basestation_part1.txt section 6.4.
+        "firefighter_view": [{k: f.get(k) for k in ["id", "position", "alive", "assigned", "route_blocked", "status",
+                                                    "nearest_fire_dist"]}
                              for f in p.get("firefighter_view", [])],
         "alert_list": [{k: a.get(k) for k in ["step", "severity", "alert_type", "target_id", "message"]}
                        for a in p.get("alert_list", [])[-8:]],
@@ -161,9 +165,30 @@ def _capture_frame(model, step):
     uavs = [{"id": str(getattr(a, "unique_id", "")), "x": int(a.pos[0]), "y": int(a.pos[1]),
              "color": _role_color(getattr(a, "current_role", ""))}
             for a in model.schedule.agents if type(a).__name__ == "UAV"]
-    vics = [{"id": str(getattr(a, "unique_id", "")), "x": int(a.pos[0]), "y": int(a.pos[1]),
-             "color": _victim_color(getattr(a, "status", "candidate"))}
-            for a in model.schedule.agents if type(a).__name__ == "Victim"]
+    # Victims carry a "flee" flag: True when the flee rule can actually move THIS
+    # victim this step. It mirrors Victim.advance()'s own per-victim guards
+    # (agents.py:1070-1085) so the drawn diamond marks exactly the victims the
+    # rule governs - G3 (terminal status) and G4 (firefighter custody). G2
+    # (pos is None) cannot arise here because this payload already indexes a.pos,
+    # and G1 (the kill switch) is handled once, browser-side, off victim_flee_radius.
+    # A victim that is dead, rescued or already in custody does not flee, so
+    # drawing its radius would assert a rule that is not running.
+    vics = []
+    for a in model.schedule.agents:
+        if type(a).__name__ != "Victim":
+            continue
+        status = getattr(a, "status", "candidate")
+        flee = str(status or "").strip().lower() not in am.VICTIM_TERMINAL_STATUSES
+        if flee:
+            custody = getattr(a, "_in_firefighter_custody", None)
+            if callable(custody):
+                try:
+                    flee = not bool(custody())
+                except Exception:
+                    flee = True
+        vics.append({"id": str(getattr(a, "unique_id", "")),
+                     "x": int(a.pos[0]), "y": int(a.pos[1]),
+                     "color": _victim_color(status), "flee": flee})
     ffs = []
     assignments = []  # firefighter -> assigned-victim lines (A)
     for a in model.schedule.agents:
@@ -390,9 +415,30 @@ def _start(cfg):
                        seed_used=seed_used)
         W = getattr(cfv, "WIDTH", 50)
         H = getattr(cfv, "HEIGHT", 50)
+        # Overlay radii. Both are constants for the life of a run, so they ride
+        # /start once rather than every frame - the map payload already carries
+        # each unit's x/y, so the radius is the only new datum the browser needs.
+        #
+        # Read through the cfv MODULE HANDLE at call time, exactly as W and H
+        # above are, and AFTER apply_scenario_config. Reading the star-imported
+        # name instead would freeze the import-time value and make a per-run
+        # override invisible - the dead-input defect documented at
+        # common_fixed_variables.py:461-472.
+        #
+        # fov_radius is Chebyshev: the UAV's observation set is a Moore
+        # neighbourhood (agents.py:232 moore=True, :359 radius=R), so the frame
+        # it drives is the EXACT 17x17 footprint, not an approximation.
+        # victim_flee_radius is MANHATTAN and goes through the model's own
+        # accessor, which carries the <= 0 kill switch (agents.py:828-839).
+        fov_r = int(getattr(cfv, "UAV_OBSERVATION_RADIUS", 8))
+        try:
+            vflee_r = int(am.victim_flee_trigger_distance())
+        except Exception:
+            vflee_r = 0
         # frame 0 (initial state, before any step)
         frame = _capture_frame(model, 0)
         return {"ok": True, "width": W, "height": H, "params": params,
+                "fov_radius": fov_r, "victim_flee_radius": vflee_r,
                 "steps": SESSION["steps"], "frame": frame, "seed_used": seed_used}
 
 
@@ -579,6 +625,10 @@ function fmtpos(p){return p&&p.length>=2?`(${Math.round(p[0])}, ${Math.round(p[1
 const BW=["#ffffff","#e6e6e6","#c9c9c9","#b1b1b1","#a1a1a1","#818181","#636363","#474747","#303030","#1a1a1a","#000000"];
 
 let W=50,H=50,cs=11.2,probMode=false,playing=false,timer=null,totalSteps=80,curFrame=null,finished=false;
+// Overlay radii, filled from /start. FOVR is Chebyshev (the UAV's Moore
+// observation block); VFR is manhattan (the victim flee trigger), and <= 0 is
+// that feature's kill switch, so 0 means draw no diamonds at all.
+let FOVR=8,VFR=0;
 const cv=document.getElementById('map'),ctx=cv.getContext('2d');
 
 fetch('/scenarios').then(r=>r.json()).then(s=>{
@@ -620,6 +670,9 @@ document.getElementById('run').onclick=async function(){
   catch(e){showErr('Could not reach server: '+e);this.disabled=false;return;}
   if(res.error){showErr(res.error);this.disabled=false;return;}
   W=res.width;H=res.height;cs=cv.width/W;totalSteps=res.steps;finished=false;
+  // Fall back to the shipped defaults if an older server omits them, so a
+  // version skew degrades to "no diamonds" rather than NaN geometry.
+  FOVR=(res.fov_radius==null?8:res.fov_radius);VFR=(res.victim_flee_radius==null?0:res.victim_flee_radius);
   document.getElementById('maxstep').textContent=totalSteps;
   document.getElementById('runinfo').textContent=
     res.params.NUM_FIRE_TRACKERS+' FT + '+res.params.NUM_VICTIM_SEARCHERS+' VS ('+res.params.NUM_AGENTS+' UAV) / '
@@ -654,9 +707,20 @@ function stopPlaying(){playing=false;clearTimeout(timer);document.getElementById
 document.getElementById('pause').onclick=function(){if(finished)return;if(playing)stopPlaying();else startPlaying();};
 document.getElementById('stepbtn').onclick=function(){if(playing)stopPlaying();doStep();};
 
-function setLegend(){document.getElementById('maplegend').innerHTML=probMode
-  ?'<span><i class="sw" style="background:#ffffff"></i>low prob</span><span><i class="sw" style="background:#636363"></i>med</span><span><i class="sw" style="background:#000000;border:1px solid #444"></i>high</span><span><i class="sw" style="background:#00FFFF"></i>victim-searcher</span><span><i class="sw" style="background:#FF00FF"></i>fire-tracker</span>'
-  :'<span><i class="sw" style="background:#fe5501"></i>fire</span><span><i class="sw" style="background:#ababab"></i>smoke</span><span><i class="sw" style="background:#2b2b2b"></i>burnt (spent)</span><span><i class="sw" style="background:#895e00"></i>scorched (re-ignites)</span><span><i class="sw" style="background:#770099"></i>base station</span><span><i class="sw" style="background:#FF00FF"></i>fire-tracker</span><span><i class="sw" style="background:#00FFFF"></i>victim-searcher</span><span><i class="sw" style="background:#FFFF00"></i>victim</span><span><i class="sw" style="background:#00FFCC"></i>firefighter</span><span><i class="sw" style="background:#ffd75a"></i>assigned-to</span>';}
+// Two-tone chips for the two overlays. A flat swatch cannot describe a two-tone
+// mark, and the existing prob-mode "high" chip already sets the precedent of
+// giving a swatch a border when the fill alone would not read. The FOV chip is
+// white-cored inside a black casing, matching the stroke it explains; the flee
+// chip is the same mark rotated 45deg, matching the manhattan diamond.
+function fovSwatch(){
+  const core='background:#FFFFFF;border:2px solid #000000';
+  let s='<span><i class="sw" style="'+core+'"></i>UAV observed area ('+((FOVR*2)+1)+'&times;'+((FOVR*2)+1)+')</span>';
+  if(VFR>0)s+='<span><i class="sw" style="'+core+';transform:rotate(45deg)"></i>victim flee radius ('+VFR+', manhattan)</span>';
+  return s;
+}
+function setLegend(){const FOVSW=fovSwatch();document.getElementById('maplegend').innerHTML=probMode
+  ?'<span><i class="sw" style="background:#ffffff"></i>low prob</span><span><i class="sw" style="background:#636363"></i>med</span><span><i class="sw" style="background:#000000;border:1px solid #444"></i>high</span><span><i class="sw" style="background:#00FFFF"></i>victim-searcher</span><span><i class="sw" style="background:#FF00FF"></i>fire-tracker</span>'+FOVSW
+  :'<span><i class="sw" style="background:#fe5501"></i>fire</span><span><i class="sw" style="background:#ababab"></i>smoke</span><span><i class="sw" style="background:#2b2b2b"></i>burnt (spent)</span><span><i class="sw" style="background:#895e00"></i>scorched (re-ignites)</span><span><i class="sw" style="background:#770099"></i>base station</span><span><i class="sw" style="background:#FF00FF"></i>fire-tracker</span><span><i class="sw" style="background:#00FFFF"></i>victim-searcher</span><span><i class="sw" style="background:#FFFF00"></i>victim</span><span><i class="sw" style="background:#00FFCC"></i>firefighter</span><span><i class="sw" style="background:#ffd75a"></i>assigned-to</span>'+FOVSW;}
 
 function showEval(e){const box=document.getElementById('eval');box.style.display='block';
   const ok=e.all_terminal?'var(--green)':'var(--amber)';box.style.borderLeftColor=ok;
@@ -701,6 +765,86 @@ function drawMap(fr){
     ctx.strokeStyle='#770099';ctx.lineWidth=2;ctx.strokeRect(dx+1,dy+1,dw-2,dh-2);
     ctx.fillStyle='#770099';ctx.font='bold 9px ui-monospace,monospace';
     ctx.fillText('BASE',dx+3,dy-3);}
+  // ---- sensing / rule overlays -------------------------------------------
+  // Drawn HERE, after the ground, gridlines and depot, and BEFORE trails,
+  // assignment lines and every unit marker. Immediate-mode canvas means this
+  // statement's position IS the z-order, so this is the only slot where the
+  // overlay is visible over terrain yet can occlude no unit and no assignment
+  // relationship. Measured, the most it can cover is a ~0.25% sliver of ground
+  // per UAV; a filled treatment would cover 11.6%. Never fill.
+  //
+  // COLOUR: a 1px #FFFFFF core inside a #000000 casing, not the mesa surface's
+  // flat black. Black alone is dE2000 = 0.0000 against five semantic marks that
+  // already exist here (dead victim, dead firefighter, the UAV role fallback,
+  // this file's own UAV stroke, and BW[10] in probability mode) and leaves
+  // 63.40% of real frame cells under WCAG 3:1. No flat colour fixes it: this
+  // palette carries three full luminance ramps, so an exhaustive 140,608-value
+  // sweep tops out at 2.73 dE2000 worst-case - below the JND. The two-tone
+  // measures 38.37, and its guarantee is palette-INDEPENDENT: for any background
+  // lightness one of the two tones is >= 50 L* away. See outputs/fovframe_part1.txt
+  // section 4.
+  //
+  // Half-pixel snapping is load-bearing, not cosmetic: cs = 11.2 puts 80% of
+  // cell edges off integer pixels, and an unaligned straddle drops 23.59% of
+  // frame cells back under 3:1. Same Math.round(k*cs)+0.5 idiom as the gridlines.
+  const snap=(v)=>Math.round(v)+0.5;
+  const twoTone=(path)=>{
+    ctx.setLineDash([]);
+    ctx.lineWidth=3;ctx.strokeStyle='#000000';path();
+    ctx.lineWidth=1;ctx.strokeStyle='#FFFFFF';path();
+  };
+  // UAV observation frame: the boundary of the TRUE Chebyshev block the UAV
+  // actually observes - cells [x-R, x+R] x [y-R, y+R], i.e. 17x17 = 289 cells at
+  // R = 8, which is exactly N_OBSERVATIONS and exactly the DQN's input width.
+  // This is the EXACT footprint, not an approximation of a disc: the model reads
+  // it with moore=True (agents.py:232,359). It is deliberately NOT the mesa
+  // surface's 19x19 ring, which sits one cell outside and overstates the sensed
+  // area by 72 cells; the two surfaces differ by one ring by decision, because a
+  // canvas stroke can sit on a cell BOUNDARY where a mesa cell-rect cannot.
+  // Clamping is load-bearing too - the grid is non-torus and a block is clipped
+  // on 31-40% of steps in a real run.
+  for(const u of (fr.uavs||[])){
+    const xlo=Math.max(0,u.x-FOVR), xhi=Math.min(W-1,u.x+FOVR);
+    const ylo=Math.max(0,u.y-FOVR), yhi=Math.min(H-1,u.y+FOVR);
+    if(xhi<xlo||yhi<ylo)continue;
+    const L=snap(xlo*cs), R=snap((xhi+1)*cs), T=snap((H-1-yhi)*cs), B=snap((H-ylo)*cs);
+    twoTone(()=>ctx.strokeRect(L,T,R-L,B-T));
+  }
+  // Victim flee radius: VICTIM_FLEE_TRIGGER_DISTANCE, a MANHATTAN radius, so this
+  // is a diamond and NOT a square. A square of the same half-width would put 24
+  // of its 49 cells outside the real range and its corners at manhattan 6 -
+  // double the trigger - which is worse than drawing nothing.
+  //
+  // The outline is emitted edge-by-edge rather than as four straight sides, so it
+  // traces the EXACT cell set (|dx|+|dy| <= r) as a staircase. A smooth diamond
+  // through the extreme points would slice cells and reintroduce the same
+  // cell-accuracy error the square was rejected for. Emitting per-edge also makes
+  // grid clipping fall out for free: a cell off the grid is simply not in the
+  // set, so the outline closes along the map edge.
+  //
+  // VFR <= 0 is the feature's kill switch and draws nothing. fr.victims[].flee
+  // mirrors the model's own per-victim guards, so a dead, rescued or
+  // in-custody victim gets no diamond - the rule does not run for it.
+  if(VFR>0){
+    for(const v of (fr.victims||[])){
+      if(!v.flee)continue;
+      const inSet=(x,y)=>x>=0&&x<W&&y>=0&&y<H&&(Math.abs(x-v.x)+Math.abs(y-v.y))<=VFR;
+      const segs=[];
+      for(let dy=-VFR;dy<=VFR;dy++)for(let dx=-VFR;dx<=VFR;dx++){
+        const x=v.x+dx, y=v.y+dy;
+        if(!inSet(x,y))continue;
+        const x0=x*cs, x1=(x+1)*cs, yTop=(H-1-y)*cs, yBot=(H-y)*cs;
+        if(!inSet(x-1,y))segs.push([x0,yTop,x0,yBot]);
+        if(!inSet(x+1,y))segs.push([x1,yTop,x1,yBot]);
+        if(!inSet(x,y+1))segs.push([x0,yTop,x1,yTop]);
+        if(!inSet(x,y-1))segs.push([x0,yBot,x1,yBot]);
+      }
+      if(!segs.length)continue;
+      twoTone(()=>{ctx.beginPath();
+        for(const s of segs){ctx.moveTo(snap(s[0]),snap(s[1]));ctx.lineTo(snap(s[2]),snap(s[3]));}
+        ctx.stroke();});
+    }
+  }
   const px=(gx)=>(gx+0.5)*cs, py=(gy)=>(H-1-gy+0.5)*cs;
   // walked trails (B): faint fading polylines of where each unit has been
   for(const t of (fr.trails||[])){const pts=t.pts||[];if(pts.length<2)continue;
@@ -743,8 +887,12 @@ function render(fr){
   h='<table><tr><th>victim</th><th>pos</th><th>status</th><th>det</th></tr>';
   for(const v of (p.victim_view||[]))h+=`<tr><td><b>${v.id}</b></td><td>${fmtpos(v.position)}</td><td>${sbadge(v.status)}</td><td>${bb(v.detected,'var(--accent)','var(--muted)')}</td></tr>`;
   document.getElementById('victims_v').innerHTML=h+'</table>';
-  h='<table><tr><th>unit</th><th>pos</th><th>alive</th><th>blocked</th></tr>';
-  for(const f of (p.firefighter_view||[]))h+=`<tr><td><b>${f.id}</b></td><td>${fmtpos(f.position)}</td><td>${f.alive?badge('alive','var(--green)'):badge('dead','var(--red)')}</td><td>${bb(f.route_blocked,'var(--red)','var(--green)')}</td></tr>`;
+  h='<table><tr><th>unit</th><th>pos</th><th>alive</th><th>blocked</th><th>fire d</th></tr>';
+  // "fire d" is manhattan cells to the nearest ACTIVELY BURNING cell. It stands in
+  // for a frame around the firefighter, which is not drawn: the unit senses
+  // nothing and its rescue condition is same-cell, so a radius would imply a
+  // capability the model lacks. null = off-grid, or nothing burning anywhere.
+  for(const f of (p.firefighter_view||[]))h+=`<tr><td><b>${f.id}</b></td><td>${fmtpos(f.position)}</td><td>${f.alive?badge('alive','var(--green)'):badge('dead','var(--red)')}</td><td>${bb(f.route_blocked,'var(--red)','var(--green)')}</td><td>${f.nearest_fire_dist==null?'<span class="k">&mdash;</span>':(f.nearest_fire_dist<=1?`<b style="color:var(--red)">${f.nearest_fire_dist}</b>`:(f.nearest_fire_dist<=3?`<b style="color:var(--amber)">${f.nearest_fire_dist}</b>`:`<span class="k">${f.nearest_fire_dist}</span>`))}</td></tr>`;
   document.getElementById('ff_v').innerHTML=h+'</table>';
   let al='';for(const a of (p.alert_list||[]).slice(-5).reverse()){const sev=(a.severity||'info').toLowerCase();al+=`<li>${badge(sev,SEV[sev]||'var(--accent)')}<span class="k">s${a.step}</span><span><b>${a.alert_type}</b> <span class="k">${a.message||''}</span></span></li>`;}
   document.getElementById('alerts').innerHTML=al||'<li class="k">none</li>';
