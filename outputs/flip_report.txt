@@ -1,0 +1,521 @@
+FLIP ROUND - REPORT
+2026-09-14. Branch depot-cost-round. Not pushed, not merged to main.
+  b853617  dcd4loss diagnosis (the HEAD this round started from)
+  68c75a9  flip: BASE_STATION_MODE 0 -> 3 (dcD)                      (Part 2, commit 1)
+  afbf8bd  tests: remove the shadowed duplicate test                  (Part 2, commit 2)
+  Part 3 was run on afbf8bd and is committed with this report.
+Checklist and evidence: outputs/flip_part1.txt. Pre-registration: outputs/flip3_prereg.txt
+(sha256 prefix 09731e1653e769e3, printed on every pool ENV line). Runner register:
+outputs/flip_runner_register.txt.
+
+THE DECISION WAS MADE BEFORE THIS ROUND and was implemented, not re-litigated. The case
+for the flip is that the feature is WANTED AT ROUGHLY NEUTRAL COST, NOT THAT IT IMPROVES
+OUTCOMES. Stated fully, as in the commit message:
+  - Fourth seed set, the only sample that did not select dcD: rescued held at 89, dead
+    ROSE 16 -> 23, firefighter deaths FELL 18 -> 7. dcD trades victim deaths for
+    firefighter survival, and the trade holds on data that did not select it.
+  - The route_blocked gate still FAILS G1 by the NEW rule on east/707, south/101,
+    south/202, south/404 (reproduced below at the new defaults, V3).
+  - Pooled over 57 distinct tuples: rescued +7, dead +7, firefighter deaths -16.
+
+======================================================================
+0. VERDICT - THE GATE PASSES ON EVERY ITEM
+======================================================================
+  checklist complete, every item addressed    PASS   sections 2-3 (Part 1 and Part 2, item by item)
+  failing NAME SET accounted for (V1)         PASS   the baseline 8 exactly; 589 collected, 581 passed
+  byte identity with the explicit dcD arm (V2) PASS  18/18 vs drhD, 15/15 vs dfD, 1/1 same commit; controls 7/7
+  route_blocked gate reproduces exactly (V3)  PASS   G1 FAIL NEW on east/707, south/101, south/202,
+                                                     south/404 and no other seed; G2 PASS; G3 PASS
+  no deadlocks or livelocks (V5)              PASS   0 of 72 UAVs / 72 return legs on every check;
+                                                     both positive controls fire
+  drone steps in fire (V4, reported)                 searcher-only 3.55% vs 1.74% at mode 0 (same 18 seeds);
+                                                     all-UAV 2.42% vs 1.26%
+Every pre-registered expected value was met exactly. No run failed, was retried or was
+excluded: 5/5 controls, 27/27 wave jobs, one full suite (no MemoryError). One procedural
+deviation: V1's free commit was read at launch and 78 s after it ended, not at its exact
+end (outputs/_flip3_v0_checks.txt). The V0 captures are committed in that file.
+
+WHAT THIS PROVES AND WHAT IT DOES NOT. The shipped defaults at afbf8bd ARE dcD with the
+dock fix on: a run with no --set is byte-identical, on all 52 behavioural and output
+fields (everything but tag, wall_s and the params/extra_params entries that record the
+--set list), to the arm that set all six values explicitly, and the route_blocked gate at the defaults is the
+gate already recorded for dcD (9d91156), seed for seed. So every committed dock-fix-on
+dcD measurement (dfD, d4D, drhD) - including its costs - now describes the default.
+(The fix-absent dcD arms from before 7f951cb do not: the dock fix changed return-leg
+share and fallback docks wherever its fallback fired.) The flip does not change
+any outcome that was measured, and it measures nothing new: west and north winds, runs
+longer than 240 steps, other grid sizes and scenarios other than D remain unmeasured
+(section 5).
+
+======================================================================
+1. STATE AND ENVIRONMENT
+======================================================================
+Start of round (07:00):  branch depot-cost-round, HEAD b853617 (the dcd4loss diagnosis,
+  the latest commit, as expected); tracked tree clean; 0 python.exe.
+Start of Part 3 (14:01): HEAD afbf8bd; `git status --porcelain --untracked-files=no`
+  empty; 0 python.exe.
+Environment (E:\Projects\SAS\.venv\Scripts\python.exe), confirmed at both points; the full
+sys.version string is on the pytest log headers, and "3.10.11 mesa 1.2.1" on every pool
+ENV line:
+  sys.version       3.10.11 (tags/v3.10.11:7d4cc5a, Apr  5 2023, 00:38:17) [MSC v.1929 64 bit (AMD64)]
+  mesa.__version__  1.2.1
+The same interpreter as the dcd4, dcd4rb and dcd4loss rounds and all 57 distinct dcD runs.
+
+======================================================================
+2. PART 1 - THE CHECKLIST (outputs/flip_part1.txt, committed in 68c75a9)
+======================================================================
+The old checklist is section 8 of outputs/dcd4_report.txt (:522-612), not of
+depotcost_report.txt. Every item was re-derived from code at b853617. Summary of the
+five points the brief named (full evidence in flip_part1.txt section 1):
+  (a) THE FIVE CONSTANTS - CONFIRMED, exactly five: MODE 0->3, DEPOTS 0->9 (NW 1 + SE 8),
+      SPAWN_SPLIT 0->2, UAV_RETURN_TO_BASE_RESERVE 60.0->0.0, BASE_STATION_RETURN_MARGIN
+      5.0->39.23. 98 committed harness runs and 4 gate shards carry exactly those five
+      plus RETURN_MECHANISM 2, which already shipped. dcD passed RESERVE as int 0; the
+      flip writes 0.0 - inert (the only reader applies float()), and V2 below proves it.
+  (b) bs* IS 6 ARMS, NOT 8 - CONFIRMED: bsoff is flip-safe (MODE=0) and bsbase fails
+      loudly (its checkout is gone); bsspawn, bsspawnu, bsret, bsretp, bsfull, bsfullp
+      change silently.
+  (c) agents.py:909 AND :931 ARE MISSED FALLBACKS - CONFIRMED, and the complete set is
+      TEN literal sites in five accessors (MODE x2, DEPOTS x1, SPLIT x3, RESERVE x2,
+      MARGIN x2). Citations at b853617.
+  (d) test_accessors_survive_junk_values AND test_distance_regime_margin_is_the_derived_one
+      ARE MISSING FROM THE LIST - CONFIRMED and MEASURED: both PASS under a simulated
+      flip. The first pinned the old fallbacks only through except branches (no test
+      anywhere exercised a getattr default); the second read no cfv and asserted the
+      single-NW "turns back earlier than 60", false at NW+SE.
+  (e) MANY MORE DEFAULT-RELIANT RUNNERS - CONFIRMED and enumerated (flip_part1.txt
+      section 5; every one classified in flip_runner_register.txt). Blast radius at
+      b853617: 53 of 91 shell runners change silently (50 directly + 3 hardcoded pools),
+      560 of 1,092 queue lines, 81 of 227 Python probes (+6 by invocation), plus entry
+      points, tests/ diagnostics, pytest runners and config-blind validators that call a
+      changed-meaning run VALID. CORRECTION to flip_part1.txt 1.5, which says 51: the
+      register's verification reclassified _rh_drive.sh (deletes 13 tracked JSON, then
+      FAILS LOUDLY - though its --nopatch control still runs silently and overwrites the
+      tracked _rh_control_nopatch.json) and counted the 3 pools. After 68c75a9: 49 of 91 remain silent
+      (3 pinned, 1 made loud).
+Part 1 item 2 - every test that fails after the flip - was MEASURED, not predicted: the
+full suite at b853617 with and without a plugin that sets the five constants
+(outputs/_flip1_pytest_{base,p0,sim}.log/.xml). sim adds exactly three names, each
+PINNING THE OLD DEFAULT, none a real problem: test_shipped_defaults,
+test_reserve_covers_the_worst_case_return, test_dock_fix_shipped_defaults. A fourth
+(test_accessors_survive_junk_values) fails once the fallbacks move. Two baseline names
+move their failure EARLIER (:286 -> :257, the trajectory divergence tests), which masks
+their existing defect (decision Q8).
+Part 1 item 3 - scripts, runners and queue files whose meaning changes silently:
+flip_part1.txt section 5 and the committed register (sections A-G).
+
+======================================================================
+3. PART 2 - WHAT WAS CHANGED (68c75a9, afbf8bd), ITEM BY ITEM
+======================================================================
+Line numbers below are at afbf8bd.
+  [A1-A5]  DONE  common_fixed_variables.py:373 DEPOTS 9, :400 SPLIT 2, :402 MODE 3,
+                 :406 RESERVE 0.0, :407 MARGIN 39.23.
+  [B1-B10] DONE  agents.py fallbacks equal the shipped values: MODE :882 getattr 3, :884
+                 except 3; DEPOTS :930 getattr 9; SPLIT :949 getattr 2, :951 except 2, :952
+                 out-of-range 2; RESERVE :967 getattr 0.0, :969 except 0.0; MARGIN :976
+                 getattr 39.23, :978 except 39.23. Block comment :869 says every fallback
+                 equals the shipped value and that a junk kill switch now arms the feature
+                 (Q1). MEASURED CONSEQUENCE: control flxJ (junk MODE/SPLIT/RESERVE/MARGIN)
+                 is identical to the explicit dcD arm on all 52 fields rule H compares
+                 (everything but tag, wall_s, params and extra_params) (V2).
+  PROOF THAT BEHAVIOUR CHANGED ONLY THROUGH THOSE 15 LITERALS: outputs/_flip_behaviour_diff.py
+                 b853617 afbf8bd compares docstring-blanked ASTs of cfv, agents.py,
+                 wildfire_model.py, _ffr_harness.py and _rblatch_campaign2.py: "BEHAVIOUR
+                 DIFF = EXACTLY THE INTENDED LITERALS" (cfv 5, agents.py 10, others 0).
+  [C1-C20] DONE  comments and docstrings that the flip made false, in cfv, agents.py
+                 (:236 battery drives the return at MODE >= 2; _update_battery_after_step;
+                 _rtb_trigger_level; :456 "ships at 3 with mechanism 2"; accessor
+                 docstrings) and wildfire_model.py (_build_base_station: a depot set,
+                 corner read only for mask 0). In cfv: THE FLAT REGIME (:208) relabelled as
+                 the pre-flip trigger; THE DISTANCE REGIME - SHIPPED (:240) with both
+                 exceeded premises named (17-step wait vs 11; latency above the 0.30
+                 allowance on 177 of 192 triggers, all at 0.43-0.53, and on 207 of 228 over
+                 all 57 runs - 205 at 0.43-0.53, 2 at 0.33; minimum arrival 37.1, not above
+                 37.8; no stranding); LIMITS (:280: trigger floors 155-151 by UAV count,
+                 second trigger 367-371, large grids); MEASURED SCOPE (:288: east or south,
+                 roles half, or east with legacy roles); west/north never measured and a
+                 bare main.py is east wind for 80 steps (:201-206); SHIPPED DEFAULT IS 3
+                 (:315) with the fourth-set trade and the four G1 seeds, and HISTORY (:328); DEPOTS limits (:361: overlap iff
+                 max(H,W) <= 2*min(5,H,W) - 1, unreachable by a real model; per-depot
+                 capacity); SE downwind (:199, :370); DOCK_FIX LIVE (:429); CORNER read
+                 only at DEPOTS 0; ROUTE_BLOCK_STALE_CLEAR rung 0 needs MODE=0; :507 "then
+                 the shipped default".
+  [T1-T2]  DONE  comment-only: _ffr_harness.py module docstring (a bare run is the shipped
+                 default, drhD/d4D's configuration); _rblatch_campaign2.py (a no-set run is
+                 mode 3, indistinguishable on disk from rbc). No output schema change (Q3).
+  [D1]     DONE  test_shipped_defaults (tests/test_base_station.py:109) asserts the dcD
+                 values; docstring states what ships, the trade, and what CHANGING A
+                 DEFAULT AGAIN requires (gate wave and route_blocked gate; the full suite
+                 with its failing name set; byte identity against an explicit --set arm;
+                 moving the agents.py fallbacks).
+  [D2]     DONE  test_reserve_covers_the_worst_case_return (:331) replaced: NW+SE geometry
+                 from the real builder (worst own-berth distance 49/50/49/50/51 by UAV
+                 index, 53 overall), level(53) = 55.13, derived arrival 37.83 AND the
+                 recorded minimum 37.1 against cfv's LOW/CRITICAL thresholds, finish(0) ==
+                 240.0125 exactly. Docstring: a design point whose premises the record
+                 exceeds; the measured minimum is a sample minimum, not a floor; the revert
+                 caveat.
+  [D3]     DONE  test_dock_fix_shipped_defaults (:1282) asserts MODE 3 / MECHANISM 2; LIVE.
+  [D4]     DONE  test_accessors_survive_junk_values (:37) rewritten: 13 accessors x (setattr
+                 junk -> except branch, delattr -> getattr default) against the value read
+                 from cfv first; SPLIT 7; DEPOTS missing; DEPOTS junk raises. Proven to bind
+                 all ten flipped sites: outputs/_flip_fallback_mutants.txt "MUTANTS KILLED
+                 10/10", unmutated control PASS.
+  [D5]     DONE  test_distance_regime_margin_is_the_derived_one (:775) asserts the shipped
+                 margin, 0.3*53 + margin < 60, crossover 69.23; its docstring says the
+                 premises are exceeded and no UAV stranded, and a comment in the body
+                 that safety rests on the margin carrying the horizon (no stranding in 228
+                 recorded dcD trips).
+  [D6]     DONE  test_depot_mask_zero_is_the_single_corner_unchanged (:472) docstring and
+                 comment.
+  [D7]     DONE  afbf8bd: the shadowed first copy of
+                 test_stall_sidestep_cannot_fire_on_a_pure_axis_approach deleted by content
+                 (30 lines); 59 defs, no duplicate, 59 collected, 59 pass.
+  [D8]     DONE  comments on the three MODE=0 pins (test_victim_searcher_scenario_matrix.py:64,
+                 test_wind_aware_victim_search.py:161, the all_cardinals pin); pins
+                 unchanged.
+  [D9]     DONE  Q8: test_north_vs_south / test_east_vs_west_trajectories_diverge_over_40_steps
+                 pinned to MODE 0 via _pin_centre_spawn
+                 (tests/test_wind_aware_trajectory_regression.py:304), whose docstring says
+                 why: unpinned they fail earlier at :257, which masks the :286 defect.
+  [D10]    DONE  test_trigger_takes_the_max_of_reserve_and_distance (:312) asserts the
+                 shipped levels, near 39.83 and far 66.23.
+  [R1-R4]  DONE  Q2: --set BASE_STATION_MODE=0 added to _vm_runwaves.sh (vmoff, vmon),
+                 _vm_runwaves2.sh (vmon3, vmoff2), _ir/rbgate.sh, and the gate stages of
+                 _ih_post.sh, _dim_post.sh, _vm_postwave.sh; _rb_eval_after.sh `cd ... ||
+                 exit 1`. Each passes bash -n; CRLF files kept their endings.
+  [RG]     DONE  outputs/flip_runner_register.txt (1,074 lines), generated by
+                 _flip_register.py from _flip_audit_coverage.json.
+  [M1]     see section 6.
+
+======================================================================
+4. PART 3 - VALIDATION ON afbf8bd (pre-registered in outputs/flip3_prereg.txt)
+======================================================================
+4.0 V0 - BEFORE ANY RUN: ALL HOLD
+  V0.1  HEAD afbf8bd (commit 2); no tracked change; 0 python.exe.
+  V0.2  cfv and accessors at HEAD: MODE 3, MECHANISM 2, DEPOTS 9, SPLIT 2, RESERVE 0.0,
+        MARGIN 39.23, DOCK_FIX 2, RETURN_STALL_LIMIT 3, WAYPOINT_FIX 1, SIZE 5,
+        SPAWN_FIREFIGHTERS 1 (accessor True), CORNER 0, RECHARGE 5.0 / RELEASE 100.0,
+        ROUTE_BLOCK_STALE_CLEAR 1, HAZARD_RETREAT_RANGE 99. All 14 base-station
+        accessors return the shipped values.
+  V0.3  Instrument self-tests at afbf8bd, before any fl* file existed:
+          _dcd4_analyze.py --mode selftest   "SELFTEST 130 PASS, 0 FAIL, 130 items"
+          _dcd4_livelock_control.py          "CONTROLS 4/4 PASS"
+        both BYTE-EQUAL (LF-normalised) to the committed outputs/_dcd4_selftest.txt and
+        outputs/_dcd4_livelock_control.txt, as they were at b853617. The flip moved
+        neither instrument.
+  V0.4  _flip3_compare.py --mode dryrun: ALL PASS 8/8 groups (every rule accepts its
+        positive pair on committed data and rejects its negative one).
+  V0.5  DIMCTRL CRASH CHECK, recorded: at the default,
+          _ffr_harness.py --repo E:/Projects/SAS --wind east --roles half --seed 101
+                          --steps 1 --dim-hook deny
+        exits 1 with AttributeError: HEIGHT, raised by the deny hook at
+        wildfire_model.py:620 (_build_base_station) inside WildFireModel(); with
+        --set BASE_STATION_MODE=0 the same command runs (rc 0). THIS CRASH IS THE CORRECT
+        FAILURE MODE for a mode-0-only instrument - it used to change meaning silently -
+        and a future round must not read it as a regression. Rerun dimctrl at MODE=0.
+  V0.6  Both pool launches (controls 14:02:25, wave 14:39:27; _flip3_wave.log:1-3,
+        :28-30): head afbf8bd, dirty_tracked 0, 3.10.11 / mesa 1.2.1, prereg_sha256
+        09731e1653e769e3, SHIPPED line MODE=3 MECHANISM=2 DEPOTS=9 SPLIT=2 RESERVE=0.0
+        MARGIN=39.23 DOCK_FIX=2 STALL=3 WAYPOINT=1 ROUTE_BLOCK_STALE_CLEAR=1 RANGE=99.
+        The V1 log header (_flip2_pytest_post.log:1-3) records head afbf8bd,
+        dirty_tracked 0, python 3.10.11 and mesa 1.2.1 (it carries no SHIPPED line; V0.2
+        read the values at the same HEAD). No tracked file was edited while any job ran;
+        `git status --porcelain --untracked-files=no` was empty after the wave.
+  Captures of V0.1-V0.5 and the post-wave selftest: outputs/_flip3_v0_checks.txt.
+
+4.1 V1 - FULL TEST SUITE AT THE NEW DEFAULTS: PASS
+  outputs/_flip2_pytest_post.log / .xml (serial, detached, 14:02:20-14:38:08, 35m47s).
+  Comparison: outputs/_flip2_pytest_names.txt (_flip_pytest_names.py base / sim / post).
+    589 collected; 8 failed, 581 passed; log FAILED set == junit failing set; no
+    MemoryError.
+  THE FAILING NAME SET - identical to flip1 base (b853617, mode 0) and to the committed
+  _fov_pytest_post.log; no name added, none removed:
+    test_behavior_regression.py::test_descriptive_next_action_uses_target_position
+    test_dashboard_panel.py::test_dashboard_panel_render_returns_string
+    test_firefighter_dispatch_replacement.py::test_no_replacement_available_marks_victim_unreachable_once
+    test_rescue_planner_authority.py::test_no_firefighter_planner_delay_or_unreachable
+    test_uav_sector_assignment.py::test_fire_tracker_still_overridden_by_search_mode_fail_safe
+    test_uav_sector_assignment.py::test_fire_tracker_uavs_receive_different_target_sets
+    test_wind_aware_trajectory_regression.py::test_east_vs_west_trajectories_diverge_over_40_steps
+    test_wind_aware_trajectory_regression.py::test_north_vs_south_trajectories_diverge_over_40_steps
+  ACCOUNTED FOR, name by name:
+    - All 8 are pre-existing failures, failing at b853617 before the flip.
+    - The 3 names the simulated flip added (test_shipped_defaults,
+      test_reserve_covers_the_worst_case_return, test_dock_fix_shipped_defaults) now
+      PASS: they pinned the old default and were updated (D1-D3).
+    - Failure messages vs base: IDENTICAL for 7 of 8, including BOTH trajectory tests,
+      which fail at :286 "assert (24.0, 45.0) != (24.0, 45.0)" as before - the Q8 pin
+      keeps that defect visible (under the unpinned simulated flip they failed at :257).
+      Their full failure blocks differ from base only by the pin's own source lines, the
+      test's traceback line number (the helper added lines) and object addresses.
+    - The one declared message difference: test_dashboard_panel_render_returns_string,
+      same assertion ('Step' in html), different HTML tail; its full failure block is
+      identical to flip1 sim's.
+    - Captured stdout, not part of any message:
+        test_no_replacement_available_marks_victim_unreachable_once
+          manhattan_dist=24 -> 43 (declared: ff_unit_2 starts on an NW berth)
+        test_dashboard_panel_render_returns_string
+          adds a step-4 detection and a dispatch ("UAV-2501 detected victim_1 at (14, 44)",
+          ff_unit_1 manhattan_dist=12). Not listed in the prereg's V1 text, but it is the
+          behaviour flip_part1.txt 3.1 names as the cause of that test's declared HTML
+          difference, and it is identical to flip1 sim. Disclosed, not a new failure.
+    - The other 4 failure blocks are identical to base and to sim, byte for byte
+      after masking object addresses; the dispatch_replacement block is identical to
+      sim and differs from base only by the manhattan_dist line.
+
+4.2 V2 - BYTE IDENTITY OF THE NEW DEFAULTS WITH THE EXPLICIT dcD ARM: PASS
+  Instrument outputs/_flip3_compare.py; every group is an explicit tuple list with a
+  declared count, so a missing file fails. Rules (from its docstring):
+    H         identical key set; every key except {tag, wall_s, params, extra_params}
+              equal - 52 fields, including repo, eval, stdout_sha256, stdout_lines,
+              uav_steps, uav_actions, ff_steps, fire_digests, rtb_log, rtb_counters,
+              base_station; the new run's extra_params == {} and the reference's == the
+              six dcD keys; params equal once those six are removed. The --set list is
+              recorded only in params and extra_params, so those are the only fields a
+              no-set run may legitimately differ on.
+    STRICT-H  every key except tag and wall_s equal.
+    H2ONLY    H's key set and 52 fields (params carry the junk strings).
+    S / STRICT-S  the same for gate shards (evals compared without wall_s).
+  CONTROLS, before the wave (outputs/_flip3_controls_compare.txt, pool 14:02-14:08,
+  valid 5/5):
+    flxD (explicit dcD --set) east/half/707, south/half/404   STRICT-H == drhD   2/2
+    flxD 707, 404, east/default/101                          STRICT-H == dfD    3/3
+    flxZ (--set MODE=0) south/half/101                        STRICT-H == drhZ   1/1
+    flxJ (--set MODE=x SPLIT=x RESERVE=x MARGIN=x) east/half/707  H2ONLY == drhD 1/1
+  So the explicit-set command still reproduces the committed arms at the flipped HEAD
+  (dfD from 7f951cb, drhD/drhZ from 9d91156), and JUNK values for the four flipped
+  accessors that parse (all four at once) run the full dcD configuration - the accepted
+  Q1 consequence, measured.
+  WAVE (outputs/_flip3_wave_compare.txt, pool 14:39-15:30, valid 27/27):
+    flhD, no --set, the 18 rbgate tuples             H == drhD             18/18
+    flhD, the 14 shared tuples + east/default/101    H == dfD              15/15
+    flhD east/default/101                            H == flxD (same commit) 1/1
+  A run at the new defaults is byte-identical, on all 52 behavioural and output fields,
+  to the explicitly configured dcD arm with the dock fix on - on 19 distinct tuples,
+  against two committed reference arms from two earlier commits and one at this commit.
+  Every field of flhD's 18 JSON files that the analyzer derives from - trips, arrivals,
+  return and charge steps, fallback docks, exposure, freezes - is therefore drhD's, and
+  section 4.3-4.5 below reproduce drhD's committed figures exactly.
+
+4.3 V3 - THE ROUTE_BLOCKED GATE AT THE NEW DEFAULTS: REPRODUCES EXACTLY - PASS
+  Precondition: wave FINAL valid=27/27; analyzer instrument (a) harness eval == shard
+  eval on every common field, 18/18 for D (flhD/flgD), Z (drhZ/flgZ) and K; no
+  "shard files missing", no "SEED SET MISMATCH".
+  Shard identity (outputs/_flip3_wave_compare.txt):
+    flgD{a,b,c,s} (no --set)       S == drgD 4/4 and S == dcrbD 4/4
+    flgZ{a,b,c,s} (--set MODE=0)   STRICT-S == drgZ 4/4
+  _ffr_rbcompare.py --new flgD --old ihrest (outputs/_flip3_rbcompare.txt):
+    ALL RUNS   rescued 53 -> 57 (+4)   victims dead 11 -> 11 (+0)   ff_deaths 9 -> 9 (+0)
+    [FAIL] rescued does not decrease on any seed vs ihrest
+          regression: D/east seed 707  rescued 4 -> 2
+          regression: D/south seed 101  rescued 3 -> 2
+          regression: D/south seed 202  rescued 4 -> 3
+          regression: D/south seed 404  rescued 4 -> 3
+    [PASS] recovery pass still recovers units (recoveries 12 -> 15, firings 26 -> 27)
+    [PASS] no unit left latched as route_blocked at end of run
+  Those lines are IDENTICAL to the committed outputs/_dcd4rb_analysis.txt:91-98 (diffed),
+  and the tool's whole output for flgD is identical to its output for drgD with the tag
+  renamed.
+  _dcd4rb_analyze.py --mode all --D flgD:flhD --Z flgZ:drhZ --K drgK:drhK
+  (outputs/_flip3_analysis.txt, 744 lines):
+    GATE ITEMS  G1 FAIL (NEW)   G2 PASS   G3 PASS                              (:135)
+    G1 each element NEW: Z rescued 4 / 3 / 4 / 4 on east/707, south/101, 202, 404;
+       Z regressing seeds vs ihrest: none                                     (:126-130)
+    "G1 is the depot round's recorded [FAIL] (same seeds, same values as dcrbD vs
+       ihrest): YES"                                                           (:131)
+    G2 recoveries D 15 (fires 27) | Z 13 (fires 26)                            (:132)
+    G3 latched units D [] | Z [] | K []                                        (:133)
+  THE WHOLE 744-LINE ANALYSIS equals the committed outputs/_dcd4rb_analysis.txt with the
+  tags renamed (drgD->flgD, drhD->flhD, drgZ->flgZ) except in exactly the two
+  PRE-DECLARED TOOL ARTEFACTS: instrument (b) prints "flhD vs dfD: 0/15 IDENTICAL",
+  listing 6 tuples as "DIFFERS on ['extra_params', 'params']" and "... and 9 more" (the
+  old tool compares params without removing the six dcD keys - rule H above is the
+  identity check), and instrument (d) prints flgD vs dcrbD "DIFFER on ['params']" for
+  the same reason (rule S passes).
+  STALE TEXT IN THE COMMITTED TOOL, identical in the committed pre-flip analysis, not
+  results: the section labels at :138 ("shipped default at HEAD", meaning the pre-flip
+  mode 0) and :354 ("the dock fix alone, same commit", false here: K is drgK from
+  9d91156) - declared in the prereg by their _dcd4rb_analyze.py source lines :331/:335;
+  and, NOT declared in the prereg, "at HEAD" for pre-flip arms at :19, :304 and :470,
+  and :136 "PRECONDITION (prereg 4): NOT MET". That last line is the dcd4rb round's
+  flip precondition (G1 must not fail NEW), and it is still not met at the defaults -
+  consistent with V3 and with the decision recorded at the top of this report, which
+  flipped with that precondition unmet.
+  THE GATE STILL FAILS G1, and after the flip that failure belongs to the shipped
+  default. It is recorded, not fixed: dcd4_losses_part1.txt attributes all four losses
+  to spawn geometry, and the decision to flip was made with that known.
+
+4.4 V4 - DRONE STEPS IN FIRE (_flip3_analysis.txt:596-620)
+  DEFINITIONS - they must not be mixed:
+    E1 SEARCHER-ONLY, the interior-hazard definition (the source of 8520706's 2.1%
+       canonical / 3.0% fresh): victim_searcher (frame, UAV) pairs on a post-step burning
+       cell rebuilt from burn_intervals, divided by all victim_searcher (frame, UAV)
+       pairs.
+    E2 ALL-UAV: the per-step `burning` flag uav_actions[i][2] summed over every UAV of
+       every role and base_state, divided by all UAV-steps.
+  THE DOCK-FIX REPORT IS WRONG where it says its all-UAV figure is "the same definition
+  behind the interior-hazard round's 2.1% canonical / 3.0% fresh"
+  (outputs/dockfix_report.txt:265-268). It computed E2; the interior-hazard figures are
+  E1. On the same 8520706 canonical runs E2 gives 1.45% (181/12480) and E1 2.12%
+  (117/5520). The dock-fix report's before/after comparison is internally consistent
+  (E2 against E2) but not comparable with 2.1% / 3.0%.
+  At the new defaults (identical to drhD, as V2 requires):
+                               E1 searcher-only           E2 all-UAV
+    flhD  rbgate 18            307/8640  = 3.55%          419/17280 = 2.42%
+    drhZ  rbgate 18 (mode 0)   150/8640  = 1.74%          218/17280 = 1.26%
+      default - mode 0, same 18 seeds: E1 +1.82 points, E2 +1.16 points
+    flhD  shared 14            303/6720  = 4.51%          414/13440 = 3.08%
+    E2 flag mismatches (the recorded flag vs the burn_intervals rebuild): 0.
+  Committed context, the same configuration on other samples:
+    dfD canonical 5.04% vs dfzero 2.08% (E1); dfD fresh 3.25% vs 3.17%;
+    d4D fourth set 3.10% vs d4off 2.29% (E1), 2.13% vs 1.62% (E2).
+  STATED PLAINLY: at the shipped default, victim searchers spend about twice as many
+  steps over burning cells on the rbgate sample as at mode 0 (+1.82 points), and more on
+  every committed sample (fourth set +0.80 points). UAVs are fire-immune in this model
+  (no UAV branch in _check_fire_casualties), so this is exposure, not loss; it is part of
+  what the flip ships, and was part of the record the decision was made on.
+  Consecutive exposure (E3, :622-651): all-UAV runs of 2+ burning steps 71 at the
+  default vs 28 at mode 0 on the same seeds; longest 18 vs 12 (the 18 is a victim
+  searcher whose majority state over the run of steps was charging/docked). The
+  longest stay on ONE burning cell is 15 frames (a searcher flying at (27,0),
+  south/half/404) at the default vs 12 at mode 0.
+
+4.5 V5 - DEADLOCK AND LIVELOCK: ZERO - PASS (_flip3_analysis.txt:674-742)
+  Definitions, imported unchanged from _dcd4_analyze.py (constants unchanged):
+    DEADLOCKED  D1 STUCK - the redefined stranding gate: returning at the last frame AND
+                >= 10 trailing frames on one cell; D2 an unarrived trip; D3 zero battery
+                outside every depot.
+    LIVELOCKED  L3 CYCLE; L4 OSCILLATION (10-frame window, <= 2 cells, >= 2 changes);
+                L5 CELL REVISIT (>= 3 visits to one cell in a collapsed leg);
+                L6 DISTANCE-PROGRESS (some k with distance(k+10) >= distance(k), split
+                inside / outside the target depot).
+    STANDOFF    a return-leg freeze of >= 10 frames outside a depot with a blocker that
+                is not itself returning (_dcd4_freezes.py).
+  flhD, the 18 rbgate tuples at the new defaults: 72 UAVs, 72 return legs, 72 arrived.
+    STUCK 0   unarrived 0   zero battery 0   CYCLE 0   OSCILLATION 0   REVISIT 0
+    L6 0 (any) / 0 (inside) / 0 (outside)   STANDOFFS 0 of 72
+    informational: 3 freezes (4, 4 and 3 frames: two inside SE head-on between returners
+    on east/half/303, one outside on south/half/404, d=3) - all below the 10-frame bar,
+    all legs arrived; longest non-decreasing distance run 4.
+  POSITIVE CONTROLS FIRE: dcB fresh STUCK 1 with L6 on 1 of 1; dfm2ref canonical STUCK 5
+  with L6 on 5 of 5. Livelock detector control 4/4 (V0.3). A detector that reads zero
+  here is not blind.
+  SCOPE, disclosed: these checks read RETURN LEGS. Non-returning victim searchers also
+  sit on one cell for >= 10 frames before the run resolves - 5 episodes at the default,
+  all victim searchers (longest 27 frames at (27,0), south/half/404), and 7 at mode 0 on
+  the same seeds (4 trackers, 3 searchers). That is search behaviour, not a return-leg
+  deadlock, and it is identical at dcD's committed drhD arm. DISCLOSED IN ADVANCE (prereg): the same configuration has ONE L6 leg and ONE
+  18-frame outside standoff on the fourth set (d4D south/half/423146201, UAV 2501, steps
+  200-217, arrived) - the 17-step wait behind the exceeded margin premise. V5's zero is a
+  statement about the gate sample; that tuple was not re-run (a fourth-set seed in a new
+  file name would break V0.3's selftest item).
+  After the wave: _dcd4_analyze.py --mode selftest still BYTE-EQUAL to the committed
+  output (the new fl* files break none of its checks).
+
+======================================================================
+5. WHAT THE FLIP SHIPS THAT IS NOT MEASURED, AND WHAT A LATER ROUND MUST NOT MISREAD
+======================================================================
+  - MEASURED SCOPE: scenario D (4 UAVs, 4 victims, 2 firefighters), 50x50, 240 steps,
+    wind east or south, roles half (2 trackers + 2 searchers) or legacy roles at east.
+    WEST AND NORTH WINDS WERE NEVER MEASURED at dcD (0 of 57 distinct runs); under both,
+    NW - where every tracker and firefighter launches - is downwind.
+  - A BARE `python main.py` is the dashboard at EAST wind for 80 steps (preset A, one
+    searcher, so SPLIT is inert). No return can trigger before step 154, so it shows the
+    NEW SPAWN POSITIONS AND BOTH DEPOT OUTLINES ONLY - no return trip, no recharge.
+  - DIMCTRL (--dim-hook deny) NOW CRASHES at WildFireModel() instead of silently changing
+    meaning (V0.5). That is the correct failure mode. Rerun it with
+    --set BASE_STATION_MODE=0; do not read the crash as a regression.
+  - A junk --set for MODE, SPLIT, RESERVE or MARGIN now falls back to the dcD value
+    (all four at once measured: flxJ == drhD); a junk DEPOTS still raises.
+  - A ROUTE_BLOCK_STALE_CLEAR rung-0 control must now also pass BASE_STATION_MODE=0 to
+    stay byte-identical to f4e79d5.
+  - 49 of 91 shell runners, 560 of 1,092 queue lines and 81 of 227 probes still run the
+    live default and now measure dcD; the pool validators call such a run VALID.
+    Before reusing any of them, read outputs/flip_runner_register.txt.
+  - The margin's derivation premises are exceeded on the record (17-step wait vs 11;
+    latency above the 0.30 allowance on 177 of 192 triggers). No UAV has stranded in 228
+    recorded trips, but 39.23 carries no demonstrated slack for longer runs (a return
+    can start from step ~151 and a second trigger comes from step ~367), larger grids,
+    or more than 4 UAVs.
+  - The shipped-default comparison baseline is now dfD (canonical 13 + fresh 10), d4D
+    (fourth set), drhD and flhD (rbgate 18). ihrest99, dfzero, d4off, drhZ and rbc are
+    valid ONLY as MODE=0 references.
+
+======================================================================
+6. RECORDED, NOT DONE THIS ROUND (flip_part1.txt section 7)
+======================================================================
+  - No read-back of effective BASE_STATION_* values into the harness JSON, the gate
+    shards or evaluate_scenarios headers (Q3): a schema change would have broken the
+    byte-identity comparisons this round depends on.
+  - No in-place queue edits; committed reports that say mode 0 ships are listed in
+    flip_part1.txt section 6 and left as history, not annotated (Q6).
+  - No dcD twins of the three MODE=0-pinned tests or the two trajectory tests; no test
+    builds a model with 2+ searchers, so SPLIT 2 and the SE spawn are covered only by
+    unit tests on stand-ins; no test covers recharge. Four 300-step slow tests pass the
+    trigger floor at the default, but pytest records no rtb_log, so whether a return
+    fired in any of them is not known; low battery (30) is not reached by any measured
+    trip (minimum arrival 37.1).
+  - No construction-time validator for RESERVE/MARGIN mixtures; SPLIT still falls back
+    instead of raising on a bad value.
+  - README.md has no base-station text at all; its main.py / dashboard port instructions
+    are stale (README.md:67 says 8521; serve_dashboard.py PORT is 8000).
+  - The west/north sample.
+  - Pre-existing imprecision not caused by the flip: tests/test_base_station.py "At HEAD"
+    phrasings (:1014, :1131; they mean pre-dock-fix commits), agents.py's None-in-primary
+    remark, wildfire_model.py's
+    firefighter-berth "far end" wording and its stale agents.py citation.
+  - Shorthand introduced by THIS round, left in committed text: the flip commit message
+    and test_reserve_covers_the_worst_case_return's docstring say "207 of 228 ... carried
+    0.43-0.53 of latency"; exactly, 207 of 228 exceed 0.30, of which 205 are at 0.43-0.53
+    and 2 at 0.33 (common_fixed_variables.py states it exactly).
+  - Left untracked, as before: _flip_pytest_base0.log and _flip_pytest_simflip.log (an
+    interrupted earlier attempt), the git-ignored outputs/_flip_plugin/, and every
+    finished pool's .stop / state files.
+  - Pushed: nothing. Merged: nothing.
+
+======================================================================
+7. MEMORY
+======================================================================
+Updated at the end of this round: MEMORY.md, a new flip-round note, and superseded-state
+lines in basestation-round, dockfix-round, dcd4-round, dcd4rb-round, dcd4loss-round,
+interior-hazard-round, dimension-round-rebaseline, latch808-round,
+gridscale-probe-and-hotspot and uav-offgrid-and-corner-facts (each said or implied that
+mode 0 ships).
+
+======================================================================
+8. FILES AND REPRODUCTION
+======================================================================
+Committed in 68c75a9: see its message (source, tests, runner pins, register, Part 1).
+Committed in afbf8bd: tests/test_base_station.py (duplicate removed).
+Committed with this report (Part 3):
+  outputs/flip3_prereg.txt            pre-registration (unchanged since written)
+  outputs/_flip3_compare.py           identity rules H / H2ONLY / STRICT-H / S / STRICT-S
+  outputs/_flip3_controls.txt, _flip3_queue.txt   the two queues (8-field format)
+  outputs/_flip2_pytest_post.log/.xml, _flip2_pytest_names.txt   V1
+  outputs/_flip3_wave.log             both pools' heartbeat logs
+  outputs/_flip3_controls_compare.txt, _flip3_wave_compare.txt     V2
+  outputs/_flip3_rbcompare.txt, _flip3_analysis.txt                V3-V5
+  outputs/_ffr_flxD_*, _ffr_flxZ_*, _ffr_flxJ_*, _ffr_flhD_* (.json, .stdout.txt) and
+    outputs/_ffr_logs/fl*.out         24 harness runs (their .err files are git-ignored,
+                                      as in every round; the 19 flhD .err files are
+                                      byte-identical to drhD's / dfD's)
+  outputs/_flip3_v0_checks.txt        V0 captures and commit-charge readings
+  outputs/_rblatch_camp2_flg{D,Z}{a,b,c,s}_D_*.json, outputs/_ffr_rb_flg*.log   8 shards
+  outputs/flip_report.txt             this file
+Reproduce (Git Bash, repo root, .venv 3.10.11 / mesa 1.2.1):
+  bash outputs/_flip_pytest.sh   with VARIANT=post FLIPTAG=<tag> (serial; ~36-56 min)
+  powershell -File outputs/_dcd4_launch.ps1 -Script /e/Projects/SAS/outputs/_dcd4rb_pool.sh
+    -Env "QUEUE=outputs/_flip3_controls.txt;WAVE=controls;LOG=outputs/_flip3_wave.log;STEM=outputs/_flip3;TAGPFX=fl;PREREG=outputs/flip3_prereg.txt;MAXPAR=5"
+  (then the same with QUEUE=outputs/_flip3_queue.txt;WAVE=wave;MAXPAR=18, ~51 min)
+  python outputs/_flip3_compare.py --mode controls | --mode wave
+  python outputs/_ffr_rbcompare.py --new flgD --old ihrest
+  python outputs/_dcd4rb_analyze.py --mode all --D flgD:flhD --Z flgZ:drhZ --K drgK:drhK
+  python outputs/_flip_pytest_names.py base=outputs/_flip1_pytest_base.log
+         sim=outputs/_flip1_pytest_sim.log post=outputs/_flip2_pytest_post.log --ref base
+  python outputs/_flip_behaviour_diff.py b853617 afbf8bd
+  python outputs/_flip_fallback_mutants.py
+Commit-charge record (Win32_OperatingSystem FreeVirtualMemory, in _flip3_v0_checks.txt):
+20,011,140 KB at the V1 + controls launch (14:02:19); 19,986,304 KB at the wave launch
+(14:39:26), 78 s after V1 ended. Lowest free_kb the pools sampled: 4,949,612 KB (floor 3,500,000); no
+THROTTLE or WAIT line.
