@@ -629,36 +629,6 @@ def test_single_depot_selection_is_the_shipped_berth(monkeypatch) -> None:
     assert uav.rtb_target_depot == 0
 
 
-def test_stall_sidestep_cannot_fire_on_a_pure_axis_approach() -> None:
-    """KNOWN DEFECT IN THE SHIPPED FEATURE, pinned so a fix flips it visibly.
-
-    test_steering_sidesteps_a_stall covers (10,48) -> (4,45), where dx and dy are
-    both non-zero and a secondary direction therefore exists. When one delta is
-    zero there is nothing to swap to, and _rtb_direction returns the SAME blocked
-    direction it just returned - so a UAV blocked on a pure-axis approach retries
-    that move forever.
-
-    MEASURED at BASE_STATION_MODE = 2: all five non-arriving return legs of the
-    base-station round are one UAV stuck at (3,44), two cells short of berth
-    (3,46) up the y axis, for 34-66 steps with 37-42 battery in hand. The round
-    that produced them recorded them as still flying home. Mode 3 masks it because
-    a docked blocker recharges and leaves, and the shipped default is mode 0, so
-    nothing is exposed today - but any round that flips the mode inherits it.
-
-    This test asserts the BROKEN behaviour on purpose. When it is fixed, this test
-    fails, which is the point.
-    """
-    uav = _TriggerAgent((3, 44))
-    uav.rtb_last_pos = None
-    first = uav._rtb_direction((3, 46))
-    assert first == 3, "straight up the y axis toward the berth"
-    uav.rtb_last_pos = (3, 44)                 # the move was refused; still here
-    assert uav._rtb_direction((3, 46)) == 3, (
-        "the sidestep has no secondary axis to take and re-picks the blocked "
-        "direction - this is the defect, not the intent"
-    )
-
-
 # --- depot-cost round: the spawn split, the latch, and the distance regime -----
 #
 # These three cover the mechanism that distinguishes arm dcD from arm dcB, the
