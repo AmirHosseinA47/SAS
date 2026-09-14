@@ -11,7 +11,9 @@ sleep 20
 echo "BASELINE_SEEN $(date +%H:%M:%S)"
 
 echo "=== CONTROL WAVE (kill switch: VICTIM_FLEE_TRIGGER_DISTANCE=0) ==="
-bash outputs/_ffr_runall.sh vmoff "$FEAT_REPO" --set VICTIM_FLEE_TRIGGER_DISTANCE=0
+# dcD flip (2026-09-14): BASE_STATION_MODE ships at 3. These waves measured the
+# mode-0 default, so the mode is now pinned explicitly (outputs/flip_runner_register.txt).
+bash outputs/_ffr_runall.sh vmoff "$FEAT_REPO" --set VICTIM_FLEE_TRIGGER_DISTANCE=0 --set BASE_STATION_MODE=0
 echo "=== FEATURE WAVE (defaults: trigger 3, leash 6) ==="
-bash outputs/_ffr_runall.sh vmon "$FEAT_REPO"
+bash outputs/_ffr_runall.sh vmon "$FEAT_REPO" --set BASE_STATION_MODE=0
 echo "ALL_VM_WAVES_COMPLETE $(date +%H:%M:%S)"

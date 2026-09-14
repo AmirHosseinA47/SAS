@@ -301,7 +301,32 @@ def _assert_trajectory_or_region_diverged(a: WindSimTrace, b: WindSimTrace) -> N
     )
 
 
-def test_north_vs_south_trajectories_diverge_over_40_steps() -> None:
+def _pin_centre_spawn(monkeypatch) -> None:
+    """Pin the base station OFF so the searcher starts in the centre cluster.
+
+    Since the dcD flip (2026-09-14) BASE_STATION_MODE ships at 3 and the searcher
+    spawns on a corner depot berth, inside the near-edge escape regime
+    (uav_executor.py _victim_near_edge_escape_required). There the executor
+    relabels every wind-aware action "_retarget_to_interior", so
+    _assert_wind_aware_behavior fails at its first check.
+
+    The two divergence tests below were ALREADY failing before the flip, at
+    _assert_trajectory_or_region_diverged ("assert (24.0, 45.0) != (24.0, 45.0)").
+    Unpinned, the flip makes them fail EARLIER, at the wind-aware label, which masks
+    that pre-existing defect: the divergence check would never execute, and a later
+    fix of it could not turn these tests green. A test that keeps failing for a
+    different reason is worse than one that fails consistently. So they are pinned to
+    mode 0 like their sibling below. That keeps them measuring what they were written
+    to measure - wind-driven divergence from the centre spawn - and keeps the original
+    defect visible. The corner-spawn behaviour at the shipped default is a recorded
+    cost of the depot spawn (outputs/basestation_report.txt, outputs/flip_part1.txt
+    3.4), not a defect in this subsystem. monkeypatch restores the value.
+    """
+    monkeypatch.setattr(cfv, "BASE_STATION_MODE", 0, raising=False)
+
+
+def test_north_vs_south_trajectories_diverge_over_40_steps(monkeypatch) -> None:
+    _pin_centre_spawn(monkeypatch)
     north = _run_wind_simulation("north", steps=40, seed=DEFAULT_SEED)
     south = _run_wind_simulation("south", steps=40, seed=DEFAULT_SEED)
 
@@ -310,7 +335,8 @@ def test_north_vs_south_trajectories_diverge_over_40_steps() -> None:
     _assert_trajectory_or_region_diverged(north, south)
 
 
-def test_east_vs_west_trajectories_diverge_over_40_steps() -> None:
+def test_east_vs_west_trajectories_diverge_over_40_steps(monkeypatch) -> None:
+    _pin_centre_spawn(monkeypatch)
     east = _run_wind_simulation("east", steps=40, seed=DEFAULT_SEED)
     west = _run_wind_simulation("west", steps=40, seed=DEFAULT_SEED)
 
@@ -326,6 +352,10 @@ def test_all_cardinals_produce_distinct_regions_and_safe_positions(monkeypatch) 
     # every run in the same corner inside the near-edge regime, which compresses
     # the early trajectories and collapses the distinctness this test measures.
     # Reported in outputs/basestation_report.txt. monkeypatch restores it.
+    # Since the dcD flip (2026-09-14) the depot ships ON (BASE_STATION_MODE 3), so
+    # this pin is a centre-spawn regression guard at a NON-default mode; unpinned at
+    # the shipped default it is predicted to fail at the wind-aware label (see
+    # _pin_centre_spawn and outputs/flip_part1.txt 3.4).
     monkeypatch.setattr(cfv, "BASE_STATION_MODE", 0, raising=False)
     steps = 35
     traces = {

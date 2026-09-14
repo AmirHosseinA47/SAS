@@ -61,6 +61,9 @@ def test_no_crash_zero_victims(monkeypatch) -> None:
     # cost of the corner spawn and is reported in outputs/basestation_report.txt;
     # it is not a regression in the victim-searcher subsystem this test covers,
     # so the depot is pinned off here. monkeypatch restores it afterwards.
+    # Since the dcD flip (2026-09-14) the depot ships ON (BASE_STATION_MODE 3), so
+    # this pin is a centre-spawn regression guard at a NON-default mode; at the
+    # shipped default the bound is predicted to read 3 (outputs/flip_part1.txt 3.4).
     monkeypatch.setattr(cfv, "BASE_STATION_MODE", 0, raising=False)
     result = run_scenario(scenario_name="edge", scenario=EDGE_CASES[0], wind="north", steps=50)
     assert result.victim_searcher_id is not None

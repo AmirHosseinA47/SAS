@@ -599,11 +599,13 @@ class WildFireModel(mesa.Model):
 
     # --- Feature 3 (base station) -------------------------------------------
     def _build_base_station(self) -> dict | None:
-        """The 5x5 depot as a model-level region, or None when the feature is off.
+        """The depot set - each a 5x5 model-level region - or None when the feature is
+        off. Ships as two depots, NW and SE (BASE_STATION_DEPOTS 9); the corner is
+        read only for the single-depot mask 0.
 
         Adds no agent, consumes no RNG and shifts no unique_agents_id: it is a
-        pure function of the grid extent, the corner and the agent counts, which
-        is what keeps an armed run seed-comparable with the baselines.
+        pure function of the grid extent, the depot mask (or corner) and the agent
+        counts, which is what keeps an armed run seed-comparable with the baselines.
 
         Berths are ranked by DESCENDING distance from the nearest grid edge. That
         is deliberately the same key the executor's own margin-3 edge filter uses

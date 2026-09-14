@@ -158,6 +158,10 @@ def test_victim_search_wind_aware_action_when_downwind_exists(monkeypatch) -> No
     # outputs/basestation_report.txt, not a defect in this subsystem - so the
     # depot is pinned off here to keep this test measuring what it was written to
     # measure. monkeypatch restores it, so nothing leaks to the next test.
+    # Since the dcD flip (2026-09-14) the depot ships ON (BASE_STATION_MODE 3), so
+    # this pin is a centre-spawn regression guard at a NON-default mode; at the
+    # shipped default the label is predicted to be "..._retarget_to_interior"
+    # (outputs/flip_part1.txt 3.4).
     monkeypatch.setattr(cfv, "BASE_STATION_MODE", 0, raising=False)
     model = _fresh_model()
     vs_id = _victim_searcher_id(model)

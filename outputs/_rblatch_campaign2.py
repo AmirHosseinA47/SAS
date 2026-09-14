@@ -226,8 +226,12 @@ def main():
     # Depot-cost round: without this the route_blocked gate can only ever run at
     # the tree defaults, so an ARMED arm could not be gated at all without editing
     # the shipped default - which the round is forbidden to do. Purely additive:
-    # with no --set the params dict below is bit-identical to what it was, which is
-    # what keeps the existing e703861 reference shards (tag `rbc`) valid.
+    # with no --set the params dict below is bit-identical to what it was. SINCE THE
+    # dcD FLIP (2026-09-14) that no longer makes a no-set run comparable with the
+    # mode-0 reference shards (rbc, ihrest, dcinerta): the dict is identical but the
+    # run is the shipped BASE_STATION_MODE 3, and the shard records no effective
+    # config, so on disk the two are indistinguishable. A mode-0 gate must pass
+    # --set BASE_STATION_MODE=0.
     ap.add_argument("--set", dest="set", action="append", default=[],
                     metavar="KEY=VALUE",
                     help="extra apply_scenario_config parameter; same coercion "
@@ -241,8 +245,9 @@ def main():
               "BATCH_SIZE": 300, "FIRE_SPREAD_MULTIPLIER": 0.75, "PROBABILITY_MAP": False,
               "NUM_FIRE_TRACKERS": ft, "NUM_VICTIM_SEARCHERS": n - ft}
     # Depot-cost round. With no --set this loop does nothing and `params` is
-    # bit-identical to what it was before the flag existed, which is what keeps the
-    # existing e703861 reference shards (tag `rbc`) comparable. The coercion ladder
+    # bit-identical to what it was before the flag existed. That kept the e703861
+    # reference shards (tag `rbc`) comparable while the shipped default was mode 0;
+    # since the dcD flip a no-set run is mode 3 (see the note above). The coercion ladder
     # is the same one outputs/_ffr_harness.py:_parse_value uses - bool, then
     # none/null, then int, then float, then str - deliberately identical so an arm
     # cannot mean one thing to the harness and another to the gate.

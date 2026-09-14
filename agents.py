@@ -233,7 +233,9 @@ class UAV(mesa.Agent):
         self.selected_dir = 0
         self.execution_direction_applied = False
         self.execution_action: str | None = None
-        # Managed operational battery (observed by Step 5 monitoring; does not affect movement).
+        # Managed operational battery (observed by Step 5 monitoring). At
+        # BASE_STATION_MODE >= 2 - the shipped default is 3 - it also drives
+        # movement: the return-to-base trigger in _apply_return_to_base reads it.
         self.battery_level = 100.0
         self.battery_status = "normal"
         self.battery_drain_per_step = 0.1
@@ -322,7 +324,9 @@ class UAV(mesa.Agent):
         return ""
 
     def _update_battery_after_step(self, moved: bool) -> None:
-        """Apply per-step and per-move drain; update status labels (no movement or planning effects)."""
+        """Apply per-step and per-move drain, plus the mode-3 recharge of a docked UAV;
+        update status labels. No movement effect here - the level it leaves is what
+        the return-to-base trigger reads on the next advance."""
         self.battery_level -= self.battery_drain_per_step
         if moved:
             self.battery_level -= self.battery_drain_per_move
@@ -371,10 +375,15 @@ class UAV(mesa.Agent):
     def _rtb_trigger_level(self, berth: tuple[int, int]) -> float:
         """Battery at or below which this UAV must turn for home, from where it is.
 
-        The max of a flat reserve (which carries the horizon constraint - the
-        return has to FINISH inside the run) and a distance-aware term (which
-        carries the fuel constraint - it has to be ABLE to get home from here).
-        Neither alone is sufficient; see the derivation in common_fixed_variables.
+        The max of a flat reserve and a distance-aware term, 0.3 * d + margin, with
+        d the manhattan distance to the berth. In the FLAT regime (reserve 60,
+        margin 5) the reserve carries both the fuel and the horizon constraint - the
+        return has to be able to get home and to FINISH inside the run - and the
+        distance term is never the max on a 50x50 grid. In the SHIPPED DISTANCE
+        regime (reserve 0.0, margin 39.23) the reserve is the identity of the max and
+        the distance term decides alone, with the margin carrying the horizon
+        constraint. See the derivation, and its measured exceedances, in
+        common_fixed_variables.
         """
         per_move = float(self.battery_drain_per_step) + float(self.battery_drain_per_move)
         distance = abs(int(self.pos[0]) - berth[0]) + abs(int(self.pos[1]) - berth[1])
@@ -444,7 +453,8 @@ class UAV(mesa.Agent):
         # why the terminator in _apply_return_to_base is keyed on this UAV'S OWN
         # PROGRESS instead. At mode 3 seven more episodes of 9 to 37 steps, one of
         # which ran to the horizon (dcB east/half/808).
-        # BASE_STATION_MODE ships at 0, where none of this is reachable.
+        # BASE_STATION_MODE ships at 3 with mechanism 2, so every default return leg
+        # reaches this pure-axis condition.
         # The recovery is _rtb_recovery_berth, called from _apply_return_to_base:
         # this function stays memoryless and is not the place for it.
         if stalled is None:
@@ -855,13 +865,23 @@ def victim_flee_max_displacement() -> int:
 # module-level constant or a star-imported name would freeze at import and the
 # switch would be silently inert, which is the dead-input defect this repo has
 # already hit nine times.
+#
+# EVERY FALLBACK BELOW EQUALS THE VALUE common_fixed_variables SHIPS, getattr
+# default and except branch alike. A fallback that silently disagrees with the
+# shipped default is the same defect in miniature: one missing or unparseable
+# override would run a configuration nobody measured. So when a default is flipped
+# the literals here move with it - the dcD flip (2026-09-14) moved MODE, DEPOTS,
+# SPAWN_SPLIT, RESERVE and MARGIN - and
+# tests/test_base_station.py::test_accessors_survive_junk_values binds every one of
+# them to cfv. A consequence worth knowing: a junk kill switch
+# (--set BASE_STATION_MODE=off) now arms the full feature.
 
 def base_station_mode() -> int:
-    """0 off (kill switch) / 1 spawn / 2 +return-to-base / 3 +recharge."""
+    """0 off (kill switch) / 1 spawn / 2 +return-to-base / 3 +recharge (shipped)."""
     try:
-        return max(0, min(3, int(getattr(cfv, "BASE_STATION_MODE", 0))))
+        return max(0, min(3, int(getattr(cfv, "BASE_STATION_MODE", 3))))
     except (TypeError, ValueError):
-        return 0
+        return 3
 
 
 def base_station_return_mechanism() -> int:
@@ -901,12 +921,13 @@ BASE_STATION_DEPOTS_MAX = 31
 def base_station_depots() -> int:
     """Bitmask over the five depot anchors; 0 = one depot at BASE_STATION_CORNER.
 
-    RAISES on an unrecognised value instead of falling back. base_station_corner()
-    maps anything outside 0..3 to NW silently, and a silent fallback here would run
-    a two-depot arm as a one-depot arm - the wave would measure the wrong thing
-    with no error anywhere, which is this repo's recorded dead-input defect class.
+    Ships at 9 (NW + SE). RAISES on an unrecognised value instead of falling back.
+    base_station_corner() maps anything outside 0..3 to NW silently, and a silent
+    fallback here would run a two-depot arm as a one-depot arm - the wave would
+    measure the wrong thing with no error anywhere, which is this repo's recorded
+    dead-input defect class. Only a MISSING attribute falls back, to the shipped 9.
     """
-    raw = getattr(cfv, "BASE_STATION_DEPOTS", 0)
+    raw = getattr(cfv, "BASE_STATION_DEPOTS", 9)
     try:
         value = int(raw)
     except (TypeError, ValueError):
@@ -923,12 +944,12 @@ def base_station_depots() -> int:
 
 
 def base_station_spawn_split() -> int:
-    """0 all at depot 0 / 1 alternate by index / 2 partition-nearest searchers."""
+    """0 all at depot 0 / 1 alternate by index / 2 partition-nearest searchers (shipped)."""
     try:
-        value = int(getattr(cfv, "BASE_STATION_SPAWN_SPLIT", 0))
+        value = int(getattr(cfv, "BASE_STATION_SPAWN_SPLIT", 2))
     except (TypeError, ValueError):
-        return 0
-    return value if value in (0, 1, 2) else 0
+        return 2
+    return value if value in (0, 1, 2) else 2
 
 
 def base_station_spawn_firefighters() -> bool:
@@ -940,19 +961,21 @@ def base_station_spawn_firefighters() -> bool:
 
 
 def uav_return_to_base_reserve() -> float:
-    """Flat battery reserve that triggers a return; see the derivation in cfv."""
+    """Flat battery floor of the return trigger. Ships at 0.0, the identity of the
+    trigger's max(): no flat floor (the distance regime). 60.0 is the flat regime."""
     try:
-        return float(getattr(cfv, "UAV_RETURN_TO_BASE_RESERVE", 60.0))
+        return float(getattr(cfv, "UAV_RETURN_TO_BASE_RESERVE", 0.0))
     except (TypeError, ValueError):
-        return 60.0
+        return 0.0
 
 
 def base_station_return_margin() -> float:
-    """Points kept in hand on top of the distance-aware term."""
+    """Points added to 0.3 * distance in the return trigger. Ships at 39.23, which in
+    the distance regime carries the horizon constraint (5.0 is the flat regime's)."""
     try:
-        return float(getattr(cfv, "BASE_STATION_RETURN_MARGIN", 5.0))
+        return float(getattr(cfv, "BASE_STATION_RETURN_MARGIN", 39.23))
     except (TypeError, ValueError):
-        return 5.0
+        return 39.23
 
 
 def base_station_recharge_per_step() -> float:

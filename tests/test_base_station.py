@@ -35,17 +35,63 @@ def test_return_reserve_reads_the_module_at_call_time(monkeypatch) -> None:
 
 
 def test_accessors_survive_junk_values(monkeypatch) -> None:
-    """A bad override must fall back, not raise inside a step."""
-    for name, accessor, fallback in (
-        ("BASE_STATION_MODE", agents.base_station_mode, 0),
-        ("BASE_STATION_RETURN_MECHANISM", agents.base_station_return_mechanism, 2),
-        ("BASE_STATION_CORNER", agents.base_station_corner, 0),
-        ("BASE_STATION_SIZE", agents.base_station_size, 5),
-        ("UAV_RETURN_TO_BASE_RESERVE", agents.uav_return_to_base_reserve, 60.0),
-        ("BASE_STATION_RECHARGE_PER_STEP", agents.base_station_recharge_per_step, 5.0),
+    """Every fallback equals the value the module SHIPS, and none raises in a step.
+
+    Since the dcD flip (2026-09-14) the shipped defaults are BASE_STATION_MODE 3,
+    DEPOTS 9 (NW + SE), SPAWN_SPLIT 2, UAV_RETURN_TO_BASE_RESERVE 0.0 and
+    BASE_STATION_RETURN_MARGIN 39.23, and the agents.py fallbacks encode exactly
+    those. A fallback that silently disagrees with the shipped value would turn one
+    missing or unparseable override into a configuration nobody measured - the
+    dead-input defect in miniature. So every accessor is checked on BOTH of its
+    fallback paths against what it returns for the shipped cfv value:
+      - an unparseable value (setattr) reaches its except branch;
+      - a MISSING attribute (delattr) reaches its getattr default, which no other
+        test can reach.
+    BASE_STATION_DEPOTS is the exception on the first path: a bad value RAISES.
+    Consequence, accepted with the flip: a junk kill switch arms the full feature.
+    A future flip of any default must move the agents.py literals with it; this test
+    fails until it does.
+    """
+    import pytest
+
+    # The raw shipped values, read before anything below deletes or junks them.
+    cfv_split = int(cfv.BASE_STATION_SPAWN_SPLIT)
+    cfv_depots = int(cfv.BASE_STATION_DEPOTS)
+
+    for name, accessor in (
+        ("BASE_STATION_MODE", agents.base_station_mode),
+        ("BASE_STATION_RETURN_MECHANISM", agents.base_station_return_mechanism),
+        ("BASE_STATION_SIZE", agents.base_station_size),
+        ("BASE_STATION_CORNER", agents.base_station_corner),
+        ("BASE_STATION_SPAWN_SPLIT", agents.base_station_spawn_split),
+        ("BASE_STATION_SPAWN_FIREFIGHTERS", agents.base_station_spawn_firefighters),
+        ("UAV_RETURN_TO_BASE_RESERVE", agents.uav_return_to_base_reserve),
+        ("BASE_STATION_RETURN_MARGIN", agents.base_station_return_margin),
+        ("BASE_STATION_RECHARGE_PER_STEP", agents.base_station_recharge_per_step),
+        ("BASE_STATION_RECHARGE_RELEASE_LEVEL", agents.base_station_recharge_release_level),
+        ("BASE_STATION_DOCK_FIX", agents.base_station_dock_fix),
+        ("BASE_STATION_RETURN_STALL_LIMIT", agents.base_station_return_stall_limit),
+        ("BASE_STATION_WAYPOINT_FIX", agents.base_station_waypoint_fix),
     ):
+        shipped = accessor()
         monkeypatch.setattr(cfv, name, "not-a-number", raising=False)
-        assert accessor() == fallback, name
+        assert accessor() == shipped, "%s: except-branch fallback" % name
+        monkeypatch.delattr(cfv, name)
+        assert accessor() == shipped, "%s: getattr-default fallback" % name
+
+    # Out of range: SPAWN_SPLIT maps to the shipped value (MODE clamps instead; see
+    # test_mode_is_clamped_to_the_ladder).
+    monkeypatch.setattr(cfv, "BASE_STATION_SPAWN_SPLIT", 7, raising=False)
+    assert agents.base_station_spawn_split() == cfv_split, (
+        "BASE_STATION_SPAWN_SPLIT: out-of-range fallback")
+
+    # DEPOTS: a missing attribute falls back to the shipped mask; a bad value raises.
+    monkeypatch.delattr(cfv, "BASE_STATION_DEPOTS")
+    assert agents.base_station_depots() == cfv_depots, (
+        "BASE_STATION_DEPOTS: getattr-default fallback")
+    monkeypatch.setattr(cfv, "BASE_STATION_DEPOTS", "not-a-number", raising=False)
+    with pytest.raises(ValueError, match="bitmask"):
+        agents.base_station_depots()
 
 
 def test_mode_is_clamped_to_the_ladder(monkeypatch) -> None:
@@ -61,29 +107,48 @@ def test_unknown_corner_falls_back_to_nw(monkeypatch) -> None:
 
 
 def test_shipped_defaults() -> None:
-    """The values the round ships with, so a silent edit is caught.
+    """The values the model ships with, so a silent edit is caught.
 
-    BASE_STATION_MODE ships at 0. That is not an oversight: at mode 3 the feature
-    fails three gate items, including two firefighters left permanently latched
-    as route_blocked on seed 808 - the category commit 70e1b33 closed, with an
-    undiagnosed mechanism. With the mode at 0 the model's default behaviour is
-    provably identical to 16b2da8. Anything that flips this default must re-run
-    the wave and the route_blocked gate, so the assertion is deliberate.
+    BASE_STATION_MODE SHIPS AT 3, in the configuration measured as arm dcD with the
+    dock fix on (outputs/_dcd4_queue.py:31-37, d4D): two depots, NW + SE
+    (BASE_STATION_DEPOTS 9 = 1 + 8); searchers launched from the depot nearest their
+    crosswind lane (BASE_STATION_SPAWN_SPLIT 2); the distance-regime return trigger,
+    with no flat floor (UAV_RETURN_TO_BASE_RESERVE 0.0) and the derived margin that
+    carries the horizon constraint (BASE_STATION_RETURN_MARGIN 39.23); the hardcoded
+    return mechanism (2); recharge. Flipped 2026-09-14, from 0 / 0 / 0 / 60.0 / 5.0,
+    because the feature is wanted at roughly neutral cost - not because it improves
+    outcomes: on the independent fourth seed set rescued held at 89, dead rose 16 -> 23
+    and firefighter deaths fell 18 -> 7 (outputs/_dcd4_splits.txt; checklist
+    outputs/flip_part1.txt, validation outputs/flip_report.txt). Mode 0 is still the
+    kill switch but no longer
+    the default: a run that must reproduce the pre-flip default (b853617) has to pass
+    BASE_STATION_MODE=0 explicitly.
+
+    CHANGING ANY OF THESE DEFAULTS AGAIN requires, before the edit lands:
+      - re-running the gate wave and the route_blocked gate at the new settings;
+      - running the FULL test suite at the new settings and accounting for every
+        name in its failing set (not just the count) against the recorded baseline;
+      - a byte-identity check of a run on the new defaults against an arm that sets
+        every BASE_STATION_* value explicitly with --set;
+      - moving the agents.py accessor fallbacks with the constants
+        (test_accessors_survive_junk_values).
+    The assertions are deliberate.
     """
-    assert cfv.BASE_STATION_MODE == 0
+    assert cfv.BASE_STATION_MODE == 3
     assert cfv.BASE_STATION_RETURN_MECHANISM == 2
     assert cfv.BASE_STATION_SIZE == 5
-    assert cfv.UAV_RETURN_TO_BASE_RESERVE == 60.0
-    assert cfv.BASE_STATION_RETURN_MARGIN == 5.0
+    assert cfv.UAV_RETURN_TO_BASE_RESERVE == 0.0
+    assert cfv.BASE_STATION_RETURN_MARGIN == 39.23
     assert cfv.BASE_STATION_RECHARGE_PER_STEP == 5.0
     assert cfv.BASE_STATION_RECHARGE_RELEASE_LEVEL == 100.0
-    # Depot-cost round. Both default to the pre-round behaviour: one depot at
-    # BASE_STATION_CORNER, every unit launching from it. The arms of that round
-    # are --set overrides, never edited defaults, precisely so this test and
-    # test_reserve_covers_the_worst_case_return keep passing.
-    assert cfv.BASE_STATION_DEPOTS == 0
-    assert cfv.BASE_STATION_SPAWN_SPLIT == 0
+    # Depot-cost round, shipped at its dcD arm: NW (1) + SE (8), searchers homed by
+    # lane, trackers and firefighters at depot 0. DEPOTS 0 / SPLIT 0 (one depot at
+    # BASE_STATION_CORNER, every unit launching from it) is now an override, and
+    # BASE_STATION_CORNER is read only when BASE_STATION_DEPOTS is 0.
+    assert cfv.BASE_STATION_DEPOTS == 9
+    assert cfv.BASE_STATION_SPAWN_SPLIT == 2
     assert cfv.BASE_STATION_CORNER == 0
+    assert cfv.BASE_STATION_SPAWN_FIREFIGHTERS == 1
 
 
 # --- depot geometry -----------------------------------------------------------
@@ -256,20 +321,99 @@ def test_trigger_takes_the_max_of_reserve_and_distance(monkeypatch) -> None:
     # With the reserve turned down, the distance term is what protects the UAV.
     monkeypatch.setattr(cfv, "UAV_RETURN_TO_BASE_RESERVE", 10.0, raising=False)
     assert far._rtb_trigger_level((4, 45)) == 32.0
+    # The SHIPPED distance regime: no flat floor, the margin alone.
+    monkeypatch.setattr(cfv, "UAV_RETURN_TO_BASE_RESERVE", 0.0, raising=False)
+    monkeypatch.setattr(cfv, "BASE_STATION_RETURN_MARGIN", 39.23, raising=False)
+    assert round(near._rtb_trigger_level((4, 45)), 6) == 39.83   # 0.3*2 + 39.23
+    assert round(far._rtb_trigger_level((4, 45)), 6) == 66.23    # 0.3*90 + 39.23
 
 
-def test_reserve_covers_the_worst_case_return() -> None:
-    """The derivation, locked down: 90 cells at 0.3 must fit inside the reserve."""
-    # 92, not 90: the trigger measures to the UAV's OWN BERTH, and the worst
-    # case is berth (3,46) from cell (49,0) = 46 + 46. The shipped comment said
-    # 90, which is the distance to the nearest depot CELL. Corrected in the
-    # depot-cost round; the conclusion is unchanged, 27.6 + 5.0 is inside 60.
-    worst_case_cost = round(92 * (0.1 + 0.2), 6)
-    assert worst_case_cost == 27.6
-    assert cfv.UAV_RETURN_TO_BASE_RESERVE >= worst_case_cost + cfv.BASE_STATION_RETURN_MARGIN
-    # And the horizon constraint: the trigger has to fire by step 150 so a
-    # 90-step return still fits inside a 240-step run.
-    assert (100.0 - cfv.UAV_RETURN_TO_BASE_RESERVE) / 0.3 <= 150.0
+def test_reserve_covers_the_worst_case_return(monkeypatch) -> None:
+    """The SHIPPED return trigger at the SHIPPED depot geometry: what its derivation
+    claims, and what dcD's own record showed instead.
+
+    Since the dcD flip (2026-09-14) the trigger runs in the DISTANCE regime.
+    UAV_RETURN_TO_BASE_RESERVE is 0.0, the identity of max(R, 0.3*d + M), so the
+    trigger is 0.3*d + M with M = BASE_STATION_RETURN_MARGIN = 39.23 and d the
+    manhattan distance to the NEAREST of the UAV's OWN berths. The margin carries the
+    horizon constraint the flat reserve used to (derivation:
+    test_distance_regime_margin_is_the_derived_one and common_fixed_variables).
+
+    d comes from the real _build_base_station at cfv's own depot set, for every one
+    of the 25 berth indices a 5x5 depot holds, from every cell of the 50x50 grid:
+    49/50/49/50/51 for UAV index 0-4, 53 over all 25. The single-NW 90/92 this test
+    used to lock cannot occur at BASE_STATION_DEPOTS 9.
+
+    The fuel and horizon numbers are the DERIVATION'S, at its own premises (blocked
+    standoff 11 steps, trigger latency 0.30, outbound move fraction 5/6), and are
+    asserted as exactly that:
+      fuel     the worst trigger, 55.13, is below a full charge, and the derived
+               arrival is 37.83;
+      horizon  finish(d) = (100 - level(d) + 0.30)/e + d + 11 is largest at d = 0,
+               where it is 240.0125 - NOT <= 240. 39.2333 was rounded down to 39.23,
+               a 0.0125-step miss at the stated premises, asserted exactly so the
+               rounding stays visible.
+    dcD's OWN RECORD EXCEEDS TWO OF THOSE PREMISES: over the 192 trips of d4D + drhD
+    one return leg waited 17 steps (d4D south/half/423146201, UAV 2501) and 177
+    triggers carried 0.43-0.53 of latency (207 of 228 over all 57 distinct dcD runs).
+    The measured minimum arrival was 37.1, not 37.83. Every trip still arrived (the
+    latest at step 227) and no UAV stranded. So the derived figures are the design
+    point, not guarantees. The measured minimum is RECORDED here as a constant and
+    compared with the configured analyzer thresholds; it is a sample minimum, not a
+    floor, and nothing in this test re-measures it.
+
+    Changing these defaults again requires the gate wave, the route_blocked gate, the
+    full suite at the new settings with its failing name set accounted for, and a
+    byte-identity check of a default run against an explicit --set arm. A revert to
+    the flat single-NW regime must rewrite this test: it fails first at the depot
+    origins, and its horizon check would fail too (flat finish(92) = 254.125 with the
+    0.30 latency, 253 without; the worst own-berth distance over all 25 berths of a
+    single NW depot is 98).
+    """
+    reserve = float(cfv.UAV_RETURN_TO_BASE_RESERVE)
+    margin = float(cfv.BASE_STATION_RETURN_MARGIN)
+    corner, depots = cfv.BASE_STATION_CORNER, cfv.BASE_STATION_DEPOTS
+    size = int(cfv.BASE_STATION_SIZE)
+    assert int(cfv.BASE_STATION_MODE) >= 2   # below 2 neither value is read
+    assert (int(cfv.HEIGHT), int(cfv.WIDTH)) == (50, 50)
+    # _station overwrites cfv, so everything above is read first. 25 UAVs and no
+    # firefighters fill every berth index without tripping the per-depot capacity.
+    station = _station(monkeypatch, corner=corner, depots=depots, size=size,
+                       uavs=size * size, ffs=0)
+    assert [d["origin"] for d in station["depots"]] == [(0, 45), (45, 0)]
+    worst = [
+        max(min(abs(x - bx) + abs(y - by) for bx, by in berths)
+            for x in range(50) for y in range(50))
+        for berths in station["uav_berths_by_depot"]
+    ]
+    assert worst[:5] == [49, 50, 49, 50, 51]
+    d_max = max(worst)
+    assert d_max == 53
+
+    per_move = 0.1 + 0.2                  # UAV drain on a moving step
+    e = 0.1 + 0.2 * (5.0 / 6.0)           # effective drain at move fraction 5/6
+    blocked, latency = 11, 0.30           # the derivation's premises
+
+    def level(d):
+        return max(reserve, per_move * d + margin)
+
+    # FUEL
+    assert round(level(d_max), 2) == 55.13
+    assert level(d_max) < float(cfv.BASE_STATION_RECHARGE_RELEASE_LEVEL)
+    derived_arrival = (min(level(d) - per_move * d for d in range(d_max + 1))
+                       - 0.1 * blocked - latency)
+    assert round(derived_arrival, 2) == 37.83
+    measured_min_arrival = 37.1           # recorded: 17-step standoff, 0.43 latency
+    for arrival in (derived_arrival, measured_min_arrival):
+        assert arrival > float(cfv.LOW_BATTERY_THRESHOLD)
+        assert arrival > float(cfv.BATTERY_CRITICAL_THRESHOLD)
+
+    # HORIZON
+    def finish(d):
+        return (100.0 - level(d) + latency) / e + d + blocked
+
+    assert max(finish(d) for d in range(d_max + 1)) == finish(0)
+    assert round(finish(0), 4) == 240.0125
 
 
 def test_steering_picks_the_larger_residual_axis() -> None:
@@ -326,14 +470,19 @@ def test_dashboard_publishes_the_depot_and_the_uav_base_state() -> None:
 # --- depot-cost round: the depot SET ------------------------------------------
 
 def test_depot_mask_zero_is_the_single_corner_unchanged(monkeypatch) -> None:
-    """The default must be the pre-round geometry exactly, or nothing else holds."""
+    """Mask 0 must be the pre-round single-corner geometry exactly.
+
+    It is no longer the shipped default - BASE_STATION_DEPOTS ships at 9 (NW + SE)
+    since the dcD flip - but it is what every --set BASE_STATION_DEPOTS=0 arm and
+    every pre-flip reference run measured, so it must not drift.
+    """
     single = _station(monkeypatch, depots=0)
     explicit_nw = _station(monkeypatch, depots=1)
     assert single["origin"] == (0, 45)
     assert len(single["depots"]) == 1
     assert single["uav_berths"] == ((4, 45), (3, 45), (3, 46), (4, 46))
     assert single["firefighter_berths"] == ((2, 45), (2, 46))
-    # mask 1 names the same corner the default falls back to
+    # mask 1 names the same corner that mask 0 falls back to (BASE_STATION_CORNER 0, NW)
     assert explicit_nw["uav_berths"] == single["uav_berths"]
     assert explicit_nw["cells"] == single["cells"]
 
@@ -656,22 +805,39 @@ def test_return_target_is_latched_for_the_whole_trip(monkeypatch) -> None:
 def test_distance_regime_margin_is_the_derived_one() -> None:
     """39.23 is derived, not tuned, and the derivation is checkable.
 
+    It is the SHIPPED margin: since the dcD flip (2026-09-14)
+    UAV_RETURN_TO_BASE_RESERVE is 0.0, so this regime is the default trigger rather
+    than an arm.
+
     M >= [100 - e*H + e*blocked] - d*(0.3 - e), worst at d = 0, with
     e = 0.1 + 0.2*(5/6), H = 240 and blocked = 11 (the measured maximum
-    blocked-step standoff over 137 recorded mechanism-2 return legs), plus 0.30 of
-    trigger latency. test_reserve_covers_the_worst_case_return locks the FLAT
-    regime; this locks the distance regime, which three of the four measured arms
-    run and which nothing else in the suite mentions.
+    blocked-step standoff over 137 recorded mechanism-2 return legs at the time),
+    plus 0.30 of trigger latency. This locks the arithmetic, including that 39.2333
+    was rounded DOWN to 39.23. test_reserve_covers_the_worst_case_return checks the
+    shipped values against the shipped NW+SE geometry.
+
+    The premises are the derivation's, not a measured bound: dcD's own record has a
+    17-step standoff, triggers carrying 0.43-0.53 of latency, and a minimum arrival
+    of 37.1 rather than the derived 37.83 (common_fixed_variables). No UAV stranded.
     """
     e = 0.1 + 0.2 * (5.0 / 6.0)
     horizon = 100.0 - e * 240.0 + e * 11
     assert round(horizon, 4) == 38.9333
+    assert round(horizon + 0.30, 4) == 39.2333
     margin = round(horizon + 0.30, 2)
     assert margin == 39.23
-    # it is nowhere less conservative than the shipped flat rule: at the true
-    # worst-case berth distance of 92 it turns back EARLIER than 60.
-    assert 0.3 * 92 + margin > 60.0
-    # and the UAV arrives clear of both analyzer thresholds
+    assert margin == cfv.BASE_STATION_RETURN_MARGIN
+    # At the shipped NW+SE depots the nearest own berth is at most 53 cells away, so
+    # this rule turns a UAV back LATER than a flat 60 at every reachable cell; it
+    # would need d > 69.23 to turn back earlier. Its safety rests on the margin
+    # carrying the horizon (no stranding in 228 recorded dcD trips), not on slack
+    # against the flat rule. (Before the
+    # flip, at the single NW depot's worst own-berth distance of 92, it was earlier:
+    # 0.3*92 + 39.23 = 66.83.)
+    assert 0.3 * 53 + margin < 60.0
+    assert round((60.0 - margin) / 0.3, 2) == 69.23
+    # and the DERIVED arrival - the design point; the measured minimum is 37.1 -
+    # is clear of both analyzer thresholds
     arrival = margin - 0.30 - 1.10
     assert arrival > 30.0          # LOW_BATTERY_THRESHOLD
     assert arrival > 15.0          # global_analyzer critical_battery_threshold
@@ -1144,10 +1310,24 @@ def test_dock_fix_accessors_survive_junk_and_clamp(monkeypatch) -> None:
 
 
 def test_dock_fix_shipped_defaults() -> None:
-    """DEFAULT ON. At BASE_STATION_MODE 0 none of it is reachable, so the shipped
-    configuration is untouched either way; shipping it off would mean carrying a
-    known stranding bug behind a flag nobody remembers to flip."""
+    """DEFAULT ON, and LIVE at the shipped configuration.
+
+    BASE_STATION_MODE ships at 3 with RETURN_MECHANISM 2 (the dcD flip, 2026-09-14),
+    so the re-keyed terminator (DOCK_FIX >= 1) and the stall recovery (DOCK_FIX 2)
+    run on every default return leg. DOCK_FIX 0 is therefore no longer a no-op on a
+    default run: it reverts docking to the 9f77178 behaviour. The waypoint fix is
+    still unreachable by default, because it is mechanism-1 only
+    (local_adaptation_generator.py _generate_base_return_options), not because of
+    the depot count. Shipping the dock fix off would mean carrying a known stranding
+    bug behind a flag nobody remembers to flip.
+
+    Changing the shipped mode again requires what test_shipped_defaults lists: the
+    gate wave, the route_blocked gate, the full suite at the new settings with its
+    failing name set accounted for, and a byte-identity check of a default run
+    against an explicit --set arm.
+    """
     assert cfv.BASE_STATION_DOCK_FIX == 2
     assert cfv.BASE_STATION_RETURN_STALL_LIMIT == 3
     assert cfv.BASE_STATION_WAYPOINT_FIX == 1
-    assert cfv.BASE_STATION_MODE == 0
+    assert cfv.BASE_STATION_MODE == 3
+    assert cfv.BASE_STATION_RETURN_MECHANISM == 2

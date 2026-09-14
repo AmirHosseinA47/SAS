@@ -13,9 +13,12 @@ cd /e/Projects/SAS
 PRE="${1:-irfix}"
 PY=.venv/Scripts/python.exe
 
+# dcD flip (2026-09-14): BASE_STATION_MODE ships at 3. The irfix reference measured
+# the mode-0 default, so the mode is now pinned explicitly (it also means a rerun's
+# params gain that key; see outputs/flip_runner_register.txt).
 run() {  # tag wind seeds
   $PY outputs/_rblatch_campaign2.py --scenario D --wind "$2" --steps 240 \
-      --seeds "$3" --tag "$1" >/dev/null 2>>"outputs/_ir/rbgate_$1_$2.err"
+      --seeds "$3" --tag "$1" --set BASE_STATION_MODE=0 >/dev/null 2>>"outputs/_ir/rbgate_$1_$2.err"
   rc=$?
   f="outputs/_rblatch_camp2_$1_D_$2.json"
   if [ $rc -ne 0 ] || [ ! -s "$f" ]; then

@@ -33,7 +33,15 @@ usage:
 
 --set KEY=VALUE adds an extra apply_scenario_config parameter (int/float/bool
 parsed), e.g. --set FF_RESCUE_ABSENCE_MAX_STEPS=0 for a feature-off control.
-Nothing is passed unless asked, so a bare invocation is the stock harness.
+Nothing is passed unless asked, so a bare invocation runs the tree's SHIPPED
+defaults. Since the dcD flip (2026-09-14) that means BASE_STATION_MODE 3 with two
+depots, and with the default --roles half and --scenario D a bare run is exactly the
+drhD / d4D configuration; a mode-0 run needs --set BASE_STATION_MODE=0. Of the
+base-station configuration the JSON records only what was passed with --set (in
+params and extra_params), not the effective defaults or the commit. After the fact,
+base_station (None vs a depot dict) separates mode 0 from mode >= 1; rtb_log shows
+mode >= 2 only once a return has triggered (not before step ~151 on 50x50), and a
+released_step shows mode 3.
 """
 from __future__ import annotations
 
