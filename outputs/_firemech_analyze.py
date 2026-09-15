@@ -25,8 +25,9 @@ Definitions
                    previous step with no row this step) was engaged
   exposed clear    a cleared never-burned cell some cell within euclidean 3 of which
                    burned at a LATER step (so it would have had a nonzero ignition chance)
-  cycle            >= 8 consecutive per-step rows of one unit with no write and whose
-                   post-advance positions cover <= 4 distinct cells (maximal runs)
+  osc / holds      >= 8 consecutive per-step rows of one unit with no write and whose
+                   post-advance positions cover 2-4 distinct cells (osc: an oscillation)
+                   or exactly 1 cell (holds: standing still with no work, e.g. no fire)
   alternation      move -> retreat -> move on three consecutive steps of one unit
   death engaged    the unit's log row ON its death step is engaged (its advance on that
                    step was firefighting); the casualty check runs after every advance
@@ -254,6 +255,31 @@ def run_summary(d, off):
                     nb_all += 1
                     nb_burn += int(burning_at(bi, n, s))
         prev_r = by_ff.get(ff, {}).get(s - 1)
+        # streak: the unit's contiguous run of per-step log rows ending at the
+        # death step (or the step before); engaged anywhere in it = the unit came
+        # to this spot through firefighting and never left the idle state since
+        rows_ff = by_ff.get(ff, {})
+        k = s if s in rows_ff else s - 1
+        streak_engaged = False
+        streak_len = 0
+        while k in rows_ff:
+            streak_len += 1
+            streak_engaged = streak_engaged or bool(rows_ff[k].get("engaged"))
+            k -= 1
+        # preempted: the unit's latest ok assign before its death landed while it
+        # was engaged (a row engaged at the assign step, or at the step before
+        # with none at the assign step) - it died on a rescue it was pulled onto
+        # from a firefighting position
+        last_assign = max((a["step"] for a in (d.get("assigns") or [])
+                           if a.get("ok") and a["ff"] == ff and a["step"] <= s), default=None)
+        preempted = False
+        if last_assign is not None:
+            now_a, prev_a = rows_ff.get(last_assign), rows_ff.get(last_assign - 1)
+            preempted = bool((now_a is not None and now_a.get("engaged"))
+                             or (now_a is None and prev_a is not None and prev_a.get("engaged")))
+            comp_between = any(c["ff"] == ff and last_assign <= c["step"] <= s
+                               for c in (d.get("completions") or []))
+            preempted = preempted and not comp_between
         deaths.append({
             "ff": ff, "step": s, "cell": cell,
             "engaged": bool(r and r.get("engaged")),
@@ -261,6 +287,10 @@ def run_summary(d, off):
             # runs, so its death-step row is recomputed on that burning cell; the
             # previous row is its last decision before the fatal fire tick
             "engaged_prev": bool(prev_r and prev_r.get("engaged")),
+            "streak_engaged": streak_engaged,
+            "streak_len": streak_len,
+            "last_assign": last_assign,
+            "preempted": preempted,
             "row": r["action"] if r else None,
             "prev_row": prev_r.get("action") if prev_r else None,
             "T": r["T"] if r else None, "dist": r["dist"] if r else None,
@@ -380,17 +410,18 @@ def sample_report(name, tuples, arms):
             "lookahead_rej",
             "retreat", "retreat_plan", "suspend_set", "s_hold", "suspended", "exit_trip", "preempt",
             "after_term", "alts")
-    say("  %-6s " % "arm" + " ".join("%9s" % c[:9] for c in cols) + " %6s" % "cycles")
+    say("  %-6s " % "arm" + " ".join("%9s" % c[:9] for c in cols) + " %6s %5s" % ("osc", "holds"))
     for tag in arms:
         rr = [s for _t, s in summaries[tag]]
         if not rr:
             continue
         say("  %-6s " % tag + " ".join("%9d" % pooled(rr, c) for c in cols)
-            + " %6d" % sum(len(s["cycles"]) for s in rr))
+            + " %6d %5d" % (sum(1 for s in rr for c in s["cycles"] if c[3] >= 2),
+                            sum(1 for s in rr for c in s["cycles"] if c[3] == 1)))
     for tag in arms:
-        cyc = [(label(t),) + c for t, s in summaries[tag] for c in s["cycles"]]
+        cyc = [(label(t),) + c for t, s in summaries[tag] for c in s["cycles"] if c[3] >= 2]
         if cyc:
-            say("  %s cycles: %s" % (tag, "; ".join("%s %s steps %d-%d on %d cells" % c for c in cyc)))
+            say("  %s oscillation windows (2-4 cells): %s" % (tag, "; ".join("%s %s steps %d-%d on %d cells" % c for c in cyc)))
 
     say("")
     say("DRONE STEPS ON A BURNING CELL   E1 searcher-only (interior-hazard) | E2 all-UAV")
@@ -407,19 +438,19 @@ def sample_report(name, tuples, arms):
     say("  firefighting-related = either. A unit with no row on both steps was not eligible (e.g. on a rescue).")
     for tag in arms:
         dd = [(label(t), x) for t, s in summaries[tag] for x in s["deaths"]]
-        say("  %-6s deaths %d  engaged-at-death %d  engaged-prev %d  firefighting-related %d  after-terminal %d  "
-            "full-enclosure %d  free-exit %d" % (
+        say("  %-6s deaths %d  engaged-at-death %d  engaged-prev %d  idle-streak-engaged %d  preempted-rescue %d  "
+            "after-terminal %d  full-enclosure %d  free-exit %d" % (
                 tag, len(dd), sum(1 for _l, x in dd if x["engaged"]), sum(1 for _l, x in dd if x["engaged_prev"]),
-                sum(1 for _l, x in dd if x["engaged"] or x["engaged_prev"]),
+                sum(1 for _l, x in dd if x["streak_engaged"]), sum(1 for _l, x in dd if x["preempted"]),
                 sum(1 for _l, x in dd if x["after_terminal"]),
                 sum(1 for _l, x in dd if x["enclosure"] == "full"),
                 sum(1 for _l, x in dd if x["enclosure"] != "full")))
         for lab, x in dd:
-            say("      %-15s %s step %3d cell %-9s engaged %-5s prev_engaged %-5s row %-10s prev %-10s T %-4s "
-                "dist %-4s burning-nbrs %s (%s)  before: %s assigned %s  after_terminal %s" % (
-                    lab, x["ff"], x["step"], AN.fmt_cell(x["cell"]), x["engaged"], x["engaged_prev"], x["row"],
-                    x["prev_row"], x["T"], x["dist"], x["nb"], x["enclosure"], x["status_before"],
-                    x["assigned_before"], x["after_terminal"]))
+            say("      %-15s %s step %3d cell %-9s engaged %-5s prev %-5s streak_engaged %-5s(%3d rows) "
+                "preempted %-5s(assign %s) row %-8s T %-4s dist %-4s nbrs %s (%s) before: %s after_terminal %s" % (
+                    lab, x["ff"], x["step"], AN.fmt_cell(x["cell"]), x["engaged"], x["engaged_prev"],
+                    x["streak_engaged"], x["streak_len"], x["preempted"], x["last_assign"], x["row"], x["T"],
+                    x["dist"], x["nb"], x["enclosure"], x["status_before"], x["after_terminal"]))
 
     say("")
     say("WALL TIME (mean s per run)  " + "  ".join(

@@ -1,0 +1,574 @@
+================================================================================
+FIRE MECHANIC, ROUND 1 - REPORT (Parts 2 and 3)
+Firefighters can EXTINGUISH and cut FIREBREAKS. Mechanic only; ships OFF.
+================================================================================
+
+BRANCH   firefighter-fire-mechanic
+COMMITS  003ed91  Part 2 implementation, feature OFF by default. This is the
+                  measured tree. The canonical, fresh and gate waves logged
+                  head=003ed91 dirty_tracked=0. The gate-harness pool logged
+                  dirty_tracked=1: the analysis script, not simulation code.
+                  fmREF ran earlier, on the detached 6adeb4f worktree; its only
+                  file from this tree was outputs/_ffr_harness.py, whose one
+                  change (the conditional block) was already final and is exactly
+                  what 003ed91 commits.
+         (this report and the Part 3 artifacts are committed on top of it)
+BASE     e8b911b = 6adeb4f source plus outputs only. The kill switch was proven
+         against a DETACHED 6adeb4f worktree, re-measured with this round's harness.
+ENV      sys.version       3.10.11 (tags/v3.10.11:7d4cc5a, Apr 5 2023) MSC v.1929 64 bit
+         mesa.__version__  1.2.1   (E:\Projects\SAS\.venv, confirmed at run time and in
+                                    every pool log's ENV line)
+DESIGN   outputs/firemech_part1.txt. D1-D6 were confirmed as written. The PART 2
+         ADDENDUM there records three corrections that review found before any
+         feature wave ran.
+
+PROVENANCE NOTE - READ FIRST
+  Before this session there was an earlier attempt at Parts 2/3 (2026-09-14
+  evening). It was rewound: agents.py, common_fixed_variables.py and the harness
+  were restored to HEAD at 2026-09-15 07:12, and its test file and scripts were
+  gone. Its ~690 run outputs had survived under the SAME tag names this round
+  uses. The pool validator would have ADOPTED them as valid, from code that no
+  longer exists. All of them were moved, not deleted, to
+  outputs/_firemech_rewound_20260914/. Nothing in this report comes from them.
+  Every RUN-DERIVED number here (harness JSON, gate shards, the 8 failed / 615
+  passed suite) was produced by commit 003ed91 or the 6adeb4f worktree. Three
+  cited figures come from elsewhere:
+    - the band probe's 0.0125: fire physics only, 2026-09-14, before any feature
+      code
+    - the pre-correction cycle counts (28-37): the uncorrected tree, measured on
+      purpose
+    - the 581-passed baseline: the merge-verification run of 6adeb4f
+  AN INDEPENDENT VERIFICATION PASS re-derived 335 of this report's claims from
+  the raw JSON, without the analysis script. It found 22 mismatches; adjudication
+  confirmed 16 as real errors and upheld the report on the other 6. Every real
+  error is corrected in this version: overstated attributions in sections 0, 5,
+  6 and 7, the word "byte-identical", a mislabelled arm, and missing
+  de-duplicated tables.
+
+================================================================================
+0. VERDICT
+================================================================================
+  THE PRIMARY QUESTION IS ANSWERED: YES, FIREFIGHTERS CAN NOW AFFECT FIRE. This
+  is shown by attribution, not by burnt_cells moving:
+    - the DRY arm (every decision made, every fire write suppressed) reproduces
+      the control's fire-digest series 240/240 on 23/23 runs
+    - every arm that writes diverges from the control EXACTLY at its first
+      write step on all 20 runs where a write happened
+    - it stays identical 240/240 on the 3 runs with no write
+    - no violations in any arm
+  The fire's net footprint shrinks in every writing arm on BOTH seed sets.
+  Untouched vegetation at step 240, canonical+fresh (23 runs):
+      control 19,764
+      firebreak-only    +2,660
+      extinguish+S      +2,867
+      full config EFS   +1,979
+  Direction is consistent per run for the firebreak arms (canonical 11 up / 2
+  down; fresh 5 up / 1 down / 4 unchanged). It is NOT consistent for
+  extinguish + suppression, fmES (canonical 7 up / 6 down).
+
+  GATE ON THE FULL CONFIGURATION (fmEFS): FAILS ONE ITEM - RESCUED DECREASES.
+    G1 kill switch identical ................... PASS  23/23 vs 6adeb4f, every
+                                                       recorded value (section 1)
+    G2 the mechanic demonstrably affects fire .. PASS  (attribution above)
+    G3 ff deaths do not increase ............... PASS  10 -> 9. None engaged at
+                                                       death; the explanation of
+                                                       the changed death mix is
+                                                       in section 6
+    G4 rescued does not decrease ............... FAIL  68 -> 66 (canonical 39 -> 38,
+                                                       fresh 29 -> 28; route_blocked
+                                                       sample, 14/18 the same runs:
+                                                       57 -> 56, ff_deaths 9 -> 5)
+    G5 no NEW route_blocked failures ........... PASS  no seed beyond the known four;
+                                                       south/202 cured, south/404 deepens
+                                                       3 -> 1 (section 8)
+    G6 no NEW test failures .................... PASS  same 8 names, 615 passed
+  THE FALLBACK (fmF, firebreak only, no loosening) fails G4 identically: 68 -> 66.
+  It passes G1, G2, G3 (10 -> 8), G5 (its gate shards equal fmgEFS seed for seed)
+  and G6 (the suite runs at the default, so it is the same run for every arm).
+
+  THE G4 LOSS IS MOSTLY WHERE ENGAGED UNITS STAND, NOT THE FIRE WRITES. The
+  DRY arm separates the two (positioning = DRY - control, writes = EFS - DRY):
+    counted 23         fmEFS -2 = positioning -2 + fire writes +0
+                       (canonical -1 +0, fresh -1 +0)
+    de-duplicated 20   fmEFS -2 = positioning -1 + fire writes -1
+  Run by run, 4 of the 5 runs where fmEFS changes a rescue change IDENTICALLY
+  in DRY, down to the victim:
+    - losses on east/half/101 and south/half/909 (909 has no fire write in any arm)
+    - gains on east/half/404 and south/half/202
+  Two runs differ, and they cancel only in the counted total:
+    - south/half/404 loses one MORE rescue with the writes (victim_2), so one
+      loss is attributable to fire writes
+    - east/def/101 loses one in DRY that the writing arms keep
+  fmF is identical to fmEFS run for run.
+  The positioning cost comes from the POLICY THIS ROUND WAS TOLD TO USE: fight
+  whenever idle, rescue preempts. Idle units walk away from their standby
+  positions toward the fire, so a dispatched unit starts its rescue from a
+  firefighting position. That is exactly the "do they pick the right job" /
+  priority-arbitration question the brief placed OUT of scope, and it is now
+  measured rather than assumed.
+
+  RECOMMENDATION: keep it OFF (as shipped). Do not enable any configuration on
+  this evidence. The mechanic works. Enabled with this policy, it costs about
+  one rescue per seed set: -2 of 68, from 1-2 positioning losses and up to 1
+  write loss depending on the sample. That is small against the variance these
+  samples carry, but G4 as written fails. Most of the fix belongs to the next
+  round's arbitration work, and south/half/404 is the one run to examine for a
+  write-caused loss.
+
+================================================================================
+1. KILL SWITCH
+================================================================================
+  fmOFF (003ed91, no --set) == fmREF (6adeb4f worktree, no --set), SAME harness:
+      23/23 identical on every recorded VALUE except tag / repo / wall_s
+      (params and extra_params also identical)
+  Precisely: this is value identity, not byte identity of the JSON files.
+    - On 22 of 23 runs the serialized bytes differ in the KEY ORDER of
+      burn_intervals.
+    - The harness builds that dict by iterating a Python set of "x,y" strings,
+      whose order is hash-randomized per process.
+    - The same happens between any two processes running identical code (every
+      identity arm shows it, and fmREF vs dfD too), and no simulation state is
+      involved.
+    - Comparing values - equivalently, JSON with sorted keys - gives 23/23.
+  fmREF == dfD (the flip round's shipped-default arm, recorded by the previous
+  harness): 23/23 identical except tag / repo / wall_s / params / extra_params.
+  dfD passed its dcD settings explicitly; that is the only difference.
+
+  INSTRUMENT DRIFT - handled before the wave, as required. The harness gained ONE
+  block. It adds the keys firefight_log, firefight_counters, firefight_shadow and
+  fire_cleared_unburned_final ONLY when the model carries the feature's own log,
+  which a feature-off model never creates. The same-instrument reference arm
+  (fmREF) was re-measured with the new harness BEFORE any feature wave, and its
+  identity to dfD shows the change added no drift: the diagnostic signature (0/N
+  with identical non-eval differing fields) did not appear.
+
+  The feature code path when OFF: _firefight_prepare returns on its first two
+  accessor reads. _needs_immediate_survival_retreat is called with its default
+  (the literal IDLE_RETREAT_SAFETY_BUFFER). No model or agent attribute is
+  created, nothing is printed, no RNG is touched.
+
+================================================================================
+2. SEPARABLE ARMS
+================================================================================
+  arm     settings                        what it isolates
+  fmOFF   none (kill switch)              control
+  fmF     FIREBREAK                       firebreak alone, retreat unchanged
+  fmFS    FIREBREAK + S (K=1)             suppression's effect on firebreak (vs fmF)
+  fmES    EXTINGUISH + S                  extinguish (needs S by construction, D1)
+  fmEFS   EXTINGUISH + FIREBREAK + S      the full configuration (gate arm)
+  fmDRY   fmEFS + DRY_RUN                 the loosening and positioning ALONE,
+                                          no fire effect (the round's key instrument)
+  IDENTITY ARMS (canonical 13), all proven:
+    fmS  (S only)             == fmOFF   13/13 identical (every recorded value)
+    fmE  (EXTINGUISH, no S)   == fmOFF   13/13
+    fmEF (E + F, no S)        == fmF     13/13, every logged field included
+  The brief's "extinguish-only" and "both" arms are therefore measured as these
+  identities, as agreed in D1. Extinguish at reach 2 cannot be done from ground
+  the 3-cell buffer allows. The replacements (fmES, fmFS, fmDRY) are what
+  measure something.
+
+================================================================================
+3. THE PRIMARY QUESTION: CAN FIREFIGHTERS AFFECT FIRE?
+================================================================================
+3.1 ATTRIBUTION (the test the brief's burnt_cells gate could not provide)
+  Per run vs fmOFF: the first step at which the fire digest (sha256 over
+  burning, burnt and fuel of all 2,500 cells) differs, compared with the arm's
+  first write step:
+      arm     identical 240/240 (no write)   diverges EXACTLY at first write   violations
+      fmF              3                               20                          0
+      fmFS             3                               20                          0
+      fmES             3                               20                          0
+      fmEFS            3                               20                          0
+      fmDRY           23                                0                          0
+  The 3 no-write runs, the same in every arm:
+    - east/half/707: the fire never spreads
+    - south/half/808 and south/half/909: both units walk toward the fire for
+      about 15 steps, are dispatched before reaching work, and are never idle
+      again (one of them dies)
+  Final fire digest equal to fmOFF: writing arms 3/23, fmDRY 23/23.
+  What this proves:
+    (i)  engagement, targeting and movement reach the fire through NO side
+         channel and draw no fire RNG (DRY == OFF)
+    (ii) the write, and only the write, changes the fire - from the exact step
+         it happens
+
+3.2 burnt_cells AND THE NET EFFECT (both as asked; burnt_cells is ambiguous by
+    construction, so untouched vegetation is carried alongside it)
+  ever  = cells that ever burned (has_burned)
+  clear = cells cleared by firebreak that never burned
+  intact = 2500 x runs - ever - clear
+
+  CANONICAL 13
+      arm     burnt_cells     ever    clear   intact  burning@240   intact vs OFF
+      fmOFF       16,053    22,648       0    9,852     1,395
+      fmF         14,351    19,929     828   11,743       613         +1,891
+      fmFS        14,657    20,268     826   11,406       708         +1,554
+      fmES        15,062    21,203       0   11,297       920         +1,445
+      fmEFS       14,622    20,338     831   11,331       665         +1,479
+      fmDRY       16,053    22,648       0    9,852     1,395             +0
+  FRESH 10
+      fmOFF       10,996    15,088       0    9,912       659
+      fmF         10,019    13,730     589   10,681       424           +769
+      fmFS        10,043    13,756     528   10,716       463           +804
+      fmES         9,783    13,666       0   11,334       513         +1,422
+      fmEFS       10,265    14,123     465   10,412       518           +500
+      fmDRY       10,996    15,088       0    9,912       659             +0
+  CANONICAL+FRESH 23 (de-duplicated, east/def excluded, 20 runs: EFS +1,389,
+  F +1,783, ES +2,402)
+      fmOFF       27,049    37,736       0   19,764     2,054
+      fmF         24,370    33,659   1,417   22,424     1,037         +2,660
+      fmFS        24,700    34,024   1,354   22,122     1,171         +2,358
+      fmES        24,845    34,869       0   22,631     1,433         +2,867
+      fmEFS       24,887    34,461   1,296   21,743     1,183         +1,979
+      fmDRY       27,049    37,736       0   19,764     2,054             +0
+
+  PER-RUN DIRECTION of intact vs OFF (up / down / unchanged):
+      canonical: fmF 11/2/0  fmFS 11/2/0  fmEFS 11/2/0  fmES 7/6/0
+      fresh:     fmF 5/1/4   fmFS 5/1/4   fmEFS 5/1/4   fmES 4/2/4
+  Firebreak's effect agrees across both seed sets, run by run. Extinguish +
+  suppression's (fmES) pooled gain rests on a few large runs; per run it is
+  nearly a coin flip. That
+  is what 1.4 of the design predicted: the first extinguish re-rolls the rest of
+  the fire, so its per-run sign carries re-roll variance.
+  burnt_cells fell in every writing arm too (EFS -2,162), despite extinguish
+  INFLATING it (an extinguished cell is burnt at the next tick) and firebreak
+  DEFLATING it (a cleared cell is never counted). Its size is not a fire-area
+  measure, which is why intact is reported.
+
+3.3 MECHANISM (canonical+fresh, pooled from the feature's own per-advance log)
+      arm     extinguish  clear (scorched)  clears exposed*  engaged rows  after terminal
+      fmF          0      1,715 (298)       921 / 1,417          4,675     2,751 (59%)
+      fmFS         0      1,774 (420)       935 / 1,354          4,732     2,550
+      fmES       490          0                -                 3,349     1,741
+      fmEFS       87      1,656 (360)       804 / 1,296          4,607     2,589 (56%)
+      fmDRY   (1,876 suppressed writes)                          4,440     2,542
+  * a never-burned cleared cell counts as exposed if a cell within euclidean 3 of
+    it burned LATER, i.e. it would have had a nonzero ignition chance. 62-69% of
+    clears were placed where the fire went.
+  - The full configuration is overwhelmingly firebreak (1,656 clears vs 87
+    extinguishes). With both actions on, a unit cuts the band and extinguishes
+    only what reaches within 2 of it (design 4.3).
+  - Over half of all engaged steps come after terminal_step (F 59%, FS 54%,
+    ES 52%, EFS 56%, DRY 57%). After every victim is resolved, a living unit is
+    engaged on 87-89% of its remaining steps (fmES 59%).
+
+================================================================================
+4. SAMPLES AND SEED PROVENANCE
+================================================================================
+  CANONICAL 13 (run first)  east/half and south/half 101-505, east/def 101-303
+  FRESH 10 (run second)     east/half and south/half 606-1010
+  - The two sets share no seed and were measured in this order. Per
+    canonical-13-is-a-screen-not-evidence, no direction is called a result
+    unless both agree.
+  - east/def and east/half with the same seed share the entire fire at OFF, so
+    canonical+fresh is 20 fire worlds over 10 seeds. Pooled tables give both
+    the counted and the de-duplicated figure.
+  - 8 of the fresh 10 tuples had run in earlier rounds (idleretreat, route_blocked
+    sample) on OTHER code; no earlier round ran this code. 14 of the rbgate 18
+    are canonical/fresh tuples (section 8), so the gate is not a third
+    independent sample. Only east/half 111-444 are new to this round.
+
+================================================================================
+5. OUTCOMES PER ARM
+================================================================================
+  CANONICAL 13                                       FRESH 10
+  arm    resc dead ffd nevdet nonterm meanterm     resc dead ffd nevdet nonterm meanterm
+  fmOFF   39   10   6    1      1      151.9        29    6    4    4      1      175.6
+  fmF     38   11   6    1      1      143.2        28    7    2    3      2      158.8
+  fmFS    36   12   6    1      2      135.6        28    6    2    3      3      164.3
+  fmES    38   12   6    0      1      139.5        29    6    3    3      2      171.0
+  fmEFS   38   11   6    1      1      140.8        28    6    3    2      4      157.2
+  fmDRY   38   10   6    1      2      134.2        28    5    5    4      3      164.7
+
+  CANONICAL+FRESH 23: rescued / dead / ff_deaths / never_detected / non-terminal
+      fmOFF 68 / 16 / 10 / 5 / 2      fmES  67 / 18 / 9 / 3 / 3
+      fmF   66 / 18 /  8 / 4 / 3      fmEFS 66 / 17 / 9 / 3 / 5
+      fmFS  64 / 18 /  8 / 4 / 5      fmDRY 66 / 15 / 11 / 5 / 5
+  DE-DUPLICATED 20 (east/def excluded), same columns, then mean terminal_step:
+      fmOFF 59 / 14 / 10 / 4 / 2  159.8   fmES  60 / 15 / 8 / 3 / 2  150.7
+      fmF   57 / 16 /  7 / 3 / 3  142.3   fmEFS 57 / 15 / 8 / 2 / 5  139.5
+      fmFS  57 / 15 /  7 / 3 / 4  143.7   fmDRY 58 / 13 / 10 / 4 / 4  144.1
+  terminal_step: mean over terminal runs falls in every feature arm (EFS 146.3
+  vs 162.0), while the count of runs that never reach all-victims-terminal rises
+  (2 -> 5 for EFS). Both follow from dispatch starting from different places;
+  neither is a fire effect (DRY matches EFS on both: 146.1, 5).
+
+  RESCUED, DECOMPOSED WITH THE DRY ARM (positioning = DRY - OFF; fire writes = arm - DRY)
+      canonical      fmF  -1 +0   fmFS -1 -2   fmES -1 +0   fmEFS -1 +0
+      fresh          fmF  -1 +0   fmFS -1 +0   fmES -1 +1   fmEFS -1 +0
+      de-duplicated  fmF  -1 -1   fmFS -1 -1   fmES -1 +2   fmEFS -1 -1
+  THESE ARE NET FIGURES; RUN BY RUN:
+    positioning (DRY - OFF):
+      canonical  east/half/101 -1, south/half/404 -1, east/def/101 -1,
+                 east/half/404 +1, south/half/202 +1
+      fresh      south/half/909 -1 (no fire write in any arm there)
+    fire writes (EFS - DRY, identical for fmF):
+      south/half/404 -1 (victim_2 lost only with writes)
+      east/def/101 +1 (DRY's loss there is not repeated)
+  Example, east/half/101 (identical in DRY): in OFF, ff_unit_0 is assigned
+  victim_0 at step 90 and rescues it at 127. In every feature arm the
+  assignment lands at step 77 while the unit is engaged, and victim_0 dies:
+  step 135 in F/FS/EFS, 138 in DRY, 141 in ES.
+
+================================================================================
+6. FIREFIGHTER DEATHS - THE RISK METRIC
+================================================================================
+  Every death classified from the feature's own log:
+    engaged      the unit's advance ON its death step had a firefighting plan
+    prev         the step before did (its last decision before the fatal tick; a
+                 unit can only die on a cell already burning when its advance runs)
+    streak       engaged anywhere in its unbroken idle run that ended at death:
+                 it reached that ground by firefighting and never left the idle state
+    preempted    its latest rescue assignment landed WHILE it was engaged, and it
+                 died without completing it. NOT always still on it: for fmEFS,
+                 4 of 5 died on or right after the rescue (route_blocked status
+                 counted as on it); south/half/606 ff_unit_1 had been unassigned
+                 at 196 and died retreating at 204. Only 2 of 5 still held the
+                 assignment at death.
+    enclosure    every in-bounds 4-neighbour burning at death
+
+  canonical+fresh 23
+      arm     deaths  engaged  prev  streak  preempted  after_terminal  full_enclosure
+      fmOFF     10       0       0      0        0            5              10
+      fmF        8       0       0      0        4            0               8
+      fmFS       8       0       0      0        4            0               8
+      fmES       9       0       0      3        2            1               9
+      fmEFS      9       0       0      0        5            0               9
+      fmDRY     11       0       0      4        3            2              11
+  de-duplicated 20 (east/def excluded) deaths:
+      OFF 10, F 7, FS 7, ES 8, EFS 8, DRY 10. The difference is one death,
+      east/def/303 ff_unit_1 at step 141, present in all five feature arms.
+
+  WHAT THIS SAYS
+  (a) NO UNIT DIED WHILE FIREFIGHTING, in any arm: 0 engaged at death, 0 on the
+      step before. Every death in every arm is a full enclosure.
+  (b) THE DEATH MIX SHIFTS.
+      - In OFF, 5 of 10 deaths come after terminal_step, 3 of them idle units on
+        the grid edge. fmF, fmFS and fmEFS have no post-terminal deaths.
+      - In their place come deaths of units pulled onto a rescue from a
+        firefighting position (EFS 5, F 4). Example: south/half/909 ff_unit_0,
+        engaged at step 14, assigned at 14, dead at step 36 on the route.
+  (c) PER RUN, THE DEATHS THE FEATURE ADDS ARE POSITIONING; THE DEATHS IT REMOVES
+      ARE PARTLY THE FIRE WRITES. Runs whose death count changes vs OFF:
+      fmDRY   +1: south/half/404, south/half/808, south/half/909, east/def/303
+              -1: east/half/101, south/half/202, east/half/606           net +1
+      fmEFS   +1: the SAME four runs as DRY
+              -1: south/half/202, south/half/303, east/half/606,
+                  east/half/909, south/half/1010                         net -1
+      fmF     as fmEFS, plus south/half/606 -1                           net -2
+    - Every death the full configuration adds, DRY adds too, with the fire
+      untouched. The writing arms then REMOVE deaths DRY does not (south/303,
+      east/909, south/1010: OFF deaths of idle, unassigned units).
+    - The suppression "streak" deaths do not add deaths: each of DRY's 4 is in
+      a run where OFF lost a unit too, in two cases at the same cell (south/606
+      at (2,0), step 129; south/303 at (48,2), step 216).
+    - So this sample shows NO measurable death cost of the suppression loosening
+      itself. DRY's +1 comes from rescue deaths in the same four runs the
+      writing arms add (three of them preempted), against fewer removals.
+  (d) The firebreak arms have the fewest deaths: fmF 8, fmFS 8.
+
+  Suppression-specific counters (canonical+fresh):
+      fmFS  S-hold steps 484   exit-guard trips  86   suspensions set  56
+      fmES  S-hold steps 1,098 exit-guard trips 236   suspensions set 311
+      fmEFS S-hold steps 426   exit-guard trips  70   suspensions set  40
+      (S-hold = a work or approach step at fire distance <= 3, i.e. one the idle
+       buffer alone would have spent retreating)
+  Livelock: oscillation windows (>=8 steps, 2-4 cells, no write)
+      F 3, FS 8, ES 14, EFS 6, DRY 6
+      - 2 per arm are east/half/707 at steps 1-27, where the fire never spreads
+      - move->retreat->move alternations: EFS 1, FS 3, F 15 (retreats in F are
+        the unchanged buffer), ES 8
+      - pre-correction, the frozen-fire search found the extinguish+S 2-cycle on
+        28-37 placements per fire; this is the residue on live fire
+
+================================================================================
+7. DRONE STEPS IN FIRE
+================================================================================
+  E1 = searcher-only, the interior-hazard definition; E2 = all UAVs
+  (_dcd4_analyze.summarize, unchanged)
+                  canonical 13          fresh 10            canonical+fresh 23
+      arm       E1       E2          E1       E2          E1       E2
+      fmOFF    5.04%    3.52%       3.25%    1.94%       4.21%    2.83%
+      fmF      4.31%    2.60%       3.08%    2.22%       3.74%    2.44%
+      fmFS     4.62%    3.04%       3.00%    2.18%       3.87%    2.66%
+      fmES     3.64%    2.92%       2.62%    1.75%       3.17%    2.41%
+      fmEFS    4.44%    2.80%       3.19%    2.21%       3.86%    2.55%
+      fmDRY    4.75%    3.37%       3.15%    1.89%       4.00%    2.73%
+  - The figures the brief quotes (3.55% / 2.42%) are for the RBGATE-18 sample,
+    not canonical+fresh. They are reproduced for fmOFF and compared for the gate
+    arms in section 8.
+  - E1 falls in every writing arm on both samples, but NOT only because of the
+    fire:
+    - fmDRY, whose fire is identical to OFF, falls too (canonical 5.04 -> 4.75,
+      fresh 3.25 -> 3.15).
+    - For fmEFS (the arm DRY is a matched control for), searcher frames on
+      burning cells split into:
+          canonical  -16 positioning, -17 fire writes
+          fresh       -5 positioning,  +2 fire writes
+          pooled     -21 positioning, -15 fire writes
+    - Firefighter positions change rescue timing, and with it where searchers
+      are.
+  - E2 falls on canonical but RISES on fresh for the firebreak arms (1.94% ->
+    2.18-2.22%): a sign disagreement, reported, not explained.
+
+================================================================================
+8. ROUTE_BLOCKED GATE
+================================================================================
+  18 seeds, the standard shard split:
+      a  east/half 101-505
+      b  east/half 606-909
+      c  east/half 111-444
+      s  south/half 101-505
+  Tags fmgOFF / fmgEFS / fmgFB (firebreak only). Every shard is a clean run of
+  outputs/_rblatch_campaign2.py at 003ed91, 24/24 jobs valid. Full text:
+  outputs/_firemech_rbgate.txt (from outputs/_firemech_rbgate.py, which calls
+  _ffr_rbcompare.py).
+
+  GATE-INSTRUMENT PARITY FIRST
+    fmgOFF (this branch, feature off) == flgD (the flip round's gate at the
+    shipped default): all four shard files match field for field, and all 18
+    per-seed records match except wall_s.
+
+  THE BRIEF'S READING: _ffr_rbcompare.py --new <tag> --old ihrest
+      tag     G1 regressions vs ihrest                              totals r/d/ffd
+      fmgOFF  east/707 4->2, south/101 3->2, south/202 4->3,          57 / 11 / 9
+              south/404 4->3
+              = exactly the known four; SAME failure, not a new one
+      fmgEFS  east/707 4->2, south/101 3->2, south/404 4->1            56 / 12 / 5
+      fmgFB   east/707 4->2, south/101 3->2, south/404 4->1            56 / 12 / 5
+    G5 "no NEW route_blocked failures beyond the four already known": PASS for
+    both. No seed outside the four regresses. south/202 stops regressing
+    (3 -> 4).
+    NOT A PASS IN SPIRIT on south/404, which DEEPENS from 3 to 1 rescued. It is
+    the same south/half/404 tuple whose canonical harness run also went 3 -> 1
+    (section 5: a positioning loss plus a fire-write loss). The other gate
+    items hold in every arm:
+      - the recovery pass still recovers (13 recoveries)
+      - no unit is left latched as route_blocked at the end of a run
+
+  THE FEATURE'S OWN DELTA: --new <tag> --old fmgOFF
+      fmgEFS  rescued 57 -> 56 (-1)   dead 11 -> 12 (+1)   ff_deaths 9 -> 5 (-4)
+              per-seed rescue losses: east/101 4->3, south/404 3->1;
+              gain east/404 +1, south/202 +1
+      fmgFB   identical to fmgEFS on all 18 seeds
+    The gate sample reproduces the harness result: about one rescue lost, and
+    firefighter deaths down. 14 of these 18 seeds ARE canonical/fresh tuples, so
+    this is confirmation of the same runs by a second instrument, not a third
+    independent sample. Only east/111-444 are new, and on them the feature
+    changed only ff_deaths (east/222 -1).
+
+  THE rbgate-18 HARNESS SIDE (the sample the brief's exposure baseline comes from)
+    fmOFF == drhD on every field but tag/repo/wall_s/params/extra_params: 18/18.
+                   rescued dead ffd    E1 searcher    E2 all-UAV   deaths engaged/streak/preempted
+      fmOFF          57    11    9       3.55%          2.42%              0 / 0 / 0
+      fmEFS          56    12    5       3.07%          2.16%              0 / 0 / 2
+      fmF            56    12    5       2.94%          2.09%              0 / 0 / 2
+    - The brief's 3.55% / 2.42% are reproduced exactly at fmOFF.
+    - The full configuration lowers searcher exposure by 0.48 points and all-UAV
+      exposure by 0.26.
+
+================================================================================
+9. TEST BASELINE
+================================================================================
+  Full suite, this branch at its default (feature OFF), 2026-09-15:
+      8 failed, 615 passed in 2459 s  (junit: 623 testcases)
+      = the 6adeb4f baseline of 8 failed / 581 passed, plus the 34 new tests
+  FAILING NAME SET, identical to the flip / merge verification lists
+  (outputs/_merge_pytest_names.txt):
+      tests/test_behavior_regression.py::test_descriptive_next_action_uses_target_position
+      tests/test_dashboard_panel.py::test_dashboard_panel_render_returns_string
+      tests/test_firefighter_dispatch_replacement.py::test_no_replacement_available_marks_victim_unreachable_once
+      tests/test_rescue_planner_authority.py::test_no_firefighter_planner_delay_or_unreachable
+      tests/test_uav_sector_assignment.py::test_fire_tracker_still_overridden_by_search_mode_fail_safe
+      tests/test_uav_sector_assignment.py::test_fire_tracker_uavs_receive_different_target_sets
+      tests/test_wind_aware_trajectory_regression.py::test_east_vs_west_trajectories_diverge_over_40_steps
+      tests/test_wind_aware_trajectory_regression.py::test_north_vs_south_trajectories_diverge_over_40_steps
+  New: tests/test_firefighter_fire_mechanic.py, 34 tests, all pass. The three
+  Part 2 correction tests were each checked to FAIL on the uncorrected code.
+
+================================================================================
+10. CORRECTIONS THIS ROUND MAKES - TO THE BRIEF AND TO THE RECORD
+================================================================================
+  C-1 THE DRY ARM IS THE ROUND'S KEY INSTRUMENT; THE BRIEF'S burnt_cells GATE
+      WOULD HAVE PROVED NOTHING.
+      - Extinguish pushes burnt_cells up, and firebreak pushes it down.
+      - The first extinguish re-rolls the rest of the fire, so ANY write - even
+        a useless one - moves it.
+      - Attribution (DRY == OFF 240/240, WET diverging exactly at the first write)
+        is what shows cause. It holds on 23/23 runs (section 3.1).
+      - The maintainer recorded this as the fourth time a specified gate measured
+        the wrong thing.
+  C-2 THE #9 ROUND'S WIDTH-3 FIREBREAK RESULT WAS STRAIGHT-FRONTS-ONLY.
+      - A 3-wide grid-step (manhattan) band leaks on a 45-degree front: maximum
+        ignition 0.0125 beyond it, both winds.
+      - A band 3 wide in straight-line (euclidean) distance blocks completely,
+        in every orientation, because distance-to-set is 1-Lipschitz.
+      - Measured with the model's own probability_of_fire:
+        outputs/_firemech_band_probe.txt, and a unit test.
+      - Recorded as a CORRECTION appended to outputs/burntcells_part1.txt, which
+        lists where the unqualified claim was carried forward
+        (scorched_report.txt:69, gridscale_part1.txt:151).
+  C-3 Fire.fuel HAS ONE RUNTIME WRITER, NOT THREE. Fire.burning has three.
+      (Re-verified by whole-tree grep, design 0.1.)
+  C-4 TWO OF THE BRIEF'S ARMS ARE IDENTITY PROOFS. Extinguish at reach 2 cannot be
+      done from ground the 3-cell buffer allows, so "extinguish-only" and "both"
+      without suppression are identical (every recorded value) to OFF and to
+      firebreak-only.
+      Proven 13/13 each. fmES / fmFS / fmDRY replace them.
+  C-5 THE APPROVED DESIGN ITSELF HAD A DEFECT, found by adversarial review of the
+      implementation before any wave (design addendum C1-C3):
+      - under suppression an approach could enter a cell whose retreat distance
+        reverts to the buffer on arrival: a zero-work approach<->retreat 2-cycle
+        on 28-37 frozen-fire placements per fire, corrected with a look-ahead
+      - retreats at the full buffer never latched suspension
+      - the exit guard was required far from fire
+      A first review pass lost its results to a workflow script error (promises
+      passed where thunks were needed); the findings were recovered from the
+      journal and verified.
+
+================================================================================
+11. WHAT IS NOT MEASURED, AND WHAT IT MEANS FOR THE NEXT ROUNDS
+================================================================================
+  - West and north winds, runs longer than 240 steps, other scenarios: not run.
+    Scenario D has 2 firefighters; more units would change both the fire effect
+    and the positioning cost.
+  - The positioning cost is the main finding for the next round. Priority
+    arbitration (which idle unit fights and which waits near its standby / depot)
+    and coordination (who finishes a half-built band) are where rescued and the
+    rescue-death shift get decided. The mechanic gives those rounds a working,
+    attributable effect to arbitrate over.
+  - Extinguish + suppression (fmES): per-run fire direction is inconsistent
+    (7/6 canonical). Without firebreak it holds still where firebreak units work
+    (the Part 2 cycle search). It carries the largest suppression exposure:
+      - S-hold steps: 1,098
+      - streak deaths: 3, one of them (east/half/505) in a run where OFF lost no
+        unit
+    It is the only arm where a suppression-exposed death is not matched by a
+    death in OFF.
+  - Over half of firefighting happens after all victims are resolved. It shrinks
+    the fire but can change no rescue outcome.
+  - burnt_cells is now ambiguous by construction. Any later comparison should
+    carry intact (or ever_burned plus cleared) beside it.
+
+================================================================================
+ARTIFACTS
+================================================================================
+  outputs/firemech_part1.txt                 design + PART 2 ADDENDUM (C1-C3)
+  outputs/firemech_report.txt                this report
+  outputs/_firemech_analyze.py               analysis (read-only; definitions in docstring)
+  outputs/_firemech_both_analysis.txt        canonical, fresh, canonical+fresh output
+  outputs/_firemech_canonical_analysis.txt   the canonical screen as first analysed
+  outputs/_firemech_queue.py + _queue_*.txt  every queued run (ref/canonical/fresh/rb/rbff)
+  outputs/_firemech_rbgate.py / .txt         the route_blocked gate reading (section 8)
+  outputs/_firemech_wave_*.log               pool logs (ENV, per-run DONE lines;
+                                             canonical/fresh/rb head=003ed91 clean,
+                                             rbff head=003ed91 dirty_tracked=1
+                                             (analysis script), ref head=e8b911b
+                                             dirty_tracked=4 with runs imported
+                                             from the 6adeb4f worktree)
+  outputs/_firemech_band_probe.py/.txt       manhattan-vs-euclidean band probe
+  outputs/_firemech_cycle_search.py          frozen-fire livelock search; _prefix/_postfix outputs
+  outputs/_firemech_pytest.log/.xml          full suite
+  outputs/_ffr_fm{REF,OFF,F,FS,ES,EFS,DRY,E,EF,S}_*.json   harness runs
+  outputs/_rblatch_camp2_fmg{OFF,EFS,FB}*_D_*.json          gate shards
+  outputs/_firemech_rewound_20260914/        the rewound attempt's outputs, quarantined
