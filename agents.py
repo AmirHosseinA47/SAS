@@ -124,6 +124,45 @@ class Fire(mesa.Agent):
                 return
             self.burning = self.next_burning_state
 
+    # Fire mechanic (round 1): the ONLY writers of Fire state outside step() and
+    # advance(), and their only caller is Firefighter.advance(). That call site
+    # is safe because the schedule advances every Fire agent (unique ids 0..N-1,
+    # added first in reset()) before any firefighter, so a write lands after this
+    # step's Fire.advance and is read by the next Fire.step as committed state -
+    # next_burning_state is always recomputed on the tick that applies it, so no
+    # staged value can overwrite the write. Neither method touches `burnt` (still
+    # written only in step()), increases fuel, clears has_burned, touches smoke or
+    # draws from any RNG. Each re-checks its own precondition and returns False,
+    # writing nothing, when the cell no longer qualifies.
+
+    def firefighter_extinguish(self) -> bool:
+        """Remove a BURNING cell's fuel: it stops burning now and cannot re-ignite.
+
+        With fuel 0, probability_of_fire returns 0 for good, and the next fire
+        tick's step() turns the cell burnt through its own has_burned/fuel test.
+        has_burned is set here because a cell ignited on the latest tick has not
+        latched it yet (step() latches it one tick later), and a cell that burned
+        must not end up indistinguishable from a firebreak cell that never did.
+        """
+        if self.burnt or not self.burning:
+            return False
+        self.fuel = 0
+        self.burning = False
+        self.has_burned = True
+        return True
+
+    def firefighter_remove_fuel(self) -> bool:
+        """Remove an IGNITABLE cell's fuel (not burning, not burnt, fuel > 0).
+
+        A never-burned cell becomes permanently inert without ever counting as
+        burnt; it keeps drawing its random number each fire tick exactly as
+        before. A scorched cell (has_burned, fuel left) turns burnt next tick.
+        """
+        if self.burnt or self.burning or self.fuel <= 0:
+            return False
+        self.fuel = 0
+        return True
+
 
 # Class Smoke holds methods for managing smoke functionality
 class Smoke:
@@ -1018,6 +1057,51 @@ def base_station_waypoint_fix() -> bool:
         return True
 
 
+# --- Fire mechanic (round 1) configuration ------------------------------------
+# Read through `cfv` at call time for the same reason as the base-station
+# accessors above. UNLIKE them, every fallback here is the OFF value, which is
+# also what common_fixed_variables ships: this feature is dark by default, so a
+# missing or unparseable override must not arm it.
+
+def ff_firefight_extinguish() -> bool:
+    """True when idle firefighters may extinguish burning front cells."""
+    try:
+        return int(getattr(cfv, "FF_FIREFIGHT_EXTINGUISH", 0)) != 0
+    except (TypeError, ValueError):
+        return False
+
+
+def ff_firefight_firebreak() -> bool:
+    """True when idle firefighters may clear fuel from the firebreak band."""
+    try:
+        return int(getattr(cfv, "FF_FIREFIGHT_FIREBREAK", 0)) != 0
+    except (TypeError, ValueError):
+        return False
+
+
+def ff_firefight_engaged_retreat_range() -> int:
+    """Idle retreat distance while engaged: 1 or 2 suppress, else the full buffer.
+
+    Anything outside 1..IDLE_RETREAT_SAFETY_BUFFER-1 - the buffer itself, larger
+    values, 0, negatives and junk - returns the buffer, i.e. no suppression.
+    """
+    try:
+        value = int(getattr(cfv, "FF_FIREFIGHT_ENGAGED_RETREAT_RANGE", IDLE_RETREAT_SAFETY_BUFFER))
+    except (TypeError, ValueError):
+        return IDLE_RETREAT_SAFETY_BUFFER
+    if 1 <= value < IDLE_RETREAT_SAFETY_BUFFER:
+        return value
+    return IDLE_RETREAT_SAFETY_BUFFER
+
+
+def ff_firefight_dry_run() -> bool:
+    """True when fire writes are suppressed while every decision still runs."""
+    try:
+        return int(getattr(cfv, "FF_FIREFIGHT_DRY_RUN", 0)) != 0
+    except (TypeError, ValueError):
+        return False
+
+
 # Orthogonal offsets in a FIXED order for the victim's flee scan. The same four
 # offsets in the same order are hardcoded in `Firefighter._neighbor_cells`; that
 # copy is deliberately left alone so the firefighter's approach path stays
@@ -1352,6 +1436,30 @@ class Victim(mesa.Agent):
 IDLE_RETREAT_SAFETY_BUFFER = 3
 IDLE_RETREAT_MAX_CELLS = 6
 
+# Fire mechanic (round 1) geometry. Not per-run switches - see
+# common_fixed_variables FF_FIREFIGHT_* for those.
+#   EXTINGUISH_REACH  manhattan distance from the unit to the front cell it
+#                     extinguishes. At 2 the unit must stand where only a
+#                     suppressed retreat distance (< 2) lets it stand.
+#   FIREBREAK_REACH   manhattan distance from the unit to the cell it clears
+#                     (its own cell or a 4-neighbour).
+#   BAND_*_SQ         the firebreak band: ignitable cells whose SQUARED euclidean
+#                     distance d2 to the nearest burning cell has
+#                     INNER < d2 <= OUTER, i.e. distance in (2, 5]. Three wide in
+#                     the same metric as distance_rate's cutoff, which is what
+#                     makes a completed band block in every orientation.
+FIREFIGHT_EXTINGUISH_REACH = 2
+FIREFIGHT_FIREBREAK_REACH = 1
+FIREFIGHT_BAND_INNER_SQ = 4
+FIREFIGHT_BAND_OUTER_SQ = 25
+# Offsets (dx, dy, d2) covering the band's outer radius, for the distance map.
+_FIREFIGHT_BAND_OFFSETS = tuple(
+    (dx, dy, dx * dx + dy * dy)
+    for dx in range(-5, 6)
+    for dy in range(-5, 6)
+    if dx * dx + dy * dy <= FIREFIGHT_BAND_OUTER_SQ
+)
+
 
 class Firefighter(mesa.Agent):
     """Firefighter marker that moves to victim and exits at boundary."""
@@ -1484,7 +1592,15 @@ class Firefighter(mesa.Agent):
         # walks toward it too, not just the approach path below.
         self._refresh_target_from_victim()
         recorded = False
-        if self._needs_immediate_survival_retreat():
+        # Fire mechanic (round 1): None unless the feature is on, this unit is idle
+        # and one of its actions is possible at all - then every line below runs
+        # exactly as before. Otherwise it carries this step's plan and the retreat
+        # distance that goes with it (suppressed only while a plan exists).
+        firefight = self._firefight_prepare()
+        idle_buffer = (
+            firefight["T"] if firefight is not None else IDLE_RETREAT_SAFETY_BUFFER
+        )
+        if self._needs_immediate_survival_retreat(idle_buffer):
             before_pos = self.pos
             cell = (int(before_pos[0]), int(before_pos[1]))
             fire_cells = self._fire_cells()
@@ -1521,7 +1637,14 @@ class Firefighter(mesa.Agent):
                     smoke="yes" if smoke else "no",
                     on_fire=on_fire,
                 )
+            if firefight is not None:
+                self._firefight_after_retreat(firefight, cell)
             return
+        if firefight is not None:
+            if firefight["plan"] is not None:
+                self._firefight_execute(firefight)
+                return
+            self._firefight_log_row(firefight, "none")
         if self.target_pos and not self.exiting:
             if self.pos == self.target_pos:
                 self.exiting = True
@@ -1708,7 +1831,12 @@ class Firefighter(mesa.Agent):
                 neighbors.append(cell)
         return neighbors
 
-    def _needs_immediate_survival_retreat(self) -> bool:
+    def _needs_immediate_survival_retreat(
+        self, idle_buffer: int = IDLE_RETREAT_SAFETY_BUFFER,
+    ) -> bool:
+        # `idle_buffer` differs from IDLE_RETREAT_SAFETY_BUFFER only on a step
+        # where the fire mechanic has an action planned for this idle unit and
+        # retreat suppression is on (see _firefight_prepare).
         if self.pos is None or getattr(self, "dead", False) or self.exiting:
             return False
         cell = (int(self.pos[0]), int(self.pos[1]))
@@ -1718,7 +1846,7 @@ class Firefighter(mesa.Agent):
         if not self.target_pos:
             if self._cell_adjacent_to_fire(cell):
                 return True
-            if self._min_fire_distance(cell, fire_cells) <= IDLE_RETREAT_SAFETY_BUFFER:
+            if self._min_fire_distance(cell, fire_cells) <= idle_buffer:
                 return True
             return False
         if self._cell_adjacent_to_fire(cell):
@@ -2201,6 +2329,448 @@ class Firefighter(mesa.Agent):
         ):
             self.status = "assigned" if self.assigned else "available"
         self.model.grid.move_agent(self, chosen)
+
+    # ------------------------------------------------------------------
+    # Fire mechanic (round 1): an idle unit works against the fire front.
+    # Design: outputs/firemech_part1.txt sections 1-5. Nothing here keeps a plan
+    # between steps - every decision is re-derived from the Fire agents in this
+    # unit's own advance(), so a rescue assignment preempts it on the next
+    # advance and any half-built firebreak simply remains in Fire state for
+    # whichever unit's targeting reaches it next. No RNG is drawn.
+    # ------------------------------------------------------------------
+    def _firefight_prepare(self) -> dict | None:
+        """This step's firefighting context, or None to leave advance() untouched.
+
+        None whenever the feature is off, the unit is not idle (idle means the
+        model's own dispatch-availability predicate AND no target), or no action
+        is possible at all - extinguish counts as possible only when retreat
+        suppression brings the retreat distance below its reach. Otherwise the
+        plan is computed at the candidate retreat distance T, and T is kept only
+        if a plan exists: a unit with nothing to do retreats at the full buffer.
+        """
+        extinguish = ff_firefight_extinguish()
+        firebreak = ff_firefight_firebreak()
+        if not (extinguish or firebreak):
+            return None
+        if self.pos is None or self.target_pos or self.exiting:
+            return None
+        available = getattr(self.model, "_firefighter_available_for_dispatch", None)
+        if not callable(available) or not available(self):
+            return None
+        buffer = IDLE_RETREAT_SAFETY_BUFFER
+        suppress = ff_firefight_engaged_retreat_range()
+        extinguish = extinguish and suppress < FIREFIGHT_EXTINGUISH_REACH
+        if not (extinguish or firebreak):
+            return None
+
+        dry = ff_firefight_dry_run()
+        shadow = None
+        if dry:
+            shadow = getattr(self.model, "_firefight_shadow", None)
+            if not isinstance(shadow, set):
+                shadow = set()
+                self.model._firefight_shadow = shadow
+
+        burning: set[tuple[int, int]] = set()
+        fuel: set[tuple[int, int]] = set()
+        smoke: set[tuple[int, int]] = set()
+        for agent in self.model.schedule.agents:
+            if type(agent) is not Fire:
+                continue
+            pos = getattr(agent, "pos", None)
+            if pos is None:
+                continue
+            c = (int(pos[0]), int(pos[1]))
+            if agent.is_burning():
+                burning.add(c)
+            elif not agent.is_burnt() and agent.fuel > 0:
+                fuel.add(c)
+            agent_smoke = getattr(agent, "smoke", None)
+            if agent_smoke is not None and agent_smoke.is_smoke_active():
+                smoke.add(c)
+        if shadow:
+            fuel -= shadow
+
+        cell = (int(self.pos[0]), int(self.pos[1]))
+        dist = self._min_fire_distance(cell, burning)
+        suspended = bool(getattr(self, "_firefight_suspended", False))
+        if suspended and self._cell_is_ideal_idle_standoff(cell, burning):
+            suspended = False
+            self._firefight_suspended = False
+        # The exit guard only matters where the retreat distance in force can
+        # decide anything: inside the full buffer. Further out no retreat can
+        # fire at any distance, so the guard is not required there - otherwise a
+        # unit parked on the grid edge facing a flat flank, 20 cells from the
+        # fire, would count as "boxed in" and never engage.
+        exit_guard = suppress < buffer and (
+            dist > buffer or self._firefight_exit_guard(cell, burning, smoke, dist)
+        )
+        t_cand = suppress if (suppress < buffer and not suspended and exit_guard) else buffer
+
+        ctx = {
+            "cell": cell,
+            "dist": dist,
+            "burning": burning,
+            "fuel": fuel,
+            "smoke": smoke,
+            "shadow": shadow,
+            "dry": dry,
+            "K": suppress,
+            "suspended": suspended,
+            "exit_guard": bool(exit_guard),
+            "extinguish": extinguish,
+            "firebreak": firebreak,
+            "n_front": None,
+            "n_band": None,
+            "blocked_target": None,
+            "lookahead_rejected": 0,
+        }
+        plan = self._firefight_plan(ctx, t_cand)
+        ctx["plan"] = plan
+        ctx["T"] = t_cand if plan is not None else buffer
+        return ctx
+
+    def _firefight_exit_guard(
+        self,
+        cell: tuple[int, int],
+        burning: set[tuple[int, int]],
+        smoke: set[tuple[int, int]],
+        dist: int,
+    ) -> bool:
+        """True when some 4-neighbour of `cell` is a step strictly AWAY from the fire.
+
+        Suppression is only allowed while such a step exists. A unit with fire
+        on more than one side, or with its back to the grid edge, has none and
+        keeps the full retreat distance - it leaves before the fire reaches it.
+        `cell` need not be the unit's own cell: the approach look-ahead asks the
+        same question of the cell it is about to step onto.
+        """
+        grid = self.model.grid
+        cx, cy = cell
+        for ox, oy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+            ncell = (cx + ox, cy + oy)
+            if grid.out_of_bounds(ncell):
+                continue
+            if ncell in burning or ncell in smoke:
+                continue
+            if self._min_fire_distance(ncell, burning) > dist:
+                return True
+        return False
+
+    def _firefight_plan(self, ctx: dict, t: int) -> tuple | None:
+        """One action for this step: ("extinguish" | "clear" | "move", cell, target).
+
+        In order: extinguish the nearest front cell if it is within reach; else
+        clear the nearest band cell within reach; else take one safe, strictly
+        improving step toward the nearest workable band cell (firebreak on) or
+        the nearest front cell (extinguish only). Every choice is an argmin over
+        (manhattan distance, x, y), so ties break identically on every run.
+        """
+        cell = ctx["cell"]
+        burning = ctx["burning"]
+        fuel = ctx["fuel"]
+        smoke = ctx["smoke"]
+        shadow = ctx["shadow"]
+        extinguish = ctx["extinguish"] and t < FIREFIGHT_EXTINGUISH_REACH
+
+        def manhattan(c: tuple[int, int]) -> int:
+            return abs(c[0] - cell[0]) + abs(c[1] - cell[1])
+
+        front = []
+        for c in burning:
+            if shadow and c in shadow:
+                continue
+            cx, cy = c
+            if (
+                (cx + 1, cy) in fuel
+                or (cx - 1, cy) in fuel
+                or (cx, cy + 1) in fuel
+                or (cx, cy - 1) in fuel
+            ):
+                front.append(c)
+        ctx["n_front"] = len(front)
+        nearest_front = (
+            min(front, key=lambda c: (manhattan(c), c[0], c[1])) if front else None
+        )
+
+        if (
+            extinguish
+            and nearest_front is not None
+            and manhattan(nearest_front) <= FIREFIGHT_EXTINGUISH_REACH
+        ):
+            return ("extinguish", nearest_front, nearest_front)
+
+        band: list[tuple[int, int]] = []
+        if ctx["firebreak"]:
+            d2map: dict[tuple[int, int], int] = {}
+            for bx, by in burning:
+                for dx, dy, d2 in _FIREFIGHT_BAND_OFFSETS:
+                    key = (bx + dx, by + dy)
+                    prev = d2map.get(key)
+                    if prev is None or d2 < prev:
+                        d2map[key] = d2
+            band = [
+                c
+                for c, d2 in d2map.items()
+                if FIREFIGHT_BAND_INNER_SQ < d2 <= FIREFIGHT_BAND_OUTER_SQ and c in fuel
+            ]
+            band.sort(key=lambda c: (manhattan(c), c[0], c[1]))
+            ctx["n_band"] = len(band)
+            if not band:
+                return None
+            if manhattan(band[0]) <= FIREFIGHT_FIREBREAK_REACH:
+                return ("clear", band[0], band[0])
+        elif not extinguish or nearest_front is None:
+            return None
+
+        close: set[tuple[int, int]] = set()
+        for bx, by in burning:
+            for dx in range(-t, t + 1):
+                rem = t - abs(dx)
+                for dy in range(-rem, rem + 1):
+                    close.add((bx + dx, by + dy))
+
+        grid = self.model.grid
+
+        def standable(c: tuple[int, int]) -> bool:
+            return (
+                not grid.out_of_bounds(c)
+                and c not in close
+                and c not in smoke
+            )
+
+        target = None
+        if ctx["firebreak"]:
+            for c in band:
+                cx, cy = c
+                if (
+                    standable(c)
+                    or standable((cx + 1, cy))
+                    or standable((cx - 1, cy))
+                    or standable((cx, cy + 1))
+                    or standable((cx, cy - 1))
+                ):
+                    target = c
+                    break
+        elif extinguish:
+            target = nearest_front
+        if target is None:
+            return None
+
+        holdable = None
+        if t < IDLE_RETREAT_SAFETY_BUFFER:
+            holdable = self._firefight_holdable_check(ctx, target, standable, set(front), set(band), extinguish)
+        step = self._firefight_approach_step(cell, target, standable, holdable, ctx)
+        if step is None:
+            ctx["blocked_target"] = target
+            return None
+        return ("move", step, target)
+
+    def _firefight_holdable_check(self, ctx, target, standable, front_set, band_set, extinguish):
+        """Look-ahead for a SUPPRESSED approach step (Part 2 review fix).
+
+        `standable` judges a destination against this step's retreat distance,
+        but the next advance recomputes that distance AT the destination, and it
+        reverts to the full buffer there if the exit guard fails or no plan
+        exists. Stepping into such a cell inside the buffer means retreating out
+        of it on the next step with the fire unchanged, and stepping back after
+        that: a zero-work approach/retreat cycle. So a destination inside the full
+        buffer is accepted only if, with the fire as it is now, the exit guard
+        holds there AND either work is in reach from there or a further standable,
+        target-improving step leads (within a few steps) to such a cell. A
+        destination outside the buffer is always accepted - no retreat can fire
+        there at any distance.
+        """
+        burning = ctx["burning"]
+        smoke = ctx["smoke"]
+        firebreak = ctx["firebreak"]
+        grid = self.model.grid
+        reach = FIREFIGHT_EXTINGUISH_REACH
+        tx, ty = target
+
+        def work_in_reach(c):
+            cx, cy = c
+            if extinguish:
+                for dx in range(-reach, reach + 1):
+                    rem = reach - abs(dx)
+                    for dy in range(-rem, rem + 1):
+                        if (cx + dx, cy + dy) in front_set:
+                            return True
+            if firebreak:
+                if (
+                    c in band_set
+                    or (cx + 1, cy) in band_set
+                    or (cx - 1, cy) in band_set
+                    or (cx, cy + 1) in band_set
+                    or (cx, cy - 1) in band_set
+                ):
+                    return True
+            return False
+
+        def holdable(c, depth=3):
+            d = self._min_fire_distance(c, burning)
+            if d > IDLE_RETREAT_SAFETY_BUFFER:
+                return True
+            if not self._firefight_exit_guard(c, burning, smoke, d):
+                return False
+            if work_in_reach(c):
+                return True
+            if depth <= 0:
+                return False
+            cx, cy = c
+            before = abs(tx - cx) + abs(ty - cy)
+            for ox, oy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                n = (cx + ox, cy + oy)
+                if grid.out_of_bounds(n) or not standable(n):
+                    continue
+                if abs(tx - n[0]) + abs(ty - n[1]) >= before:
+                    continue
+                if holdable(n, depth - 1):
+                    return True
+            return False
+
+        return holdable
+
+    def _firefight_approach_step(self, cell, target, standable, holdable=None, ctx=None) -> tuple[int, int] | None:
+        """The standable 4-neighbour that strictly shortens the way to `target`.
+
+        Ties: fewer remaining cells, then _move_toward's preferred larger-axis
+        step, then x, then y. No such neighbour means no move, so an engaged unit
+        never wanders sideways. A standable cell is outside the retreat distance
+        in force THIS step; under suppression `holdable` additionally refuses a
+        destination whose own retreat distance would revert to the full buffer
+        on arrival, so an approach cannot step into a cell the unit's retreat
+        would immediately take it out of.
+        """
+        cx, cy = cell
+        tx, ty = target
+        dx, dy = tx - cx, ty - cy
+        if abs(dx) >= abs(dy):
+            preferred = (cx + (1 if dx > 0 else -1 if dx < 0 else 0), cy)
+        else:
+            preferred = (cx, cy + (1 if dy > 0 else -1 if dy < 0 else 0))
+        before = abs(dx) + abs(dy)
+        best = None
+        for ncell in self._neighbor_cells():
+            if not standable(ncell):
+                continue
+            after = abs(tx - ncell[0]) + abs(ty - ncell[1])
+            if after >= before:
+                continue
+            key = (after, 0 if ncell == preferred else 1, ncell[0], ncell[1])
+            if best is not None and key >= best[0]:
+                continue
+            if holdable is not None and not holdable(ncell):
+                if ctx is not None:
+                    ctx["lookahead_rejected"] += 1
+                continue
+            best = (key, ncell)
+        return best[1] if best is not None else None
+
+    def _firefight_fire_at(self, cell: tuple[int, int]):
+        for agent in self.model.grid.get_cell_list_contents([cell]):
+            if type(agent) is Fire:
+                return agent
+        return None
+
+    def _firefight_execute(self, ctx: dict) -> None:
+        kind, cell_t, target = ctx["plan"]
+        wrote = False
+        scorched = None
+        if kind == "move":
+            self.model.grid.move_agent(self, cell_t)
+        else:
+            fire = self._firefight_fire_at(cell_t)
+            if fire is not None:
+                if kind == "clear":
+                    scorched = bool(getattr(fire, "has_burned", False))
+                if ctx["dry"]:
+                    ctx["shadow"].add(cell_t)
+                elif kind == "extinguish":
+                    wrote = fire.firefighter_extinguish()
+                else:
+                    wrote = fire.firefighter_remove_fuel()
+            if wrote:
+                name = (
+                    "firefight_extinguished_total"
+                    if kind == "extinguish"
+                    else "firefight_cleared_total"
+                )
+                setattr(self.model, name, int(getattr(self.model, name, 0) or 0) + 1)
+                if kind == "clear" and not scorched:
+                    self.model.firefight_cleared_unburned_total = (
+                        int(getattr(self.model, "firefight_cleared_unburned_total", 0) or 0) + 1
+                    )
+        here = (int(self.pos[0]), int(self.pos[1]))
+        # Retreat memory is handled exactly as the standby branch handles an idle
+        # unit at rest: cleared iff the unit's cell meets required idle safety.
+        if self._cell_meets_required_idle_safety(here, ctx["burning"]):
+            self._reset_idle_retreat_state()
+        self._record_movement_reason(
+            "firefighting_" + kind,
+            (
+                f"firefighting ({kind}) at {cell_t} against the front "
+                f"(nearest-fire dist {ctx['dist']}, retreat distance {ctx['T']})"
+            ),
+            target=target,
+            nearest_fire_dist=ctx["dist"],
+            retreat_distance=ctx["T"],
+        )
+        self._firefight_log_row(ctx, kind, wrote=wrote, scorched=scorched)
+
+    def _firefight_after_retreat(self, ctx: dict, cell_before: tuple[int, int]) -> None:
+        """A retreat fired for an idle unit. With suppression configured, suspend it.
+
+        The suspension holds until the unit stands on an ideal idle standoff, so
+        a unit pushed out of its work position completes its retreat before it
+        comes back, instead of re-engaging one cell outside the suppressed
+        distance - the worst place to be enclosed.
+
+        It latches on EVERY retreat while suppression is configured, not only on
+        one taken at the suppressed distance (Part 2 review fix). The retreats
+        that matter most - the exit guard refusing suppression in a pocket, or a
+        unit left with no plan inside the buffer - are taken at the full buffer,
+        and latching only suppressed-distance retreats let exactly those units
+        take one step out and re-engage at manhattan 2. A latched unit keeps the
+        full buffer, i.e. the unsuppressed behaviour, so the extra latching can
+        only make it more cautious.
+        """
+        suspend = ctx["K"] < IDLE_RETREAT_SAFETY_BUFFER
+        if suspend:
+            self._firefight_suspended = True
+        self._firefight_log_row(ctx, "retreat", suspend_set=bool(suspend and not ctx["suspended"]))
+
+    def _firefight_log_row(self, ctx: dict, action: str, **extra: object) -> None:
+        """Append the read-only mechanism record the validation harness reads."""
+        log = getattr(self.model, "_firefight_log", None)
+        if not isinstance(log, list):
+            log = []
+            self.model._firefight_log = log
+        plan = ctx.get("plan")
+        row = {
+            "step": int(getattr(self.model, "evaluation_timesteps_counter", 0) or 0),
+            "ff": str(getattr(self, "unit_id", "") or ""),
+            "action": action,
+            "engaged": plan is not None,
+            "plan": plan[0] if plan is not None else None,
+            "cell": [ctx["cell"][0], ctx["cell"][1]],
+            "target": [plan[2][0], plan[2][1]] if plan is not None else None,
+            "T": ctx["T"],
+            "K": ctx["K"],
+            "suspended": ctx["suspended"],
+            "exit_guard": ctx["exit_guard"],
+            "dist": ctx["dist"],
+            "dry": ctx["dry"],
+            "front": ctx["n_front"],
+            "band": ctx["n_band"],
+            "blocked_target": (
+                [ctx["blocked_target"][0], ctx["blocked_target"][1]]
+                if ctx.get("blocked_target") is not None else None
+            ),
+            "lookahead_rejected": ctx.get("lookahead_rejected", 0),
+        }
+        row.update(extra)
+        log.append(row)
 
 
 class PathMarker(mesa.Agent):

@@ -541,3 +541,51 @@ REPRODUCE
 Artifacts: outputs/_bc_{east_half,south_half,east_def}_<seed>.json,
            outputs/_bc_gap_*.json, outputs/_bc_analysis.txt,
            outputs/_bc_sweeps_raw.txt, outputs/_bc_verdicts_raw.txt
+
+================================================================================
+CORRECTION (2026-09-14, fire mechanic round 1) - THE CRITICAL WIDTH OF 3 HOLDS
+FOR AXIS-ALIGNED BANDS ONLY
+================================================================================
+Section 1.3 above states "FIREBREAK - YES, above a measured critical width of
+exactly 3", and verdict (C) repeats "permanent firebreak above a measured critical
+width of 3". The measurement (outputs/_bc_firebreak.py) was of a band that is
+STRAIGHT ALONG A GRID AXIS. The reason given - "distance_rate is euclidean**-2 for
+d <= 3 and 0 beyond" - is correct, but it does not make a grid-step (manhattan)
+width of 3 enough in every orientation.
+
+WHAT IS WRONG. On a 45-degree front a band 3 grid steps wide leaks. The (2,2) offset
+is manhattan 4 but euclidean 2.83, which is inside the kernel. Measured with the
+model's own probability_of_fire (outputs/_firemech_band_probe.py ->
+outputs/_firemech_band_probe.txt): band fuel removed, and the worst case of every
+fuel cell on the fire side already burning. The value is the maximum ignition
+probability of any cell beyond the band.
+
+    orientation  band rule                        east     south
+    axis         manhattan distance 3..5          0.0000   0.0000   blocks
+    axis         euclidean distance (2, 5]        0.0000   0.0000   blocks
+    diagonal     manhattan distance 3..5          0.0125   0.0125   LEAKS
+    diagonal     euclidean distance (2, 5]        0.0000   0.0000   blocks
+
+0.0125 is one diagonal source (1/8, damped by MU because it is off the wind row or
+column) before FIRE_SPREAD_MULTIPLIER. It is small per tick and per cell. Repeated
+along a front and over many ticks it is a crossing, not a barrier. A manhattan band
+of width 3 is only ~2.1 cells thick measured perpendicular to a 45-degree front.
+Section 1.3's own table puts width 2 at 0.9111 crossing.
+
+WHAT IS RIGHT. The critical width is 3 in EUCLIDEAN distance. Distance-to-set is
+1-Lipschitz, so if every ignitable cell with euclidean distance in (r, r+3] from the
+fire is inert, every cell beyond is more than 3 from every cell on the fire side,
+in any orientation. The probe confirms 0.0000 on both orientations. The price is
+more cells on diagonals: 243 vs 148 in the probe's 50x50 diagonal.
+
+WHAT IS NOT AFFECTED. The absorbing property of `burnt` (0 re-ignitions), the
+scorched re-ignition rate, the death-rate table and every verdict of this report
+stand. Only the firebreak statement's scope changes: "a band of width 3" must read
+"a band of euclidean width 3".
+
+WHERE THE UNQUALIFIED CLAIM WAS CARRIED FORWARD
+  outputs/scorched_report.txt:69     "permanent firebreak above a measured critical width of 3"
+  outputs/gridscale_part1.txt:151    "the firebreak critical width measured at exactly 3 in the #9 round"
+Neither built anything on the orientation, so nothing downstream needs re-measuring.
+The fire mechanic round uses the euclidean band (outputs/firemech_part1.txt section
+3; FIREFIGHT_BAND_INNER_SQ / _OUTER_SQ in agents.py).

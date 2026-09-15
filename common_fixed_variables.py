@@ -164,6 +164,37 @@ VICTIM_FLEE_MAX_DISPLACEMENT = 6
 # applies. Deterministic - it draws from no RNG.
 VICTIM_SEARCHER_HAZARD_RETREAT_RANGE = 99
 
+# Firefighter fire mechanic (round 1, outputs/firemech_part1.txt). An IDLE
+# firefighter - one the rescue dispatcher counts as available and that has no
+# target - works against the fire front; any rescue assignment preempts it on its
+# very next advance. Both actions are the same write, removing a cell's fuel, and
+# the Fire state machine does the rest:
+#   EXTINGUISH  a burning front cell within manhattan 2: it stops burning at once
+#               and turns burnt (absorbing) at the next fire tick.
+#   FIREBREAK   an ignitable cell (not burning, not burnt, fuel > 0 - scorched
+#               cells included) within manhattan 1, chosen from the band at
+#               EUCLIDEAN distance (2, 5] from the nearest burning cell. A completed
+#               band of that euclidean width blocks spread in every orientation; a
+#               3-wide manhattan band leaks on a 45-degree front
+#               (outputs/_firemech_band_probe.txt).
+# FF_FIREFIGHT_ENGAGED_RETREAT_RANGE is retreat suppression: while a unit is
+# engaged, its idle retreat distance (IDLE_RETREAT_SAFETY_BUFFER, 3) drops to this
+# value. 1 is the distance an ASSIGNED firefighter already retreats at. Extinguish
+# at reach 2 is only possible below 2, so without suppression it never acts.
+# 3 - and 0, negatives or anything unparseable - means no suppression.
+# FF_FIREFIGHT_DRY_RUN keeps every decision and suppresses every fire write (the
+# targeting then treats the would-be-written cell as done), which isolates the
+# behaviour from its effect on the fire.
+# ALL OFF BY DEFAULT, and every accessor fallback in agents.py is the OFF value, so
+# a missing or junk override cannot arm anything. With both action switches 0 no
+# firefighter code path changes. Overridable per run through apply_scenario_config
+# like every other scenario parameter, and read at call time. Deterministic - it
+# draws from no RNG.
+FF_FIREFIGHT_EXTINGUISH = 0
+FF_FIREFIGHT_FIREBREAK = 0
+FF_FIREFIGHT_ENGAGED_RETREAT_RANGE = 3
+FF_FIREFIGHT_DRY_RUN = 0
+
 # Base station (feature 3). A set of 5x5 depots - shipped as two, NW and SE (see
 # BASE_STATION_DEPOTS) - that the UAV team and the firefighters launch from, that a
 # UAV returns to (the nearest of its own berths) when its battery reaches the return

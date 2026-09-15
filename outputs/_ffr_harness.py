@@ -789,6 +789,30 @@ def main() -> int:
         "stdout_sha256": hashlib.sha256(stdout_text.encode("utf-8", "replace")).hexdigest(),
         "stdout_lines": stdout_text.count("\n"),
     }
+    # --- fire mechanic round 1 --------------------------------------------------
+    # Added ONLY when the model carries the feature's own log, which it creates
+    # lazily on the first firefighting step. A feature-off run, and any checkout
+    # without the feature, therefore produces exactly the JSON shape it produced
+    # before this block existed, so fmOFF / fmREF stay comparable field for field
+    # with the dfD arm recorded by the previous harness. Pure reads.
+    ff_log = getattr(model, "_firefight_log", None)
+    if ff_log is not None:
+        shadow = getattr(model, "_firefight_shadow", None)
+        out["firefight_log"] = list(ff_log)
+        out["firefight_counters"] = {
+            "extinguished": int(getattr(model, "firefight_extinguished_total", 0) or 0),
+            "cleared": int(getattr(model, "firefight_cleared_total", 0) or 0),
+            "cleared_unburned": int(getattr(model, "firefight_cleared_unburned_total", 0) or 0),
+        }
+        out["firefight_shadow"] = (
+            sorted([int(c[0]), int(c[1])] for c in shadow) if isinstance(shadow, set) else None
+        )
+        # fuel exhausted on a cell that never burned: only a firebreak produces it
+        out["fire_cleared_unburned_final"] = sum(
+            1 for a in model.schedule.agents
+            if type(a).__name__ == "Fire" and getattr(a, "pos", None) is not None
+            and getattr(a, "fuel", 1) <= 0 and not getattr(a, "has_burned", False)
+        )
     os.makedirs(os.path.dirname(os.path.abspath(args.out)) or ".", exist_ok=True)
     tmp = args.out + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:

@@ -1,0 +1,900 @@
+================================================================================
+FIRE MECHANIC, ROUND 1 - PART 1: DESIGN
+Firefighters get the ability to affect fire. Mechanic only.
+Design document. No source file has been modified. STOPPED FOR CONFIRMATION.
+================================================================================
+
+BRANCH   firefighter-fire-mechanic   (created from main)
+HEAD     e8b911b, NOT 6adeb4f as the brief expected. e8b911b is the merge-
+         verification commit on top of 6adeb4f. `git diff --name-only 6adeb4f
+         e8b911b` lists 20 files, all under outputs/ (the _merge_* and mgD
+         artifacts), and 0 source files. So the simulation source is 6adeb4f's.
+         The kill switch will still be proven against a detached 6adeb4f
+         worktree, not against HEAD.
+TREE     No tracked file is modified. There are 10 untracked files under outputs/:
+         heartbeat .stop sentinels, *_state.txt and two flip pytest logs from
+         earlier rounds. No source files are among them.
+RUNNING  NOTHING. A Win32_Process scan finds no python.exe, bash.exe or pytest.
+         One stale worktree from another session is registered in the
+         scratchpad (dc_e703861, detached). It is left alone.
+ENV      sys.version    3.10.11 (tags/v3.10.11:7d4cc5a, Apr 5 2023) MSC v.1929 64 bit
+         mesa.__version__  1.2.1        (E:\Projects\SAS\.venv, confirmed at run time)
+
+IN ONE PARAGRAPH
+  Firefighters get one new write on Fire state: REMOVE A CELL'S FUEL. Applied
+  to a burning cell this is EXTINGUISH. Applied to a cell that can still ignite
+  it is FIREBREAK. Fire's own state machine does everything after that:
+    - An extinguished cell stops burning at once and turns `burnt` at the next
+      fire tick. That is the model's existing absorbing state (0 re-ignitions in
+      23,126 opportunities).
+    - A cleared cell can never ignite.
+  A firebreak is a 3-wide band ahead of the fire, and it must be measured in
+  EUCLIDEAN distance. A probe in this round shows that a Manhattan band of
+  width 3 LEAKS on a 45-degree front; the Euclidean band blocks exactly.
+  Targeting is nearest-first with a total-order tie-break, draws no random
+  numbers, and stores no plan.
+  The retreat constraint in the brief is real, but only EXTINGUISH needs to be
+  inside the buffer. FIREBREAK works from ground the idle buffer already
+  accepts, so it needs no loosening. That separates the two cleanly:
+    - firebreak answers "can they affect fire at all" with retreat unchanged
+    - extinguish needs suppression, and suppression gets its own arms,
+      including a DRY arm with the same behaviour and no fire effect
+  Two of the brief's arms ("extinguish only" and "both", without suppression)
+  are identical to other arms BY CONSTRUCTION under this design. They are kept
+  as cheap identity proofs, and three more arms are proposed so every component
+  can be measured apart.
+
+
+================================================================================
+0. RE-VERIFICATION OF THE SCOPING ROUND'S CLAIMS
+================================================================================
+
+0.1 "NOTHING CAN INFLUENCE FIRE" - CONFIRMED, WITH A CORRECTION TO THE COUNT
+  Whole-tree grep (tests/, outputs/, .venv excluded) for assignments to
+  burning / fuel / burnt / has_burned / next_burning_state / cell_prob /
+  steps_counter, plus setattr(..., "burning"|"fuel"|"burnt"):
+    agents.py:23   fuel        = random.randint(7, 10)    constructor
+    agents.py:24   burning     = burning                  constructor
+    agents.py:25   burnt       = False                    constructor
+    agents.py:26   has_burned  = bool(burning)            constructor
+    agents.py:106  has_burned  = True                     Fire.step
+    agents.py:108  fuel        = fuel - BURNING_RATE      Fire.step
+    agents.py:110  burnt       = True                     Fire.step
+    agents.py:111  burning     = False                    Fire.step
+    agents.py:123  burning     = False                    Fire.advance
+    agents.py:125  burning     = next_burning_state       Fire.advance
+  So `burning` has exactly three runtime writers, all inside step/advance, as
+  the brief says. `fuel` has ONE runtime writer (:108), not three. Nothing
+  outside class Fire writes any of these fields. The only other writers are
+  test fixtures and outputs/ probes.
+
+  RE-MEASURED ON THE CURRENT CODE, from existing arms: ihrest99/ihrest99fresh
+  (16b2da8, mode 0) and dfD (the shipped default, several rounds later,
+  including base station, depots, dock fix and the flip) differ in
+  rescued/dead/ff_deaths on 17 of 23 canonical+fresh runs. Their fire-digest
+  series are IDENTICAL on 23 of 23 runs, 240 of 240 steps each. Everything
+  those rounds changed about units left the fire untouched. canonical-13
+  burnt_cells at dfD = 16053, the same figure as the scoping round's table.
+
+0.2 "NO AREA/SECTOR COMMAND VOCABULARY" - CONFIRMED
+  wildfire_model.py:84-90 `@dataclass(frozen=True) class PhysicalRescueCommand`
+  has the fields (action, victim_id, firefighter_id, reason, metadata).
+  apply_physical_rescue_command branches on exactly four actions: assign
+  :4520, unassign :4640, mark_unreachable :4711 and finalize_rescue :4768.
+  assign writes `ff_marker.target_pos = victim_cell` (:4557).
+  THIS ROUND DOES NOT TOUCH IT.
+
+0.3 "NO PLANNER->FIREFIGHTER CHANNEL" - CONFIRMED
+  Everything the Firefighter class body (agents.py:1356-2204) reads from the
+  model: grid, schedule, HEIGHT, WIDTH, _on_firefighter_route_blocked,
+  evaluation_timesteps_counter, _movement_transition_log. That is seven
+  attributes. It also writes _agents_pending_removal and
+  _rescue_path_clear_requested. The adaptation layer writes none of them.
+  THIS ROUND ADDS NO CHANNEL. The new behaviour reads only the Fire agents on
+  the grid and the cfv switches below.
+
+0.4 WHERE THE WORK CAN HAPPEN - MEASURED OPPORTUNITY (dfD, canonical+fresh)
+  Scenario D has 2 FIREFIGHTERS, 4 UAVs and 4 victims. Firefighter-steps
+  alive and on grid: 10,091. IDLE steps (status available, not assigned, not
+  exiting): 5,214 (51.7%), about 227 per run.
+  Manhattan distance from an idle unit to the nearest burning cell:
+      > 15: 2,734   9-15: 550   4-8: 1,238   <= 3: 256   no fire: 436
+  Front size, measured as burning cells with a never-ignited 4-neighbour:
+  mean 20-45 per run, max 112. east/half/707 never spreads (burnt_cells 0).
+  Idle time is therefore plentiful, but most of it is spent far from the
+  fire. Runs reach all-victims-terminal at step 99-219, and both units stay
+  idle from then until step 240. (scratchpad script opp.py, read-only.)
+
+
+================================================================================
+1. THE FIRE MECHANIC
+================================================================================
+
+1.1 FIRE'S STATE MACHINE, QUOTED (agents.py @ 6adeb4f)
+
+  Constructor (:21-35)
+      self.fuel = random.randint(FUEL_BOTTOM_LIMIT, FUEL_UPPER_LIMIT)   # 7..10
+      self.burning = burning
+      self.burnt = False
+      self.has_burned = bool(burning)
+      self.next_burning_state = None
+      self.moore = True
+      self.radius = 3
+      ...
+      self.smoke = Smoke(fire_cell_fuel=self.fuel)
+
+  probability_of_fire (:53-86)
+      if self.burnt:
+          return 0
+      probs = []
+      if self.fuel > 0:
+          adjacent_cells = self.model.grid.get_neighborhood(
+              self.pos, moore=self.moore, include_center=False, radius=self.radius)
+          for adjacent in adjacent_cells:
+              agents_in_adjacent = self.model.grid.get_cell_list_contents([adjacent])
+              for agent in agents_in_adjacent:
+                  if type(agent) is Fire:
+                      adjacent_burning = 1 if agent.is_burning() else 0
+                      aux_prob = distance_rate(self.pos, adjacent, self.radius) * adjacent_burning
+                      if ACTIVATE_WIND and (adjacent_burning == 1):
+                          aux_prob = self.model.wind.apply_wind(aux_prob, self.pos, agent.pos)
+                      probs.append(1 - aux_prob)
+          if len(probs) == 0:
+              P = 0
+          else:
+              P = 1 - functools.reduce(lambda a, b: a * b, probs)
+      else:
+          P = 0
+      return P
+    with distance_rate = euclidean**-2 if euclidean <= 3 else 0
+    (common_fixed_variables.py:591-596), and wind +/- MU=0.9 only for sources
+    in the same row/column as the target.
+
+  step (:89-115)
+      self.steps_counter += 1
+      if self.burnt:
+          self.next_burning_state = False
+          if ACTIVATE_SMOKE:
+              self.smoke.smoke_step(False)
+          return
+      if self.steps_counter % FIRE_SPREAD_SPEED == 0:          # every 3 steps
+          self.cell_prob = self.probability_of_fire()
+          self.cell_prob = self.cell_prob * FIRE_SPREAD_MULTIPLIER
+          self.cell_prob = max(0.0, min(1.0, self.cell_prob))
+          generated = random.random()                          # THE fire RNG draw
+          self.next_burning_state = generated < self.cell_prob
+          if self.burning:
+              self.has_burned = True
+              if self.fuel > 0:
+                  self.fuel = self.fuel - BURNING_RATE         # WRITE fuel
+          if self.has_burned and self.fuel <= 0:
+              self.burnt = True
+              self.burning = False                             # WRITE burning
+              self.next_burning_state = False
+          if ACTIVATE_SMOKE:
+              self.smoke.smoke_step(self.burning)
+
+  advance (:119-125)
+      if self.steps_counter % FIRE_SPREAD_SPEED == 0:
+          if self.burnt:
+              self.burning = False                             # WRITE burning
+              return
+          self.burning = self.next_burning_state               # WRITE burning
+
+  FACTS THE DESIGN RESTS ON
+    F1 A cell's next burning state is re-sampled every fire tick from its
+       NEIGHBOURS only. Its own burning flag does not feed back. So clearing
+       `burning` alone lasts one tick: a front cell re-ignites from its
+       neighbours ("scorched" ground re-ignites 96%, burntcells_part1.txt:311).
+    F2 fuel <= 0 makes probability_of_fire return 0 FOREVER. fuel never
+       increases: there is no regrowth.
+    F3 `burnt` = has_burned and fuel <= 0, set only at :110. It is absorbing:
+       0 re-ignitions in 23,126 opportunities. The engine therefore already
+       holds two permanent "cannot burn" states: burnt, and fuel == 0 on a
+       cell that never burned. The second is simply unused today.
+    F4 One random.random() is drawn per NON-burnt cell per fire tick, in
+       unique_id order. A burnt cell draws nothing. Any change to WHICH cells
+       are burnt therefore shifts the draw stream for every later cell.
+    F5 A burnt band of width 3 blocks spread, width 2 does not (0.9111).
+       Measured by outputs/_bc_firebreak.py, axis-aligned only.
+
+1.2 ONE WRITE PRIMITIVE, TWO TARGET POPULATIONS
+
+  EXTINGUISH - a burning cell
+    fuel = 0, burning = False, has_burned = True
+    Rate      one cell per firefighter per step (atomic, nothing carried over)
+    Reach     Manhattan distance <= 2 from the firefighter's cell
+    Afterward
+      - burning False immediately: the cell stops being a spread source and
+        stops being a casualty cell, from this step's post-move stage on
+      - at the next fire tick (<= 2 steps later) Fire.step's own :109-112
+        sets burnt = True
+      - it can NEVER re-ignite: fuel 0 (F2), then burnt (F3). No new guard is
+        added - the existing state machine forbids it.
+    Should it re-ignite? NO, for this round. The only alternative is a
+    knockdown that leaves fuel. By F1 that cell re-ignites at the next tick
+    with ~96% probability, so the action would be almost worthless. Removing
+    fuel uses the one lasting effect the engine already provides. Real mop-up
+    is not modelled, and saying so is honest.
+    Why has_burned is written: a cell that ignited at tick k only latches
+    has_burned at tick k+1 (:105-106). A front cell is often that fresh.
+    Without the write, extinguishing it would leave a never-burned fuel-0 cell,
+    indistinguishable from a firebreak cell and invisible to burnt_cells even
+    though it visibly burned. The write sets the latch to exactly what it
+    means ("this cell has burned"), one-way, and only on a burning cell.
+
+  FIREBREAK - a fuel cell: not burning, not burnt, fuel > 0
+    fuel = 0
+    Rate      one cell per firefighter per step
+    Reach     the firefighter's own cell or a 4-neighbour (Manhattan <= 1)
+    Afterward
+      - a never-burned cell: P = 0 forever, never ignites, never becomes
+        burnt, never has_burned. It still draws its RNG number every tick
+        exactly as before (F4), because it is not burnt.
+      - a scorched cell (has_burned, fuel > 0): becomes burnt at the next tick
+        and is permanently safe. This is deliberate. Scorched ground is the
+        most ignitable ground in the model.
+    It REUSES the physics, not the label. A band of fuel-0 cells is exactly as
+    inert to probability_of_fire as a band of burnt cells: both return 0 and
+    neither is ever a source. So F5's blocking result carries over. The label
+    does not carry over: a cleared cell does not count as burnt.
+
+  WHY NOT REUSE `burnt` FOR FIREBREAK
+    (a) burnt_cells (serve_dashboard.py:367-368 counts raw `.burnt`) would
+        count vegetation the firefighters removed as area the FIRE burned. A
+        firebreak would inflate the fire metric by exactly its own size.
+    (b) `burnt` would gain a second writer. With the write above, `burnt` is
+        still written ONLY at agents.py:110, and the absorbing-state tests in
+        tests/test_executor_routing_and_burnt.py keep one producer.
+    (c) Setting burnt directly stops that cell's RNG draw at once (F4). A fuel-0
+        cell keeps drawing, so a firebreak write does not perturb the draw
+        stream until a physical consequence does (see 1.4).
+
+  WHAT THIS DOES TO burnt_cells AS A METRIC - IT STOPS BEING A CLEAN FIRE-AREA
+  MEASURE, IN BOTH DIRECTIONS
+    - EXTINGUISH INFLATES it. At dfD the canonical 13 end with 22,648 cells
+      that ever burned but only 16,053 burnt; 6,595 are still burning or
+      scorched at step 240. Every extinguished cell becomes burnt at once
+      instead of being one of those. burnt_cells can RISE while the fire
+      shrinks.
+    - FIREBREAK DEFLATES it. A cleared cell the fire would have burned is
+      simply not counted, even if the band blocks nothing.
+    So the report will carry burnt_cells as asked AND the end-state partition
+    of the 2,500 cells:
+        ever_burned   has_burned               (fire_ground_final, recorded now)
+        cleared       fuel 0, never burned     (from the feature's own log)
+        intact        2500 - ever_burned - cleared
+        burning@240
+    INTACT is the net fire effect. A band that blocks nothing lowers intact by
+    its own size; it raises intact only if it saves more than it cost.
+    burnt_cells moving is necessary but NOT sufficient evidence (see 1.4).
+
+1.3 THE FOURTH WRITER: WHERE IT HOOKS AND WHY THAT SITE IS SAFE
+  WHERE
+    Two new methods on class Fire:
+      Fire.firefighter_extinguish()     burning cell only; returns False otherwise
+      Fire.firefighter_remove_fuel()    fuel cell only; returns False otherwise
+    Each re-checks its own precondition, so a stale target is a no-op, never a
+    corrupt write. The fields stay inside class Fire, so a grep for writers
+    still finds them all in one class. The ONLY caller is Firefighter.advance()
+    (agents.py:1480), through the engagement branch in section 4.
+
+  WHY Firefighter.advance IS SAFE
+    S1 ORDER. wildfire_model.step (:5779) calls self.schedule.step(), which is
+       mesa 1.2.1 SimultaneousActivation: every agent's step(), then every
+       agent's advance(), in _agents dict order (.venv/Lib/site-packages/
+       mesa/time.py:138-151). That order is unique_id order: reset() adds all
+       2,500 Fire agents first (set_fire_agents, wildfire_model.py:182 ->
+       :2274-2301), then UAVs (:237), victims (:837-840), firefighters
+       (:904-908). No Fire agent is added later.
+       So when any Firefighter.advance runs, every Fire.step AND Fire.advance
+       of the step is already done.
+    S2 NO STALE STAGED VALUE. The staged field next_burning_state is applied
+       by advance only on a spread tick, right after step recomputed it on that
+       same tick (steps_counter is incremented in step). A write after
+       Fire.advance(t) is therefore read by Fire.step(t+1) as committed state.
+       No pending value exists to overwrite it. This holds on any tick phase.
+    S3 INVARIANTS KEPT. The writes never touch a burnt cell.
+         fuel        only decreases (to 0)
+         has_burned  only set True, and only on a burning cell (same meaning as :106)
+         burnt       untouched, still single-writer
+         smoke       untouched: counters were sized from constructor fuel, and a
+                     cell that smoked keeps its dispelling schedule
+    S4 NO RNG. The writes and the targeting draw nothing from any RNG, so a
+       seed stays a seed.
+    S5 WHO SEES THE WRITE, AND WHEN (deterministic, stated so no one discovers it later)
+         - UAV.advance and Victim.advance run BEFORE firefighters in the same
+           pass. They see the pre-write fire for that step.
+         - Post-move monitoring, the UAV observation bridge and
+           _check_fire_casualties (adaptation_manager.py:182) run AFTER. They
+           see the post-write fire. So a victim or unit standing on a cell
+           extinguished this step is NOT killed by it this step.
+         - A second firefighter later in the same pass sees the first one's
+           writes. It therefore never re-targets a cell that is already done.
+    S6 Firefighter.step() is `pass` (:1436-1437). All firefighter behaviour
+       already lives in advance(), so this adds no new phase.
+
+1.4 CONSEQUENCE FOR THE PRIMARY QUESTION: "burnt_cells MOVES" IS A WEAK TEST
+  An extinguished cell becomes burnt one tick early and stops drawing (F4).
+  Every later cell in unique_id order then gets a different random number from
+  that tick on, so the REST OF THE FIRE RE-ROLLS. A single useless write moves
+  burnt_cells. What is demonstrable:
+    (i)  A DRY arm (same engagement and targeting, writes suppressed) must
+         reproduce the OFF arm's fire-digest series 240/240 on every run. That
+         proves engagement touches the fire through no side channel and draws
+         no fire RNG.
+    (ii) In the matching WET arm, the first fire-digest divergence from OFF
+         must be EXACTLY the first write step. The digest hashes (burning,
+         burnt, fuel), so the write itself is visible in that step's digest.
+    (iii) Mechanism accounting from the log and burn_intervals:
+          - cells extinguished
+          - cells cleared
+          - cleared cells EXPOSED, i.e. some cell within euclidean 3 burned
+            later, so the cleared cell would have had a nonzero ignition
+            probability
+          - whether any band segment held
+    (iv) Direction (intact, ever_burned) claimed only if canonical AND fresh
+         agree. Per canonical-13-is-a-screen-not-evidence, the canonical
+         result is a screen.
+  A firebreak write re-rolls later. A fuel-0 cell keeps drawing, so the stream
+  shifts only when a burn-out differs, >= 21 steps after the first prevented
+  ignition.
+
+
+================================================================================
+2. THE FIRE FRONT (minimal)
+================================================================================
+  FUEL CELL   Fire agent with is_burning() False, is_burnt() False, fuel > 0
+  FRONT       burning cells with >= 1 in-bounds 4-neighbour that is a FUEL CELL
+
+  Computable from existing state with no new tracking: yes. It is one pass
+  over the Fire agents to collect the burning set and the fuel set, then four
+  neighbour lookups per burning cell. No history, no velocity, no direction,
+  no sectors. It is recomputed from scratch at each firefighter's own
+  advance().
+
+  Two deliberate choices:
+    - 4-adjacency, not the radius-3 Moore spread kernel. This is the "adjacent
+      to fuel" the brief defines, and the same adjacency the firefighter's own
+      hazard predicates use (_cell_adjacent_to_fire, agents.py:1685).
+    - FUEL INCLUDES SCORCHED CELLS (has_burned, fuel > 0, not burning). #9
+      measured that they re-ignite 96% of the time, so leaving them out would
+      drop the most ignitable ground from both the front and the break. For a
+      unit approaching from unburnt ground the nearest front cell is on the
+      outer perimeter either way.
+
+  NOT BUILT: front velocity, spread-direction prediction, sector
+  decomposition, front segmentation. Wind is not read by the targeting.
+
+
+================================================================================
+3. TARGETING
+================================================================================
+  d_M = Manhattan distance (the firefighter code's existing metric), E2 =
+  squared Euclidean distance.
+
+  F*  nearest FRONT cell to the unit
+        argmin over FRONT of (d_M(unit, c), c.x, c.y)
+  B   BAND = fuel cells c with 4 < E2(c, nearest burning cell) <= 25
+        i.e. euclidean distance in (2, 5]
+  W*  nearest WORKABLE band cell to the unit
+        argmin over workable B of (d_M(unit, c), c.x, c.y)
+      workable = c itself or one of its 4-neighbours is a cell the unit may
+      stand on this step (section 4: not burning, no active smoke, d_M to
+      fire > T)
+
+  WHY EUCLIDEAN FOR THE BAND - MEASURED THIS ROUND (outputs/_firemech_band_probe.py
+  -> outputs/_firemech_band_probe.txt)
+    Test: the model's own probability_of_fire on a real grid, a straight front,
+    band fuel set to 0, and the WORST CASE of every fuel cell on the fire side
+    already burning. Result: the maximum ignition probability of any cell
+    beyond the band.
+        orientation  band rule          east     south
+        axis         manhattan [3,5]    0.0000   0.0000   blocks
+        axis         euclid    (2,5]    0.0000   0.0000   blocks
+        diagonal     manhattan [3,5]    0.0125   0.0125   LEAKS
+        diagonal     euclid    (2,5]    0.0000   0.0000   blocks
+    Why Manhattan fails: the kernel reaches euclidean 3, and the (2,2) offset
+    is Manhattan 4 but euclidean 2.83. A Manhattan band is only ~2.1 cells
+    thick on a 45-degree front, and #9 measured width 2 at 91% crossing.
+    Why Euclidean holds: distance-to-set is 1-Lipschitz, so any cell beyond
+    (d > 5) is more than 3 from any cell on the fire side (d <= 2). No band
+    cell can burn, so a COMPLETED band blocks in every orientation. The cost is
+    more cells on diagonals: 243 vs 148 in the probe.
+    The inner edge 2 is the ring given up: those cells can ignite this tick. It
+    is also exactly what the idle buffer lets a unit reach: every cell with
+    E2 > 4 has d_M >= 3, which is a 4-neighbour of a d_M >= 4 standing cell.
+
+  WHY THE FIREBREAK TARGETS THE NEAREST BAND CELL TO THE UNIT AND NOT "THE BAND
+  CELL NEAREST F*" - FLAGGED FOR CONFIRMATION
+    The brief says "targeting by nearest front cell". Extinguish follows it
+    literally (target F*). For firebreak the work is not ON the front, so it
+    targets the strip in front of it. The band is the offset of the burning
+    set, so the band cell nearest the unit lies in front of the front section
+    nearest the unit.
+    The literal alternative re-derives the work cell from F* every step. A
+    moving unit can then flip between two near-equidistant front cells: the
+    ping-pong / livelock pattern that the dockfix round showed a positional
+    gate cannot see.
+    Nearest-band-cell-to-the-unit is monotone instead: with a static band each
+    approach step strictly reduces the distance to the current minimum. The
+    break then extends sideways by itself, because the nearest uncleared band
+    cell is always on the edge of the patch just cleared.
+
+  TIES AND DETERMINISM
+    - Every argmin key ends in (x, y), and a cell holds exactly one Fire agent
+      (DENSITY_PROB = 1), so every argmin has a unique answer. Set or dict
+      iteration order cannot matter.
+    - Nothing draws from any RNG.
+    - Plans are recomputed inside each unit's own advance(), and units advance
+      in fixed unique_id order. A later unit sees an earlier unit's writes,
+      so two units never work the same cell in one step.
+    - Under a fixed seed the whole sequence is therefore a pure function of
+      state. Part 3 proves it two ways:
+        - the DRY arm's fire digests equal OFF's
+        - a repeated run of one configuration is byte-identical
+    Approach-step tie-break: among in-bounds 4-neighbours that are standable
+    and STRICTLY reduce d_M to the target, pick by
+    (d_M after, 0 if it is _move_toward's preferred larger-axis step else 1, x, y).
+    No improving standable step means no move. The unit never wanders
+    sideways, so it cannot oscillate on its own.
+
+
+================================================================================
+4. RETREAT SUPPRESSION (S) AND ENGAGEMENT
+================================================================================
+
+4.1 WHAT THE CONSTRAINT ACTUALLY IS (agents.py:1711-1728)
+    An idle unit (no target_pos) retreats when any of these holds:
+      - its cell is burning or has active smoke
+      - its cell is 4-adjacent to fire
+      - d_M to fire <= IDLE_RETREAT_SAFETY_BUFFER (3)
+    An assigned unit retreats only on its cell burning or smoky, or d_M <= 1.
+    A retreat takes the rest of the step (_survival_move, then return).
+    Incidental finding: _idle_needs_survival_move (:1730, the `elif` at :1599)
+    tests the same condition as the idle half of :1711, so for an idle unit that
+    branch is unreachable today.
+
+4.2 THE KEY GEOMETRIC POINT
+    An idle unit can stand at d_M >= 4. Reach-1 FIREBREAK work from there
+    clears cells at d_M >= 3, which is the whole band (section 3). So
+    firebreak NEEDS NO SUPPRESSION.
+    EXTINGUISH with reach 2 needs the unit at d_M <= 2, so it CANNOT act
+    unless the threshold is loosened. This round makes that explicit rather
+    than accidental: extinguish counts as OPERABLE only if T < reach, where T
+    is the active threshold. With T = 3 it is not operable, so the unit is not
+    engaged for it at all.
+
+    Result 1: E alone without S is EXACTLY OFF, byte for byte.
+    Result 2: E+F without S is EXACTLY F.
+    Neither is an inert measurement to discover later; both are identities to
+    prove.
+
+    Alternative considered and NOT recommended: extinguish reach 4, which works
+    from the idle standoff with no loosening. Both actions would then always be
+    available at the standoff, so any strict priority makes one of them unused
+    ("both" == one of them). A mix would then need an arbitrary duty cycle.
+    Reach 2 matches reality better as well: direct attack at the flame edge is
+    the risky job, and line construction at distance is the safer one.
+
+4.3 ENGAGEMENT (computed fresh in each advance(); no latched task state)
+    ELIGIBLE, i.e. "idle":
+      - model._firefighter_available_for_dispatch(self) is True
+        (wildfire_model.py:3237: not dead, status not dead/route_blocked, not
+        assigned, not exiting, not rescue_completed, on grid)
+      - AND target_pos is None
+      - AND at least one of FF_FIREFIGHT_EXTINGUISH / FF_FIREFIGHT_FIREBREAK is on
+    "Idle" is thus exactly what the dispatcher considers available. Any unit
+    that is firefighting can be taken for a rescue.
+
+    RESCUE PREEMPTS IMMEDIATELY, by construction:
+      - assign (:4556-4559) sets assigned/target_pos/status="en_route"
+      - the unit's very next advance() fails eligibility and takes the rescue
+        branch
+      - a work action is atomic within one advance(), so there is nothing to
+        finish and no completion threshold
+    Status stays "available" while firefighting. No new status is introduced,
+    so nothing downstream (planner snapshot, sync, dashboard) changes meaning.
+
+    PLAN: one action per step, in this order, with threshold T (4.4)
+      1  EXTINGUISH  if on, operable (T < 2) and d_M(unit, F*) <= 2  -> extinguish F*
+      2  FIREBREAK   if on and a band cell is within Manhattan 1     -> clear it
+                     (nearest to the unit, then x, y; own cell first)
+      3  APPROACH    one standable strictly-improving step toward
+                     W* if firebreak is on, else F* (extinguish on and operable)
+      4  none        -> the unit is NOT engaged this step
+    With both on and S on, this gives a real MIX: the unit walks to the break,
+    cuts line, and knocks down any front cell that comes within 2 of it. It
+    defends the line rather than choosing a job.
+
+    STANDABLE (the approach filter): in bounds, not burning, no active smoke,
+    d_M to fire > T. An approach can therefore never step into a cell that
+    would trip the unit's own retreat. That removes "approach, hit the buffer,
+    flee" by construction, with or without S.
+
+4.4 THE THRESHOLD
+    FF_FIREFIGHT_ENGAGED_RETREAT_RANGE = K. Default 3 (= IDLE_RETREAT_SAFETY_BUFFER,
+    no suppression). Clamped to [1, 3]; junk falls back to 3 (OFF).
+    The S arm uses K = 1. That value is BORROWED, not invented: it is the d_M
+    threshold every ASSIGNED firefighter already retreats at (:1726) on every
+    rescue approach in every run. The codebase already lets a unit doing a
+    task stand at d_M = 2.
+
+    For an eligible unit, each step:
+      T_cand = K   if S is on (K < 3) AND not suspended AND exit guard passes
+             = 3   otherwise
+      plan   = PLAN(T_cand)
+      T      = T_cand if plan exists else 3
+      retreat test = the existing :1711-1728 idle test with 3 replaced by T
+      if it fires  -> existing retreat path, UNCHANGED; if T < 3, set suspended
+      else if plan -> execute plan
+      else         -> existing standby / holding branches, unchanged
+
+    WHAT REPLACES THE BUFFER WHILE ENGAGED: T = K = 1. The unit still leaves
+    when its cell is burning or smoky, when it is adjacent to fire, or when
+    d_M <= 1.
+
+    WHAT RESTORES IT ON DISENGAGE: nothing needs restoring, because nothing is
+    latched. T = 3 on ANY step where the unit is not engaged:
+      - plan is None: no front, no band, approach blocked
+      - the unit is ineligible (assigned, exiting, off grid)
+      - the feature is off
+    So a unit near the fire with no work is back under the idle buffer on that
+    same step. S never holds a unit that is not working.
+
+4.5 HOW A UNIT THAT IS ACTUALLY ABOUT TO BE OVERRUN STILL ESCAPES
+    E1 THE TRIGGER STAYS. The retreat still fires on the unit's cell burning or
+       smoky, on adjacency, and on d_M <= 1. _survival_move and its leash,
+       stall and one-step logic are NOT modified.
+    E2 TIMING IS ON THE UNIT'S SIDE (S1). Fire.advance runs before
+       Firefighter.advance, and _check_fire_casualties runs after both. A unit
+       whose cell ignites this tick moves off it in the same step whenever any
+       in-bounds 4-neighbour is not burning and lies within the retreat leash
+       (IDLE_RETREAT_MAX_CELLS from the retreat origin, which is re-anchored
+       for an idle unit standing beyond it, :1792-1814). _retreat_candidates
+       keeps such a neighbour even against its anti-oscillation memory when the
+       unit stands in fire (:1929-1941). Death therefore requires the cell AND
+       every admissible exit to burn on one tick: enclosure, or the leash edge.
+    E3 EXIT GUARD (new, local, no state). S applies only while at least one
+       in-bounds 4-neighbour is not burning, has no active smoke, and is
+       STRICTLY farther from fire (d_M) than the unit's cell. With no outward
+       step, T = 3 and the unit leaves early. That catches the #9 pattern (a
+       unit boxed by fire on two sides, or backed against a grid edge) before
+       the fire reaches d_M 1.
+    E4 SUSPENSION LATCH (one bit). If a retreat fires for an engaged unit under
+       T < 3, S is suspended. T = 3 then applies until the unit stands on an
+       ideal idle standoff (_cell_is_ideal_idle_standoff, :1765: required
+       safety and d_M >= 4). That is the same condition under which
+       _survival_move resets its own retreat state (:1787, :1885).
+       Without the latch, a unit pushed from d_M 1 to 2 would count as safe
+       under K = 1, re-engage at the flame edge and hover there: the worst
+       place to be enclosed. With it, a unit that had to flee completes the
+       flight and only then comes back.
+    E5 APPROACH NEVER CLOSES THE DISTANCE BELOW K+1 (4.3 STANDABLE). The only
+       way an engaged unit ends up at d_M <= K is the fire advancing onto it.
+
+    RETREAT STATE: on a plan step the unit calls _reset_idle_retreat_state()
+    iff _cell_meets_required_idle_safety(cell). That is exactly the condition
+    the standby branch (:1616-1630) applies to an idle unit at rest, so retreat
+    memory is handled as it is today for a unit on safe ground. No new reset
+    semantics: the _reset_idle_retreat_state round is the warning.
+
+4.6 THE ARM FOR S, AND WHY IT IS THE RISKY PIECE
+    Three prior rounds found that TIGHTENING movement near fire hurt. K = 1 is
+    a LOOSENING of 2 cells while engaged, and it is unmeasured.
+    S is isolated three ways:
+      FS    vs F    S's effect on firebreak alone (units keep cutting at d_M 2-3
+                    instead of yielding)
+      ES    vs OFF  extinguish + the S it requires
+      DRY   vs OFF  THE LOOSENING ALONE: EFS behaviour (approach, hold at the
+                    band / flame edge, same targeting) with every fire write
+                    suppressed (4.7)
+      EFS   vs DRY  the fire writes alone at matched behaviour
+    DRY is the purest answer to "does standing closer kill units". The fire is
+    not reduced, so its death count is an UPPER BOUND on the exposure cost of S.
+
+4.7 DRY RUN (FF_FIREFIGHT_DRY_RUN = 1)
+    Everything in 4.3-4.5 runs. The Fire methods are NOT called. Instead the
+    target cell goes into a model-level shadow set, and targeting treats shadow
+    cells as not-fuel and not-front. Units therefore walk the band and move
+    between front cells as the WET arm does, while every hazard and retreat
+    test still reads the real fire. The fire is untouched.
+
+
+================================================================================
+5. PARTIAL WORK
+================================================================================
+  DECIDED: PARTIAL WORK PERSISTS, AND NOTHING CAN MAKE IT VANISH.
+    - A clear is one atomic write to Fire state. fuel never increases, so a
+      cleared cell stays cleared for the rest of the run, whoever is nearby.
+    - No firefighter-side plan exists. The band is re-derived from the fire
+      every step, so the uncleared remainder of a half-built band is exactly
+      the set of nearest workable band cells. ANY eligible unit near it,
+      including the same unit back from a rescue, finishes it without
+      "knowing" it was started.
+    - Extinguish has no partial state at all: one step, one cell.
+
+  WHAT PREEMPTION ACTUALLY COSTS
+    - Not the work done. The cost is the fire's progress while the unit is away.
+    - If the front reaches a band before it is 3 cells thick, the remnant is
+      width <= 2: 0.9298 / 0.9111 crossing (#9). Nearly worthless as a
+      barrier, though its cleared cells still cannot burn. The band then
+      re-forms 2-5 cells out from the new fire, and later work goes there.
+    - Only 2 firefighters exist. Nothing guarantees the OTHER unit is anywhere
+      near a half-finished band. Coordination is out of scope and is the
+      obvious next round.
+    - The harness will measure it: clears, preemptions (an engaged unit
+      assigned), the band state at preemption, and whether a band cell was
+      later reached by fire.
+
+  A LATER-ROUND KNOB, NOT BUILT: a per-cell work duration. If it is wanted,
+  partial progress should live in Fire.fuel as a reduction, so it also
+  persists physically.
+
+
+================================================================================
+6. KILL SWITCH AND ARM SEPARABILITY
+================================================================================
+6.1 SWITCHES
+    common_fixed_variables.py, read at CALL time through the cfv module (the
+    victim_flee_trigger_distance / base_station_mode accessor pattern,
+    agents.py:838-1016), settable with --set:
+      FF_FIREFIGHT_EXTINGUISH             0 | 1   default 0
+      FF_FIREFIGHT_FIREBREAK              0 | 1   default 0
+      FF_FIREFIGHT_ENGAGED_RETREAT_RANGE  1..3    default 3 (= no suppression)
+      FF_FIREFIGHT_DRY_RUN                0 | 1   default 0
+    Module constants in agents.py next to IDLE_RETREAT_*, NOT arms:
+      FIREFIGHT_EXTINGUISH_REACH = 2, FIREFIGHT_FIREBREAK_REACH = 1,
+      band 4 < E2 <= 25.
+
+    FALLBACKS ARE THE OFF VALUE. The flip round measured that a junk --set of a
+    switch whose fallback equals its shipped value arms the feature. Here
+    every fallback is OFF (0 / 0 / 3 / 0), so a typo cannot arm anything. A
+    unit test pins that.
+
+    SHIPPED DEFAULT THIS ROUND: ALL OFF. The feature merges dark. Whether and
+    which configuration becomes the default is a later decision on Part 3's
+    evidence.
+
+6.2 BYTE-IDENTITY WHEN OFF
+    With both action switches 0, eligibility returns False before any
+    computation, and the retreat test is called with the literal constant 3.
+      - no Fire method is called
+      - no model attribute is created (the log and shadow set are created
+        lazily, as _victim_flee_log is)
+      - nothing is printed
+      - no RNG is touched
+    Part 3 proves OFF == REF on all 23 canonical+fresh runs, and REF == dfD.
+
+6.3 SEPARABILITY
+    E, F   independent targets and independent writes
+    S      changes only T, and only on a step where the unit is engaged
+    DRY    changes only whether a write lands
+    Identities by construction, each to be MEASURED (canonical 13):
+      S alone (K=1, E=F=0)  == OFF   (S needs engagement)
+      E alone (K=3)         == OFF   (extinguish not operable)
+      E+F     (K=3)         == F     (extinguish not operable)
+
+
+================================================================================
+7. VALIDATION PLAN (Part 3, for confirmation now so nothing is reshaped later)
+================================================================================
+7.1 ARMS  (prefix fm; runs are one seed per process through the dcd4 pool)
+    tag     settings                                    canonical 13  fresh 10
+    fmREF   6adeb4f worktree, no --set                        x          x
+    fmOFF   this branch, no --set  (KILL SWITCH)              x          x
+    fmS     K=1                        (identity -> OFF)      x
+    fmE     E=1                        (identity -> OFF)      x
+    fmEF    E=1 F=1                    (identity -> F)        x
+    fmF     F=1                        firebreak-only         x          x
+    fmFS    F=1 K=1                                           x          x
+    fmES    E=1 K=1                    extinguish-only        x          x
+    fmEFS   E=1 F=1 K=1                both + suppression     x          x
+    fmDRY   E=1 F=1 K=1 DRY=1          loosening alone        x          x
+    That is 130 + 70 = 200 harness runs at ~6-7 min each, ~12 concurrent,
+    so about 2 h of wall time. The canonical wave runs first and is analysed
+    before the fresh wave is queued.
+    route_blocked gate (18 seeds, shards + harness): fmEFS and fmF.
+    Full pytest at the default (OFF).
+    Total, including the rbgate and pytest: ~5 h.
+
+7.2 INSTRUMENT
+    The harness gains ONE conditional block. When the model has a firefight
+    log, it records the log, the counters and the shadow-set size. When it
+    does not, the JSON gains no key.
+      - fmOFF, fmREF and dfD therefore have the same shape.
+      - fmREF is still re-measured with the NEW harness file BEFORE any feature
+        wave, per baseline-instrument-drift. That wave must come back
+        byte-identical to dfD, apart from tag/repo/wall_s, before anything
+        else is read.
+    Per-step log row for every eligible unit while the feature is on:
+      step, ff, engaged, action (extinguish | clear | move | retreat | none),
+      cell, target, T, suspended, exit_guard, d_M to fire, dry
+    All runs use --uav-actions (E1/E2 need it; dfD has it).
+
+7.3 WHAT IS REPORTED PER ARM (outputs/_firemech_analyze.py, new)
+    kill switch     field-by-field identity with REF, then with dfD
+    fire            burnt_cells; ever_burned / cleared / intact / burning@240;
+                    fire_final_digest vs OFF; first fire-digest divergence
+                    step vs first write step (must be equal); DRY: 240/240
+                    identical to OFF on every run
+    mechanism       extinguished, cleared (virgin / scorched), cleared cells
+                    later exposed, engaged steps, S-holds (engaged at
+                    d_M <= 3), retreats while engaged, suspended steps, exit
+                    guard trips, preemptions of an engaged unit, work after
+                    terminal_step
+    outcomes        rescued, dead, ff_deaths, never_detected, terminal_step
+                    (counted, and de-duplicated by fire world)
+    deaths          every firefighter death: step, cell, engaged at that
+                    step's advance? action, T, d_M, enclosure (burning
+                    neighbours at death), before/after terminal_step
+    drones          E1 searcher-only and E2 all-UAV steps on a burning cell
+                    (interior-hazard definitions, as _dcd4rb_analyze.py). The
+                    3.55% / 2.42% quoted in the brief are the RBGATE-18
+                    figures (drhD). Canonical+fresh arms are compared with
+                    fmREF's own figure; the gate arms' rbgate harness runs are
+                    compared with drhD directly.
+    livelock        per engaged unit: position cycles (period <= 4 over >= 8
+                    steps without a write), approach/retreat alternations,
+                    and standby holds with a band target present
+    route_blocked   _ffr_rbcompare.py --new <tag> --old ihrest. The G1 NEW set
+                    must be {east/707, south/101, south/202, south/404}
+                    (== flgD) - any other seed is a new failure.
+    tests           full suite at OFF: 8 failed / 581 passed with the SAME 8
+                    names (listed in outputs/_merge_pytest_names.txt), plus the
+                    new test file. The failing NAME SET is compared, not the count.
+
+7.4 SEED PROVENANCE (stated up front)
+    Canonical 13 = east/half and south/half 101-505, plus east/def 101-303.
+    Fresh 10 = east/half and south/half 606-1010.
+    - east/def and east/half with the same seed share the ENTIRE fire at OFF.
+      So the canonical 13 hold 10 fire worlds, and 23 runs are 20 fire worlds
+      over 10 seeds.
+    - In feature arms the east/def and east/half fires can diverge.
+    - 8 of the fresh 10 tuples ran in earlier rounds (idleretreat, rbgate), but
+      no earlier round ran THIS code. Within this round the two samples share
+      no seed, so they are independent screens of each other.
+    - 14 of the rbgate 18 are canonical/fresh tuples. Only east/half 111-444
+      are new, so the gate is not a third independent sample.
+    Pooled figures will be given both as counted and de-duplicated.
+
+7.5 GATE (as briefed), EVALUATED ON fmEFS, with every arm reported
+    G1  kill switch: fmOFF == fmREF byte-identical, 23/23
+    G2  the mechanic affects fire: burnt_cells moves AND 1.4 (i)-(ii) hold
+        (DRY == OFF 240/240; first divergence == first write). intact and
+        ever_burned direction are reported, not gated.
+    G3  ff_deaths do not rise without a measured explanation. DRY and FS
+        attribute any rise to loosening vs fire effect. Each death is
+        classified by engagement.
+    G4  rescued does not fall, on canonical AND fresh
+    G5  route_blocked G1 NEW set unchanged from the known four
+    G6  test failing-name set unchanged
+    If fmEFS fails G3 or G4, fmF (no loosening) is evaluated as the fallback
+    configuration against the same gate.
+
+
+================================================================================
+8. RISKS I EXPECT PART 3 TO HIT
+================================================================================
+  R1  S raises enclosure deaths. That is why E3/E4 exist and why DRY is the
+      upper bound. A 2-cell loosening against a 3-thick burning annulus is the
+      exposure this round is built to measure, not assume away.
+  R2  ENGAGEMENT MOVES UNITS TOWARD THE FIRE EVEN WHEN IT DOES NOTHING TO IT.
+      Dispatch starts nearer the victims, who also sit near fire. Routes then
+      cross fire more often, so route_blocked flags can rise or fall. DRY vs
+      OFF shows the pure positioning effect.
+  R3  Per-seed noise. The first extinguish re-rolls the whole fire, so
+      per-seed burnt_cells deltas carry re-roll variance. One sample's
+      direction is not a result.
+  R4  WORK AFTER THE MISSION IS DECIDED. Units keep fighting fire from
+      terminal_step to 240. That adds death exposure that cannot change
+      rescued. Deaths are split before/after terminal_step. The policy is left
+      as specified ("fight when idle").
+  R5  The E1/E2 exposure can move with the fire: fewer burning cells near
+      searchers. It is reported, not engineered.
+  R6  Wall time. Front and band are recomputed per unit per step, bounded by
+      ~200 burning cells x 81 band offsets. Expect a few percent, measured via
+      wall_s.
+  R7  Movement explainability gets new fine categories (firefighting_*).
+      notable_firefighter_movement_category passes unknown categories through
+      (movement_explainability.py:28-32). Tests will be checked.
+
+
+================================================================================
+9. DECISIONS NEEDED BEFORE IMPLEMENTATION
+================================================================================
+  D1  Extinguish reach 2, requiring suppression. Two of the briefed arms (E and
+      E+F without S) therefore become identity proofs, and ES / FS / DRY are
+      added. The alternative is reach 4 with a duty-cycle mix (4.2), which I
+      do not recommend.
+  D2  The firebreak band is measured in EUCLIDEAN distance (2, 5] to the
+      nearest burning cell. The firebreak targets the band cell nearest to the
+      UNIT, not the band cell nearest to F* (section 3).
+  D3  K = 1 (borrowed from the assigned-unit trigger) for the S arms. K = 2 is
+      the smaller loosening, and it would make extinguish inoperable at reach
+      2, so it would need reach 3.
+  D4  Fuel includes scorched cells, for both the front and the band.
+  D5  The feature ships OFF this round.
+  D6  Arm set and cost in 7.1 (~5 h including rbgate and pytest). Gate on
+      fmEFS with fmF as fallback.
+
+ARTIFACTS OF THIS PART
+  outputs/firemech_part1.txt           this document
+  outputs/_firemech_band_probe.py      band-metric probe (read-only, 7 s)
+  outputs/_firemech_band_probe.txt     its output
+  (the opportunity sizing in 0.4 is a scratchpad read of the committed dfD JSON)
+
+================================================================================
+PART 2 ADDENDUM (2026-09-15) - CONFIRMED D1-D6 AS WRITTEN; THREE CORRECTIONS
+FOUND BY ADVERSARIAL REVIEW OF THE IMPLEMENTATION, BEFORE ANY FEATURE WAVE
+================================================================================
+The maintainer confirmed D1-D6 exactly as written. The implementation then went
+through two adversarial review passes (six dimensions, then three, with two
+independent verifiers per finding). The first pass confirmed one defect in this
+design (C1), and C2/C3 were fixed alongside it. All three are corrected in the
+code. The second pass found nothing further (3 findings, all refuted by both
+verifiers). No feature arm had run before these corrections.
+
+C1  "An approach can never step into a cell that would trip the unit's own
+    retreat" (4.3) and "cannot oscillate on its own" (3) were FALSE UNDER
+    SUPPRESSION.
+    - STANDABLE checks a destination against THIS step's retreat distance.
+    - The next advance recomputes that distance AT the destination.
+    - It reverts to the full buffer there if the exit guard fails there or no
+      plan exists there.
+    Result: a zero-work approach<->retreat 2-cycle. Measured on frozen real
+    fires (outputs/_firemech_cycle_search.py, one unit placed at every third
+    cell 4-7 from fire), zero-work 2-cycles:
+        extinguish+S   37/116, 32/62, 28/53 placements (seeds 202/303/404)
+        EFS            2/116
+        FS, DRY, F     0
+    CORRECTION: under suppression, an approach destination inside the full
+    buffer (d_M <= 3) is accepted only if, with the fire as it is now:
+      - its exit guard holds, AND
+      - either work is in reach from it, or a further standable,
+        target-improving step (depth 3) leads to such a cell.
+    Outside the buffer every destination stays acceptable
+    (Firefighter._firefight_holdable_check). After the correction, zero-work
+    2-cycles:
+        extinguish+S   0/116, 0/62, 1/53 - the one left is a retreat<->retreat
+                       swap of the UNCHANGED retreat routine, identical with the
+                       feature off
+        EFS, FS, DRY   0
+        F              byte-for-byte the same classification as before (the
+                       correction cannot act without suppression)
+    COST: extinguish+S units that used to cycle now HOLD (still 35/61/35). With
+    firebreak off they have no reachable work in those geometries.
+    Outputs: _firemech_cycle_search_prefix.txt / _postfix.txt.
+
+C2  E4 latched suspension only on a retreat taken at T < 3. The retreats E3
+    exists for - exit guard failed, or no plan left inside the buffer - are taken
+    AT T = 3, so they never latched. A boxed-in unit took one step out and
+    re-engaged at d_M 2: the hover E4 calls the worst place to be enclosed.
+    CORRECTION: with suppression configured (K < 3), EVERY retreat of an eligible
+    unit latches. A latched unit keeps the full buffer, i.e. the unsuppressed
+    behaviour, until an ideal idle standoff.
+
+C3  E3's guard was required at ANY distance. A unit on the grid edge facing a
+    flat flank 20 cells away counted as "boxed in" and never engaged in the
+    extinguish-only arm.
+    CORRECTION: the guard is required only within the full buffer
+    (d_M <= 3). Beyond it no retreat can fire at any distance.
+
+ALSO ADDED: blocked_target and lookahead_rejected on every log row (a blocked
+approach is visible, not an unexplained hold). _firemech_analyze.py classifies
+each death by the death-step row AND the previous row, because a unit can only
+die on a cell already burning when its advance runs. It also records whether a
+non-burning 4-neighbour existed at death (full enclosure vs free exit). The
+second pass reproduced leash-edge deaths under suppression: the unchanged
+IDLE_RETREAT_MAX_CELLS leash leaves a unit exactly 6 cells from the retreat
+origin with no admissible candidate. That is E2's "enclosure, or the leash edge"
+- R1's measured exposure, not an implementation defect.
+
+UNCHANGED BY THE CORRECTIONS
+  - the kill switch (OFF runs no feature code)
+  - the identities E(K=3) == OFF, EF(K=3) == F and S alone == OFF (the
+    corrections only act when K < 3)
+  - the firebreak-only arm
+  - no RNG
+Tests: tests/test_firefighter_fire_mechanic.py, 34 tests. Each of the three
+correction tests was checked to FAIL on the uncorrected code.
