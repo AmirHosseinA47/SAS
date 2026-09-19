@@ -1,0 +1,1130 @@
+====================================================================================================
+FIREMECH ROUND 2, PART 1 DIAGNOSIS - TASK A: THE POSITIONING LOSS (fmDRY vs fmOFF)
+====================================================================================================
+Produced by outputs/_fm2_diag_positioning.py (read-only). Inputs: outputs/_ffr_fmOFF_<t>.json and
+outputs/_ffr_fmDRY_<t>.json for the canonical 13 + fresh 10 tuples, opened by explicit path. No f2* file was
+opened, no simulation was run. Part A (answers) and Part B (pre-registration) are interpretation written from
+the computed sections 0-5 printed below them; every number in A and B is printed in those sections.
+Conventions (call position, idle streak, anchor, episode, divergence) are in the script docstring and are
+checked in section 0.
+
+====================================================================================================
+PART A. ANSWERS
+====================================================================================================
+A1 WHAT CHANGED (section 1; both round-1 lists re-derived: MATCH)
+  9 of 23 runs differ on rescued, dead, ff_deaths or a victim's final status.
+    rescued -1   east/half/101  victim_0 rescued -> dead
+                 south/half/404 victim_3 rescued -> still assigned at 240
+                 east/def/101   victim_3 rescued -> still assigned at 240
+                 south/half/909 victim_3 rescued -> still assigned at 240
+    rescued +1   east/half/404  victim_1 dead -> rescued
+                 south/half/202 victim_0 still assigned at 240 -> rescued
+    dead -1 only east/half/606  victim_0 dead -> still assigned at 240 (rescued unchanged)
+    ff deaths +1 south/half/404 (ff_unit_1 s72), south/half/808 (ff_unit_0 s51),
+                 south/half/909 (ff_unit_0 s36), east/def/303 (ff_unit_1 s141)
+    ff deaths -1 east/half/101 (OFF ff_unit_0 s195), south/half/202 (OFF ff_unit_0 s207),
+                 east/half/606 (OFF ff_unit_0 s210)
+    count-neutral unit-death swaps: east/half/404 (OFF ff_unit_0 s240 -> DRY ff_unit_1 s72), and four runs
+      whose counts are unchanged (south/half/101, south/half/303, east/half/909, south/half/1010).
+  Totals: rescued 68 -> 66 counted, 59 -> 58 de-duplicated. Fire digests equal 240/240 on 23/23, spawns 23/23.
+
+A2 ONE PATTERN UNDERLIES ALL 23 RUNS (sections 4, 4b)
+  - Both units are engaged on their step-1 feature-log row on 23/23 runs (46/46 units) and walk toward the
+    fire. The first dispatch of every run is at step 14-16 (mean 14.57). By then the called unit is a median
+    14 cells from its berth (min 2 on east/half/707, where the fire does not spread; max 16). The two units
+    stand 1 cell apart on 21/23 runs (2 and 3 on the other two).
+  - The rescue timeline (events only, no positions) first differs INSIDE that first-dispatch window on 23/23:
+    on 20 runs it is a contact/completion/death of a first-dispatch episode that moved; on 3 it is the first
+    assign itself going to the other unit (east/half/202, south/half/404, east/def/202).
+  - The walk mostly HELPS the first rescues. First-dispatch distance at the call, DRY-OFF (n=46): mean -8.15,
+    median -14 (37 shorter, 8 longer, 1 equal). Contact step (n=38): mean -7.24, median -12.5 (29 earlier,
+    8 later). All 8 later contacts are victim_1: runs where the walk went away from it (south/half/303 and
+    505 +16, east/def/303 +15, south/half/707 +14, south/half/808 +8, east/half/808 +4, east/half/707 +2),
+    and south/half/404 +1, where the other unit took it.
+  - Everything after is re-timed: victims completed in both arms complete mean -6.05, median -9.5 steps
+    (45 earlier, 16 later, 3 same; n=64).
+  - Victims and UAVs do NOT react to firefighter positions. Detection (the first planner decision per
+    victim) is identical on 23/23. The first differing victim frame is always an escorted victim or a
+    status change (23/23). The UAV series diverges only after the rescue timeline does (23/23): first UAV
+    divergence s95-s233, never on 9 runs. Class M4 is empty.
+  The east/half/101 scouting is reproduced exactly (both units engage at s1; completions 28 vs 42 and 70 vs
+  85; victim_0 assigned s77 vs s90 on a unit idle 2 steps and 2 cells out; route_blocked unassign s135;
+  victim dead s138 vs rescued s127). The pattern it suggested - engagement before the first dispatch re-times
+  the whole chain - holds on every run.
+
+A3 IS THERE A SYSTEMATIC LATENCY COST? NO (section 4)
+  - Per victim, first ok assign (n=81): distance at the call DRY-OFF mean -5.44, median -6 (18 longer, 54
+    shorter, 9 equal). Assign->contact (n=62): mean -5.90, median -6.5 (11 slower, 44 faster). De-duplicated
+    20: distance -5.18, contact -6.22.
+  - Calls after each unit's first dispatch (n=35): distance mean -1.89, median 0 (10 longer, 17 shorter, 8
+    equal). Contact (n=24): mean -3.79, median -1 (3 slower, 15 faster, 6 equal).
+  - Every ok assign matched by (victim, ordinal), n=100: distance mean -3.66, median -4; contact (n=66) mean
+    -6.30, median -6.5; a different unit on 24 of 100.
+  - 62 of 104 DRY ok assigns (59.6%) land on a unit engaged on its latest row. Displacement from the idle
+    anchor at calls inside a feature-log idle streak: median 15, mean 14.17 (first streak median 15, later
+    streaks median 12). OFF, same measure: mean 0.03. Yet the distance at the call is not longer: all ok
+    assigns mean 35.70 DRY vs 38.38 OFF, median 39 vs 39.
+  - The units walk toward the fire, and the victims are near the fire, so the Manhattan distance the chooser
+    uses mostly shrinks. The outcome flips are not the tail of a latency distribution: 2 rescue gains and 4
+    losses (plus 1 dead -> unresolved), while 45 of 64 shared completions came earlier.
+
+A4 MECHANISM OF EACH CHANGED OUTCOME (section 3: rule on computed indicators; details in section 2)
+  M1 displaced at the call: same call, same unit, DRY unit engaged and >= 5 cells out, so its route changed.
+  M2 re-timed chain: the call comes at another step (or finds the unit elsewhere) because upstream
+     completions moved; no material displacement at the call.
+  M3 a different unit takes the same call.
+  M4 victim/UAV side (empty).
+  M5 post-terminal idle death (no rescue involved).
+  LOSSES
+   south/half/909  victim_3 and ff_unit_0 death - M1 at the FIRST dispatch (s14). Same call, unit and victim.
+     The DRY unit was engaged, 14 cells out at (10,39) vs (2,45) in OFF, and Manhattan-CLOSER (51 vs 65). Its
+     greedy walk ran down x=10 into the fire's west flank and it died at (9,23) at s36. OFF's walk went down
+     x=2, reached the victim at s203, rescued s218. The other unit stood 1 cell away at (9,39), engaged, d=52.
+   south/half/808  ff_unit_0 death - M1 at the first dispatch (s14). Start (6,35) vs (2,45), d 51 vs 65.
+     route_blocked unassign s49, died s51 at (14,17). OFF's same assignment never reached the victim either,
+     but that unit survived. The other unit was at (5,35), d=52.
+   south/half/404  victim_3 and ff_unit_1 death - M3+M1 at the first dispatch (s14). The chooser took
+     ff_unit_1 at (8,42), d=56, over ff_unit_0 at (6,41), d=57; OFF took ff_unit_0 from the berth, d=65.
+     ff_unit_1: route_blocked unassign s58, died s72 at (0,8). victim_3 waited until s208 and was not reached
+     by 240. OFF re-assigned victim_3 at s118 and rescued it at s189.
+   east/half/101  victim_0 - M2. The first two rescues ran 14 and 15 steps early (contacts 26/66 vs 40/81),
+     so ff_unit_0 was back at s75 instead of s90. victim_0 (confirmed s77 in both; OFF delayed at s77 and s85
+     with no unit free) was assigned at s77, not s90. At that call the unit was 2 cells from its return cell,
+     d 28 vs 24 (+4), time to contact 23 vs 24: no latency cost. Contact came at s100 at (35,14) instead of
+     s114 at (36,12). The exit rule (nearest edge; a tie keeps the first key) sends (35,14) EAST to (49,14)
+     (a 14/14 tie) and (36,12) SOUTH to (36,0). The DRY escort went east, spent 12 frames at fire distance
+     <= 1, was route_blocked (unassign s135), and the victim died s138. OFF completed at s127.
+   east/def/101  victim_3 - M3+M1 at a LATER call, on top of an 86-step first streak. ff_unit_0 was not
+     dispatched for 86 steps and walked 31 cells toward the fire (28 at the call). At s86 it was nearer
+     victim_0 (d=30) than ff_unit_1 (d=32, idle without a plan at (32,49)), so it took victim_0 (OFF:
+     ff_unit_1, d=39). victim_3's call at s117 then went to ff_unit_1, engaged 12 cells from its return cell,
+     at (36,48), d=56 (OFF: ff_unit_0 from the berth, d=65). ff_unit_1 walked down x=37 to (37,15) by s159,
+     then crept south-west along the fire's edge: (27,7) at s219, (23,7) at s237. It never reached the victim,
+     which had moved to (18,1) by s237 (min fire distance 2, 0 route_blocked frames over 124 frames). OFF's
+     unit reached the victim in 65 steps.
+   east/def/303  ff_unit_1 death - M2. The step-1 walk went SOUTH along x=2 to (2,30)/(2,31). That shortened
+     victim_2 (d 13 vs 28) and lengthened victim_1 (d 40 vs 25). The swapped return times gave victim_0 to
+     ff_unit_0 at s49 (OFF: ff_unit_1) and made ff_unit_1 a second claimant on its return (s63/s64). It spent
+     19 frames route_blocked and died at s141. It was not engaged at its own call.
+   east/half/404  ff_unit_1 death (count-neutral) - M2, downstream of the victim_1 gain. It came back at
+     (32,49), was assigned victim_2 at s53 from (30,49), and died at s72 after 18 route_blocked frames.
+  GAINS
+   east/half/404  victim_1 dead -> rescued - M1 at the first dispatch, helpful direction. ff_unit_1 was 11
+     cells out at (10,43), d 20 vs 25, and made contact at s41. In OFF the unit was route_blocked at s46 and
+     the victim died at s48.
+   south/half/202  victim_0 -> rescued, and OFF's ff_unit_0 death - M2. ff_unit_0's first rescue ran 13 steps
+     early (contact 59 vs 72), so victim_0 was assigned at s68, not s81 (OFF delayed at s68 and s76). The DRY
+     unit was blocked, re-assigned at s96, and made contact at s166. OFF's unit, called at s81, died en
+     route at s207.
+   east/half/606  OFF's ff_unit_0 death avoided (victim_0 dead -> unresolved) - M1 at a later call, the
+     classic preempted-far case. At s139 the same unit had been engaged for 66 steps and was 32 cells out at
+     (20,27), d 37 vs 29. It never reached the victim: it held at (21,22) from about s163 to s181, and was
+     route_blocked (unassign s204). OFF's unit made contact at s165;
+     its escort was route_blocked at s205, the victim died s207 and the unit s210.
+   east/half/101 and east/half/404  OFF's post-terminal idle deaths (s195 at (39,0), s240 at (27,0)) do not
+     occur in DRY - M5.
+  COUNTS (section 3): M1 loss 4 / gain 2 / neutral 1; M2 loss 3 / gain 2; M3(+M1) loss 2; M5 gain 2; M4 0.
+
+A5 THE CRUX
+  THE LOSS IS NOT A PER-ASSIGNMENT "FAR AWAY" COST.
+   - At the calls that lost a rescue, DRY's unit was Manhattan-CLOSER than OFF's in 3 of 4: south/404 -9,
+     east/def/101 -9, south/909 -14. In the fourth (east/half/101) it was +4, and contact came 1 step sooner.
+   - The only preempted-far call in the sample (east/half/606: +8, 32 cells out) cost no rescue and avoided a
+     unit death.
+   - There is no systematic latency cost (A3).
+  IT IS WHERE THE UNITS ALREADY ARE WHEN THE CHAIN STARTS: the walk of steps 1-14/16, before any victim is
+  confirmed.
+   - Directly from that window: 2 of 4 rescue losses (south/404, south/909), 3 of 4 added deaths (south/404,
+     south/808, south/909) and one gain (east/half/404).
+   - Through the re-timing it causes: east/half/101 (loss), east/def/303 (death), south/half/202 (gain), and
+     the count-neutral east/half/404 death.
+   - Only east/def/101 (loss) and east/half/606 (death avoided) are decided at a later call, and both come
+     out of long idle streaks. In east/def/101, ff_unit_0 walked for 86 steps (28 cells out at s86), and the
+     s117 call landed on ff_unit_1 after 84 idle rows, 12 cells out. In east/half/606 the streak was 66
+     steps, 32 cells out.
+  WHAT A CHOOSER CAN AND CANNOT DO
+   - At the first dispatch the two units stand together: 1 cell apart on 21/23 runs, and the other unit is
+     exactly 1 cell farther from the victim on 22/23. Picking the other unit changes nothing. No chooser
+     among available units could have avoided south/909 or south/808, nor south/404 beyond a 1-cell tie.
+   - Manhattan distance is the wrong cost. Units walk greedily: agents.Firefighter._move_toward takes the
+     best non-burning neighbour, with no path planning. A fire-ward start with a SHORTER distance walks into
+     the flank (909, 808, 404) or stalls behind the fire (east/def/101). A fire-aware path cost could see a
+     stall, but at the first dispatch there was no alternative unit to choose.
+   - Re-timing (east/half/101, south/half/202, east/def/303) has no signature at the call: displacement 2, or
+     not engaged. It cuts both ways. In rescued: one gain (south/half/202) against one loss (east/half/101).
+     In unit deaths: one avoided (south/half/202) against one added (east/def/303). No chooser can target it.
+   - A commitment limit works on the cause, not the call. A leash of N caps the pre-dispatch walk and so the
+     first-dispatch head start at N cells. It should remove the first-dispatch M1 losses AND the re-timing
+     gains and losses together. f2GD removes the walk entirely.
+  WOULD ONE IDLE UNIT GOING (INSTEAD OF BOTH) HAVE AVOIDED EACH LOSS? (section 5 counterfactual first-window
+  choices; validated 23/23 against both arms)
+   - south/half/909, south/half/808: NO. A single engaged unit is 14-15 cells Manhattan-closer to victim_3
+     than the berth unit (U0: 51 vs 66; U1: 52 vs 65), so the chooser still sends it from the flank. Under U1
+     it starts at (9,39) / (5,35), one cell from DRY's fatal start.
+   - south/half/404: NO under U1 (ff_unit_1 from (8,42), DRY's exact start). Unknown under U0 (ff_unit_0 from
+     (6,41), a start no arm has run).
+   - east/half/101: plausibly YES under either. U1: victim_3 is served from the berth (d=65), so ff_unit_0
+     returns on OFF's schedule. U0: ff_unit_0 takes victim_1 (d=12) and ff_unit_1 serves victim_3 from the
+     berth (d=66), which again puts victim_0's server back around OFF's s90.
+   - east/def/101: plausibly YES under either. It needs one unit left undispatched on a long engaged walk
+     while the other serves victim_1. With only one engaged unit, that unit takes victim_1 at s14 (d=11 or
+     12), and the berth unit is the one left for victim_3.
+   - Deaths: east/def/303 plausibly avoided under U0 (OFF's identities at s49); unknown under U1.
+
+====================================================================================================
+PART B. PRE-REGISTRATION FOR THE RUNNING PROBES (all DRY): f2U0D, f2U1D, f2L3D, f2L8D, f2GD
+====================================================================================================
+Written before any f2 output was opened; this script reads none. Under the conclusion of A5, per changed run.
+"OFF" = the fmOFF outcome on that item, "DRY" = the fmDRY outcome, "?" = no confident prediction.
+Confidence in brackets: H high, M medium, L low.
+Assumptions (not verified):
+  - a lone engaged unit follows its DRY path until its first call (the paths of the two units do not interact)
+  - later behaviour is argued qualitatively from the first-window choices of section 5
+A leash of N holds the unit at the last DRY path cell within N of its berth (section 5 L3/L8 rows).
+
+f2GD (engage only while no victim is unresolved)
+  - value-identical to fmOFF through OFF's terminal_step on 23/23 runs; there is nothing to engage before
+  - every victim's final status equals OFF on 23/23: rescued 68 counted, 59 de-duplicated
+  - unit deaths may differ only after terminal_step. Candidates are OFF's post-terminal idle deaths:
+    east/half/101 s195, east/half/404 s240, south/half/303 s216, east/half/909 s189   [H]
+  It removes the walk wholesale, so it cannot tell M1 from M2. It is the positive control for "the walk is
+  the cause".
+
+run / item                        f2U0D           f2U1D              f2L3D          f2L8D
+south/half/909 v3 + ff death      DRY [H-M]       DRY, ff_unit_1     OFF [M]        ? [L]
+                                                  dies [M]
+south/half/808 ff death           DRY [H-M]       DRY, ff_unit_1     OFF [M]        OFF [L]
+                                                  dies [M]
+south/half/404 v3 + ff death      ? [-]           DRY [M]            OFF [M-L]      ? [L]
+east/half/101 v0                  OFF [M]         OFF [M]            OFF [L]        ? [L]
+east/def/101 v3                   OFF [M]         OFF [M]            OFF [M]        OFF [M-L]
+east/def/303 ff death             OFF [M]         OFF [L]            OFF [L]        DRY [L]
+east/half/404 v1 (gain)           OFF = lost [H]  OFF = lost [H]     ? [L]          ? [L]
+south/half/202 v0 (gain)          DRY = kept [M]  DRY = kept [L]     OFF = lost [L] ? [L]
+east/half/606 ff death avoided    OFF [M-L]       OFF [M]            OFF [M]        ? [L]
+
+WHY, per column (the first-window choices come from section 5):
+  f2U0D - ff_unit_0 still starts the first call for victim_3 from the flank in 909 (10,39) and 808 (6,35).
+          It takes victim_1 at s14 in east/half/101, 606 and def/101, which returns their chains to OFF's
+          identities. victim_1 in east/half/404 goes to ff_unit_1 from the berth (d=25, OFF's call). The
+          south/half/202 head start on victim_3 is ff_unit_0's own.
+  f2U1D - ff_unit_1 takes victim_3 from (9,39) / (5,35) / (8,42) in 909 / 808 / 404 (d 52 / 52 / 56 vs the
+          berth unit's 65). In east/half/404 it takes victim_3 at s15, so victim_1 goes to ff_unit_0 from the
+          berth (d=26, one more than OFF). In east/half/606, ff_unit_0 is never engaged: it stands at (25,0) at
+          s139 as in OFF.
+  f2L3D - first calls start at most 3 cells out: 909 (4,44), 808 (2,42), 404 (5,45) for victim_3. Head starts
+          shrink to <= 3 steps, so the re-timed chains land within a few steps of OFF, and the gains go with
+          them.
+  f2L8D - starts at most 8 cells out: 909 (7,42), 808 (3,38), 404 (7,42). Some are on the flank corridor and
+          some are not. Re-timing of up to 8 steps is enough to flip the timing-sensitive items either way.
+
+WHAT WOULD REFUTE A5
+  - f2U0D and f2U1D BOTH recover south/half/909 (victim_3 rescued, no death) and south/half/808 (no death).
+    That would mean the first-dispatch flank start is not the mechanism.
+  - f2L8D recovers every loss while keeping both gains. That would favour a per-assignment cost of the
+    engaged unit over the pre-dispatch walk.
+  - f2L3D differs from OFF on the changed items as often as fmDRY does.
+  - f2GD differs from OFF on any victim before terminal_step. That would mean something other than
+    engagement moves the chain.
+  Pooled totals are NOT predicted for the U and L arms. Every one of them re-times all 23 chains differently,
+  so new flips on the 14 unchanged runs are expected in both directions. Read them per run, against this
+  table.
+
+====================================================================================================
+COMPUTED SECTIONS
+====================================================================================================
+====================================================================================================
+0. CONVENTION CHECKS (computed)
+====================================================================================================
+  DRY ok assigns by (reason, unit state before the call, feature-log row at s):
+     61  ('initial', 'idle', 'row@s')
+     18  ('initial', 'on_rescue', 'no-row@s')
+     22  ('initial', 'returned', 'no-row@s')
+      3  ('replacement_after_blocked', 'idle', 'no-row@s')
+  idle-unit initial assigns: post-move rule agrees with 'row at s' on 64, disagrees on 0 []
+  victim_spawns identical OFF vs DRY: 23/23;  fire_digests identical 240/240: 23/23
+
+====================================================================================================
+1. WHERE fmDRY DIFFERS FROM fmOFF: eval rescued / dead / firefighter_deaths, per-victim final
+   status (last victim_steps frame), and which unit died when
+====================================================================================================
+  tuple            OFF r/d/ffd term       DRY r/d/ffd term       differences
+  east/half/101    4/0/1 t127         3/1/0 t138         rescued -1; dead +1; ff_deaths -1; victim_0 rescued->dead  unit deaths OFF {'ff_unit_0': 195} DRY {}
+  east/half/202    3/1/0 t104         3/1/0 t93          -
+  east/half/303    3/1/0 t219         3/1/0 t121         -
+  east/half/404    2/2/1 t162         3/1/1 t162         rescued +1; dead -1; victim_1 dead->rescued  unit deaths OFF {'ff_unit_0': 240} DRY {'ff_unit_1': 72}
+  east/half/505    3/1/0 t109         3/1/0 t94          -
+  south/half/101   2/1/2 t159         2/1/2 t147         -  unit deaths OFF {'ff_unit_0': 66, 'ff_unit_1': 159} DRY {'ff_unit_0': 90, 'ff_unit_1': 147}
+  south/half/202   3/0/1 tNone        4/0/0 t167         rescued +1; ff_deaths -1; victim_0 assigned->rescued  unit deaths OFF {'ff_unit_0': 207} DRY {}
+  south/half/303   4/0/1 t114         4/0/1 t115         -  unit deaths OFF {'ff_unit_1': 216} DRY {'ff_unit_0': 216}
+  south/half/404   3/1/0 t189         2/1/1 tNone        rescued -1; ff_deaths +1; victim_3 rescued->assigned  unit deaths OFF {} DRY {'ff_unit_1': 72}
+  south/half/505   3/1/0 t114         3/1/0 t115         -
+  east/def/101     3/0/0 t215         2/0/0 tNone        rescued -1; victim_3 rescued->assigned
+  east/def/202     3/1/0 t181         3/1/0 t175         -
+  east/def/303     3/1/0 t130         3/1/1 t149         ff_deaths +1  unit deaths OFF {} DRY {'ff_unit_1': 141}
+  east/half/606    3/1/1 t207         3/0/0 tNone        dead -1; ff_deaths -1; victim_0 dead->assigned  unit deaths OFF {'ff_unit_0': 210} DRY {}
+  east/half/707    2/0/0 t210         2/0/0 t210         -
+  east/half/808    3/1/0 t99          3/1/0 t103         -
+  east/half/909    4/0/1 t122         4/0/1 t117         -  unit deaths OFF {'ff_unit_0': 189} DRY {'ff_unit_0': 156}
+  east/half/1010   3/1/0 t105         3/1/0 t105         -
+  south/half/606   3/0/1 t210         3/0/1 t210         -
+  south/half/707   3/1/0 t198         3/1/0 t198         -
+  south/half/808   2/1/0 tNone        2/1/1 tNone        ff_deaths +1  unit deaths OFF {} DRY {'ff_unit_0': 51}
+  south/half/909   3/1/0 t219         2/1/1 tNone        rescued -1; ff_deaths +1; victim_3 rescued->assigned  unit deaths OFF {} DRY {'ff_unit_0': 36}
+  south/half/1010  3/0/1 t210         3/0/1 t210         -  unit deaths OFF {'ff_unit_0': 129} DRY {'ff_unit_0': 96}
+
+  ROUND-1 LIST CHECK: rescued deltas MATCH  (east/def/101 -1, east/half/101 -1, east/half/404 +1, south/half/202 +1, south/half/404 -1, south/half/909 -1)
+  ROUND-1 LIST CHECK: ff deaths +1 MATCH (south/half/404, east/def/303, south/half/808, south/half/909);  -1 MATCH (east/half/101, south/half/202, east/half/606)
+  counted 23: rescued OFF 68 DRY 66; de-duplicated 20 (east/def excluded): OFF 59 DRY 58
+  runs with ANY difference on these items: 9 -> east/half/101, east/half/404, south/half/202, south/half/404, east/def/101, east/def/303, east/half/606, south/half/808, south/half/909
+
+====================================================================================================
+2. PER CHANGED RUN: streaks, the calls that matter, the other unit, the re-timing chain, divergences
+====================================================================================================
+
+----------------------------------------------------------------------------------------------------
+RUN east/half/101   OFF r/d/ffd 4/0/1 term 127   DRY 3/1/0 term 138
+----------------------------------------------------------------------------------------------------
+(a) DRY idle streaks (feature-log rows): steps, anchor, first engaged row, end cell, max displacement, actions
+    ff_unit_0 steps   1- 15 anchor (2,45)   first engaged s1 (2,45)      end (17,45)  maxdisp 15  {'move': 15}
+    ff_unit_0 steps  76- 77 anchor (25,0)   first engaged s76 (25,0)     end (25,2)   maxdisp  2  {'move': 2}
+    ff_unit_0 steps 139-240 anchor (42,10)  first engaged s159 (45,12)   end (34,3)   maxdisp 15  {'retreat': 26, 'clear': 20, 'move': 56}
+    ff_unit_1 steps   1- 14 anchor (2,46)   first engaged s1 (2,46)      end (16,46)  maxdisp 14  {'move': 14}
+    ff_unit_1 steps  34- 53 anchor (25,49)  first engaged s34 (25,49)    end (26,41)  maxdisp  9  {'move': 11, 'clear': 9}
+    ff_unit_1 steps 101-134 anchor (0,25)   first engaged s101 (0,25)    end (18,28)  maxdisp 22  {'move': 23, 'clear': 10, 'extinguish': 1}
+    ff_unit_1 steps 139-240 anchor (19,28)  first engaged s139 (19,28)   end (8,39)   maxdisp 23  {'move': 36, 'clear': 64, 'none': 2}
+    OFF idle frames: ff_unit_0 1-14@(2,45),130-194@(36,0); ff_unit_1 1-13@(2,46),47-52@(25,49),107-240@(0,25)
+(b-d) EVERY ok assign, both arms (call position, distance, anchor/displacement, the other unit, episode):
+    fmOFF s14  ff_unit_1->victim_1 initial                   unit (2,46)   victim (25,48)  d=25  [idle] anchor (2,46) disp 0 max 0 idle 13 1st-engaged - | other ff_unit_0 at (2,45) avail=True standby d=26 | contact 40 (+26) complete 42 end 42(contact) rb_unassign 0 rb_frames 0
+    fmOFF s15  ff_unit_0->victim_3 initial                   unit (2,45)   victim (25,3)   d=65  [idle] anchor (2,45) disp 0 max 0 idle 14 1st-engaged - | other ff_unit_1 at (3,46) avail=False not-idle d=65 | contact 81 (+66) complete 85 end 85(contact) rb_unassign 0 rb_frames 0
+    fmOFF s53  ff_unit_1->victim_2 initial                   unit (25,49)  victim (10,25)  d=39  [idle] anchor (25,49) disp 0 max 0 idle 6 1st-engaged - | other ff_unit_0 at (12,17) avail=False not-idle d=10 | contact 93 (+40) complete 104 end 104(contact) rb_unassign 0 rb_frames 0
+    fmOFF s90  ff_unit_0->victim_0 initial                   unit (25,0)   victim (33,16)  d=24  [returned] anchor - disp None max None idle None 1st-engaged - | other ff_unit_1 at (11,26) avail=False not-idle d=32 | contact 114 (+24) complete 127 end 127(contact) rb_unassign 0 rb_frames 0
+    fmDRY s14  ff_unit_1->victim_1 initial                   unit (16,46)  victim (25,48)  d=11  [idle engaged=True] anchor (2,46) disp 14 max 14 idle 14 1st-engaged s1 (2,46) | other ff_unit_0 at (16,45) avail=True engaged d=12 | contact 26 (+12) complete 28 end 28(contact) rb_unassign 0 rb_frames 0
+    fmDRY s15  ff_unit_0->victim_3 initial                   unit (17,45)  victim (25,3)   d=50  [idle engaged=True] anchor (2,45) disp 15 max 15 idle 15 1st-engaged s1 (2,45) | other ff_unit_1 at (17,46) avail=False engaged d=51 | contact 66 (+51) complete 70 end 70(contact) rb_unassign 0 rb_frames 0
+    fmDRY s53  ff_unit_1->victim_2 initial                   unit (26,41)  victim (10,25)  d=32  [idle engaged=True] anchor (25,49) disp 9 max 9 idle 20 1st-engaged s34 (25,49) | other ff_unit_0 at (19,9) avail=False not-idle d=25 | contact 86 (+33) complete 97 end 97(contact) rb_unassign 0 rb_frames 0
+    fmDRY s77  ff_unit_0->victim_0 initial                   unit (25,2)   victim (37,18)  d=28  [idle engaged=True] anchor (25,0) disp 2 max 2 idle 2 1st-engaged s76 (25,0) | other ff_unit_1 at (14,29) avail=False not-idle d=34 | contact 100 (+23) complete None end 138(contact) rb_unassign 1 rb_frames 3
+    fmDRY s135 ff_unit_1->victim_0 replacement_after_blocked unit (18,28)  victim (41,10)  d=41  [idle engaged=True] anchor (0,25) disp 21 max 22 idle 34 1st-engaged s101 (0,25) | other ff_unit_0 at (41,10) avail=False not-idle d=0 | contact None (+None) complete None end 138(victim_dead) rb_unassign 1 rb_frames 3
+  CHANGED VICTIM victim_0: OFF rescued (terminal frame (127, 'rescued'))  DRY dead (terminal frame (138, 'dead'))
+    fmOFF call s90 ff_unit_0: unit at (25,0), victim at (33,16), d=24; SAME unit in the other arm at s90: (29,11) (d=9)
+    fmDRY call s77 ff_unit_0: unit at (25,2), victim at (37,18), d=28; SAME unit in the other arm at s77: (24,5) (d=26)
+    fmDRY call s135 ff_unit_1: unit at (18,28), victim at (41,10), d=41; SAME unit in the other arm at s134: (0,25) (d=56)
+    fmOFF contact s114 ff_unit_0 at (36,12) -> exit target by the rule (36,0); completed s127 at (36,0)
+    fmDRY contact s100 ff_unit_0 at (35,14) -> exit target by the rule (49,14); completed no
+    fmOFF s90 episode ff_unit_0: frames 37, min fire distance 2, frames at fire distance <=1: 0, end 127(contact) | path 90(25,0) 96(25,6) 102(30,7) 108(33,10) 114(36,12) 120(36,6) 126(36,0)
+        (d) other unit at this call: ff_unit_1 at (11,26) status en_route avail=False not-idle d=32 (called unit d=24)
+    fmDRY s77 episode ff_unit_0: frames 62, min fire distance 1, frames at fire distance <=1: 12, end 138(contact) | path 77(25,2) 83(25,8) 89(28,11) 95(31,14) 101(36,14) 107(38,14) 113(41,13) 119(42,12) 125(41,11) 131(41,11) 137(41,10)
+        (d) other unit at this call: ff_unit_1 at (14,29) status en_route avail=False not-idle d=34 (called unit d=28)
+    fmDRY s135 episode ff_unit_1: frames 4, min fire distance 4, frames at fire distance <=1: 0, end 138(victim_dead) | path 135(19,28)
+        (d) other unit at this call: ff_unit_0 at (41,10) status en_route avail=False not-idle d=0 (called unit d=41)
+    FIRST CALL  OFF s90 ff_unit_0 d=24 -> contact 114   |  DRY s77 ff_unit_0 d=28 -> contact 100   | step delta -13  dist delta +4  to-contact delta -1  same unit True
+  CHANGED UNIT DEATH ff_unit_0: OFF 195  DRY None
+    fmOFF last assign before death: s90 ->victim_0  unit at (25,0) d=24 state returned engaged False disp None | died s195 at (39,0) (status before available; after terminal True) | frames at fire distance <=1 from the call: 4 | path 90(25,0) 96(25,6) 102(30,7) 108(33,10) 114(36,12) 120(36,6) 126(36,0) 132(36,0) 138(36,0) 144(36,0) 150(36,0) 156(36,0) 162(36,0) 168(36,0)
+      same (unit, victim) in fmDRY: s77 from (25,2) d=28 engaged True disp 2 -> contact 100 end 138(contact), frames at fire distance <=1: 12 | path 77(25,2) 83(25,8) 89(28,11) 95(31,14) 101(36,14) 107(38,14) 113(41,13) 119(42,12) 125(41,11) 131(41,11) 137(41,10)
+(e) RESCUE TIMELINE (events only, no positions): first differing step = 26
+      OFF only: []
+      DRY only: [('contact', 'ff_unit_1', 'victim_1')]
+    first assign that differs (unit, victim, step or call position): OFF s14 ff_unit_1->victim_1 from (2,46) d=25 | DRY s14 ff_unit_1->victim_1 from (16,46) d=11 (DRY unit disp 14, engaged True)
+    FIRST-DISPATCH HEAD START (the first ok assign of each unit):
+      ff_unit_0: OFF s15 ->victim_3 from (2,45) d=65 contact 81 complete 85 | DRY s15 ->victim_3 from (17,45) d=50 contact 66 complete 70 | d delta -15, contact delta -15
+      ff_unit_1: OFF s14 ->victim_1 from (2,46) d=25 contact 40 complete 42 | DRY s14 ->victim_1 from (16,46) d=11 contact 26 complete 28 | d delta -14, contact delta -14
+    completions OFF: [(42, 'ff_unit_1', 'victim_1'), (85, 'ff_unit_0', 'victim_3'), (104, 'ff_unit_1', 'victim_2'), (127, 'ff_unit_0', 'victim_0')]
+    completions DRY: [(28, 'ff_unit_1', 'victim_1'), (70, 'ff_unit_0', 'victim_3'), (97, 'ff_unit_1', 'victim_2')]
+(f) FIRST DIVERGENCE  ff_steps 1 | victim_steps 27 (pos 27, status 28) | victim_flee_log 102 | uav_steps 129 | uav_actions 130 | partition 128 | rescue timeline 26
+      victim frame 27: victim_1 OFF [25, 48] assigned (contact<=: []) | DRY [25, 49] assigned (contact<=: [26])
+      first planner decision per victim (detection proxy) OFF {'victim_0': 77, 'victim_1': 14, 'victim_2': 53, 'victim_3': 15} | DRY {'victim_0': 77, 'victim_1': 14, 'victim_2': 53, 'victim_3': 15}
+
+----------------------------------------------------------------------------------------------------
+RUN east/half/404   OFF r/d/ffd 2/2/1 term 162   DRY 3/1/1 term 162
+----------------------------------------------------------------------------------------------------
+(a) DRY idle streaks (feature-log rows): steps, anchor, first engaged row, end cell, max displacement, actions
+    ff_unit_0 steps   1- 15 anchor (2,45)   first engaged s1 (2,45)      end (10,41)  maxdisp 12  {'move': 12, 'clear': 3}
+    ff_unit_0 steps 134-240 anchor (0,25)   first engaged s134 (0,25)    end (1,19)   maxdisp  9  {'move': 42, 'clear': 59, 'retreat': 3, 'none': 2, 'extinguish': 1}
+    ff_unit_1 steps   1- 16 anchor (2,46)   first engaged s1 (2,46)      end (10,43)  maxdisp 11  {'move': 11, 'clear': 5}
+    ff_unit_1 steps  46- 53 anchor (32,49)  first engaged none           end (30,49)  maxdisp  2  {'retreat': 8}
+    OFF idle frames: ff_unit_0 1-14@(2,45),88-239@(25,0); ff_unit_1 1-15@(2,46),48-52@(23,49),158-240@(0,25)
+(b-d) EVERY ok assign, both arms (call position, distance, anchor/displacement, the other unit, episode):
+    fmOFF s15  ff_unit_0->victim_3 initial                   unit (2,45)   victim (25,3)   d=65  [idle] anchor (2,45) disp 0 max 0 idle 14 1st-engaged - | other ff_unit_1 at (2,46) avail=True standby d=66 | contact 81 (+66) complete 85 end 85(contact) rb_unassign 0 rb_frames 0
+    fmOFF s16  ff_unit_1->victim_1 initial                   unit (2,46)   victim (25,48)  d=25  [idle] anchor (2,46) disp 0 max 0 idle 15 1st-engaged - | other ff_unit_0 at (2,44) avail=False not-idle d=27 | contact None (+None) complete None end 48(victim_dead) rb_unassign 1 rb_frames 2
+    fmOFF s53  ff_unit_1->victim_2 initial                   unit (25,49)  victim (10,25)  d=39  [idle] anchor (23,49) disp 2 max 2 idle 5 1st-engaged - | other ff_unit_0 at (12,17) avail=False not-idle d=10 | contact 146 (+93) complete 155 end 155(contact) rb_unassign 1 rb_frames 6
+    fmOFF s60  ff_unit_1->victim_2 initial                   unit (25,47)  victim (10,25)  d=37  [on_rescue:route_blocked] anchor - disp None max None idle None 1st-engaged - | other ff_unit_0 at (15,14) avail=False not-idle d=16 | contact 146 (+86) complete 155 end 155(contact) rb_unassign 0 rb_frames 3
+    fmDRY s15  ff_unit_0->victim_3 initial                   unit (10,41)  victim (25,3)   d=53  [idle engaged=True] anchor (2,45) disp 12 max 12 idle 15 1st-engaged s1 (2,45) | other ff_unit_1 at (10,43) avail=True engaged d=55 | contact 69 (+54) complete 73 end 73(contact) rb_unassign 0 rb_frames 0
+    fmDRY s16  ff_unit_1->victim_1 initial                   unit (10,43)  victim (25,48)  d=20  [idle engaged=True] anchor (2,46) disp 11 max 11 idle 16 1st-engaged s1 (2,46) | other ff_unit_0 at (10,40) avail=False engaged d=23 | contact 41 (+25) complete 42 end 42(contact) rb_unassign 0 rb_frames 0
+    fmDRY s53  ff_unit_1->victim_2 initial                   unit (30,49)  victim (10,25)  d=44  [idle engaged=False] anchor (32,49) disp 2 max 2 idle 8 1st-engaged - | other ff_unit_0 at (18,11) avail=False not-idle d=22 | contact None (+None) complete None end 72(unit_dead) rb_unassign 1 rb_frames 18
+    fmDRY s76  ff_unit_0->victim_2 initial                   unit (25,0)   victim (10,25)  d=40  [returned engaged=False] anchor - disp None max None idle None 1st-engaged - | other ff_unit_1 at (31,49) avail=False not-idle d=45 | contact 117 (+41) complete 128 end 128(contact) rb_unassign 0 rb_frames 0
+  CHANGED VICTIM victim_1: OFF dead (terminal frame (48, 'dead'))  DRY rescued (terminal frame (42, 'rescued'))
+    fmOFF call s16 ff_unit_1: unit at (2,46), victim at (25,48), d=25; SAME unit in the other arm at s16: (10,43) (d=20)
+    fmDRY call s16 ff_unit_1: unit at (10,43), victim at (25,48), d=20; SAME unit in the other arm at s16: (2,46) (d=25)
+    fmDRY contact s41 ff_unit_1 at (28,49) -> exit target by the rule (28,49); completed s42 at (28,49)
+    fmOFF s16 episode ff_unit_1: frames 33, min fire distance 1, frames at fire distance <=1: 5, end 48(victim_dead) | path 16(2,46) 22(8,46) 28(14,46) 34(19,47) 40(21,49) 46(25,49)
+        (d) other unit at this call: ff_unit_0 at (2,44) status en_route avail=False not-idle d=27 (called unit d=25)
+    fmDRY s16 episode ff_unit_1: frames 26, min fire distance 1, frames at fire distance <=1: 1, end 42(contact) | path 16(10,43) 22(14,45) 28(19,46) 34(23,48) 40(28,49)
+        (d) other unit at this call: ff_unit_0 at (10,40) status en_route avail=False engaged d=23 (called unit d=20)
+    FIRST CALL  OFF s16 ff_unit_1 d=25 -> contact None   |  DRY s16 ff_unit_1 d=20 -> contact 41   | step delta +0  dist delta -5  to-contact delta -  same unit True
+  CHANGED UNIT DEATH ff_unit_0: OFF 240  DRY None
+    fmOFF last assign before death: s15 ->victim_3  unit at (2,45) d=65 state idle engaged False disp 0 | died s240 at (27,0) (status before available; after terminal True) | frames at fire distance <=1 from the call: 9 | path 15(2,45) 21(2,39) 27(2,33) 33(2,27) 39(5,24) 45(8,21) 51(11,18) 57(14,15) 63(17,12) 69(20,9) 75(23,6) 81(25,3) 87None 93(25,0)
+      same (unit, victim) in fmDRY: s15 from (10,41) d=53 engaged True disp 12 -> contact 69 end 73(contact), frames at fire distance <=1: 0 | path 15(10,41) 21(10,35) 27(10,29) 33(10,23) 39(11,18) 45(14,15) 51(17,12) 57(20,9) 63(23,6) 69(25,3)
+  CHANGED UNIT DEATH ff_unit_1: OFF None  DRY 72
+    fmDRY last assign before death: s53 ->victim_2  unit at (30,49) d=44 state idle engaged False disp 2 | died s72 at (31,49) (status before route_blocked; after terminal False) | frames at fire distance <=1 from the call: 20 | path 53(30,49) 59(29,49) 65(28,49) 71(31,49)
+      same (unit, victim) in fmOFF: s53 from (25,49) d=39 engaged False disp 2 -> contact 146 end 155(contact), frames at fire distance <=1: 22 | path 53(25,49) 59(25,47) 65(25,45) 71(25,41) 77(22,38) 83(19,35) 89(17,33) 95(16,32) 101(18,32) 107(19,31) 113(15,31) 119(16,30) 125(13,31) 131(12,29)
+(e) RESCUE TIMELINE (events only, no positions): first differing step = 41
+      OFF only: []
+      DRY only: [('contact', 'ff_unit_1', 'victim_1')]
+    first assign that differs (unit, victim, step or call position): OFF s15 ff_unit_0->victim_3 from (2,45) d=65 | DRY s15 ff_unit_0->victim_3 from (10,41) d=53 (DRY unit disp 12, engaged True)
+    FIRST-DISPATCH HEAD START (the first ok assign of each unit):
+      ff_unit_0: OFF s15 ->victim_3 from (2,45) d=65 contact 81 complete 85 | DRY s15 ->victim_3 from (10,41) d=53 contact 69 complete 73 | d delta -12, contact delta -12
+      ff_unit_1: OFF s16 ->victim_1 from (2,46) d=25 contact None complete None | DRY s16 ->victim_1 from (10,43) d=20 contact 41 complete 42 | d delta -5, contact delta -
+    completions OFF: [(85, 'ff_unit_0', 'victim_3'), (155, 'ff_unit_1', 'victim_2')]
+    completions DRY: [(42, 'ff_unit_1', 'victim_1'), (73, 'ff_unit_0', 'victim_3'), (128, 'ff_unit_0', 'victim_2')]
+(f) FIRST DIVERGENCE  ff_steps 1 | victim_steps 42 (pos 42, status 42) | victim_flee_log 135 | uav_steps None | uav_actions None | partition None | rescue timeline 41
+      victim frame 42: victim_1 OFF [28, 49] assigned (contact<=: []) | DRY None rescued (contact<=: [41])
+      first planner decision per victim (detection proxy) OFF {'victim_0': None, 'victim_1': 16, 'victim_2': 53, 'victim_3': 15} | DRY {'victim_0': None, 'victim_1': 16, 'victim_2': 53, 'victim_3': 15}
+
+----------------------------------------------------------------------------------------------------
+RUN south/half/202   OFF r/d/ffd 3/0/1 term None   DRY 4/0/0 term 167
+----------------------------------------------------------------------------------------------------
+(a) DRY idle streaks (feature-log rows): steps, anchor, first engaged row, end cell, max displacement, actions
+    ff_unit_0 steps   1- 14 anchor (2,45)   first engaged s1 (2,45)      end (11,40)  maxdisp 14  {'move': 14}
+    ff_unit_0 steps 172-240 anchor (49,29)  first engaged s172 (49,29)   end (40,36)  maxdisp 16  {'move': 23, 'clear': 31, 'extinguish': 8, 'retreat': 7}
+    ff_unit_1 steps   1- 16 anchor (2,46)   first engaged s1 (2,46)      end (11,39)  maxdisp 16  {'move': 16}
+    ff_unit_1 steps 101-240 anchor (0,25)   first engaged s101 (0,25)    end (1,26)   maxdisp 20  {'move': 53, 'clear': 72, 'retreat': 15}
+    OFF idle frames: ff_unit_0 1-13@(2,45); ff_unit_1 1-15@(2,46),102-206@(0,25)
+(b-d) EVERY ok assign, both arms (call position, distance, anchor/displacement, the other unit, episode):
+    fmOFF s14  ff_unit_0->victim_3 initial                   unit (2,45)   victim (25,3)   d=65  [idle] anchor (2,45) disp 0 max 0 idle 13 1st-engaged - | other ff_unit_1 at (2,46) avail=True standby d=66 | contact 72 (+58) complete 76 end 76(contact) rb_unassign 0 rb_frames 0
+    fmOFF s16  ff_unit_1->victim_1 initial                   unit (2,46)   victim (25,48)  d=25  [idle] anchor (2,46) disp 0 max 0 idle 15 1st-engaged - | other ff_unit_0 at (2,43) avail=False not-idle d=28 | contact 42 (+26) complete 44 end 44(contact) rb_unassign 0 rb_frames 0
+    fmOFF s47  ff_unit_1->victim_2 initial                   unit (25,49)  victim (10,25)  d=39  [returned] anchor - disp None max None idle None 1st-engaged - | other ff_unit_0 at (8,18) avail=False not-idle d=9 | contact 87 (+40) complete 98 end 98(contact) rb_unassign 0 rb_frames 0
+    fmOFF s81  ff_unit_0->victim_0 initial                   unit (15,0)   victim (48,25)  d=58  [returned] anchor - disp None max None idle None 1st-engaged - | other ff_unit_1 at (12,28) avail=False not-idle d=39 | contact None (+None) complete None end 207(unit_dead) rb_unassign 1 rb_frames 0
+    fmOFF s207 ff_unit_1->victim_0 replacement_after_blocked unit (0,25)   victim (49,29)  d=53  [idle] anchor (0,25) disp 0 max 0 idle 105 1st-engaged - | other ff_unit_0 at (21,29) avail=False not-idle d=28 | contact None (+None) complete None end 240(horizon) rb_unassign 0 rb_frames 0
+    fmDRY s14  ff_unit_0->victim_3 initial                   unit (11,40)  victim (25,3)   d=51  [idle engaged=True] anchor (2,45) disp 14 max 14 idle 14 1st-engaged s1 (2,45) | other ff_unit_1 at (11,41) avail=True engaged d=52 | contact 59 (+45) complete 63 end 63(contact) rb_unassign 0 rb_frames 0
+    fmDRY s16  ff_unit_1->victim_1 initial                   unit (11,39)  victim (25,48)  d=23  [idle engaged=True] anchor (2,46) disp 16 max 16 idle 16 1st-engaged s1 (2,46) | other ff_unit_0 at (11,38) avail=False not-idle d=24 | contact 40 (+24) complete 42 end 42(contact) rb_unassign 0 rb_frames 0
+    fmDRY s45  ff_unit_1->victim_2 initial                   unit (25,49)  victim (10,25)  d=39  [returned engaged=False] anchor - disp None max None idle None 1st-engaged - | other ff_unit_0 at (14,12) avail=False not-idle d=17 | contact 85 (+40) complete 96 end 96(contact) rb_unassign 0 rb_frames 0
+    fmDRY s68  ff_unit_0->victim_0 initial                   unit (17,0)   victim (42,25)  d=50  [returned engaged=False] anchor - disp None max None idle None 1st-engaged - | other ff_unit_1 at (18,33) avail=False not-idle d=32 | contact 166 (+98) complete 167 end 167(contact) rb_unassign 1 rb_frames 17
+    fmDRY s96  ff_unit_0->victim_0 initial                   unit (19,1)   victim (48,25)  d=53  [on_rescue:route_blocked engaged=False] anchor - disp None max None idle None 1st-engaged - | other ff_unit_1 at (0,25) avail=False not-idle d=48 | contact 166 (+70) complete 167 end 167(contact) rb_unassign 0 rb_frames 0
+  CHANGED VICTIM victim_0: OFF assigned (terminal frame None)  DRY rescued (terminal frame (167, 'rescued'))
+    fmOFF call s81 ff_unit_0: unit at (15,0), victim at (48,25), d=58; SAME unit in the other arm at s81: (19,0) (d=54)
+    fmOFF call s207 ff_unit_1: unit at (0,25), victim at (49,29), d=53; SAME unit in the other arm at s206: (0,12) (d=66)
+    fmDRY call s68 ff_unit_0: unit at (17,0), victim at (42,25), d=50; SAME unit in the other arm at s68: (16,5) (d=46)
+    fmDRY call s96 ff_unit_0: unit at (19,1), victim at (48,25), d=53; SAME unit in the other arm at s95: (13,8) (d=52)
+    fmDRY contact s166 ff_unit_0 at (49,29) -> exit target by the rule (49,29); completed s167 at (49,29)
+    fmOFF s81 episode ff_unit_0: frames 127, min fire distance 0, frames at fire distance <=1: 10, end 207(unit_dead) | path 81(15,0) 87(14,1) 93(13,6) 99(11,8) 105(14,11) 111(17,14) 117(16,15) 123(15,16) 129(15,16) 135(17,20) 141(22,21) 147(27,22) 153(26,23) 159(24,23)
+        (d) other unit at this call: ff_unit_1 at (12,28) status en_route avail=False not-idle d=39 (called unit d=58)
+    fmOFF s207 episode ff_unit_1: frames 34, min fire distance 2, frames at fire distance <=1: 0, end 240(horizon) | path 207(1,25) 213(7,25) 219(12,26) 225(9,29) 231(7,29) 237(7,29)
+        (d) other unit at this call: ff_unit_0 at (21,29) status en_route avail=False not-idle d=28 (called unit d=53)
+    fmDRY s68 episode ff_unit_0: frames 99, min fire distance 1, frames at fire distance <=1: 20, end 167(contact) | path 68(17,0) 74(18,1) 80(19,0) 86(19,0) 92(19,1) 98(22,1) 104(25,2) 110(28,5) 116(31,8) 122(34,11) 128(37,14) 134(39,18) 140(42,21) 146(44,23)
+        (d) other unit at this call: ff_unit_1 at (18,33) status en_route avail=False not-idle d=32 (called unit d=50)
+    fmDRY s96 episode ff_unit_0: frames 71, min fire distance 1, frames at fire distance <=1: 2, end 167(contact) | path 96(20,1) 102(23,2) 108(27,4) 114(30,7) 120(33,10) 126(36,13) 132(38,17) 138(41,20) 144(43,22) 150(46,25) 156(45,26) 162(48,27)
+        (d) other unit at this call: ff_unit_1 at (0,25) status en_route avail=False not-idle d=48 (called unit d=53)
+    FIRST CALL  OFF s81 ff_unit_0 d=58 -> contact None   |  DRY s68 ff_unit_0 d=50 -> contact 166   | step delta -13  dist delta -8  to-contact delta -  same unit True
+  CHANGED UNIT DEATH ff_unit_0: OFF 207  DRY None
+    fmOFF last assign before death: s81 ->victim_0  unit at (15,0) d=58 state returned engaged False disp None | died s207 at (21,29) (status before en_route; after terminal False) | frames at fire distance <=1 from the call: 10 | path 81(15,0) 87(14,1) 93(13,6) 99(11,8) 105(14,11) 111(17,14) 117(16,15) 123(15,16) 129(15,16) 135(17,20) 141(22,21) 147(27,22) 153(26,23) 159(24,23)
+      same (unit, victim) in fmDRY: s68 from (17,0) d=50 engaged False disp None -> contact 166 end 167(contact), frames at fire distance <=1: 20 | path 68(17,0) 74(18,1) 80(19,0) 86(19,0) 92(19,1) 98(22,1) 104(25,2) 110(28,5) 116(31,8) 122(34,11) 128(37,14) 134(39,18) 140(42,21) 146(44,23)
+(e) RESCUE TIMELINE (events only, no positions): first differing step = 40
+      OFF only: []
+      DRY only: [('contact', 'ff_unit_1', 'victim_1')]
+    first assign that differs (unit, victim, step or call position): OFF s14 ff_unit_0->victim_3 from (2,45) d=65 | DRY s14 ff_unit_0->victim_3 from (11,40) d=51 (DRY unit disp 14, engaged True)
+    FIRST-DISPATCH HEAD START (the first ok assign of each unit):
+      ff_unit_0: OFF s14 ->victim_3 from (2,45) d=65 contact 72 complete 76 | DRY s14 ->victim_3 from (11,40) d=51 contact 59 complete 63 | d delta -14, contact delta -13
+      ff_unit_1: OFF s16 ->victim_1 from (2,46) d=25 contact 42 complete 44 | DRY s16 ->victim_1 from (11,39) d=23 contact 40 complete 42 | d delta -2, contact delta -2
+    completions OFF: [(44, 'ff_unit_1', 'victim_1'), (76, 'ff_unit_0', 'victim_3'), (98, 'ff_unit_1', 'victim_2')]
+    completions DRY: [(42, 'ff_unit_1', 'victim_1'), (63, 'ff_unit_0', 'victim_3'), (96, 'ff_unit_1', 'victim_2'), (167, 'ff_unit_0', 'victim_0')]
+(f) FIRST DIVERGENCE  ff_steps 1 | victim_steps 41 (pos 41, status 42) | victim_flee_log 60 | uav_steps 169 | uav_actions 169 | partition 169 | rescue timeline 40
+      victim frame 41: victim_1 OFF [25, 48] assigned (contact<=: []) | DRY [25, 49] assigned (contact<=: [40])
+      first planner decision per victim (detection proxy) OFF {'victim_0': 68, 'victim_1': 16, 'victim_2': 22, 'victim_3': 14} | DRY {'victim_0': 68, 'victim_1': 16, 'victim_2': 22, 'victim_3': 14}
+
+----------------------------------------------------------------------------------------------------
+RUN south/half/404   OFF r/d/ffd 3/1/0 term 189   DRY 2/1/1 term None
+----------------------------------------------------------------------------------------------------
+(a) DRY idle streaks (feature-log rows): steps, anchor, first engaged row, end cell, max displacement, actions
+    ff_unit_0 steps   1- 16 anchor (2,45)   first engaged s1 (2,45)      end (6,41)   maxdisp  9  {'move': 10, 'clear': 6}
+    ff_unit_1 steps   1- 14 anchor (2,46)   first engaged s1 (2,46)      end (8,42)   maxdisp 10  {'move': 10, 'clear': 4}
+    OFF idle frames: ff_unit_0 1-13@(2,45),194-240@(44,0); ff_unit_1 1-15@(2,46),162-240@(37,24)
+(b-d) EVERY ok assign, both arms (call position, distance, anchor/displacement, the other unit, episode):
+    fmOFF s14  ff_unit_0->victim_3 initial                   unit (2,45)   victim (25,3)   d=65  [idle] anchor (2,45) disp 0 max 0 idle 13 1st-engaged - | other ff_unit_1 at (2,46) avail=True standby d=66 | contact None (+None) complete None end 78(reassigned) rb_unassign 1 rb_frames 0
+    fmOFF s16  ff_unit_1->victim_1 initial                   unit (2,46)   victim (25,48)  d=25  [idle] anchor (2,46) disp 0 max 0 idle 15 1st-engaged - | other ff_unit_0 at (2,43) avail=False not-idle d=28 | contact 42 (+26) complete 44 end 44(contact) rb_unassign 0 rb_frames 0
+    fmOFF s47  ff_unit_1->victim_2 initial                   unit (25,49)  victim (0,25)   d=49  [returned] anchor - disp None max None idle None 1st-engaged - | other ff_unit_0 at (2,22) avail=False not-idle d=5 | contact None (+None) complete None end 69(reassigned) rb_unassign 1 rb_frames 0
+    fmOFF s69  ff_unit_1->victim_0 initial                   unit (13,40)  victim (40,25)  d=42  [on_rescue:en_route] anchor - disp None max None idle None 1st-engaged - | other ff_unit_0 at (1,28) avail=False not-idle d=42 | contact None (+None) complete None end 162(victim_dead) rb_unassign 1 rb_frames 12
+    fmOFF s78  ff_unit_0->victim_2 initial                   unit (0,30)   victim (0,30)   d=0   [on_rescue:en_route] anchor - disp None max None idle None 1st-engaged - | other ff_unit_1 at (15,35) avail=False not-idle d=20 | contact 114 (+36) complete 115 end 115(contact) rb_unassign 1 rb_frames 5
+    fmOFF s87  ff_unit_0->victim_2 initial                   unit (0,31)   victim (0,30)   d=1   [on_rescue:en_route] anchor - disp None max None idle None 1st-engaged - | other ff_unit_1 at (17,34) avail=False not-idle d=21 | contact 114 (+27) complete 115 end 115(contact) rb_unassign 1 rb_frames 5
+    fmOFF s118 ff_unit_0->victim_3 initial                   unit (0,25)   victim (43,3)   d=65  [returned] anchor - disp None max None idle None 1st-engaged - | other ff_unit_1 at (28,25) avail=False not-idle d=37 | contact 186 (+68) complete 189 end 189(contact) rb_unassign 0 rb_frames 21
+    fmDRY s14  ff_unit_1->victim_3 initial                   unit (8,42)   victim (25,3)   d=56  [idle engaged=True] anchor (2,46) disp 10 max 10 idle 14 1st-engaged s1 (2,46) | other ff_unit_0 at (6,41) avail=True engaged d=57 | contact None (+None) complete None end 72(unit_dead) rb_unassign 1 rb_frames 14
+    fmDRY s16  ff_unit_0->victim_1 initial                   unit (6,41)   victim (25,48)  d=26  [idle engaged=True] anchor (2,45) disp 8 max 9 idle 16 1st-engaged s1 (2,45) | other ff_unit_1 at (8,40) avail=False not-idle d=25 | contact 43 (+27) complete 45 end 45(contact) rb_unassign 0 rb_frames 0
+    fmDRY s48  ff_unit_0->victim_2 initial                   unit (25,49)  victim (0,25)   d=49  [returned engaged=False] anchor - disp None max None idle None 1st-engaged - | other ff_unit_1 at (3,15) avail=False not-idle d=13 | contact None (+None) complete None end 71(reassigned) rb_unassign 1 rb_frames 0
+    fmDRY s71  ff_unit_0->victim_0 initial                   unit (16,42)  victim (40,25)  d=41  [on_rescue:en_route engaged=False] anchor - disp None max None idle None 1st-engaged - | other ff_unit_1 at (0,8) avail=False not-idle d=57 | contact None (+None) complete None end 162(victim_dead) rb_unassign 1 rb_frames 11
+    fmDRY s150 ff_unit_0->victim_0 initial                   unit (37,32)  victim (49,23)  d=21  [on_rescue:en_route engaged=False] anchor - disp None max None idle None 1st-engaged - | other ff_unit_1 at (0,8) avail=False not-idle d=64 | contact None (+None) complete None end 162(victim_dead) rb_unassign 1 rb_frames 11
+    fmDRY s162 ff_unit_0->victim_2 initial                   unit (40,27)  victim (0,25)   d=42  [on_rescue:route_blocked engaged=False] anchor - disp None max None idle None 1st-engaged - | other ff_unit_1 at (0,8) avail=False not-idle d=17 | contact 204 (+42) complete 205 end 205(contact) rb_unassign 0 rb_frames 0
+    fmDRY s208 ff_unit_0->victim_3 initial                   unit (0,25)   victim (44,2)   d=67  [returned engaged=False] anchor - disp None max None idle None 1st-engaged - | other ff_unit_1 at (0,8) avail=False not-idle d=50 | contact None (+None) complete None end 240(horizon) rb_unassign 0 rb_frames 0
+  CHANGED VICTIM victim_3: OFF rescued (terminal frame (189, 'rescued'))  DRY assigned (terminal frame None)
+    fmOFF call s14 ff_unit_0: unit at (2,45), victim at (25,3), d=65; SAME unit in the other arm at s14: (6,41) (d=57)
+    fmOFF call s118 ff_unit_0: unit at (0,25), victim at (43,3), d=65; SAME unit in the other arm at s118: (30,38) (d=48)
+    fmDRY call s14 ff_unit_1: unit at (8,42), victim at (25,3), d=56; SAME unit in the other arm at s14: (2,46) (d=66)
+    fmDRY call s208 ff_unit_0: unit at (0,25), victim at (44,2), d=67; SAME unit in the other arm at s208: (44,0) (d=2)
+    fmOFF contact s186 ff_unit_0 at (44,2) -> exit target by the rule (44,0); completed s189 at (44,0)
+    fmOFF s14 episode ff_unit_0: frames 65, min fire distance 1, frames at fire distance <=1: 17, end 78(reassigned) | path 14(2,45) 20(2,39) 26(2,33) 32(2,27) 38(5,24) 44(4,23) 50(2,23) 56(0,25) 62(0,27) 68(1,28) 74(0,31)
+        (d) other unit at this call: ff_unit_1 at (2,46) status available avail=True standby d=66 (called unit d=65)
+    fmOFF s118 episode ff_unit_0: frames 71, min fire distance 4, frames at fire distance <=1: 0, end 189(contact) | path 118(0,25) 124(6,25) 130(12,25) 136(18,25) 142(24,25) 148(27,22) 154(30,19) 160(33,16) 166(36,13) 172(38,9) 178(41,6) 184(44,3)
+        (d) other unit at this call: ff_unit_1 at (28,25) status en_route avail=False not-idle d=37 (called unit d=65)
+    fmDRY s14 episode ff_unit_1: frames 59, min fire distance 0, frames at fire distance <=1: 7, end 72(unit_dead) | path 14(8,42) 20(8,36) 26(5,33) 32(5,27) 38(5,21) 44(6,16) 50(3,13) 56(2,10) 62(0,7) 68(0,7)
+        (d) other unit at this call: ff_unit_0 at (6,41) status available avail=True engaged d=57 (called unit d=56)
+    fmDRY s208 episode ff_unit_0: frames 33, min fire distance 15, frames at fire distance <=1: 0, end 240(horizon) | path 208(0,25) 214(6,25) 220(12,25) 226(18,25) 232(23,24) 238(26,21)
+        (d) other unit at this call: ff_unit_1 at (0,8) status dead avail=False not-idle d=50 (called unit d=67)
+    FIRST CALL  OFF s14 ff_unit_0 d=65 -> contact None   |  DRY s14 ff_unit_1 d=56 -> contact None   | step delta +0  dist delta -9  to-contact delta -  same unit False
+  CHANGED UNIT DEATH ff_unit_1: OFF None  DRY 72
+    fmDRY last assign before death: s14 ->victim_3  unit at (8,42) d=56 state idle engaged True disp 10 | died s72 at (0,8) (status before route_blocked; after terminal False) | frames at fire distance <=1 from the call: 7 | path 14(8,42) 20(8,36) 26(5,33) 32(5,27) 38(5,21) 44(6,16) 50(3,13) 56(2,10) 62(0,7) 68(0,7)
+      fmOFF never assigned ff_unit_1 to victim_3
+(e) RESCUE TIMELINE (events only, no positions): first differing step = 14
+      OFF only: [('assign', 'ff_unit_0', 'victim_3', 'initial', True)]
+      DRY only: [('assign', 'ff_unit_1', 'victim_3', 'initial', True)]
+    first assign that differs (unit, victim, step or call position): OFF s14 ff_unit_0->victim_3 from (2,45) d=65 | DRY s14 ff_unit_1->victim_3 from (8,42) d=56 (DRY unit disp 10, engaged True)
+    FIRST-DISPATCH HEAD START (the first ok assign of each unit):
+      ff_unit_0: OFF s14 ->victim_3 from (2,45) d=65 contact None complete None | DRY s16 ->victim_1 from (6,41) d=26 contact 43 complete 45 | d delta (other victim), contact delta -
+      ff_unit_1: OFF s16 ->victim_1 from (2,46) d=25 contact 42 complete 44 | DRY s14 ->victim_3 from (8,42) d=56 contact None complete None | d delta (other victim), contact delta -
+    completions OFF: [(44, 'ff_unit_1', 'victim_1'), (115, 'ff_unit_0', 'victim_2'), (189, 'ff_unit_0', 'victim_3')]
+    completions DRY: [(45, 'ff_unit_0', 'victim_1'), (205, 'ff_unit_0', 'victim_2')]
+(f) FIRST DIVERGENCE  ff_steps 1 | victim_steps 43 (pos 43, status 44) | victim_flee_log None | uav_steps 233 | uav_actions 192 | partition 192 | rescue timeline 14
+      victim frame 43: victim_1 OFF [25, 49] assigned (contact<=: [42]) | DRY [25, 48] assigned (contact<=: [43])
+      first planner decision per victim (detection proxy) OFF {'victim_0': 58, 'victim_1': 16, 'victim_2': 26, 'victim_3': 14} | DRY {'victim_0': 58, 'victim_1': 16, 'victim_2': 26, 'victim_3': 14}
+
+----------------------------------------------------------------------------------------------------
+RUN east/def/101   OFF r/d/ffd 3/0/0 term 215   DRY 2/0/0 term None
+----------------------------------------------------------------------------------------------------
+(a) DRY idle streaks (feature-log rows): steps, anchor, first engaged row, end cell, max displacement, actions
+    ff_unit_0 steps   1- 86 anchor (2,45)   first engaged s1 (2,45)      end (19,34)  maxdisp 31  {'move': 46, 'clear': 40}
+    ff_unit_0 steps 222-240 anchor (45,0)   first engaged s222 (45,0)    end (35,3)   maxdisp 13  {'move': 15, 'clear': 4}
+    ff_unit_1 steps   1- 14 anchor (2,46)   first engaged s1 (2,46)      end (16,46)  maxdisp 14  {'move': 14}
+    ff_unit_1 steps  34-117 anchor (25,49)  first engaged s34 (25,49)    end (36,48)  maxdisp 12  {'move': 19, 'clear': 25, 'retreat': 40}
+    OFF idle frames: ff_unit_0 1-116@(2,45),215-240@(23,1); ff_unit_1 1-13@(2,46),47-85@(25,49),218-240@(45,0)
+(b-d) EVERY ok assign, both arms (call position, distance, anchor/displacement, the other unit, episode):
+    fmOFF s14  ff_unit_1->victim_1 initial                   unit (2,46)   victim (25,48)  d=25  [idle] anchor (2,46) disp 0 max 0 idle 13 1st-engaged - | other ff_unit_0 at (2,45) avail=True standby d=26 | contact 40 (+26) complete 42 end 42(contact) rb_unassign 0 rb_frames 0
+    fmOFF s86  ff_unit_1->victim_0 initial                   unit (25,49)  victim (33,18)  d=39  [idle] anchor (25,49) disp 0 max 0 idle 39 1st-engaged - | other ff_unit_0 at (2,45) avail=True standby d=58 | contact 204 (+118) complete 215 end 215(contact) rb_unassign 1 rb_frames 17
+    fmOFF s117 ff_unit_0->victim_3 initial                   unit (2,45)   victim (25,3)   d=65  [idle] anchor (2,45) disp 0 max 0 idle 116 1st-engaged - | other ff_unit_1 at (28,33) avail=False not-idle d=33 | contact 182 (+65) complete 186 end 186(contact) rb_unassign 0 rb_frames 0
+    fmOFF s168 ff_unit_1->victim_0 initial                   unit (33,12)  victim (42,0)   d=21  [on_rescue:en_route] anchor - disp None max None idle None 1st-engaged - | other ff_unit_0 at (18,11) avail=False not-idle d=35 | contact 204 (+36) complete 215 end 215(contact) rb_unassign 1 rb_frames 17
+    fmOFF s191 ff_unit_0->victim_0 initial                   unit (24,0)   victim (42,0)   d=18  [returned] anchor - disp None max None idle None 1st-engaged - | other ff_unit_1 at (44,5) avail=False not-idle d=7 | contact None (+None) complete None end 215(victim_rescued) rb_unassign 0 rb_frames 0
+    fmDRY s14  ff_unit_1->victim_1 initial                   unit (16,46)  victim (25,48)  d=11  [idle engaged=True] anchor (2,46) disp 14 max 14 idle 14 1st-engaged s1 (2,46) | other ff_unit_0 at (16,45) avail=True engaged d=12 | contact 26 (+12) complete 28 end 28(contact) rb_unassign 0 rb_frames 0
+    fmDRY s86  ff_unit_0->victim_0 initial                   unit (19,34)  victim (33,18)  d=30  [idle engaged=True] anchor (2,45) disp 28 max 31 idle 86 1st-engaged s1 (2,45) | other ff_unit_1 at (32,49) avail=True idle-no-plan d=32 | contact 205 (+119) complete 216 end 216(contact) rb_unassign 1 rb_frames 18
+    fmDRY s117 ff_unit_1->victim_3 initial                   unit (36,48)  victim (25,3)   d=56  [idle engaged=True] anchor (25,49) disp 12 max 12 idle 84 1st-engaged s34 (25,49) | other ff_unit_0 at (25,23) avail=False not-idle d=20 | contact None (+None) complete None end 240(horizon) rb_unassign 0 rb_frames 0
+    fmDRY s168 ff_unit_0->victim_0 initial                   unit (28,14)  victim (42,0)   d=28  [on_rescue:en_route engaged=False] anchor - disp None max None idle None 1st-engaged - | other ff_unit_1 at (36,14) avail=False not-idle d=20 | contact 205 (+37) complete 216 end 216(contact) rb_unassign 1 rb_frames 18
+  CHANGED VICTIM victim_3: OFF rescued (terminal frame (186, 'rescued'))  DRY assigned (terminal frame None)
+    fmOFF call s117 ff_unit_0: unit at (2,45), victim at (25,3), d=65; SAME unit in the other arm at s117: (25,23) (d=20)
+    fmDRY call s117 ff_unit_1: unit at (36,48), victim at (25,3), d=56; SAME unit in the other arm at s117: (28,33) (d=33)
+    fmOFF contact s182 ff_unit_0 at (24,3) -> exit target by the rule (24,0); completed s186 at (24,0)
+    fmOFF s117 episode ff_unit_0: frames 69, min fire distance 2, frames at fire distance <=1: 0, end 186(contact) | path 117(2,45) 123(2,39) 129(2,33) 135(2,27) 141(5,24) 147(8,21) 153(11,18) 159(14,15) 165(17,12) 171(20,9) 177(22,5) 183(24,2)
+        (d) other unit at this call: ff_unit_1 at (28,33) status en_route avail=False not-idle d=33 (called unit d=65)
+    fmDRY s117 episode ff_unit_1: frames 124, min fire distance 2, frames at fire distance <=1: 0, end 240(horizon) | path 117(36,48) 123(37,43) 129(37,37) 135(37,31) 141(37,25) 147(37,19) 153(38,16) 159(37,15) 165(37,15) 171(34,12) 177(33,11) 183(32,10) 189(31,9) 195(30,8)
+        (d) other unit at this call: ff_unit_0 at (25,23) status en_route avail=False not-idle d=20 (called unit d=56)
+    FIRST CALL  OFF s117 ff_unit_0 d=65 -> contact 182   |  DRY s117 ff_unit_1 d=56 -> contact None   | step delta +0  dist delta -9  to-contact delta -  same unit False
+(e) RESCUE TIMELINE (events only, no positions): first differing step = 26
+      OFF only: []
+      DRY only: [('contact', 'ff_unit_1', 'victim_1')]
+    first assign that differs (unit, victim, step or call position): OFF s14 ff_unit_1->victim_1 from (2,46) d=25 | DRY s14 ff_unit_1->victim_1 from (16,46) d=11 (DRY unit disp 14, engaged True)
+    FIRST-DISPATCH HEAD START (the first ok assign of each unit):
+      ff_unit_0: OFF s117 ->victim_3 from (2,45) d=65 contact 182 complete 186 | DRY s86 ->victim_0 from (19,34) d=30 contact 205 complete 216 | d delta (other victim), contact delta -
+      ff_unit_1: OFF s14 ->victim_1 from (2,46) d=25 contact 40 complete 42 | DRY s14 ->victim_1 from (16,46) d=11 contact 26 complete 28 | d delta -14, contact delta -14
+    completions OFF: [(42, 'ff_unit_1', 'victim_1'), (186, 'ff_unit_0', 'victim_3'), (215, 'ff_unit_1', 'victim_0')]
+    completions DRY: [(28, 'ff_unit_1', 'victim_1'), (216, 'ff_unit_0', 'victim_0')]
+(f) FIRST DIVERGENCE  ff_steps 1 | victim_steps 27 (pos 27, status 28) | victim_flee_log 183 | uav_steps None | uav_actions 219 | partition 217 | rescue timeline 26
+      victim frame 27: victim_1 OFF [25, 48] assigned (contact<=: []) | DRY [25, 49] assigned (contact<=: [26])
+      first planner decision per victim (detection proxy) OFF {'victim_0': 86, 'victim_1': 14, 'victim_2': None, 'victim_3': 117} | DRY {'victim_0': 86, 'victim_1': 14, 'victim_2': None, 'victim_3': 117}
+
+----------------------------------------------------------------------------------------------------
+RUN east/def/303   OFF r/d/ffd 3/1/0 term 130   DRY 3/1/1 term 149
+----------------------------------------------------------------------------------------------------
+(a) DRY idle streaks (feature-log rows): steps, anchor, first engaged row, end cell, max displacement, actions
+    ff_unit_0 steps   1- 15 anchor (2,45)   first engaged s1 (2,45)      end (2,30)   maxdisp 15  {'move': 15}
+    ff_unit_0 steps  46- 49 anchor (0,25)   first engaged s46 (0,25)     end (4,25)   maxdisp  4  {'move': 4}
+    ff_unit_0 steps 153-240 anchor (49,24)  first engaged s153 (49,24)   end (26,36)  maxdisp 44  {'move': 63, 'clear': 10, 'extinguish': 3, 'retreat': 12}
+    ff_unit_1 steps   1- 15 anchor (2,46)   first engaged s1 (2,46)      end (2,31)   maxdisp 15  {'move': 15}
+    OFF idle frames: ff_unit_0 1-14@(2,45),58-59@(0,25),130-240@(31,24); ff_unit_1 1-14@(2,46),48-48@(25,49),60-60@(27,40),133-240@(49,24)
+(b-d) EVERY ok assign, both arms (call position, distance, anchor/displacement, the other unit, episode):
+    fmOFF s15  ff_unit_0->victim_2 initial                   unit (2,45)   victim (10,25)  d=28  [idle] anchor (2,45) disp 0 max 0 idle 14 1st-engaged - | other ff_unit_1 at (2,46) avail=False not-idle d=29 | contact 43 (+28) complete 53 end 53(contact) rb_unassign 0 rb_frames 0
+    fmOFF s15  ff_unit_1->victim_1 initial                   unit (2,46)   victim (25,48)  d=25  [idle] anchor (2,46) disp 0 max 0 idle 14 1st-engaged - | other ff_unit_0 at (2,45) avail=False not-idle d=26 | contact 41 (+26) complete 43 end 43(contact) rb_unassign 0 rb_frames 0
+    fmOFF s49  ff_unit_1->victim_0 initial                   unit (25,49)  victim (40,27)  d=37  [idle] anchor (25,49) disp 0 max 0 idle 1 1st-engaged - | other ff_unit_0 at (3,25) avail=False not-idle d=39 | contact 120 (+71) complete 130 end 130(contact) rb_unassign 1 rb_frames 27
+    fmOFF s60  ff_unit_0->victim_0 replacement_after_blocked unit (0,25)   victim (39,28)  d=42  [idle] anchor (0,25) disp 0 max 0 idle 2 1st-engaged - | other ff_unit_1 at (27,41) avail=False not-idle d=25 | contact None (+None) complete None end 130(victim_rescued) rb_unassign 1 rb_frames 16
+    fmOFF s61  ff_unit_1->victim_0 replacement_after_blocked unit (27,40)  victim (39,27)  d=25  [idle] anchor (27,40) disp 0 max 0 idle 1 1st-engaged - | other ff_unit_0 at (0,25) avail=False not-idle d=41 | contact 120 (+59) complete 130 end 130(contact) rb_unassign 0 rb_frames 27
+    fmOFF s61  ff_unit_0->victim_0 initial                   unit (0,25)   victim (39,27)  d=41  [on_rescue:en_route] anchor - disp None max None idle None 1st-engaged - | other ff_unit_1 at (27,40) avail=True standby d=25 | contact None (+None) complete None end 130(victim_rescued) rb_unassign 1 rb_frames 16
+    fmDRY s15  ff_unit_0->victim_2 initial                   unit (2,30)   victim (10,25)  d=13  [idle engaged=True] anchor (2,45) disp 15 max 15 idle 15 1st-engaged s1 (2,45) | other ff_unit_1 at (2,31) avail=False engaged d=14 | contact 29 (+14) complete 40 end 40(contact) rb_unassign 0 rb_frames 0
+    fmDRY s15  ff_unit_1->victim_1 initial                   unit (2,31)   victim (25,48)  d=40  [idle engaged=True] anchor (2,46) disp 15 max 15 idle 15 1st-engaged s1 (2,46) | other ff_unit_0 at (2,30) avail=False engaged d=41 | contact 56 (+41) complete 58 end 58(contact) rb_unassign 0 rb_frames 0
+    fmDRY s49  ff_unit_0->victim_0 initial                   unit (4,25)   victim (40,27)  d=38  [idle engaged=True] anchor (0,25) disp 4 max 4 idle 4 1st-engaged s46 (0,25) | other ff_unit_1 at (22,45) avail=False not-idle d=36 | contact 139 (+90) complete 149 end 149(contact) rb_unassign 1 rb_frames 17
+    fmDRY s60  ff_unit_0->victim_0 initial                   unit (14,25)  victim (39,28)  d=28  [on_rescue:en_route engaged=False] anchor - disp None max None idle None 1st-engaged - | other ff_unit_1 at None avail=False not-idle d=None | contact 139 (+79) complete 149 end 149(contact) rb_unassign 1 rb_frames 17
+    fmDRY s63  ff_unit_1->victim_0 initial                   unit (25,49)  victim (38,27)  d=35  [returned engaged=False] anchor - disp None max None idle None 1st-engaged - | other ff_unit_0 at (13,26) avail=False not-idle d=26 | contact None (+None) complete None end 141(unit_dead) rb_unassign 1 rb_frames 19
+    fmDRY s64  ff_unit_1->victim_0 initial                   unit (25,49)  victim (38,27)  d=35  [on_rescue:en_route engaged=False] anchor - disp None max None idle None 1st-engaged - | other ff_unit_0 at (13,26) avail=False not-idle d=26 | contact None (+None) complete None end 141(unit_dead) rb_unassign 1 rb_frames 19
+  CHANGED UNIT DEATH ff_unit_1: OFF None  DRY 141
+    fmDRY last assign before death: s64 ->victim_0  unit at (25,49) d=35 state on_rescue:en_route engaged False disp None | died s141 at (41,46) (status before route_blocked; after terminal False) | frames at fire distance <=1 from the call: 11 | path 64(25,48) 70(25,42) 76(27,38) 82(31,36) 88(30,37) 94(34,39) 100(36,41) 106(32,41) 112(36,41) 118(34,43) 124(38,45) 130(41,46) 136(42,45)
+      same (unit, victim) in fmOFF: s49 from (25,49) d=37 engaged False disp 0 -> contact 120 end 130(contact), frames at fire distance <=1: 26 | path 49(25,49) 55(25,43) 61(27,39) 67(29,35) 73(32,34) 79(34,34) 85(35,35) 91(35,38) 97(33,36) 103(34,34) 109(35,29) 115(38,26) 121(41,24) 127(47,24)
+(e) RESCUE TIMELINE (events only, no positions): first differing step = 29
+      OFF only: []
+      DRY only: [('contact', 'ff_unit_0', 'victim_2')]
+    first assign that differs (unit, victim, step or call position): OFF s15 ff_unit_0->victim_2 from (2,45) d=28 | DRY s15 ff_unit_0->victim_2 from (2,30) d=13 (DRY unit disp 15, engaged True)
+    FIRST-DISPATCH HEAD START (the first ok assign of each unit):
+      ff_unit_0: OFF s15 ->victim_2 from (2,45) d=28 contact 43 complete 53 | DRY s15 ->victim_2 from (2,30) d=13 contact 29 complete 40 | d delta -15, contact delta -14
+      ff_unit_1: OFF s15 ->victim_1 from (2,46) d=25 contact 41 complete 43 | DRY s15 ->victim_1 from (2,31) d=40 contact 56 complete 58 | d delta +15, contact delta +15
+    completions OFF: [(43, 'ff_unit_1', 'victim_1'), (53, 'ff_unit_0', 'victim_2'), (130, 'ff_unit_1', 'victim_0')]
+    completions DRY: [(40, 'ff_unit_0', 'victim_2'), (58, 'ff_unit_1', 'victim_1'), (149, 'ff_unit_0', 'victim_0')]
+(f) FIRST DIVERGENCE  ff_steps 1 | victim_steps 30 (pos 30, status 40) | victim_flee_log 39 | uav_steps 131 | uav_actions 131 | partition 131 | rescue timeline 29
+      victim frame 30: victim_2 OFF [10, 25] assigned (contact<=: []) | DRY [9, 25] assigned (contact<=: [29])
+      first planner decision per victim (detection proxy) OFF {'victim_0': 49, 'victim_1': 15, 'victim_2': 15, 'victim_3': None} | DRY {'victim_0': 49, 'victim_1': 15, 'victim_2': 15, 'victim_3': None}
+
+----------------------------------------------------------------------------------------------------
+RUN east/half/606   OFF r/d/ffd 3/1/1 term 207   DRY 3/0/0 term None
+----------------------------------------------------------------------------------------------------
+(a) DRY idle streaks (feature-log rows): steps, anchor, first engaged row, end cell, max displacement, actions
+    ff_unit_0 steps   1- 15 anchor (2,45)   first engaged s1 (2,45)      end (17,45)  maxdisp 15  {'move': 15}
+    ff_unit_0 steps  74-139 anchor (25,0)   first engaged s74 (25,0)     end (20,27)  maxdisp 32  {'move': 40, 'clear': 26}
+    ff_unit_1 steps   1- 14 anchor (2,46)   first engaged s1 (2,46)      end (16,46)  maxdisp 14  {'move': 14}
+    ff_unit_1 steps  33- 53 anchor (25,49)  first engaged s33 (25,49)    end (28,46)  maxdisp  7  {'move': 10, 'clear': 11}
+    ff_unit_1 steps 112-203 anchor (0,25)   first engaged s112 (0,25)    end (15,33)  maxdisp 26  {'move': 47, 'clear': 45}
+    ff_unit_1 steps 223-240 anchor (14,33)  first engaged s223 (14,33)   end (15,37)  maxdisp  5  {'clear': 11, 'move': 7}
+    OFF idle frames: ff_unit_0 1-14@(2,45),88-138@(25,0); ff_unit_1 1-13@(2,46),46-52@(25,49),111-204@(0,25),207-240@(1,25)
+(b-d) EVERY ok assign, both arms (call position, distance, anchor/displacement, the other unit, episode):
+    fmOFF s14  ff_unit_1->victim_1 initial                   unit (2,46)   victim (25,48)  d=25  [idle] anchor (2,46) disp 0 max 0 idle 13 1st-engaged - | other ff_unit_0 at (2,45) avail=True standby d=26 | contact 40 (+26) complete 42 end 42(contact) rb_unassign 0 rb_frames 0
+    fmOFF s15  ff_unit_0->victim_3 initial                   unit (2,45)   victim (25,3)   d=65  [idle] anchor (2,45) disp 0 max 0 idle 14 1st-engaged - | other ff_unit_1 at (3,46) avail=False not-idle d=65 | contact 81 (+66) complete 85 end 85(contact) rb_unassign 0 rb_frames 0
+    fmOFF s53  ff_unit_1->victim_2 initial                   unit (25,49)  victim (10,25)  d=39  [idle] anchor (25,49) disp 0 max 0 idle 7 1st-engaged - | other ff_unit_0 at (12,17) avail=False not-idle d=10 | contact 95 (+42) complete 106 end 106(contact) rb_unassign 0 rb_frames 0
+    fmOFF s139 ff_unit_0->victim_0 initial                   unit (25,0)   victim (42,12)  d=29  [idle] anchor (25,0) disp 0 max 0 idle 51 1st-engaged - | other ff_unit_1 at (0,25) avail=True standby d=55 | contact 165 (+26) complete None end 207(contact) rb_unassign 1 rb_frames 3
+    fmOFF s205 ff_unit_1->victim_0 replacement_after_blocked unit (0,25)   victim (49,2)   d=72  [idle] anchor (0,25) disp 0 max 0 idle 94 1st-engaged - | other ff_unit_0 at (49,2) avail=False not-idle d=0 | contact None (+None) complete None end 207(victim_dead) rb_unassign 1 rb_frames 2
+    fmDRY s14  ff_unit_1->victim_1 initial                   unit (16,46)  victim (25,48)  d=11  [idle engaged=True] anchor (2,46) disp 14 max 14 idle 14 1st-engaged s1 (2,46) | other ff_unit_0 at (16,45) avail=True engaged d=12 | contact 26 (+12) complete 28 end 28(contact) rb_unassign 0 rb_frames 0
+    fmDRY s15  ff_unit_0->victim_3 initial                   unit (17,45)  victim (25,3)   d=50  [idle engaged=True] anchor (2,45) disp 15 max 15 idle 15 1st-engaged s1 (2,45) | other ff_unit_1 at (17,46) avail=False engaged d=51 | contact 66 (+51) complete 70 end 70(contact) rb_unassign 0 rb_frames 0
+    fmDRY s53  ff_unit_1->victim_2 initial                   unit (28,46)  victim (10,25)  d=39  [idle engaged=True] anchor (25,49) disp 6 max 7 idle 21 1st-engaged s33 (25,49) | other ff_unit_0 at (19,9) avail=False not-idle d=25 | contact 95 (+42) complete 106 end 106(contact) rb_unassign 0 rb_frames 0
+    fmDRY s139 ff_unit_0->victim_0 initial                   unit (20,27)  victim (42,12)  d=37  [idle engaged=True] anchor (25,0) disp 32 max 32 idle 66 1st-engaged s74 (25,0) | other ff_unit_1 at (20,27) avail=True engaged d=37 | contact None (+None) complete None end 240(horizon) rb_unassign 1 rb_frames 18
+    fmDRY s204 ff_unit_1->victim_0 replacement_after_blocked unit (15,33)  victim (49,0)   d=67  [idle engaged=True] anchor (0,25) disp 23 max 26 idle 92 1st-engaged s112 (0,25) | other ff_unit_0 at (29,20) avail=False not-idle d=40 | contact None (+None) complete None end 240(horizon) rb_unassign 1 rb_frames 18
+    fmDRY s222 ff_unit_0->victim_0 initial                   unit (30,20)  victim (47,0)   d=37  [on_rescue:route_blocked engaged=False] anchor - disp None max None idle None 1st-engaged - | other ff_unit_1 at (14,33) avail=False not-idle d=66 | contact None (+None) complete None end 240(horizon) rb_unassign 0 rb_frames 0
+  CHANGED VICTIM victim_0: OFF dead (terminal frame (207, 'dead'))  DRY assigned (terminal frame None)
+    fmOFF call s139 ff_unit_0: unit at (25,0), victim at (42,12), d=29; SAME unit in the other arm at s139: (20,27) (d=37)
+    fmOFF call s205 ff_unit_1: unit at (0,25), victim at (49,2), d=72; SAME unit in the other arm at s204: (16,33) (d=64)
+    fmDRY call s139 ff_unit_0: unit at (20,27), victim at (42,12), d=37; SAME unit in the other arm at s139: (25,0) (d=29)
+    fmDRY call s204 ff_unit_1: unit at (15,33), victim at (49,0), d=67; SAME unit in the other arm at s203: (0,25) (d=74)
+    fmDRY call s222 ff_unit_0: unit at (30,20), victim at (47,0), d=37; SAME unit in the other arm at s221: (49,3) (d=5)
+    fmOFF contact s165 ff_unit_0 at (42,8) -> exit target by the rule (49,8); completed no
+    fmOFF s139 episode ff_unit_0: frames 69, min fire distance 1, frames at fire distance <=1: 6, end 207(contact) | path 139(25,0) 145(31,0) 151(36,1) 157(39,4) 163(42,7) 169(44,8) 175(46,6) 181(47,5) 187(49,5) 193(47,3) 199(49,3) 205(49,2)
+        (d) other unit at this call: ff_unit_1 at (0,25) status available avail=True standby d=55 (called unit d=29)
+    fmOFF s205 episode ff_unit_1: frames 3, min fire distance 17, frames at fire distance <=1: 0, end 207(victim_dead) | path 205(1,25)
+        (d) other unit at this call: ff_unit_0 at (49,2) status en_route avail=False not-idle d=0 (called unit d=72)
+    fmDRY s139 episode ff_unit_0: frames 102, min fire distance 2, frames at fire distance <=1: 0, end 240(horizon) | path 139(20,27) 145(24,25) 151(22,23) 157(23,22) 163(21,22) 169(21,22) 175(21,22) 181(21,22) 187(20,21) 193(21,20) 199(25,20) 205(30,20) 211(30,20) 217(30,20)
+        (d) other unit at this call: ff_unit_1 at (20,27) status available avail=True engaged d=37 (called unit d=37)
+    fmDRY s204 episode ff_unit_1: frames 37, min fire distance 4, frames at fire distance <=1: 0, end 240(horizon) | path 204(16,33) 210(15,33) 216(15,33) 222(14,33) 228(15,34) 234(16,36) 240(15,37)
+        (d) other unit at this call: ff_unit_0 at (29,20) status en_route avail=False not-idle d=40 (called unit d=67)
+    fmDRY s222 episode ff_unit_0: frames 19, min fire distance 2, frames at fire distance <=1: 0, end 240(horizon) | path 222(30,20) 228(31,15) 234(36,14) 240(39,11)
+        (d) other unit at this call: ff_unit_1 at (14,33) status route_blocked avail=False not-idle d=66 (called unit d=37)
+    FIRST CALL  OFF s139 ff_unit_0 d=29 -> contact 165   |  DRY s139 ff_unit_0 d=37 -> contact None   | step delta +0  dist delta +8  to-contact delta -  same unit True
+  CHANGED UNIT DEATH ff_unit_0: OFF 210  DRY None
+    fmOFF last assign before death: s139 ->victim_0  unit at (25,0) d=29 state idle engaged False disp 0 | died s210 at (49,3) (status before route_blocked; after terminal True) | frames at fire distance <=1 from the call: 9 | path 139(25,0) 145(31,0) 151(36,1) 157(39,4) 163(42,7) 169(44,8) 175(46,6) 181(47,5) 187(49,5) 193(47,3) 199(49,3) 205(49,2)
+      same (unit, victim) in fmDRY: s139 from (20,27) d=37 engaged True disp 32 -> contact None end 240(horizon), frames at fire distance <=1: 0 | path 139(20,27) 145(24,25) 151(22,23) 157(23,22) 163(21,22) 169(21,22) 175(21,22) 181(21,22) 187(20,21) 193(21,20) 199(25,20) 205(30,20) 211(30,20) 217(30,20)
+(e) RESCUE TIMELINE (events only, no positions): first differing step = 26
+      OFF only: []
+      DRY only: [('contact', 'ff_unit_1', 'victim_1')]
+    first assign that differs (unit, victim, step or call position): OFF s14 ff_unit_1->victim_1 from (2,46) d=25 | DRY s14 ff_unit_1->victim_1 from (16,46) d=11 (DRY unit disp 14, engaged True)
+    FIRST-DISPATCH HEAD START (the first ok assign of each unit):
+      ff_unit_0: OFF s15 ->victim_3 from (2,45) d=65 contact 81 complete 85 | DRY s15 ->victim_3 from (17,45) d=50 contact 66 complete 70 | d delta -15, contact delta -15
+      ff_unit_1: OFF s14 ->victim_1 from (2,46) d=25 contact 40 complete 42 | DRY s14 ->victim_1 from (16,46) d=11 contact 26 complete 28 | d delta -14, contact delta -14
+    completions OFF: [(42, 'ff_unit_1', 'victim_1'), (85, 'ff_unit_0', 'victim_3'), (106, 'ff_unit_1', 'victim_2')]
+    completions DRY: [(28, 'ff_unit_1', 'victim_1'), (70, 'ff_unit_0', 'victim_3'), (106, 'ff_unit_1', 'victim_2')]
+(f) FIRST DIVERGENCE  ff_steps 1 | victim_steps 27 (pos 27, status 28) | victim_flee_log 165 | uav_steps None | uav_actions None | partition 212 | rescue timeline 26
+      victim frame 27: victim_1 OFF [25, 48] assigned (contact<=: []) | DRY [25, 49] assigned (contact<=: [26])
+      first planner decision per victim (detection proxy) OFF {'victim_0': 139, 'victim_1': 14, 'victim_2': 53, 'victim_3': 15} | DRY {'victim_0': 139, 'victim_1': 14, 'victim_2': 53, 'victim_3': 15}
+
+----------------------------------------------------------------------------------------------------
+RUN south/half/808   OFF r/d/ffd 2/1/0 term None   DRY 2/1/1 term None
+----------------------------------------------------------------------------------------------------
+(a) DRY idle streaks (feature-log rows): steps, anchor, first engaged row, end cell, max displacement, actions
+    ff_unit_0 steps   1- 14 anchor (2,45)   first engaged s1 (2,45)      end (6,35)   maxdisp 14  {'move': 14}
+    ff_unit_1 steps   1- 16 anchor (2,46)   first engaged s1 (2,46)      end (6,34)   maxdisp 16  {'move': 16}
+    OFF idle frames: ff_unit_0 1-13@(2,45); ff_unit_1 1-15@(2,46),147-240@(1,24)
+(b-d) EVERY ok assign, both arms (call position, distance, anchor/displacement, the other unit, episode):
+    fmOFF s14  ff_unit_0->victim_3 initial                   unit (2,45)   victim (25,3)   d=65  [idle] anchor (2,45) disp 0 max 0 idle 13 1st-engaged - | other ff_unit_1 at (2,46) avail=True standby d=66 | contact None (+None) complete None end 144(victim_dead) rb_unassign 1 rb_frames 14
+    fmOFF s16  ff_unit_1->victim_1 initial                   unit (2,46)   victim (25,48)  d=25  [idle] anchor (2,46) disp 0 max 0 idle 15 1st-engaged - | other ff_unit_0 at (2,43) avail=False not-idle d=28 | contact 42 (+26) complete 44 end 44(contact) rb_unassign 0 rb_frames 0
+    fmOFF s48  ff_unit_1->victim_2 initial                   unit (25,49)  victim (7,25)   d=42  [returned] anchor - disp None max None idle None 1st-engaged - | other ff_unit_0 at (11,24) avail=False not-idle d=5 | contact 97 (+49) complete 98 end 98(contact) rb_unassign 0 rb_frames 0
+    fmOFF s101 ff_unit_1->victim_0 initial                   unit (0,26)   victim (40,25)  d=41  [returned] anchor - disp None max None idle None 1st-engaged - | other ff_unit_0 at (31,13) avail=False not-idle d=21 | contact None (+None) complete None end 240(horizon) rb_unassign 1 rb_frames 8
+    fmOFF s129 ff_unit_0->victim_3 initial                   unit (39,4)   victim (49,3)   d=11  [on_rescue:en_route] anchor - disp None max None idle None 1st-engaged - | other ff_unit_1 at (1,26) avail=False not-idle d=71 | contact None (+None) complete None end 144(victim_dead) rb_unassign 1 rb_frames 14
+    fmOFF s144 ff_unit_0->victim_0 initial                   unit (43,3)   victim (41,25)  d=24  [on_rescue:route_blocked] anchor - disp None max None idle None 1st-engaged - | other ff_unit_1 at (0,27) avail=False not-idle d=43 | contact None (+None) complete None end 240(horizon) rb_unassign 0 rb_frames 0
+    fmDRY s14  ff_unit_0->victim_3 initial                   unit (6,35)   victim (25,3)   d=51  [idle engaged=True] anchor (2,45) disp 14 max 14 idle 14 1st-engaged s1 (2,45) | other ff_unit_1 at (5,35) avail=True engaged d=52 | contact None (+None) complete None end 51(unit_dead) rb_unassign 1 rb_frames 2
+    fmDRY s16  ff_unit_1->victim_1 initial                   unit (6,34)   victim (25,48)  d=33  [idle engaged=True] anchor (2,46) disp 16 max 16 idle 16 1st-engaged s1 (2,46) | other ff_unit_0 at (6,33) avail=False not-idle d=34 | contact 50 (+34) complete 52 end 52(contact) rb_unassign 0 rb_frames 0
+    fmDRY s56  ff_unit_1->victim_2 initial                   unit (25,49)  victim (5,25)   d=44  [returned engaged=False] anchor - disp None max None idle None 1st-engaged - | other ff_unit_0 at (14,17) avail=False not-idle d=17 | contact 104 (+48) complete 105 end 105(contact) rb_unassign 0 rb_frames 0
+    fmDRY s108 ff_unit_1->victim_0 initial                   unit (0,27)   victim (40,25)  d=42  [returned engaged=False] anchor - disp None max None idle None 1st-engaged - | other ff_unit_0 at (14,17) avail=False not-idle d=34 | contact 240 (+132) complete None end 240(contact) rb_unassign 1 rb_frames 8
+    fmDRY s147 ff_unit_1->victim_0 initial                   unit (1,25)   victim (42,25)  d=41  [on_rescue:route_blocked engaged=False] anchor - disp None max None idle None 1st-engaged - | other ff_unit_0 at (14,17) avail=False not-idle d=36 | contact 240 (+93) complete None end 240(contact) rb_unassign 0 rb_frames 0
+  CHANGED UNIT DEATH ff_unit_0: OFF None  DRY 51
+    fmDRY last assign before death: s14 ->victim_3  unit at (6,35) d=51 state idle engaged True disp 14 | died s51 at (14,17) (status before route_blocked; after terminal False) | frames at fire distance <=1 from the call: 8 | path 14(6,35) 20(6,29) 26(6,23) 32(10,21) 38(12,19) 44(11,18) 50(14,17)
+      same (unit, victim) in fmOFF: s14 from (2,45) d=65 engaged False disp 0 -> contact None end 144(victim_dead), frames at fire distance <=1: 12 | path 14(2,45) 20(2,39) 26(2,33) 32(3,28) 38(7,26) 44(11,24) 50(11,24) 56(11,24) 62(12,25) 68(17,26) 74(21,24) 80(23,20) 86(25,18) 92(27,16)
+(e) RESCUE TIMELINE (events only, no positions): first differing step = 42
+      OFF only: [('contact', 'ff_unit_1', 'victim_1')]
+      DRY only: []
+    first assign that differs (unit, victim, step or call position): OFF s14 ff_unit_0->victim_3 from (2,45) d=65 | DRY s14 ff_unit_0->victim_3 from (6,35) d=51 (DRY unit disp 14, engaged True)
+    FIRST-DISPATCH HEAD START (the first ok assign of each unit):
+      ff_unit_0: OFF s14 ->victim_3 from (2,45) d=65 contact None complete None | DRY s14 ->victim_3 from (6,35) d=51 contact None complete None | d delta -14, contact delta -
+      ff_unit_1: OFF s16 ->victim_1 from (2,46) d=25 contact 42 complete 44 | DRY s16 ->victim_1 from (6,34) d=33 contact 50 complete 52 | d delta +8, contact delta +8
+    completions OFF: [(44, 'ff_unit_1', 'victim_1'), (98, 'ff_unit_1', 'victim_2')]
+    completions DRY: [(52, 'ff_unit_1', 'victim_1'), (105, 'ff_unit_1', 'victim_2')]
+(f) FIRST DIVERGENCE  ff_steps 1 | victim_steps 43 (pos 43, status 44) | victim_flee_log 97 | uav_steps None | uav_actions None | partition None | rescue timeline 42
+      victim frame 43: victim_1 OFF [25, 49] assigned (contact<=: [42]) | DRY [25, 48] assigned (contact<=: [])
+      first planner decision per victim (detection proxy) OFF {'victim_0': 71, 'victim_1': 16, 'victim_2': 17, 'victim_3': 14} | DRY {'victim_0': 71, 'victim_1': 16, 'victim_2': 17, 'victim_3': 14}
+
+----------------------------------------------------------------------------------------------------
+RUN south/half/909   OFF r/d/ffd 3/1/0 term 219   DRY 2/1/1 term None
+----------------------------------------------------------------------------------------------------
+(a) DRY idle streaks (feature-log rows): steps, anchor, first engaged row, end cell, max displacement, actions
+    ff_unit_0 steps   1- 14 anchor (2,45)   first engaged s1 (2,45)      end (10,39)  maxdisp 14  {'move': 14}
+    ff_unit_1 steps   1- 16 anchor (2,46)   first engaged s1 (2,46)      end (10,38)  maxdisp 16  {'move': 16}
+    OFF idle frames: ff_unit_0 1-13@(2,45),223-240@(48,6); ff_unit_1 1-15@(2,46),219-240@(42,23)
+(b-d) EVERY ok assign, both arms (call position, distance, anchor/displacement, the other unit, episode):
+    fmOFF s14  ff_unit_0->victim_3 initial                   unit (2,45)   victim (25,3)   d=65  [idle] anchor (2,45) disp 0 max 0 idle 13 1st-engaged - | other ff_unit_1 at (2,46) avail=True standby d=66 | contact 203 (+189) complete 218 end 218(contact) rb_unassign 1 rb_frames 4
+    fmOFF s16  ff_unit_1->victim_1 initial                   unit (2,46)   victim (25,48)  d=25  [idle] anchor (2,46) disp 0 max 0 idle 15 1st-engaged - | other ff_unit_0 at (2,43) avail=False not-idle d=28 | contact 42 (+26) complete 44 end 44(contact) rb_unassign 0 rb_frames 0
+    fmOFF s48  ff_unit_1->victim_2 initial                   unit (25,49)  victim (1,25)   d=48  [returned] anchor - disp None max None idle None 1st-engaged - | other ff_unit_0 at (5,24) avail=False not-idle d=5 | contact 137 (+89) complete 138 end 138(contact) rb_unassign 0 rb_frames 0
+    fmOFF s142 ff_unit_1->victim_0 initial                   unit (0,30)   victim (42,25)  d=47  [returned] anchor - disp None max None idle None 1st-engaged - | other ff_unit_0 at (37,8) avail=False not-idle d=22 | contact None (+None) complete None end 219(victim_dead) rb_unassign 1 rb_frames 5
+    fmOFF s171 ff_unit_0->victim_3 initial                   unit (44,7)   victim (49,8)   d=6   [on_rescue:en_route] anchor - disp None max None idle None 1st-engaged - | other ff_unit_1 at (27,29) avail=False not-idle d=43 | contact 203 (+32) complete 218 end 218(contact) rb_unassign 1 rb_frames 4
+    fmOFF s213 ff_unit_1->victim_0 initial                   unit (40,24)  victim (49,24)  d=9   [on_rescue:en_route] anchor - disp None max None idle None 1st-engaged - | other ff_unit_0 at (46,6) avail=False not-idle d=21 | contact None (+None) complete None end 219(victim_dead) rb_unassign 1 rb_frames 5
+    fmDRY s14  ff_unit_0->victim_3 initial                   unit (10,39)  victim (25,3)   d=51  [idle engaged=True] anchor (2,45) disp 14 max 14 idle 14 1st-engaged s1 (2,45) | other ff_unit_1 at (9,39) avail=True engaged d=52 | contact None (+None) complete None end 36(unit_dead) rb_unassign 1 rb_frames 0
+    fmDRY s16  ff_unit_1->victim_1 initial                   unit (10,38)  victim (25,48)  d=25  [idle engaged=True] anchor (2,46) disp 16 max 16 idle 16 1st-engaged s1 (2,46) | other ff_unit_0 at (10,37) avail=False not-idle d=26 | contact 42 (+26) complete 44 end 44(contact) rb_unassign 0 rb_frames 0
+    fmDRY s48  ff_unit_1->victim_2 initial                   unit (25,49)  victim (1,25)   d=48  [returned engaged=False] anchor - disp None max None idle None 1st-engaged - | other ff_unit_0 at (9,23) avail=False not-idle d=10 | contact 137 (+89) complete 138 end 138(contact) rb_unassign 0 rb_frames 0
+    fmDRY s142 ff_unit_1->victim_0 initial                   unit (0,30)   victim (42,25)  d=47  [returned engaged=False] anchor - disp None max None idle None 1st-engaged - | other ff_unit_0 at (9,23) avail=False not-idle d=35 | contact None (+None) complete None end 219(victim_dead) rb_unassign 1 rb_frames 5
+    fmDRY s213 ff_unit_1->victim_0 initial                   unit (40,24)  victim (49,24)  d=9   [on_rescue:en_route engaged=False] anchor - disp None max None idle None 1st-engaged - | other ff_unit_0 at (9,23) avail=False not-idle d=41 | contact None (+None) complete None end 219(victim_dead) rb_unassign 1 rb_frames 5
+    fmDRY s219 ff_unit_1->victim_3 initial                   unit (41,23)  victim (44,6)   d=20  [on_rescue:route_blocked engaged=False] anchor - disp None max None idle None 1st-engaged - | other ff_unit_0 at (9,23) avail=False not-idle d=52 | contact 239 (+20) complete None end 240(contact) rb_unassign 0 rb_frames 0
+  CHANGED VICTIM victim_3: OFF rescued (terminal frame (218, 'rescued'))  DRY assigned (terminal frame None)
+    fmOFF call s14 ff_unit_0: unit at (2,45), victim at (25,3), d=65; SAME unit in the other arm at s14: (10,39) (d=51)
+    fmOFF call s171 ff_unit_0: unit at (44,7), victim at (49,8), d=6; SAME unit in the other arm at s170: (9,23) (d=55)
+    fmDRY call s14 ff_unit_0: unit at (10,39), victim at (25,3), d=51; SAME unit in the other arm at s14: (2,45) (d=65)
+    fmDRY call s219 ff_unit_1: unit at (41,23), victim at (44,6), d=20; SAME unit in the other arm at s218: (41,23) (d=20)
+    fmOFF contact s203 ff_unit_0 at (47,6) -> exit target by the rule (49,6); completed s218 at (49,6)
+    fmDRY contact s239 ff_unit_1 at (44,6) -> exit target by the rule (49,6); completed no
+    fmOFF s14 episode ff_unit_0: frames 204, min fire distance 1, frames at fire distance <=1: 17, end 218(contact) | path 14(2,45) 20(2,39) 26(2,33) 32(2,27) 38(5,24) 44(6,23) 50(3,24) 56(4,23) 62(1,22) 68(2,21) 74(2,23) 80(1,22) 86(1,22) 92(0,19)
+        (d) other unit at this call: ff_unit_1 at (2,46) status available avail=True standby d=66 (called unit d=65)
+    fmOFF s171 episode ff_unit_0: frames 47, min fire distance 1, frames at fire distance <=1: 2, end 218(contact) | path 171(43,7) 177(43,7) 183(43,7) 189(44,8) 195(44,8) 201(46,6) 207(47,6) 213(47,6)
+        (d) other unit at this call: ff_unit_1 at (27,29) status en_route avail=False not-idle d=43 (called unit d=6)
+    fmDRY s14 episode ff_unit_0: frames 23, min fire distance 0, frames at fire distance <=1: 7, end 36(unit_dead) | path 14(10,39) 20(10,33) 26(10,27) 32(10,25)
+        (d) other unit at this call: ff_unit_1 at (9,39) status available avail=True engaged d=52 (called unit d=51)
+    fmDRY s219 episode ff_unit_1: frames 22, min fire distance 2, frames at fire distance <=1: 0, end 240(contact) | path 219(42,23) 225(43,18) 231(43,12) 237(44,7)
+        (d) other unit at this call: ff_unit_0 at (9,23) status dead avail=False not-idle d=52 (called unit d=20)
+    FIRST CALL  OFF s14 ff_unit_0 d=65 -> contact 203   |  DRY s14 ff_unit_0 d=51 -> contact None   | step delta +0  dist delta -14  to-contact delta -  same unit True
+  CHANGED UNIT DEATH ff_unit_0: OFF None  DRY 36
+    fmDRY last assign before death: s14 ->victim_3  unit at (10,39) d=51 state idle engaged True disp 14 | died s36 at (9,23) (status before en_route; after terminal False) | frames at fire distance <=1 from the call: 7 | path 14(10,39) 20(10,33) 26(10,27) 32(10,25)
+      same (unit, victim) in fmOFF: s14 from (2,45) d=65 engaged False disp 0 -> contact 203 end 218(contact), frames at fire distance <=1: 17 | path 14(2,45) 20(2,39) 26(2,33) 32(2,27) 38(5,24) 44(6,23) 50(3,24) 56(4,23) 62(1,22) 68(2,21) 74(2,23) 80(1,22) 86(1,22) 92(0,19)
+(e) RESCUE TIMELINE (events only, no positions): first differing step = 36
+      OFF only: []
+      DRY only: [('ffdead', 'ff_unit_0'), ('planner', 'delay', 'victim_3', 'replacement_after_blocked'), ('unassign', 'ff_unit_0', 'victim_3', 'replacement_after_blocked'), ('vstat', 'victim_3', 'confirmed')]
+    first assign that differs (unit, victim, step or call position): OFF s14 ff_unit_0->victim_3 from (2,45) d=65 | DRY s14 ff_unit_0->victim_3 from (10,39) d=51 (DRY unit disp 14, engaged True)
+    FIRST-DISPATCH HEAD START (the first ok assign of each unit):
+      ff_unit_0: OFF s14 ->victim_3 from (2,45) d=65 contact 203 complete 218 | DRY s14 ->victim_3 from (10,39) d=51 contact None complete None | d delta -14, contact delta -
+      ff_unit_1: OFF s16 ->victim_1 from (2,46) d=25 contact 42 complete 44 | DRY s16 ->victim_1 from (10,38) d=25 contact 42 complete 44 | d delta +0, contact delta +0
+    completions OFF: [(44, 'ff_unit_1', 'victim_1'), (138, 'ff_unit_1', 'victim_2'), (218, 'ff_unit_0', 'victim_3')]
+    completions DRY: [(44, 'ff_unit_1', 'victim_1'), (138, 'ff_unit_1', 'victim_2')]
+(f) FIRST DIVERGENCE  ff_steps 1 | victim_steps 36 (pos 203, status 36) | victim_flee_log 203 | uav_steps 231 | uav_actions 231 | partition 221 | rescue timeline 36
+      victim frame 36: victim_3 OFF [25, 3] assigned (contact<=: []) | DRY [25, 3] confirmed (contact<=: [])
+      first planner decision per victim (detection proxy) OFF {'victim_0': 61, 'victim_1': 16, 'victim_2': 17, 'victim_3': 14} | DRY {'victim_0': 61, 'victim_1': 16, 'victim_2': 17, 'victim_3': 14}
+
+----------------------------------------------------------------------------------------------------
+SAME-COUNT UNIT-DEATH CHANGES on runs whose outcome counts agree (which unit died, and when)
+----------------------------------------------------------------------------------------------------
+  south/half/101  OFF {'ff_unit_0': 66, 'ff_unit_1': 159}  DRY {'ff_unit_0': 90, 'ff_unit_1': 147}  (terminal OFF 159 DRY 147)
+    fmOFF ff_unit_0 died s66 at (16,14) status-before en_route after-terminal False | last assign s57 ->victim_0 engaged False disp None | DRY idle streak engaged before death -
+    fmOFF ff_unit_1 died s159 at (9,30) status-before route_blocked after-terminal False | last assign s120 ->victim_0 engaged False disp None | DRY idle streak engaged before death -
+    fmDRY ff_unit_0 died s90 at (11,13) status-before en_route after-terminal False | last assign s57 ->victim_0 engaged False disp None | DRY idle streak engaged before death False
+    fmDRY ff_unit_1 died s147 at (4,27) status-before assigned after-terminal False | last assign s102 ->victim_0 engaged False disp None | DRY idle streak engaged before death False
+  south/half/303  OFF {'ff_unit_1': 216}  DRY {'ff_unit_0': 216}  (terminal OFF 114 DRY 115)
+    fmOFF ff_unit_1 died s216 at (48,2) status-before available after-terminal True | last assign s49 ->victim_3 engaged False disp None | DRY idle streak engaged before death -
+    fmDRY ff_unit_0 died s216 at (48,2) status-before available after-terminal True | last assign s45 ->victim_3 engaged False disp None | DRY idle streak engaged before death True
+  east/half/909  OFF {'ff_unit_0': 189}  DRY {'ff_unit_0': 156}  (terminal OFF 122 DRY 117)
+    fmOFF ff_unit_0 died s189 at (36,0) status-before available after-terminal True | last assign s89 ->victim_0 engaged False disp None | DRY idle streak engaged before death -
+    fmDRY ff_unit_0 died s156 at (48,0) status-before available after-terminal True | last assign s83 ->victim_0 engaged True disp 9 | DRY idle streak engaged before death True
+  south/half/1010  OFF {'ff_unit_0': 129}  DRY {'ff_unit_0': 96}  (terminal OFF 210 DRY 210)
+    fmOFF ff_unit_0 died s129 at (0,6) status-before available after-terminal False | last assign s14 ->victim_3 engaged False disp 0 | DRY idle streak engaged before death -
+    fmDRY ff_unit_0 died s96 at (14,0) status-before available after-terminal False | last assign s14 ->victim_3 engaged True disp 14 | DRY idle streak engaged before death True
+
+====================================================================================================
+3. CLASSIFICATION OF EVERY CHANGED OUTCOME (rule applied to the computed indicators)
+   M1 displaced-at-the-call: same call step, same unit, the DRY unit was ENGAGED at the call and displaced >= 5
+      from its idle anchor, so its route at the call changed (farther, or a shorter Manhattan distance that the
+      unit's greedy walker could not cover: agents.Firefighter._move_toward steps to the best non-burning
+      neighbour, no global path)
+   M2 re-timed chain: the call that matters happens at a DIFFERENT step because upstream completions moved,
+      and the DRY unit at the call is not materially displaced (not in an idle streak, or displacement <= 3)
+   M3 unit identity: same call step, a different unit takes it (the chooser saw different positions)
+   M4 victim/UAV side: detection timing differs or the UAV series diverges at or before the call
+   M5 post-terminal: a unit death after terminal_step with no rescue involved (where idle units stand)
+   The call that matters = the victim's first ok assign in each arm; for a death, the dead unit's last ok assign
+   (and, for a death only one arm has, the same (unit, victim) assign in the other arm).
+====================================================================================================
+  east/half/101    victim_0 rescued->dead             M2                     LOSS                                  
+      OFF s90 ff_unit_0 d=24 contact 114 | DRY s77 ff_unit_0 d=28 engaged True disp 2 contact 100 end 138(contact) | DRY call is the unit's first dispatch False | rescue timeline first differs s26 | uav div 129 | earlier identity swaps 0
+  east/half/101    ff_unit_0 death fmOFF              M5                     GAIN (ff death avoided)               
+      fmOFF ff_unit_0 died s195 (terminal 127, idle at death True); its last call s90 ->victim_0 d=24 engaged False disp None; other arm: s77 from (25,2) d=28 engaged True disp 2 contact 100
+  east/half/404    victim_1 dead->rescued             M1                     GAIN                                  
+      OFF s16 ff_unit_1 d=25 contact None | DRY s16 ff_unit_1 d=20 engaged True disp 11 contact 41 end 42(contact) | DRY call is the unit's first dispatch True | rescue timeline first differs s41 | uav div None | earlier identity swaps 0
+  east/half/404    ff_unit_0 death fmOFF              M5                     GAIN (ff death avoided)               
+      fmOFF ff_unit_0 died s240 (terminal 162, idle at death True); its last call s15 ->victim_3 d=65 engaged False disp 0; other arm: s15 from (10,41) d=53 engaged True disp 12 contact 69
+  east/half/404    ff_unit_1 death fmDRY              M2                     LOSS (ff death added)                 
+      fmDRY ff_unit_1 died s72 (terminal 162, idle at death False); its last call s53 ->victim_2 d=44 engaged False disp 2; other arm: s53 from (25,49) d=39 engaged False disp 2 contact 146
+  south/half/202   victim_0 assigned->rescued         M2                     GAIN                                  
+      OFF s81 ff_unit_0 d=58 contact None | DRY s68 ff_unit_0 d=50 engaged False disp None contact 166 end 167(contact) | DRY call is the unit's first dispatch False | rescue timeline first differs s40 | uav div 169 | earlier identity swaps 0
+  south/half/202   ff_unit_0 death fmOFF              M2                     GAIN (ff death avoided)               
+      fmOFF ff_unit_0 died s207 (terminal None, idle at death False); its last call s81 ->victim_0 d=58 engaged False disp None; other arm: s68 from (17,0) d=50 engaged False disp None contact 166
+  south/half/404   victim_3 rescued->assigned         M3+M1(fire-ward start) LOSS                                  
+      OFF s14 ff_unit_0 d=65 contact None | DRY s14 ff_unit_1 d=56 engaged True disp 10 contact None end 72(unit_dead) | DRY call is the unit's first dispatch True | rescue timeline first differs s14 | uav div 233 | earlier identity swaps 0
+  south/half/404   ff_unit_1 death fmDRY              M1                     LOSS (ff death added)                 
+      fmDRY ff_unit_1 died s72 (terminal None, idle at death False); its last call s14 ->victim_3 d=56 engaged True disp 10; other arm: no such assign
+  east/def/101     victim_3 rescued->assigned         M3+M1(fire-ward start) LOSS                                  
+      OFF s117 ff_unit_0 d=65 contact 182 | DRY s117 ff_unit_1 d=56 engaged True disp 12 contact None end 240(horizon) | DRY call is the unit's first dispatch False | rescue timeline first differs s26 | uav div None | earlier identity swaps 1
+  east/def/303     ff_unit_1 death fmDRY              M2                     LOSS (ff death added)                 
+      fmDRY ff_unit_1 died s141 (terminal 149, idle at death False); its last call s64 ->victim_0 d=35 engaged False disp None; other arm: s49 from (25,49) d=37 engaged False disp 0 contact 120
+  east/half/606    victim_0 dead->assigned            M1                     NEUTRAL-rescued (dead -> unresolved)  
+      OFF s139 ff_unit_0 d=29 contact 165 | DRY s139 ff_unit_0 d=37 engaged True disp 32 contact None end 240(horizon) | DRY call is the unit's first dispatch False | rescue timeline first differs s26 | uav div None | earlier identity swaps 0
+  east/half/606    ff_unit_0 death fmOFF              M1                     GAIN (ff death avoided)               
+      fmOFF ff_unit_0 died s210 (terminal 207, idle at death False); its last call s139 ->victim_0 d=29 engaged False disp 0; other arm: s139 from (20,27) d=37 engaged True disp 32 contact None
+  south/half/808   ff_unit_0 death fmDRY              M1                     LOSS (ff death added)                 
+      fmDRY ff_unit_0 died s51 (terminal None, idle at death False); its last call s14 ->victim_3 d=51 engaged True disp 14; other arm: s14 from (2,45) d=65 engaged False disp 0 contact None
+  south/half/909   victim_3 rescued->assigned         M1                     LOSS                                  
+      OFF s14 ff_unit_0 d=65 contact 203 | DRY s14 ff_unit_0 d=51 engaged True disp 14 contact None end 36(unit_dead) | DRY call is the unit's first dispatch True | rescue timeline first differs s36 | uav div 231 | earlier identity swaps 0
+  south/half/909   ff_unit_0 death fmDRY              M1                     LOSS (ff death added)                 
+      fmDRY ff_unit_0 died s36 (terminal None, idle at death False); its last call s14 ->victim_3 d=51 engaged True disp 14; other arm: s14 from (2,45) d=65 engaged False disp 0 contact 203
+  COUNTS by (class, sign): {('M1', 'GAIN'): 2, ('M1', 'LOSS'): 4, ('M1', 'NEUTRAL-rescued'): 1, ('M2', 'GAIN'): 2, ('M2', 'LOSS'): 3, ('M3', 'LOSS'): 2, ('M5', 'GAIN'): 2}
+
+====================================================================================================
+4. SYSTEMATIC, ALL 23 TUPLES (and the de-duplicated 20): per victim, per assign, per first dispatch
+====================================================================================================
+  PER VICTIM (first ok assign in each arm): step OFF/DRY, unit, d at call OFF/DRY, contact delay OFF/DRY, outcome
+    east/half/101    victim_0 s 90/77  0/0 d 24/28 ( +4) contact +24/+23  rescued   -> dead       <== FLIP
+    east/half/101    victim_1 s 14/14  1/1 d 25/11 (-14) contact +26/+12  rescued   -> rescued    
+    east/half/101    victim_2 s 53/53  1/1 d 39/32 ( -7) contact +40/+33  rescued   -> rescued    
+    east/half/101    victim_3 s 15/15  0/0 d 65/50 (-15) contact +66/+51  rescued   -> rescued    
+    east/half/202    victim_0 OFF assigns 0 DRY assigns 0  dead -> dead 
+    east/half/202    victim_1 s 15/15  1/0 d 25/15 (-10) contact +26/+16  rescued   -> rescued    
+    east/half/202    victim_2 s 53/53  1/0 d 39/28 (-11) contact +40/+29  rescued   -> rescued    
+    east/half/202    victim_3 s 15/15  0/1 d 65/51 (-14) contact +66/+52  rescued   -> rescued    
+    east/half/303    victim_0 s 58/70  0/1 d 42/38 ( -4) contact +None/+41  rescued   -> rescued    
+    east/half/303    victim_1 s130/45  0/0 d 30/48 (+18) contact +87/+49  rescued   -> rescued    
+    east/half/303    victim_2 s 15/15  0/0 d 28/13 (-15) contact +28/+14  rescued   -> rescued    
+    east/half/303    victim_3 s 15/15  1/1 d 66/51 (-15) contact +None/+None  dead      -> dead       
+    east/half/404    victim_0 OFF assigns 0 DRY assigns 0  dead -> dead 
+    east/half/404    victim_1 s 16/16  1/1 d 25/20 ( -5) contact +None/+25  dead      -> rescued    <== FLIP
+    east/half/404    victim_2 s 53/53  1/1 d 39/44 ( +5) contact +93/+None  rescued   -> rescued    
+    east/half/404    victim_3 s 15/15  0/0 d 65/53 (-12) contact +66/+54  rescued   -> rescued    
+    east/half/505    victim_0 OFF assigns 0 DRY assigns 0  dead -> dead 
+    east/half/505    victim_1 s 58/43  0/0 d 48/48 ( +0) contact +49/+49  rescued   -> rescued    
+    east/half/505    victim_2 s 15/15  0/0 d 28/13 (-15) contact +29/+14  rescued   -> rescued    
+    east/half/505    victim_3 s 15/15  1/1 d 66/51 (-15) contact +74/+56  rescued   -> rescued    
+    south/half/101   victim_0 s 57/57  0/0 d 46/50 ( +4) contact +None/+None  unreachable-> unreachable 
+    south/half/101   victim_1 s 16/16  1/1 d 25/11 (-14) contact +26/+12  rescued   -> rescued    
+    south/half/101   victim_2 s 49/41  1/1 d 39/34 ( -5) contact +42/+35  rescued   -> rescued    
+    south/half/101   victim_3 s 14/14  0/0 d 65/51 (-14) contact +None/+None  dead      -> dead       
+    south/half/202   victim_0 s 81/68  0/0 d 58/50 ( -8) contact +None/+98  assigned  -> rescued    <== FLIP
+    south/half/202   victim_1 s 16/16  1/1 d 25/23 ( -2) contact +26/+24  rescued   -> rescued    
+    south/half/202   victim_2 s 47/45  1/1 d 39/39 ( +0) contact +40/+40  rescued   -> rescued    
+    south/half/202   victim_3 s 14/14  0/0 d 65/51 (-14) contact +58/+45  rescued   -> rescued    
+    south/half/303   victim_0 s 63/65  0/1 d 40/39 ( -1) contact +41/+40  rescued   -> rescued    
+    south/half/303   victim_1 s 16/16  1/1 d 25/41 (+16) contact +26/+42  rescued   -> rescued    
+    south/half/303   victim_2 s 15/15  0/0 d 28/13 (-15) contact +29/+14  rescued   -> rescued    
+    south/half/303   victim_3 s 49/45  1/0 d 46/47 ( +1) contact +50/+51  rescued   -> rescued    
+    south/half/404   victim_0 s 69/71  1/0 d 42/41 ( -1) contact +None/+None  dead      -> dead       
+    south/half/404   victim_1 s 16/16  1/0 d 25/26 ( +1) contact +26/+27  rescued   -> rescued    
+    south/half/404   victim_2 s 47/48  1/0 d 49/49 ( +0) contact +None/+None  rescued   -> rescued    
+    south/half/404   victim_3 s 14/14  0/1 d 65/56 ( -9) contact +None/+None  rescued   -> assigned   <== FLIP
+    south/half/505   victim_0 s 63/65  0/1 d 40/39 ( -1) contact +41/+40  rescued   -> rescued    
+    south/half/505   victim_1 s 16/16  1/1 d 25/41 (+16) contact +26/+42  rescued   -> rescued    
+    south/half/505   victim_2 s 15/15  0/0 d 28/13 (-15) contact +29/+14  rescued   -> rescued    
+    south/half/505   victim_3 s 47/43  1/0 d 46/47 ( +1) contact +None/+None  dead      -> dead       
+    east/def/101     victim_0 s 86/86  1/0 d 39/30 ( -9) contact +118/+119  rescued   -> rescued    
+    east/def/101     victim_1 s 14/14  1/1 d 25/11 (-14) contact +26/+12  rescued   -> rescued    
+    east/def/101     victim_2 OFF assigns 0 DRY assigns 0  unreachable -> unreachable 
+    east/def/101     victim_3 s117/117 0/1 d 65/56 ( -9) contact +65/+None  rescued   -> assigned   <== FLIP
+    east/def/202     victim_0 OFF assigns 0 DRY assigns 0  dead -> dead 
+    east/def/202     victim_1 s 16/16  1/0 d 25/14 (-11) contact +26/+15  rescued   -> rescued    
+    east/def/202     victim_2 s141/141 0/0 d 28/22 ( -6) contact +29/+23  rescued   -> rescued    
+    east/def/202     victim_3 s106/106 1/1 d 46/26 (-20) contact +47/+27  rescued   -> rescued    
+    east/def/303     victim_0 s 49/49  1/0 d 37/38 ( +1) contact +71/+90  rescued   -> rescued    
+    east/def/303     victim_1 s 15/15  1/1 d 25/40 (+15) contact +26/+41  rescued   -> rescued    
+    east/def/303     victim_2 s 15/15  0/0 d 28/13 (-15) contact +28/+14  rescued   -> rescued    
+    east/def/303     victim_3 OFF assigns 0 DRY assigns 0  dead -> dead 
+    east/half/606    victim_0 s139/139 0/0 d 29/37 ( +8) contact +26/+None  dead      -> assigned   <== FLIP
+    east/half/606    victim_1 s 14/14  1/1 d 25/11 (-14) contact +26/+12  rescued   -> rescued    
+    east/half/606    victim_2 s 53/53  1/1 d 39/39 ( +0) contact +42/+42  rescued   -> rescued    
+    east/half/606    victim_3 s 15/15  0/0 d 65/50 (-15) contact +66/+51  rescued   -> rescued    
+    east/half/707    victim_0 OFF assigns 0 DRY assigns 0  unreachable -> unreachable 
+    east/half/707    victim_1 s 15/15  1/1 d 25/27 ( +2) contact +26/+28  rescued   -> rescued    
+    east/half/707    victim_2 s 27/27  0/0 d 28/26 ( -2) contact +29/+27  rescued   -> rescued    
+    east/half/707    victim_3 OFF assigns 0 DRY assigns 0  unreachable -> unreachable 
+    east/half/808    victim_0 OFF assigns 0 DRY assigns 0  dead -> dead 
+    east/half/808    victim_1 s 16/16  1/1 d 25/29 ( +4) contact +26/+30  rescued   -> rescued    
+    east/half/808    victim_2 s 48/52  1/1 d 39/39 ( +0) contact +40/+40  rescued   -> rescued    
+    east/half/808    victim_3 s 15/15  0/0 d 65/50 (-15) contact +66/+51  rescued   -> rescued    
+    east/half/909    victim_0 s 89/83  0/0 d 28/20 ( -8) contact +23/+17  rescued   -> rescued    
+    east/half/909    victim_1 s 16/16  1/1 d 25/23 ( -2) contact +26/+24  rescued   -> rescued    
+    east/half/909    victim_2 s 53/53  1/1 d 39/37 ( -2) contact +42/+40  rescued   -> rescued    
+    east/half/909    victim_3 s 15/15  0/0 d 65/50 (-15) contact +66/+51  rescued   -> rescued    
+    east/half/1010   victim_0 s 97/97  0/0 d 29/14 (-15) contact +None/+None  dead      -> dead       
+    east/half/1010   victim_1 s 15/15  1/1 d 25/12 (-13) contact +26/+13  rescued   -> rescued    
+    east/half/1010   victim_2 s 52/52  1/1 d 39/35 ( -4) contact +40/+36  rescued   -> rescued    
+    east/half/1010   victim_3 s 15/15  0/0 d 65/50 (-15) contact +66/+51  rescued   -> rescued    
+    south/half/606   victim_0 OFF assigns 0 DRY assigns 0  unreachable -> unreachable 
+    south/half/606   victim_1 s 15/15  1/1 d 25/10 (-15) contact +26/+11  rescued   -> rescued    
+    south/half/606   victim_2 s 55/55  1/1 d 39/28 (-11) contact +40/+29  rescued   -> rescued    
+    south/half/606   victim_3 s 14/14  0/0 d 65/51 (-14) contact +57/+47  rescued   -> rescued    
+    south/half/707   victim_0 s107/63  1/1 d 40/39 ( -1) contact +41/+40  rescued   -> rescued    
+    south/half/707   victim_1 s 16/16  1/1 d 25/39 (+14) contact +26/+40  rescued   -> rescued    
+    south/half/707   victim_2 s 49/118 1/1 d 30/27 ( -3) contact +28/+28  rescued   -> rescued    
+    south/half/707   victim_3 s 14/14  0/0 d 65/51 (-14) contact +None/+None  dead      -> dead       
+    south/half/808   victim_0 s101/108 1/1 d 41/42 ( +1) contact +None/+132  assigned  -> assigned   
+    south/half/808   victim_1 s 16/16  1/1 d 25/33 ( +8) contact +26/+34  rescued   -> rescued    
+    south/half/808   victim_2 s 48/56  1/1 d 42/44 ( +2) contact +49/+48  rescued   -> rescued    
+    south/half/808   victim_3 s 14/14  0/0 d 65/51 (-14) contact +None/+None  dead      -> dead       
+    south/half/909   victim_0 s142/142 1/1 d 47/47 ( +0) contact +None/+None  dead      -> dead       
+    south/half/909   victim_1 s 16/16  1/1 d 25/25 ( +0) contact +26/+26  rescued   -> rescued    
+    south/half/909   victim_2 s 48/48  1/1 d 48/48 ( +0) contact +89/+89  rescued   -> rescued    
+    south/half/909   victim_3 s 14/14  0/0 d 65/51 (-14) contact +189/+None  rescued   -> assigned   <== FLIP
+    south/half/1010  victim_0 OFF assigns 0 DRY assigns 0  unreachable -> unreachable 
+    south/half/1010  victim_1 s 15/15  1/1 d 25/18 ( -7) contact +26/+19  rescued   -> rescued    
+    south/half/1010  victim_2 s 46/39  1/1 d 39/39 ( +0) contact +42/+41  rescued   -> rescued    
+    south/half/1010  victim_3 s 14/14  0/0 d 65/51 (-14) contact +55/+43  rescued   -> rescued    
+  all23           first-assign STEP delta (DRY-OFF): n=81 mean -1.16 median +0.0  (+9 / -11 / 0:61)  min -85 max +69
+  all23           DISTANCE at call delta:            n=81 mean -5.44 median -6.0  (+18 / -54 / 0:9)  min -20 max +18
+  all23           ASSIGN->CONTACT delta (both made): n=62 mean -5.90 median -6.5  (+11 / -44 / 0:7)  min -38 max +19
+  dedup20         first-assign STEP delta (DRY-OFF): n=72 mean -1.31 median +0.0  (+9 / -11 / 0:52)  min -85 max +69
+  dedup20         DISTANCE at call delta:            n=72 mean -5.18 median -4.5  (+16 / -47 / 0:9)  min -15 max +18
+  dedup20         ASSIGN->CONTACT delta (both made): n=54 mean -6.22 median -6.5  (+8 / -39 / 0:7)  min -38 max +16
+  first-dispatch  first-assign STEP delta (DRY-OFF): n=46 mean +0.00 median +0.0  (+0 / -0 / 0:46)  min +0 max +0
+  first-dispatch  DISTANCE at call delta:            n=46 mean -8.15 median -14.0  (+8 / -37 / 0:1)  min -15 max +16
+  first-dispatch  ASSIGN->CONTACT delta (both made): n=38 mean -7.24 median -12.5  (+8 / -29 / 0:1)  min -18 max +16
+  later           first-assign STEP delta (DRY-OFF): n=35 mean -2.69 median +0.0  (+9 / -11 / 0:15)  min -85 max +69
+  later           DISTANCE at call delta:            n=35 mean -1.89 median +0.0  (+10 / -17 / 0:8)  min -20 max +18
+  later           ASSIGN->CONTACT delta (both made): n=24 mean -3.79 median -1.0  (+3 / -15 / 0:6)  min -38 max +19
+  outcome flips (OFF -> DRY): {('rescued', 'dead'): 1, ('dead', 'rescued'): 1, ('assigned', 'rescued'): 1, ('rescued', 'assigned'): 3, ('dead', 'assigned'): 1}
+
+  EVERY DRY ok assign: engaged on its latest row (round-1 preemption) and displacement from the idle anchor
+    DRY ok assigns 104, engaged at the call 62 (59.6%); by (state before call, engaged): {('idle', 'engaged'): 61, ('returned', 'not-engaged'): 22, ('on_rescue', 'not-engaged'): 17, ('idle', 'not-engaged'): 3, ('on_rescue', 'engaged'): 1}
+    displacement at the call, calls on a unit inside a feature-log idle streak: n=65 mean 14.17 median 15.0 min 2 max 50
+        first streak (from the berth, step 1): n=46 mean 15.07 median 15.0 min 2 max 50   list [2, 2, 8, 10, 11, 12, 14, 14, 14, 14, 14, 14, 14, 14, 14, 14, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 28, 50]
+        later streaks (after a rescue):         n=19 mean 12.00 median 12.0 min 2 max 32   list [2, 2, 2, 4, 5, 6, 9, 9, 11, 12, 12, 14, 15, 15, 17, 17, 21, 23, 32]
+    OFF, same measure on idle-unit calls (only the unchanged idle retreat can move a unit): n=65 mean 0.03 median 0.0 min 0 max 2
+    distance at call over ALL ok assigns: OFF n=105 mean 38.38 median 39.0 min 0 max 72 | DRY n=104 mean 35.70 median 39.0 min 9 max 67
+
+  EVERY ok assign matched by (tuple, victim, ordinal):
+    step delta     n=100 mean +0.22 median +0.0  (+17 / -15 / 0:68)  min -111 max +90
+    distance delta n=100 mean -3.66 median -4.0  (+28 / -61 / 0:11)  min -20 max +42
+    contact delta  n=66 mean -6.30 median -6.5  (+13 / -46 / 0:7)  min -45 max +19
+    same unit on the matched assign 76, different unit 24
+
+  FIRST DISPATCH (each unit's first ok assign, same victim in both arms): distance and time to contact
+    east/half/101    victim_3 s15/15 0/0 d65/50 contact 81/66 | victim_1 s14/14 1/1 d25/11 contact 40/26
+    east/half/202    victim_3 s15/15 0/1 d65/51 contact 81/67 | victim_1 s15/15 1/0 d25/15 contact 41/31
+    east/half/303    victim_2 s15/15 0/0 d28/13 contact 43/29 | victim_3 s15/15 1/1 d66/51 contact None/None
+    east/half/404    victim_3 s15/15 0/0 d65/53 contact 81/69 | victim_1 s16/16 1/1 d25/20 contact None/41
+    east/half/505    victim_2 s15/15 0/0 d28/13 contact 44/29 | victim_3 s15/15 1/1 d66/51 contact 89/71
+    south/half/101   victim_3 s14/14 0/0 d65/51 contact None/None | victim_1 s16/16 1/1 d25/11 contact 42/28
+    south/half/202   victim_3 s14/14 0/0 d65/51 contact 72/59 | victim_1 s16/16 1/1 d25/23 contact 42/40
+    south/half/303   victim_2 s15/15 0/0 d28/13 contact 44/29 | victim_1 s16/16 1/1 d25/41 contact 42/58
+    south/half/404   victim_3 s14/14 0/1 d65/56 contact None/None | victim_1 s16/16 1/0 d25/26 contact 42/43
+    south/half/505   victim_2 s15/15 0/0 d28/13 contact 44/29 | victim_1 s16/16 1/1 d25/41 contact 42/58
+    east/def/101     victim_3 s117/117 0/1 d65/56 contact 182/None | victim_1 s14/14 1/1 d25/11 contact 40/26
+    east/def/202     victim_2 s141/141 0/0 d28/22 contact 170/164 | victim_1 s16/16 1/0 d25/14 contact 42/31
+    east/def/303     victim_2 s15/15 0/0 d28/13 contact 43/29 | victim_1 s15/15 1/1 d25/40 contact 41/56
+    east/half/606    victim_3 s15/15 0/0 d65/50 contact 81/66 | victim_1 s14/14 1/1 d25/11 contact 40/26
+    east/half/707    victim_2 s27/27 0/0 d28/26 contact 56/54 | victim_1 s15/15 1/1 d25/27 contact 41/43
+    east/half/808    victim_3 s15/15 0/0 d65/50 contact 81/66 | victim_1 s16/16 1/1 d25/29 contact 42/46
+    east/half/909    victim_3 s15/15 0/0 d65/50 contact 81/66 | victim_1 s16/16 1/1 d25/23 contact 42/40
+    east/half/1010   victim_3 s15/15 0/0 d65/50 contact 81/66 | victim_1 s15/15 1/1 d25/12 contact 41/28
+    south/half/606   victim_3 s14/14 0/0 d65/51 contact 71/61 | victim_1 s15/15 1/1 d25/10 contact 41/26
+    south/half/707   victim_3 s14/14 0/0 d65/51 contact None/None | victim_1 s16/16 1/1 d25/39 contact 42/56
+    south/half/808   victim_3 s14/14 0/0 d65/51 contact None/None | victim_1 s16/16 1/1 d25/33 contact 42/50
+    south/half/909   victim_3 s14/14 0/0 d65/51 contact 203/None | victim_1 s16/16 1/1 d25/25 contact 42/42
+    south/half/1010  victim_3 s14/14 0/0 d65/51 contact 69/57 | victim_1 s15/15 1/1 d25/18 contact 41/34
+    distance delta DRY-OFF   n=46 mean -8.15 median -14.0  (+8 / -37 / 0:1)  min -15 max +16
+    contact STEP delta       n=38 mean -7.24 median -12.5  (+8 / -29 / 0:1)  min -18 max +16
+    completion STEP delta    n=38 mean -7.18 median -12.5  (+8 / -29 / 0:1)  min -18 max +16
+    victims whose first-dispatch unit differs (identity swap): ['east/half/202 victim_3', 'east/half/202 victim_1', 'south/half/404 victim_3', 'south/half/404 victim_1', 'east/def/101 victim_3', 'east/def/202 victim_1']
+    DRY FIRST ok assign of the run: step n=23 mean 14.57 median 15.0 min 14 max 16; displacement of the called unit from its berth n=23 mean 13.70 median 14.0 min 2 max 16
+    distance between the two units at that call n=23 mean 1.13 median 1.0 min 1 max 3   list [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 3]
+    the other unit's distance to that victim minus the called unit's: n=23 mean 1.04 median 1.0 min 1 max 2   list [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2]
+
+====================================================================================================
+4b. ALL 23: where the rescue timeline first differs, and whether it is the first-dispatch head start
+====================================================================================================
+  east/half/101    ff_steps div 1 | timeline div 26: first-dispatch episode (contact/complete/block/death) re-timed | victim_steps div 27 (a status change or an escorted victim: True) | uav_steps div 129 | detection (first planner decision per victim) same True | victim & UAV series diverge only at/after the timeline: True | [('contact', 'ff_unit_1', 'victim_1')]
+  east/half/202    ff_steps div 1 | timeline div 15: first-window assign differs | victim_steps div 32 (a status change or an escorted victim: True) | uav_steps div 98 | detection (first planner decision per victim) same True | victim & UAV series diverge only at/after the timeline: True | [('assign', 'ff_unit_0', 'victim_1', 'initial', True), ('assign', 'ff_unit_0', 'victim_3', 'initial', True), ('assign', 'ff_unit_1', 'victim_1', 'initial', True), ('assign', 'ff_unit_1', 'victim_3', 'initial', True)]
+  east/half/303    ff_steps div 1 | timeline div 29: first-dispatch episode (contact/complete/block/death) re-timed | victim_steps div 30 (a status change or an escorted victim: True) | uav_steps div 122 | detection (first planner decision per victim) same True | victim & UAV series diverge only at/after the timeline: True | [('contact', 'ff_unit_0', 'victim_2')]
+  east/half/404    ff_steps div 1 | timeline div 41: first-dispatch episode (contact/complete/block/death) re-timed | victim_steps div 42 (a status change or an escorted victim: True) | uav_steps div None | detection (first planner decision per victim) same True | victim & UAV series diverge only at/after the timeline: True | [('contact', 'ff_unit_1', 'victim_1')]
+  east/half/505    ff_steps div 1 | timeline div 29: first-dispatch episode (contact/complete/block/death) re-timed | victim_steps div 30 (a status change or an escorted victim: True) | uav_steps div 95 | detection (first planner decision per victim) same True | victim & UAV series diverge only at/after the timeline: True | [('contact', 'ff_unit_0', 'victim_2')]
+  south/half/101   ff_steps div 1 | timeline div 28: first-dispatch episode (contact/complete/block/death) re-timed | victim_steps div 29 (a status change or an escorted victim: True) | uav_steps div 148 | detection (first planner decision per victim) same True | victim & UAV series diverge only at/after the timeline: True | [('contact', 'ff_unit_1', 'victim_1')]
+  south/half/202   ff_steps div 1 | timeline div 40: first-dispatch episode (contact/complete/block/death) re-timed | victim_steps div 41 (a status change or an escorted victim: True) | uav_steps div 169 | detection (first planner decision per victim) same True | victim & UAV series diverge only at/after the timeline: True | [('contact', 'ff_unit_1', 'victim_1')]
+  south/half/303   ff_steps div 1 | timeline div 29: first-dispatch episode (contact/complete/block/death) re-timed | victim_steps div 30 (a status change or an escorted victim: True) | uav_steps div 115 | detection (first planner decision per victim) same True | victim & UAV series diverge only at/after the timeline: True | [('contact', 'ff_unit_0', 'victim_2')]
+  south/half/404   ff_steps div 1 | timeline div 14: first-window assign differs | victim_steps div 43 (a status change or an escorted victim: True) | uav_steps div 233 | detection (first planner decision per victim) same True | victim & UAV series diverge only at/after the timeline: True | [('assign', 'ff_unit_0', 'victim_3', 'initial', True), ('assign', 'ff_unit_1', 'victim_3', 'initial', True)]
+  south/half/505   ff_steps div 1 | timeline div 29: first-dispatch episode (contact/complete/block/death) re-timed | victim_steps div 30 (a status change or an escorted victim: True) | uav_steps div None | detection (first planner decision per victim) same True | victim & UAV series diverge only at/after the timeline: True | [('contact', 'ff_unit_0', 'victim_2')]
+  east/def/101     ff_steps div 1 | timeline div 26: first-dispatch episode (contact/complete/block/death) re-timed | victim_steps div 27 (a status change or an escorted victim: True) | uav_steps div None | detection (first planner decision per victim) same True | victim & UAV series diverge only at/after the timeline: True | [('contact', 'ff_unit_1', 'victim_1')]
+  east/def/202     ff_steps div 1 | timeline div 16: first-window assign differs | victim_steps div 32 (a status change or an escorted victim: True) | uav_steps div 176 | detection (first planner decision per victim) same True | victim & UAV series diverge only at/after the timeline: True | [('assign', 'ff_unit_0', 'victim_1', 'initial', True), ('assign', 'ff_unit_1', 'victim_1', 'initial', True)]
+  east/def/303     ff_steps div 1 | timeline div 29: first-dispatch episode (contact/complete/block/death) re-timed | victim_steps div 30 (a status change or an escorted victim: True) | uav_steps div 131 | detection (first planner decision per victim) same True | victim & UAV series diverge only at/after the timeline: True | [('contact', 'ff_unit_0', 'victim_2')]
+  east/half/606    ff_steps div 1 | timeline div 26: first-dispatch episode (contact/complete/block/death) re-timed | victim_steps div 27 (a status change or an escorted victim: True) | uav_steps div None | detection (first planner decision per victim) same True | victim & UAV series diverge only at/after the timeline: True | [('contact', 'ff_unit_1', 'victim_1')]
+  east/half/707    ff_steps div 1 | timeline div 41: first-dispatch episode (contact/complete/block/death) re-timed | victim_steps div 42 (a status change or an escorted victim: True) | uav_steps div None | detection (first planner decision per victim) same True | victim & UAV series diverge only at/after the timeline: True | [('contact', 'ff_unit_1', 'victim_1')]
+  east/half/808    ff_steps div 1 | timeline div 42: first-dispatch episode (contact/complete/block/death) re-timed | victim_steps div 43 (a status change or an escorted victim: True) | uav_steps div 102 | detection (first planner decision per victim) same True | victim & UAV series diverge only at/after the timeline: True | [('contact', 'ff_unit_1', 'victim_1')]
+  east/half/909    ff_steps div 1 | timeline div 40: first-dispatch episode (contact/complete/block/death) re-timed | victim_steps div 41 (a status change or an escorted victim: True) | uav_steps div 124 | detection (first planner decision per victim) same True | victim & UAV series diverge only at/after the timeline: True | [('contact', 'ff_unit_1', 'victim_1')]
+  east/half/1010   ff_steps div 1 | timeline div 28: first-dispatch episode (contact/complete/block/death) re-timed | victim_steps div 29 (a status change or an escorted victim: True) | uav_steps div None | detection (first planner decision per victim) same True | victim & UAV series diverge only at/after the timeline: True | [('contact', 'ff_unit_1', 'victim_1')]
+  south/half/606   ff_steps div 1 | timeline div 26: first-dispatch episode (contact/complete/block/death) re-timed | victim_steps div 27 (a status change or an escorted victim: True) | uav_steps div None | detection (first planner decision per victim) same True | victim & UAV series diverge only at/after the timeline: True | [('contact', 'ff_unit_1', 'victim_1')]
+  south/half/707   ff_steps div 1 | timeline div 42: first-dispatch episode (contact/complete/block/death) re-timed | victim_steps div 43 (a status change or an escorted victim: True) | uav_steps div None | detection (first planner decision per victim) same True | victim & UAV series diverge only at/after the timeline: True | [('contact', 'ff_unit_1', 'victim_1')]
+  south/half/808   ff_steps div 1 | timeline div 42: first-dispatch episode (contact/complete/block/death) re-timed | victim_steps div 43 (a status change or an escorted victim: True) | uav_steps div None | detection (first planner decision per victim) same True | victim & UAV series diverge only at/after the timeline: True | [('contact', 'ff_unit_1', 'victim_1')]
+  south/half/909   ff_steps div 1 | timeline div 36: first-dispatch episode (contact/complete/block/death) re-timed | victim_steps div 36 (a status change or an escorted victim: True) | uav_steps div 231 | detection (first planner decision per victim) same True | victim & UAV series diverge only at/after the timeline: True | [('ffdead', 'ff_unit_0'), ('planner', 'delay', 'victim_3', 'replacement_after_blocked'), ('unassign', 'ff_unit_0', 'victim_3', 'replacement_after_blocked'), ('vstat', 'victim_3', 'confirmed')]
+  south/half/1010  ff_steps div 1 | timeline div 34: first-dispatch episode (contact/complete/block/death) re-timed | victim_steps div 35 (a status change or an escorted victim: True) | uav_steps div None | detection (first planner decision per victim) same True | victim & UAV series diverge only at/after the timeline: True | [('contact', 'ff_unit_1', 'victim_1')]
+  first timeline divergence kinds: {'first-dispatch episode (contact/complete/block/death) re-timed': 20, '_order_ok': 23, '_detect_same': 23, '_victim_div_rescue_caused': 23, 'first-window assign differs': 3}
+  completion step shift DRY-OFF, victims completed in both arms: n=64 mean -6.05 median -9.5  (+16 / -45 / 0:3)  min -123 max +90
+  units engaged on their step-1 row: 46 of 46
+
+====================================================================================================
+5. COUNTERFACTUAL FIRST-DISPATCH CHOICE for the probe arms (f2U0D, f2U1D, f2L3D, f2L8D; f2GD == OFF before
+   terminal). Model: until its first call each unit follows its DRY path (engaged) or stays where OFF has it
+   (not engaged); a leash holds the unit at the last DRY path cell within N of its berth. The chooser is
+   rescue_planner's: lowest confirmed needy victim id, Manhattan-nearest available unit, tie lower id.
+   Calls, victims and victim positions are OFF's (identical in DRY until the first contact). VALIDATION:
+   policy OFF must reproduce OFF's choice and policy DRY must reproduce DRY's.
+====================================================================================================
+  *east/half/101    valid OFF True DRY True
+      OFF s14 victim_1 <- ff_unit_1 from (2,46) d=25 | s15 victim_3 <- ff_unit_0 from (2,45) d=65
+      DRY s14 victim_1 <- ff_unit_1 from (16,46) d=11 | s15 victim_3 <- ff_unit_0 from (17,45) d=50
+      U0  s14 victim_1 <- ff_unit_0 from (16,45) d=12 | s15 victim_3 <- ff_unit_1 from (2,46) d=66
+      U1  s14 victim_1 <- ff_unit_1 from (16,46) d=11 | s15 victim_3 <- ff_unit_0 from (2,45) d=65
+      L3  s14 victim_1 <- ff_unit_1 from (5,46) d=22 | s15 victim_3 <- ff_unit_0 from (5,45) d=62
+      L8  s14 victim_1 <- ff_unit_1 from (10,46) d=17 | s15 victim_3 <- ff_unit_0 from (10,45) d=57
+   east/half/202    valid OFF True DRY True
+      OFF s15 victim_1 <- ff_unit_1 from (2,46) d=25 | s15 victim_3 <- ff_unit_0 from (2,45) d=65
+      DRY s15 victim_1 <- ff_unit_0 from (15,43) d=15 | s15 victim_3 <- ff_unit_1 from (14,43) d=51
+      U0  s15 victim_1 <- ff_unit_0 from (15,43) d=15 | s15 victim_3 <- ff_unit_1 from (2,46) d=66
+      U1  s15 victim_1 <- ff_unit_1 from (14,43) d=16 | s15 victim_3 <- ff_unit_0 from (2,45) d=65
+      L3  s15 victim_1 <- ff_unit_1 from (5,46) d=22 | s15 victim_3 <- ff_unit_0 from (5,45) d=62
+      L8  s15 victim_1 <- ff_unit_1 from (10,46) d=17 | s15 victim_3 <- ff_unit_0 from (10,45) d=57
+   east/half/303    valid OFF True DRY True
+      OFF s15 victim_2 <- ff_unit_0 from (2,45) d=28 | s15 victim_3 <- ff_unit_1 from (2,46) d=66
+      DRY s15 victim_2 <- ff_unit_0 from (2,30) d=13 | s15 victim_3 <- ff_unit_1 from (2,31) d=51
+      U0  s15 victim_2 <- ff_unit_0 from (2,30) d=13 | s15 victim_3 <- ff_unit_1 from (2,46) d=66
+      U1  s15 victim_2 <- ff_unit_1 from (2,31) d=14 | s15 victim_3 <- ff_unit_0 from (2,45) d=65
+      L3  s15 victim_2 <- ff_unit_0 from (2,42) d=25 | s15 victim_3 <- ff_unit_1 from (2,43) d=63
+      L8  s15 victim_2 <- ff_unit_0 from (2,37) d=20 | s15 victim_3 <- ff_unit_1 from (2,38) d=58
+  *east/half/404    valid OFF True DRY True
+      OFF s15 victim_3 <- ff_unit_0 from (2,45) d=65 | s16 victim_1 <- ff_unit_1 from (2,46) d=25
+      DRY s15 victim_3 <- ff_unit_0 from (10,41) d=53 | s16 victim_1 <- ff_unit_1 from (10,43) d=20
+      U0  s15 victim_3 <- ff_unit_0 from (10,41) d=53 | s16 victim_1 <- ff_unit_1 from (2,46) d=25
+      U1  s15 victim_3 <- ff_unit_1 from (10,43) d=55 | s16 victim_1 <- ff_unit_0 from (2,45) d=26
+      L3  s15 victim_3 <- ff_unit_0 from (5,45) d=62 | s16 victim_1 <- ff_unit_1 from (5,46) d=22
+      L8  s15 victim_3 <- ff_unit_0 from (7,42) d=57 | s16 victim_1 <- ff_unit_1 from (7,43) d=23
+   east/half/505    valid OFF True DRY True
+      OFF s15 victim_2 <- ff_unit_0 from (2,45) d=28 | s15 victim_3 <- ff_unit_1 from (2,46) d=66
+      DRY s15 victim_2 <- ff_unit_0 from (4,32) d=13 | s15 victim_3 <- ff_unit_1 from (3,32) d=51
+      U0  s15 victim_2 <- ff_unit_0 from (4,32) d=13 | s15 victim_3 <- ff_unit_1 from (2,46) d=66
+      U1  s15 victim_2 <- ff_unit_1 from (3,32) d=14 | s15 victim_3 <- ff_unit_0 from (2,45) d=65
+      L3  s15 victim_2 <- ff_unit_0 from (2,42) d=25 | s15 victim_3 <- ff_unit_1 from (2,43) d=63
+      L8  s15 victim_2 <- ff_unit_0 from (2,37) d=20 | s15 victim_3 <- ff_unit_1 from (2,38) d=58
+   south/half/101   valid OFF True DRY True
+      OFF s14 victim_3 <- ff_unit_0 from (2,45) d=65 | s16 victim_1 <- ff_unit_1 from (2,46) d=25
+      DRY s14 victim_3 <- ff_unit_0 from (16,45) d=51 | s16 victim_1 <- ff_unit_1 from (17,45) d=11
+      U0  s14 victim_3 <- ff_unit_0 from (16,45) d=51 | s16 victim_1 <- ff_unit_1 from (2,46) d=25
+      U1  s14 victim_3 <- ff_unit_1 from (16,46) d=52 | s16 victim_1 <- ff_unit_0 from (2,45) d=26
+      L3  s14 victim_3 <- ff_unit_0 from (5,45) d=62 | s16 victim_1 <- ff_unit_1 from (5,46) d=22
+      L8  s14 victim_3 <- ff_unit_0 from (10,45) d=57 | s16 victim_1 <- ff_unit_1 from (10,46) d=17
+  *south/half/202   valid OFF True DRY True
+      OFF s14 victim_3 <- ff_unit_0 from (2,45) d=65 | s16 victim_1 <- ff_unit_1 from (2,46) d=25
+      DRY s14 victim_3 <- ff_unit_0 from (11,40) d=51 | s16 victim_1 <- ff_unit_1 from (11,39) d=23
+      U0  s14 victim_3 <- ff_unit_0 from (11,40) d=51 | s16 victim_1 <- ff_unit_1 from (2,46) d=25
+      U1  s14 victim_3 <- ff_unit_1 from (11,41) d=52 | s16 victim_1 <- ff_unit_0 from (2,45) d=26
+      L3  s14 victim_3 <- ff_unit_0 from (5,45) d=62 | s16 victim_1 <- ff_unit_1 from (5,46) d=22
+      L8  s14 victim_3 <- ff_unit_0 from (9,44) d=57 | s16 victim_1 <- ff_unit_1 from (9,45) d=19
+   south/half/303   valid OFF True DRY True
+      OFF s15 victim_2 <- ff_unit_0 from (2,45) d=28 | s16 victim_1 <- ff_unit_1 from (2,46) d=25
+      DRY s15 victim_2 <- ff_unit_0 from (2,30) d=13 | s16 victim_1 <- ff_unit_1 from (2,30) d=41
+      U0  s15 victim_2 <- ff_unit_0 from (2,30) d=13 | s16 victim_1 <- ff_unit_1 from (2,46) d=25
+      U1  s15 victim_2 <- ff_unit_1 from (2,31) d=14 | s16 victim_1 <- ff_unit_0 from (2,45) d=26
+      L3  s15 victim_2 <- ff_unit_0 from (2,42) d=25 | s16 victim_1 <- ff_unit_1 from (2,43) d=28
+      L8  s15 victim_2 <- ff_unit_0 from (2,37) d=20 | s16 victim_1 <- ff_unit_1 from (2,38) d=33
+  *south/half/404   valid OFF True DRY True
+      OFF s14 victim_3 <- ff_unit_0 from (2,45) d=65 | s16 victim_1 <- ff_unit_1 from (2,46) d=25
+      DRY s14 victim_3 <- ff_unit_1 from (8,42) d=56 | s16 victim_1 <- ff_unit_0 from (6,41) d=26
+      U0  s14 victim_3 <- ff_unit_0 from (6,41) d=57 | s16 victim_1 <- ff_unit_1 from (2,46) d=25
+      U1  s14 victim_3 <- ff_unit_1 from (8,42) d=56 | s16 victim_1 <- ff_unit_0 from (2,45) d=26
+      L3  s14 victim_3 <- ff_unit_0 from (5,45) d=62 | s16 victim_1 <- ff_unit_1 from (4,45) d=24
+      L8  s14 victim_3 <- ff_unit_0 from (7,42) d=57 | s16 victim_1 <- ff_unit_1 from (7,43) d=23
+   south/half/505   valid OFF True DRY True
+      OFF s15 victim_2 <- ff_unit_0 from (2,45) d=28 | s16 victim_1 <- ff_unit_1 from (2,46) d=25
+      DRY s15 victim_2 <- ff_unit_0 from (2,30) d=13 | s16 victim_1 <- ff_unit_1 from (2,30) d=41
+      U0  s15 victim_2 <- ff_unit_0 from (2,30) d=13 | s16 victim_1 <- ff_unit_1 from (2,46) d=25
+      U1  s15 victim_2 <- ff_unit_1 from (2,31) d=14 | s16 victim_1 <- ff_unit_0 from (2,45) d=26
+      L3  s15 victim_2 <- ff_unit_0 from (2,42) d=25 | s16 victim_1 <- ff_unit_1 from (2,43) d=28
+      L8  s15 victim_2 <- ff_unit_0 from (2,37) d=20 | s16 victim_1 <- ff_unit_1 from (2,38) d=33
+  *east/def/101     valid OFF True DRY True
+      OFF s14 victim_1 <- ff_unit_1 from (2,46) d=25
+      DRY s14 victim_1 <- ff_unit_1 from (16,46) d=11
+      U0  s14 victim_1 <- ff_unit_0 from (16,45) d=12
+      U1  s14 victim_1 <- ff_unit_1 from (16,46) d=11
+      L3  s14 victim_1 <- ff_unit_1 from (5,46) d=22
+      L8  s14 victim_1 <- ff_unit_1 from (10,46) d=17
+   east/def/202     valid OFF True DRY True
+      OFF s16 victim_1 <- ff_unit_1 from (2,46) d=25
+      DRY s16 victim_1 <- ff_unit_0 from (16,43) d=14
+      U0  s16 victim_1 <- ff_unit_0 from (16,43) d=14
+      U1  s16 victim_1 <- ff_unit_1 from (15,43) d=15
+      L3  s16 victim_1 <- ff_unit_1 from (5,46) d=22
+      L8  s16 victim_1 <- ff_unit_1 from (10,46) d=17
+  *east/def/303     valid OFF True DRY True
+      OFF s15 victim_2 <- ff_unit_0 from (2,45) d=28 | s15 victim_1 <- ff_unit_1 from (2,46) d=25
+      DRY s15 victim_2 <- ff_unit_0 from (2,30) d=13 | s15 victim_1 <- ff_unit_1 from (2,31) d=40
+      U0  s15 victim_2 <- ff_unit_0 from (2,30) d=13 | s15 victim_1 <- ff_unit_1 from (2,46) d=25
+      U1  s15 victim_2 <- ff_unit_1 from (2,31) d=14 | s15 victim_1 <- ff_unit_0 from (2,45) d=26
+      L3  s15 victim_2 <- ff_unit_0 from (2,42) d=25 | s15 victim_1 <- ff_unit_1 from (2,43) d=28
+      L8  s15 victim_2 <- ff_unit_0 from (2,37) d=20 | s15 victim_1 <- ff_unit_1 from (2,38) d=33
+  *east/half/606    valid OFF True DRY True
+      OFF s14 victim_1 <- ff_unit_1 from (2,46) d=25 | s15 victim_3 <- ff_unit_0 from (2,45) d=65
+      DRY s14 victim_1 <- ff_unit_1 from (16,46) d=11 | s15 victim_3 <- ff_unit_0 from (17,45) d=50
+      U0  s14 victim_1 <- ff_unit_0 from (16,45) d=12 | s15 victim_3 <- ff_unit_1 from (2,46) d=66
+      U1  s14 victim_1 <- ff_unit_1 from (16,46) d=11 | s15 victim_3 <- ff_unit_0 from (2,45) d=65
+      L3  s14 victim_1 <- ff_unit_1 from (5,46) d=22 | s15 victim_3 <- ff_unit_0 from (5,45) d=62
+      L8  s14 victim_1 <- ff_unit_1 from (10,46) d=17 | s15 victim_3 <- ff_unit_0 from (10,45) d=57
+   east/half/707    valid OFF True DRY True
+      OFF s15 victim_1 <- ff_unit_1 from (2,46) d=25 | s27 victim_2 <- ff_unit_0 from (2,45) d=28
+      DRY s15 victim_1 <- ff_unit_1 from (2,44) d=27 | s27 victim_2 <- ff_unit_0 from (2,43) d=26
+      U0  s15 victim_1 <- ff_unit_1 from (2,46) d=25 | s27 victim_2 <- ff_unit_0 from (2,43) d=26
+      U1  s15 victim_1 <- ff_unit_0 from (2,45) d=26 | s27 victim_2 <- ff_unit_1 from (14,44) d=23
+      L3  s15 victim_1 <- ff_unit_1 from (2,44) d=27 | s27 victim_2 <- ff_unit_0 from (2,43) d=26
+      L8  s15 victim_1 <- ff_unit_1 from (2,44) d=27 | s27 victim_2 <- ff_unit_0 from (2,43) d=26
+   east/half/808    valid OFF True DRY True
+      OFF s15 victim_3 <- ff_unit_0 from (2,45) d=65 | s16 victim_1 <- ff_unit_1 from (2,46) d=25
+      DRY s15 victim_3 <- ff_unit_0 from (9,37) d=50 | s16 victim_1 <- ff_unit_1 from (8,36) d=29
+      U0  s15 victim_3 <- ff_unit_0 from (9,37) d=50 | s16 victim_1 <- ff_unit_1 from (2,46) d=25
+      U1  s15 victim_3 <- ff_unit_1 from (8,37) d=51 | s16 victim_1 <- ff_unit_0 from (2,45) d=26
+      L3  s15 victim_3 <- ff_unit_0 from (3,43) d=62 | s16 victim_1 <- ff_unit_1 from (2,43) d=28
+      L8  s15 victim_3 <- ff_unit_0 from (5,40) d=57 | s16 victim_1 <- ff_unit_1 from (5,41) d=27
+   east/half/909    valid OFF True DRY True
+      OFF s15 victim_3 <- ff_unit_0 from (2,45) d=65 | s16 victim_1 <- ff_unit_1 from (2,46) d=25
+      DRY s15 victim_3 <- ff_unit_0 from (11,39) d=50 | s16 victim_1 <- ff_unit_1 from (11,39) d=23
+      U0  s15 victim_3 <- ff_unit_0 from (11,39) d=50 | s16 victim_1 <- ff_unit_1 from (2,46) d=25
+      U1  s15 victim_3 <- ff_unit_1 from (10,39) d=51 | s16 victim_1 <- ff_unit_0 from (2,45) d=26
+      L3  s15 victim_3 <- ff_unit_0 from (4,44) d=62 | s16 victim_1 <- ff_unit_1 from (3,44) d=26
+      L8  s15 victim_3 <- ff_unit_0 from (7,42) d=57 | s16 victim_1 <- ff_unit_1 from (6,42) d=25
+   east/half/1010   valid OFF True DRY True
+      OFF s15 victim_1 <- ff_unit_1 from (2,46) d=25 | s15 victim_3 <- ff_unit_0 from (2,45) d=65
+      DRY s15 victim_1 <- ff_unit_1 from (16,45) d=12 | s15 victim_3 <- ff_unit_0 from (16,44) d=50
+      U0  s15 victim_1 <- ff_unit_0 from (16,44) d=13 | s15 victim_3 <- ff_unit_1 from (2,46) d=66
+      U1  s15 victim_1 <- ff_unit_1 from (16,45) d=12 | s15 victim_3 <- ff_unit_0 from (2,45) d=65
+      L3  s15 victim_1 <- ff_unit_1 from (5,46) d=22 | s15 victim_3 <- ff_unit_0 from (5,45) d=62
+      L8  s15 victim_1 <- ff_unit_1 from (10,46) d=17 | s15 victim_3 <- ff_unit_0 from (10,45) d=57
+   south/half/606   valid OFF True DRY True
+      OFF s14 victim_3 <- ff_unit_0 from (2,45) d=65 | s15 victim_1 <- ff_unit_1 from (2,46) d=25
+      DRY s14 victim_3 <- ff_unit_0 from (16,45) d=51 | s15 victim_1 <- ff_unit_1 from (17,46) d=10
+      U0  s14 victim_3 <- ff_unit_0 from (16,45) d=51 | s15 victim_1 <- ff_unit_1 from (2,46) d=25
+      U1  s14 victim_3 <- ff_unit_1 from (16,46) d=52 | s15 victim_1 <- ff_unit_0 from (2,45) d=26
+      L3  s14 victim_3 <- ff_unit_0 from (5,45) d=62 | s15 victim_1 <- ff_unit_1 from (5,46) d=22
+      L8  s14 victim_3 <- ff_unit_0 from (10,45) d=57 | s15 victim_1 <- ff_unit_1 from (10,46) d=17
+   south/half/707   valid OFF True DRY True
+      OFF s14 victim_3 <- ff_unit_0 from (2,45) d=65 | s16 victim_1 <- ff_unit_1 from (2,46) d=25
+      DRY s14 victim_3 <- ff_unit_0 from (4,33) d=51 | s16 victim_1 <- ff_unit_1 from (3,31) d=39
+      U0  s14 victim_3 <- ff_unit_0 from (4,33) d=51 | s16 victim_1 <- ff_unit_1 from (2,46) d=25
+      U1  s14 victim_3 <- ff_unit_1 from (3,33) d=52 | s16 victim_1 <- ff_unit_0 from (2,45) d=26
+      L3  s14 victim_3 <- ff_unit_0 from (2,42) d=62 | s16 victim_1 <- ff_unit_1 from (2,43) d=28
+      L8  s14 victim_3 <- ff_unit_0 from (2,37) d=57 | s16 victim_1 <- ff_unit_1 from (2,38) d=33
+  *south/half/808   valid OFF True DRY True
+      OFF s14 victim_3 <- ff_unit_0 from (2,45) d=65 | s16 victim_1 <- ff_unit_1 from (2,46) d=25
+      DRY s14 victim_3 <- ff_unit_0 from (6,35) d=51 | s16 victim_1 <- ff_unit_1 from (6,34) d=33
+      U0  s14 victim_3 <- ff_unit_0 from (6,35) d=51 | s16 victim_1 <- ff_unit_1 from (2,46) d=25
+      U1  s14 victim_3 <- ff_unit_1 from (5,35) d=52 | s16 victim_1 <- ff_unit_0 from (2,45) d=26
+      L3  s14 victim_3 <- ff_unit_0 from (2,42) d=62 | s16 victim_1 <- ff_unit_1 from (2,43) d=28
+      L8  s14 victim_3 <- ff_unit_0 from (3,38) d=57 | s16 victim_1 <- ff_unit_1 from (3,39) d=31
+  *south/half/909   valid OFF True DRY True
+      OFF s14 victim_3 <- ff_unit_0 from (2,45) d=65 | s16 victim_1 <- ff_unit_1 from (2,46) d=25
+      DRY s14 victim_3 <- ff_unit_0 from (10,39) d=51 | s16 victim_1 <- ff_unit_1 from (10,38) d=25
+      U0  s14 victim_3 <- ff_unit_0 from (10,39) d=51 | s16 victim_1 <- ff_unit_1 from (2,46) d=25
+      U1  s14 victim_3 <- ff_unit_1 from (9,39) d=52 | s16 victim_1 <- ff_unit_0 from (2,45) d=26
+      L3  s14 victim_3 <- ff_unit_0 from (4,44) d=62 | s16 victim_1 <- ff_unit_1 from (3,44) d=26
+      L8  s14 victim_3 <- ff_unit_0 from (7,42) d=57 | s16 victim_1 <- ff_unit_1 from (6,42) d=25
+   south/half/1010  valid OFF True DRY True
+      OFF s14 victim_3 <- ff_unit_0 from (2,45) d=65 | s15 victim_1 <- ff_unit_1 from (2,46) d=25
+      DRY s14 victim_3 <- ff_unit_0 from (13,42) d=51 | s15 victim_1 <- ff_unit_1 from (13,42) d=18
+      U0  s14 victim_3 <- ff_unit_0 from (13,42) d=51 | s15 victim_1 <- ff_unit_1 from (2,46) d=25
+      U1  s14 victim_3 <- ff_unit_1 from (13,43) d=52 | s15 victim_1 <- ff_unit_0 from (2,45) d=26
+      L3  s14 victim_3 <- ff_unit_0 from (5,45) d=62 | s15 victim_1 <- ff_unit_1 from (5,46) d=22
+      L8  s14 victim_3 <- ff_unit_0 from (10,45) d=57 | s15 victim_1 <- ff_unit_1 from (10,46) d=17
+  validation: policy OFF reproduces OFF's first-window choices on 23/23, policy DRY reproduces DRY's on 23/23

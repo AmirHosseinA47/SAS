@@ -1,9 +1,18 @@
-"""Fire mechanic round 1: idle firefighters extinguish and cut firebreaks.
+"""Fire mechanic: idle firefighters extinguish and cut firebreaks (round 1), and the
+round-2 mission gate that decides WHEN they may do it.
 
 Drives the real WildFireModel and the real Firefighter.advance(), in the style of
 tests/test_victim_fire_flight.py: the whole map is quieted, a test lays out
 exactly which cells burn, and one firefighter's advance() is called directly so
-nothing else moves. Design: outputs/firemech_part1.txt.
+nothing else moves. Design: outputs/firemech_part1.txt, outputs/firemech2_part1.txt.
+
+THE SHIPPED DEFAULT IS FF_FIREFIGHT_MISSION_GATE = 1: a unit may engage only once
+every managed victim is rescued or dead. A real WildFireModel starts with every
+victim unresolved, so under the default the gate is CLOSED here and no firefighting
+code runs at all. Every round-1 case below is about the MECHANIC, so _model() opens
+the gate explicitly (mission_gate=0) - that is round 1's policy, any idle unit at any
+time. The gate itself is tested at the end of this file, where the default is left
+alone and the victims are driven to a terminal status on purpose.
 """
 
 from __future__ import annotations
@@ -31,6 +40,7 @@ _SWITCHES = (
     "FF_FIREFIGHT_FIREBREAK",
     "FF_FIREFIGHT_ENGAGED_RETREAT_RANGE",
     "FF_FIREFIGHT_DRY_RUN",
+    "FF_FIREFIGHT_MISSION_GATE",
 )
 _CONFIG_NAMES = _SWITCHES + ("SYSTEM_RANDOM",)
 
@@ -52,7 +62,17 @@ def _restore_module_config():
     agents.random = saved_agents_random
 
 
-def _model(seed: int = 101, extinguish=0, firebreak=0, retreat_range=3, dry=0) -> WildFireModel:
+def _model(seed: int = 101, extinguish=0, firebreak=0, retreat_range=3, dry=0,
+           mission_gate=0) -> WildFireModel:
+    """A real model with the map quieted.
+
+    mission_gate defaults to 0 HERE, which is NOT the shipped default (1). Every
+    round-1 case in this file asserts what an engaged unit does, and the shipped gate
+    would keep all of them from ever engaging: the model's victims are all at status
+    "candidate" from reset, so "every victim rescued or dead" is false. Passing 0 is
+    round 1's policy - any idle unit, any time - which is exactly what those cases are
+    about. The gate's own behaviour is tested separately, with the default left alone.
+    """
     rng = random.Random(seed)
     cfv.SYSTEM_RANDOM = rng
     wf.SYSTEM_RANDOM = rng
@@ -64,6 +84,7 @@ def _model(seed: int = 101, extinguish=0, firebreak=0, retreat_range=3, dry=0) -
         FF_FIREFIGHT_FIREBREAK=firebreak,
         FF_FIREFIGHT_ENGAGED_RETREAT_RANGE=retreat_range,
         FF_FIREFIGHT_DRY_RUN=dry,
+        FF_FIREFIGHT_MISSION_GATE=mission_gate,
     )
     with contextlib.redirect_stdout(io.StringIO()):
         model = WildFireModel()
@@ -147,6 +168,7 @@ def _fire_steps(model: WildFireModel, n: int) -> None:
 # ---------------------------------------------------------------------------
 
 def test_every_switch_ships_off_and_every_fallback_is_off(monkeypatch) -> None:
+    """Every ACTION switch ships off and falls back off; the gate is the exception."""
     assert cfv.FF_FIREFIGHT_EXTINGUISH == 0
     assert cfv.FF_FIREFIGHT_FIREBREAK == 0
     assert cfv.FF_FIREFIGHT_ENGAGED_RETREAT_RANGE == agents.IDLE_RETREAT_SAFETY_BUFFER
@@ -163,6 +185,29 @@ def test_every_switch_ships_off_and_every_fallback_is_off(monkeypatch) -> None:
         assert accessor() == off, name + " junk"
         monkeypatch.delattr(cfv, name, raising=False)
         assert accessor() == off, name + " missing"
+
+
+def test_mission_gate_ships_on_and_falls_back_on(monkeypatch) -> None:
+    """The one deliberate exception to "every fallback is the OFF value".
+
+    The gate cannot arm the feature - that still needs EXTINGUISH or FIREBREAK - and
+    its conservative value is ON, so a junk or missing override must leave it ON.
+    """
+    assert cfv.FF_FIREFIGHT_MISSION_GATE == 1
+    assert agents.ff_firefight_mission_gate() is True
+    monkeypatch.setattr(cfv, "FF_FIREFIGHT_MISSION_GATE", "off", raising=False)
+    assert agents.ff_firefight_mission_gate() is True
+    monkeypatch.setattr(cfv, "FF_FIREFIGHT_MISSION_GATE", None, raising=False)
+    assert agents.ff_firefight_mission_gate() is True
+    monkeypatch.delattr(cfv, "FF_FIREFIGHT_MISSION_GATE", raising=False)
+    assert agents.ff_firefight_mission_gate() is True
+    for off in (0, 0.0, "0", False):
+        monkeypatch.setattr(cfv, "FF_FIREFIGHT_MISSION_GATE", off, raising=False)
+        assert agents.ff_firefight_mission_gate() is False, off
+    # a non-integral float is a typo, not a setting: it must NOT open the gate
+    for junk in (0.5, -0.5, "0.5", "", [], object()):
+        monkeypatch.setattr(cfv, "FF_FIREFIGHT_MISSION_GATE", junk, raising=False)
+        assert agents.ff_firefight_mission_gate() is True, junk
 
 
 @pytest.mark.parametrize("raw,expected", [(1, 1), (2, 2), (3, 3), (0, 3), (-1, 3), (7, 3), ("x", 3), (None, 3)])
@@ -574,3 +619,141 @@ def test_same_state_same_decisions() -> None:
         return _log(model), fuel, _cell(ff)
 
     assert run() == run()
+
+
+# ---------------------------------------------------------------------------
+# Round 2: the mission gate. These cases leave the SHIPPED default in place
+# (FF_FIREFIGHT_MISSION_GATE = 1) and drive the victims themselves.
+# ---------------------------------------------------------------------------
+
+
+def _victim_statuses(model, status: str) -> None:
+    """Force every managed victim to one status (the gate reads managed_victims)."""
+    for state in (getattr(model, "managed_victims", None) or {}).values():
+        if state is not None:
+            state.status = status
+
+
+def _engaged_rows(model) -> int:
+    return sum(1 for row in (getattr(model, "_firefight_log", None) or []) if row["engaged"])
+
+
+def test_gate_closed_while_any_victim_is_unresolved_runs_no_feature_code() -> None:
+    """The shipped default, with victims as a real run starts them: nothing engages.
+
+    Not merely "does not write": prepare returns before any accessor below it, so no
+    model attribute is created and no log row exists.
+    """
+    model = _model(extinguish=1, firebreak=1, retreat_range=1, mission_gate=1)
+    _line_x(model, 20)
+    ff = _unit(model, (24, 25))
+    assert ff._firefight_mission_resolved() is False
+    assert ff._firefight_prepare() is None
+    before = _cell(ff)
+    for _ in range(5):
+        ff.advance()
+    assert getattr(model, "_firefight_log", None) is None
+    assert getattr(model, "_firefight_shadow", None) is None
+    assert getattr(model, "firefight_cleared_total", None) is None
+    assert _cell(ff) == before
+
+
+def test_gate_opens_only_when_every_victim_is_rescued_or_dead() -> None:
+    """rescued and dead open it; candidate, confirmed, assigned, unreachable do not."""
+    model = _model(extinguish=1, firebreak=1, retreat_range=1, mission_gate=1)
+    _line_x(model, 20)
+    ff = _unit(model, (24, 25))
+    for status in ("candidate", "confirmed", "assigned", "unreachable", "cancelled"):
+        _victim_statuses(model, status)
+        assert ff._firefight_mission_resolved() is False, status
+        assert ff._firefight_prepare() is None, status
+    for status in ("rescued", "dead", "DEAD"):
+        _victim_statuses(model, status)
+        assert ff._firefight_mission_resolved() is True, status
+        assert ff._firefight_prepare() is not None, status
+
+
+def test_gate_stays_closed_while_one_victim_of_many_is_unresolved() -> None:
+    """All victims must be terminal - one unreachable straggler keeps it shut.
+
+    That straggler is the reason for the strict predicate: an unreachable victim is
+    still alive on the grid and can still burn, so fire written while it lives could
+    change its recorded outcome (outputs/_fm2_audit_gate.txt, P1).
+    """
+    model = _model(extinguish=1, firebreak=1, retreat_range=1, mission_gate=1)
+    _line_x(model, 20)
+    ff = _unit(model, (24, 25))
+    _victim_statuses(model, "rescued")
+    managed = list((getattr(model, "managed_victims", None) or {}).values())
+    assert managed
+    managed[0].status = "unreachable"
+    assert ff._firefight_mission_resolved() is False
+    assert ff._firefight_prepare() is None
+    managed[0].status = "dead"
+    assert ff._firefight_mission_resolved() is True
+
+
+def test_gate_off_reproduces_round_one_engagement_exactly() -> None:
+    """MISSION_GATE=0 is round 1: same decisions, same writes, same cells."""
+
+    def run(gate):
+        model = _model(extinguish=1, firebreak=1, retreat_range=1, mission_gate=gate)
+        _line_x(model, 20)
+        if gate:  # let the gate open so the two runs are comparable
+            _victim_statuses(model, "dead")
+        ff = _unit(model, (24, 25))
+        for _ in range(12):
+            ff.advance()
+        fuel = sorted(
+            (int(a.pos[0]), int(a.pos[1]), a.fuel, a.burning)
+            for a in model.schedule.agents if type(a) is agents.Fire
+        )
+        return _log(model), fuel, _cell(ff)
+
+    assert run(0) == run(1)
+
+
+def test_gate_closed_is_identical_to_the_feature_being_off() -> None:
+    """The gate-closed path and the kill switch produce the same run, step for step."""
+
+    def run(**kw):
+        model = _model(**kw)
+        _line_x(model, 20)
+        ff = _unit(model, (24, 25))
+        cells = []
+        for _ in range(12):
+            ff.advance()
+            cells.append(_cell(ff))
+        fuel = sorted(
+            (int(a.pos[0]), int(a.pos[1]), a.fuel, a.burning)
+            for a in model.schedule.agents if type(a) is agents.Fire
+        )
+        return cells, fuel
+
+    gated = run(extinguish=1, firebreak=1, retreat_range=1, mission_gate=1)
+    off = run(extinguish=0, firebreak=0, retreat_range=3, mission_gate=0)
+    assert gated == off
+
+
+def test_gate_predicate_is_open_when_a_model_has_no_managed_victims() -> None:
+    """No victims means no rescue to protect; a real model always populates the dict."""
+    model = _model(extinguish=1, firebreak=1, retreat_range=1, mission_gate=1)
+    ff = _unit(model, (24, 25))
+    assert isinstance(getattr(model, "managed_victims", None), dict)
+    assert getattr(model, "managed_victims")
+    model.managed_victims = {}
+    assert ff._firefight_mission_resolved() is True
+    model.managed_victims = None
+    assert ff._firefight_mission_resolved() is True
+
+
+def test_gate_predicate_draws_no_rng_and_creates_nothing() -> None:
+    """The predicate is a pure read: same RNG state, no new model attribute."""
+    model = _model(extinguish=1, firebreak=1, retreat_range=1, mission_gate=1)
+    ff = _unit(model, (24, 25))
+    before_state = agents.random.getstate()
+    before_attrs = set(vars(model))
+    for _ in range(3):
+        ff._firefight_mission_resolved()
+    assert agents.random.getstate() == before_state
+    assert set(vars(model)) == before_attrs

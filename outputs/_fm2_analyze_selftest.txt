@@ -1,0 +1,607 @@
+outputs/_fm2_analyze.py - SELF-TEST OUTPUT AND FIRST LIVE READING
+===================================================================
+tree      a3a24f1 (branch firefighter-fire-mechanic), E:\Projects\SAS\.venv python 3.10.11
+commands  .venv/Scripts/python.exe outputs/_fm2_analyze.py --self-test --out <file>
+          .venv/Scripts/python.exe outputs/_fm2_analyze.py --sample both --out <file>
+          (both read JSON only; no simulation started; runtime about 2-4 s each)
+
+VERDICT   SELF-TEST SUMMARY: 275 checks, 275 PASS, 0 FAIL
+  The self-test runs round-1 arms through the SAME code paths as the probe tables
+  (compute / agg / flips / direction / check_dry / check_gate / check_crn /
+  identity_block) and compares against:
+    - every table row parsed from outputs/_firemech_both_analysis.txt for the three
+      samples and both views (outcomes, fire end state with deltas, E1/E2 n/d, the
+      death classification counts, engaged / after-terminal / ext / clear) and every
+      per-run line (r/d/ff, burnt, ever, cleared, intact, ext/clear, first write)
+    - values transcribed from outputs/firemech_report.txt sections 1, 2, 3.1, 3.2,
+      3.3, 5 (tables, rescued decomposition, per-run positioning and write losses,
+      the south/half/404 victim_2 flip), 6 (death table, de-duplicated deaths,
+      per-run death-count changes) and 7 (E1/E2 per sample and the fmEFS
+      positioning/write split of searcher frames)
+  No discrepancy with either document was found in any checked number.
+
+ADJUDICATION OF THE FAILURES SEEN WHILE WRITING THE SELF-TEST (all fixed; none is a
+bug in the analyzer's table or check code, none a report error)
+  1. First run: 3 FAILs, "fmS/fmE/fmEF differing keys". My expectation said only
+     extra_params differs; the data show params AND extra_params differ (both carry
+     the --set keys). The report excludes both, so it is consistent. The check now
+     asserts differing keys are a subset of {params, extra_params} (13/13 each) and
+     identity with both excluded (13/13 each).
+  2. Second run: 1 FAIL, the ff_steps prefix boundary control found no round-1 run
+     whose ff_steps diverge from fmOFF after step 1 (every round-1 feature arm logs
+     its first row at step 1 on all 23 runs: the by-construction prefix checks on
+     them compare 0 steps). Replaced by synthetic in-memory controls (a copy of
+     fmREF east/half/101 altered from step 100): first row 100 passes comparing
+     steps 1-99, first row 101 fails at step 100; CRN first write 100 exact,
+     101/99/None violations. The non-vacuous real-data prefix control is fmREF as
+     a gate arm vs fmOFF: 0 violations over 23 x 240 = 5520 steps.
+
+KNOWN LIMITS OF THE SELF-TEST
+  - The gate outcome check was exercised positively (fmREF: 0 violations) and
+    negatively (ungated fmF flags exactly the 6 runs whose r/d differ in the
+    analysis per-run lines). It has not yet seen a real gated run.
+  - The CRN attribution code is validated on stock-RNG round-1 arms (identical 3 /
+    exact 20 / violations 0, report 3.1); CRN runs themselves are not yet present.
+  - fm2p counters are read as recorded; no round-1 stand-in carries them.
+  - Report 3.2 labels its canonical+fresh table "(de-duplicated, east/def excluded,
+    20 runs: ...)" but the table rows are the COUNTED 23 figures; only the
+    parenthetical deltas (+1,389 / +1,783 / +2,402) are de-duplicated. Both were
+    verified numerically; this is a wording issue in the report, not a number.
+
+GATE SEMANTICS NOTE (read from source, for interpreting later gate violations)
+  FM2P_GATE calls local_adaptation_generator._count_unresolved_victims, which
+  iterates model.managed_victims. All NUM_VICTIMS are inserted there at model init
+  as "candidate" (wildfire_model._init_managed_victims), so an undetected victim
+  holds the gate closed; "unreachable" and "cancelled" count as resolved, so the
+  gate MAY open before eval.terminal_step (not verified against eval). The analyzer reports, per gated run, the
+  first log row, first engaged row, terminal_step and engaged rows at step <=
+  terminal_step so any early opening is visible.
+
+##############################################################################################################
+# PART 1 - SELF-TEST OUTPUT (verbatim)
+##############################################################################################################
+SELF-TEST: round-1 arms as stand-ins, through the same code paths as the probe tables
+  expected values: parsed from _firemech_both_analysis.txt, and transcribed from firemech_report.txt sections 1, 2, 3.1-3.3, 5, 6, 7
+  parsed samples: canonical 13 (13 per-run lines), fresh 10 (10 per-run lines), canonical+fresh 23 (23 per-run lines)
+  PASS [data] fmOFF complete runs got=23 want=23
+  PASS [data] fmF complete runs got=23 want=23
+  PASS [data] fmFS complete runs got=23 want=23
+  PASS [data] fmES complete runs got=23 want=23
+  PASS [data] fmEFS complete runs got=23 want=23
+  PASS [data] fmDRY complete runs got=23 want=23
+  PASS [data] fmREF complete runs got=23 want=23
+
+A. TABLE NUMBERS vs _firemech_both_analysis.txt
+  PASS [analysis] canonical 13 counted fmOFF runs/r/d/ffd/nd/unr/nonterm/meanT/burnt/ever/clr/intact/b240 got=(13, 39, 10, 6, 1, 2, 1, '151.9', 16053, 22648, 0, 9852, 1395) want=(13, 39, 10, 6, 1, 2, 1, '151.9', 16053, 22648, 0, 9852, 1395)
+  PASS [analysis] canonical 13 counted fmF runs/r/d/ffd/nd/unr/nonterm/meanT/burnt/ever/clr/intact/b240 got=(13, 38, 11, 6, 1, 2, 1, '143.2', 14351, 19929, 828, 11743, 613) want=(13, 38, 11, 6, 1, 2, 1, '143.2', 14351, 19929, 828, 11743, 613)
+  PASS [analysis] canonical 13 counted fmF vs fmOFF delta burnt/ever/intact got=(-1702, -2719, 1891) want=(-1702, -2719, 1891)
+  PASS [analysis] canonical 13 counted fmFS runs/r/d/ffd/nd/unr/nonterm/meanT/burnt/ever/clr/intact/b240 got=(13, 36, 12, 6, 1, 2, 2, '135.6', 14657, 20268, 826, 11406, 708) want=(13, 36, 12, 6, 1, 2, 2, '135.6', 14657, 20268, 826, 11406, 708)
+  PASS [analysis] canonical 13 counted fmFS vs fmOFF delta burnt/ever/intact got=(-1396, -2380, 1554) want=(-1396, -2380, 1554)
+  PASS [analysis] canonical 13 counted fmES runs/r/d/ffd/nd/unr/nonterm/meanT/burnt/ever/clr/intact/b240 got=(13, 38, 12, 6, 0, 0, 1, '139.5', 15062, 21203, 0, 11297, 920) want=(13, 38, 12, 6, 0, 0, 1, '139.5', 15062, 21203, 0, 11297, 920)
+  PASS [analysis] canonical 13 counted fmES vs fmOFF delta burnt/ever/intact got=(-991, -1445, 1445) want=(-991, -1445, 1445)
+  PASS [analysis] canonical 13 counted fmEFS runs/r/d/ffd/nd/unr/nonterm/meanT/burnt/ever/clr/intact/b240 got=(13, 38, 11, 6, 1, 2, 1, '140.8', 14622, 20338, 831, 11331, 665) want=(13, 38, 11, 6, 1, 2, 1, '140.8', 14622, 20338, 831, 11331, 665)
+  PASS [analysis] canonical 13 counted fmEFS vs fmOFF delta burnt/ever/intact got=(-1431, -2310, 1479) want=(-1431, -2310, 1479)
+  PASS [analysis] canonical 13 counted fmDRY runs/r/d/ffd/nd/unr/nonterm/meanT/burnt/ever/clr/intact/b240 got=(13, 38, 10, 6, 1, 2, 2, '134.2', 16053, 22648, 0, 9852, 1395) want=(13, 38, 10, 6, 1, 2, 2, '134.2', 16053, 22648, 0, 9852, 1395)
+  PASS [analysis] canonical 13 counted fmDRY vs fmOFF delta burnt/ever/intact got=(0, 0, 0) want=(0, 0, 0)
+  PASS [analysis] canonical 13 dedup fmOFF runs/r/d/ffd/nd/unr/nonterm/meanT/burnt/ever/clr/intact/b240 got=(10, 30, 8, 6, 0, 1, 1, '144.1', 12708, 17774, 0, 7226, 1044) want=(10, 30, 8, 6, 0, 1, 1, '144.1', 12708, 17774, 0, 7226, 1044)
+  PASS [analysis] canonical 13 dedup fmF runs/r/d/ffd/nd/unr/nonterm/meanT/burnt/ever/clr/intact/b240 got=(10, 29, 9, 5, 0, 1, 1, '127.7', 11725, 16116, 644, 8240, 519) want=(10, 29, 9, 5, 0, 1, 1, '127.7', 11725, 16116, 644, 8240, 519)
+  PASS [analysis] canonical 13 dedup fmF vs fmOFF delta burnt/ever/intact got=(-983, -1658, 1014) want=(-983, -1658, 1014)
+  PASS [analysis] canonical 13 dedup fmFS runs/r/d/ffd/nd/unr/nonterm/meanT/burnt/ever/clr/intact/b240 got=(10, 29, 9, 5, 0, 1, 1, '127.7', 11873, 16282, 620, 8098, 630) want=(10, 29, 9, 5, 0, 1, 1, '127.7', 11873, 16282, 620, 8098, 630)
+  PASS [analysis] canonical 13 dedup fmFS vs fmOFF delta burnt/ever/intact got=(-835, -1492, 872) want=(-835, -1492, 872)
+  PASS [analysis] canonical 13 dedup fmES runs/r/d/ffd/nd/unr/nonterm/meanT/burnt/ever/clr/intact/b240 got=(10, 31, 9, 5, 0, 0, 0, '134.5', 12027, 16794, 0, 8206, 693) want=(10, 31, 9, 5, 0, 0, 0, '134.5', 12027, 16794, 0, 8206, 693)
+  PASS [analysis] canonical 13 dedup fmES vs fmOFF delta burnt/ever/intact got=(-681, -980, 980) want=(-681, -980, 980)
+  PASS [analysis] canonical 13 dedup fmEFS runs/r/d/ffd/nd/unr/nonterm/meanT/burnt/ever/clr/intact/b240 got=(10, 29, 9, 5, 0, 1, 1, '127.7', 11791, 16255, 630, 8115, 566) want=(10, 29, 9, 5, 0, 1, 1, '127.7', 11791, 16255, 630, 8115, 566)
+  PASS [analysis] canonical 13 dedup fmEFS vs fmOFF delta burnt/ever/intact got=(-917, -1519, 889) want=(-917, -1519, 889)
+  PASS [analysis] canonical 13 dedup fmDRY runs/r/d/ffd/nd/unr/nonterm/meanT/burnt/ever/clr/intact/b240 got=(10, 30, 8, 5, 0, 1, 1, '128.0', 12708, 17774, 0, 7226, 1044) want=(10, 30, 8, 5, 0, 1, 1, '128.0', 12708, 17774, 0, 7226, 1044)
+  PASS [analysis] canonical 13 dedup fmDRY vs fmOFF delta burnt/ever/intact got=(0, 0, 0) want=(0, 0, 0)
+  PASS [analysis] canonical 13 fmOFF E1n/E1d/E2n/E2d got=(278, 5520, 439, 12480) want=(278, 5520, 439, 12480)
+  PASS [analysis] canonical 13 fmOFF deaths/eng/prev/streak/preempt/afterT/full/free got=(6, 0, 0, 0, 0, 3, 6, 0) want=(6, 0, 0, 0, 0, 3, 6, 0)
+  PASS [analysis] canonical 13 fmOFF engaged rows / after terminal / ext / clear got=(0, 0, 0, 0) want=(0, 0, 0, 0)
+  PASS [analysis] canonical 13 fmF E1n/E1d/E2n/E2d got=(238, 5520, 325, 12480) want=(238, 5520, 325, 12480)
+  PASS [analysis] canonical 13 fmF deaths/eng/prev/streak/preempt/afterT/full/free got=(6, 0, 0, 0, 2, 0, 6, 0) want=(6, 0, 0, 0, 2, 0, 6, 0)
+  PASS [analysis] canonical 13 fmF engaged rows / after terminal / ext / clear got=(2734, 1689, 0, 1015) want=(2734, 1689, 0, 1015)
+  PASS [analysis] canonical 13 fmFS E1n/E1d/E2n/E2d got=(255, 5520, 379, 12480) want=(255, 5520, 379, 12480)
+  PASS [analysis] canonical 13 fmFS deaths/eng/prev/streak/preempt/afterT/full/free got=(6, 0, 0, 0, 2, 0, 6, 0) want=(6, 0, 0, 0, 2, 0, 6, 0)
+  PASS [analysis] canonical 13 fmFS engaged rows / after terminal / ext / clear got=(2861, 1708, 0, 1078) want=(2861, 1708, 0, 1078)
+  PASS [analysis] canonical 13 fmES E1n/E1d/E2n/E2d got=(201, 5520, 365, 12480) want=(201, 5520, 365, 12480)
+  PASS [analysis] canonical 13 fmES deaths/eng/prev/streak/preempt/afterT/full/free got=(6, 0, 0, 2, 0, 1, 6, 0) want=(6, 0, 0, 2, 0, 1, 6, 0)
+  PASS [analysis] canonical 13 fmES engaged rows / after terminal / ext / clear got=(2065, 1137, 300, 0) want=(2065, 1137, 300, 0)
+  PASS [analysis] canonical 13 fmEFS E1n/E1d/E2n/E2d got=(245, 5520, 350, 12480) want=(245, 5520, 350, 12480)
+  PASS [analysis] canonical 13 fmEFS deaths/eng/prev/streak/preempt/afterT/full/free got=(6, 0, 0, 0, 2, 0, 6, 0) want=(6, 0, 0, 0, 2, 0, 6, 0)
+  PASS [analysis] canonical 13 fmEFS engaged rows / after terminal / ext / clear got=(2819, 1778, 43, 1042) want=(2819, 1778, 43, 1042)
+  PASS [analysis] canonical 13 fmDRY E1n/E1d/E2n/E2d got=(262, 5520, 421, 12480) want=(262, 5520, 421, 12480)
+  PASS [analysis] canonical 13 fmDRY deaths/eng/prev/streak/preempt/afterT/full/free got=(6, 0, 0, 1, 1, 1, 6, 0) want=(6, 0, 0, 1, 1, 1, 6, 0)
+  PASS [analysis] canonical 13 fmDRY engaged rows / after terminal / ext / clear got=(2790, 1763, 0, 0) want=(2790, 1763, 0, 0)
+  PASS [analysis] canonical 13 per-run r/d/ff/b/e/c/i/ext/clear/first-write (13 runs x 6 arms) got=[] want=[]
+  PASS [analysis] fresh 10 counted fmOFF runs/r/d/ffd/nd/unr/nonterm/meanT/burnt/ever/clr/intact/b240 got=(10, 29, 6, 4, 4, 4, 1, '175.6', 10996, 15088, 0, 9912, 659) want=(10, 29, 6, 4, 4, 4, 1, '175.6', 10996, 15088, 0, 9912, 659)
+  PASS [analysis] fresh 10 counted fmF runs/r/d/ffd/nd/unr/nonterm/meanT/burnt/ever/clr/intact/b240 got=(10, 28, 7, 2, 3, 3, 2, '158.8', 10019, 13730, 589, 10681, 424) want=(10, 28, 7, 2, 3, 3, 2, '158.8', 10019, 13730, 589, 10681, 424)
+  PASS [analysis] fresh 10 counted fmF vs fmOFF delta burnt/ever/intact got=(-977, -1358, 769) want=(-977, -1358, 769)
+  PASS [analysis] fresh 10 counted fmFS runs/r/d/ffd/nd/unr/nonterm/meanT/burnt/ever/clr/intact/b240 got=(10, 28, 6, 2, 3, 3, 3, '164.3', 10043, 13756, 528, 10716, 463) want=(10, 28, 6, 2, 3, 3, 3, '164.3', 10043, 13756, 528, 10716, 463)
+  PASS [analysis] fresh 10 counted fmFS vs fmOFF delta burnt/ever/intact got=(-953, -1332, 804) want=(-953, -1332, 804)
+  PASS [analysis] fresh 10 counted fmES runs/r/d/ffd/nd/unr/nonterm/meanT/burnt/ever/clr/intact/b240 got=(10, 29, 6, 3, 3, 3, 2, '171.0', 9783, 13666, 0, 11334, 513) want=(10, 29, 6, 3, 3, 3, 2, '171.0', 9783, 13666, 0, 11334, 513)
+  PASS [analysis] fresh 10 counted fmES vs fmOFF delta burnt/ever/intact got=(-1213, -1422, 1422) want=(-1213, -1422, 1422)
+  PASS [analysis] fresh 10 counted fmEFS runs/r/d/ffd/nd/unr/nonterm/meanT/burnt/ever/clr/intact/b240 got=(10, 28, 6, 3, 2, 2, 4, '157.2', 10265, 14123, 465, 10412, 518) want=(10, 28, 6, 3, 2, 2, 4, '157.2', 10265, 14123, 465, 10412, 518)
+  PASS [analysis] fresh 10 counted fmEFS vs fmOFF delta burnt/ever/intact got=(-731, -965, 500) want=(-731, -965, 500)
+  PASS [analysis] fresh 10 counted fmDRY runs/r/d/ffd/nd/unr/nonterm/meanT/burnt/ever/clr/intact/b240 got=(10, 28, 5, 5, 4, 4, 3, '164.7', 10996, 15088, 0, 9912, 659) want=(10, 28, 5, 5, 4, 4, 3, '164.7', 10996, 15088, 0, 9912, 659)
+  PASS [analysis] fresh 10 counted fmDRY vs fmOFF delta burnt/ever/intact got=(0, 0, 0) want=(0, 0, 0)
+  PASS [analysis] fresh 10 dedup fmOFF runs/r/d/ffd/nd/unr/nonterm/meanT/burnt/ever/clr/intact/b240 got=(10, 29, 6, 4, 4, 4, 1, '175.6', 10996, 15088, 0, 9912, 659) want=(10, 29, 6, 4, 4, 4, 1, '175.6', 10996, 15088, 0, 9912, 659)
+  PASS [analysis] fresh 10 dedup fmF runs/r/d/ffd/nd/unr/nonterm/meanT/burnt/ever/clr/intact/b240 got=(10, 28, 7, 2, 3, 3, 2, '158.8', 10019, 13730, 589, 10681, 424) want=(10, 28, 7, 2, 3, 3, 2, '158.8', 10019, 13730, 589, 10681, 424)
+  PASS [analysis] fresh 10 dedup fmF vs fmOFF delta burnt/ever/intact got=(-977, -1358, 769) want=(-977, -1358, 769)
+  PASS [analysis] fresh 10 dedup fmFS runs/r/d/ffd/nd/unr/nonterm/meanT/burnt/ever/clr/intact/b240 got=(10, 28, 6, 2, 3, 3, 3, '164.3', 10043, 13756, 528, 10716, 463) want=(10, 28, 6, 2, 3, 3, 3, '164.3', 10043, 13756, 528, 10716, 463)
+  PASS [analysis] fresh 10 dedup fmFS vs fmOFF delta burnt/ever/intact got=(-953, -1332, 804) want=(-953, -1332, 804)
+  PASS [analysis] fresh 10 dedup fmES runs/r/d/ffd/nd/unr/nonterm/meanT/burnt/ever/clr/intact/b240 got=(10, 29, 6, 3, 3, 3, 2, '171.0', 9783, 13666, 0, 11334, 513) want=(10, 29, 6, 3, 3, 3, 2, '171.0', 9783, 13666, 0, 11334, 513)
+  PASS [analysis] fresh 10 dedup fmES vs fmOFF delta burnt/ever/intact got=(-1213, -1422, 1422) want=(-1213, -1422, 1422)
+  PASS [analysis] fresh 10 dedup fmEFS runs/r/d/ffd/nd/unr/nonterm/meanT/burnt/ever/clr/intact/b240 got=(10, 28, 6, 3, 2, 2, 4, '157.2', 10265, 14123, 465, 10412, 518) want=(10, 28, 6, 3, 2, 2, 4, '157.2', 10265, 14123, 465, 10412, 518)
+  PASS [analysis] fresh 10 dedup fmEFS vs fmOFF delta burnt/ever/intact got=(-731, -965, 500) want=(-731, -965, 500)
+  PASS [analysis] fresh 10 dedup fmDRY runs/r/d/ffd/nd/unr/nonterm/meanT/burnt/ever/clr/intact/b240 got=(10, 28, 5, 5, 4, 4, 3, '164.7', 10996, 15088, 0, 9912, 659) want=(10, 28, 5, 5, 4, 4, 3, '164.7', 10996, 15088, 0, 9912, 659)
+  PASS [analysis] fresh 10 dedup fmDRY vs fmOFF delta burnt/ever/intact got=(0, 0, 0) want=(0, 0, 0)
+  PASS [analysis] fresh 10 fmOFF E1n/E1d/E2n/E2d got=(156, 4800, 186, 9600) want=(156, 4800, 186, 9600)
+  PASS [analysis] fresh 10 fmOFF deaths/eng/prev/streak/preempt/afterT/full/free got=(4, 0, 0, 0, 0, 2, 4, 0) want=(4, 0, 0, 0, 0, 2, 4, 0)
+  PASS [analysis] fresh 10 fmOFF engaged rows / after terminal / ext / clear got=(0, 0, 0, 0) want=(0, 0, 0, 0)
+  PASS [analysis] fresh 10 fmF E1n/E1d/E2n/E2d got=(148, 4800, 213, 9600) want=(148, 4800, 213, 9600)
+  PASS [analysis] fresh 10 fmF deaths/eng/prev/streak/preempt/afterT/full/free got=(2, 0, 0, 0, 2, 0, 2, 0) want=(2, 0, 0, 0, 2, 0, 2, 0)
+  PASS [analysis] fresh 10 fmF engaged rows / after terminal / ext / clear got=(1941, 1062, 0, 700) want=(1941, 1062, 0, 700)
+  PASS [analysis] fresh 10 fmFS E1n/E1d/E2n/E2d got=(144, 4800, 209, 9600) want=(144, 4800, 209, 9600)
+  PASS [analysis] fresh 10 fmFS deaths/eng/prev/streak/preempt/afterT/full/free got=(2, 0, 0, 0, 2, 0, 2, 0) want=(2, 0, 0, 0, 2, 0, 2, 0)
+  PASS [analysis] fresh 10 fmFS engaged rows / after terminal / ext / clear got=(1871, 842, 0, 696) want=(1871, 842, 0, 696)
+  PASS [analysis] fresh 10 fmES E1n/E1d/E2n/E2d got=(126, 4800, 168, 9600) want=(126, 4800, 168, 9600)
+  PASS [analysis] fresh 10 fmES deaths/eng/prev/streak/preempt/afterT/full/free got=(3, 0, 0, 1, 2, 0, 3, 0) want=(3, 0, 0, 1, 2, 0, 3, 0)
+  PASS [analysis] fresh 10 fmES engaged rows / after terminal / ext / clear got=(1284, 604, 190, 0) want=(1284, 604, 190, 0)
+  PASS [analysis] fresh 10 fmEFS E1n/E1d/E2n/E2d got=(153, 4800, 212, 9600) want=(153, 4800, 212, 9600)
+  PASS [analysis] fresh 10 fmEFS deaths/eng/prev/streak/preempt/afterT/full/free got=(3, 0, 0, 0, 3, 0, 3, 0) want=(3, 0, 0, 0, 3, 0, 3, 0)
+  PASS [analysis] fresh 10 fmEFS engaged rows / after terminal / ext / clear got=(1788, 811, 44, 614) want=(1788, 811, 44, 614)
+  PASS [analysis] fresh 10 fmDRY E1n/E1d/E2n/E2d got=(151, 4800, 181, 9600) want=(151, 4800, 181, 9600)
+  PASS [analysis] fresh 10 fmDRY deaths/eng/prev/streak/preempt/afterT/full/free got=(5, 0, 0, 3, 2, 1, 5, 0) want=(5, 0, 0, 3, 2, 1, 5, 0)
+  PASS [analysis] fresh 10 fmDRY engaged rows / after terminal / ext / clear got=(1650, 779, 0, 0) want=(1650, 779, 0, 0)
+  PASS [analysis] fresh 10 per-run r/d/ff/b/e/c/i/ext/clear/first-write (10 runs x 6 arms) got=[] want=[]
+  PASS [analysis] canonical+fresh 23 counted fmOFF runs/r/d/ffd/nd/unr/nonterm/meanT/burnt/ever/clr/intact/b240 got=(23, 68, 16, 10, 5, 6, 2, '162.0', 27049, 37736, 0, 19764, 2054) want=(23, 68, 16, 10, 5, 6, 2, '162.0', 27049, 37736, 0, 19764, 2054)
+  PASS [analysis] canonical+fresh 23 counted fmF runs/r/d/ffd/nd/unr/nonterm/meanT/burnt/ever/clr/intact/b240 got=(23, 66, 18, 8, 4, 5, 3, '149.4', 24370, 33659, 1417, 22424, 1037) want=(23, 66, 18, 8, 4, 5, 3, '149.4', 24370, 33659, 1417, 22424, 1037)
+  PASS [analysis] canonical+fresh 23 counted fmF vs fmOFF delta burnt/ever/intact got=(-2679, -4077, 2660) want=(-2679, -4077, 2660)
+  PASS [analysis] canonical+fresh 23 counted fmFS runs/r/d/ffd/nd/unr/nonterm/meanT/burnt/ever/clr/intact/b240 got=(23, 64, 18, 8, 4, 5, 5, '146.8', 24700, 34024, 1354, 22122, 1171) want=(23, 64, 18, 8, 4, 5, 5, '146.8', 24700, 34024, 1354, 22122, 1171)
+  PASS [analysis] canonical+fresh 23 counted fmFS vs fmOFF delta burnt/ever/intact got=(-2349, -3712, 2358) want=(-2349, -3712, 2358)
+  PASS [analysis] canonical+fresh 23 counted fmES runs/r/d/ffd/nd/unr/nonterm/meanT/burnt/ever/clr/intact/b240 got=(23, 67, 18, 9, 3, 3, 3, '152.1', 24845, 34869, 0, 22631, 1433) want=(23, 67, 18, 9, 3, 3, 3, '152.1', 24845, 34869, 0, 22631, 1433)
+  PASS [analysis] canonical+fresh 23 counted fmES vs fmOFF delta burnt/ever/intact got=(-2204, -2867, 2867) want=(-2204, -2867, 2867)
+  PASS [analysis] canonical+fresh 23 counted fmEFS runs/r/d/ffd/nd/unr/nonterm/meanT/burnt/ever/clr/intact/b240 got=(23, 66, 17, 9, 3, 4, 5, '146.3', 24887, 34461, 1296, 21743, 1183) want=(23, 66, 17, 9, 3, 4, 5, '146.3', 24887, 34461, 1296, 21743, 1183)
+  PASS [analysis] canonical+fresh 23 counted fmEFS vs fmOFF delta burnt/ever/intact got=(-2162, -3275, 1979) want=(-2162, -3275, 1979)
+  PASS [analysis] canonical+fresh 23 counted fmDRY runs/r/d/ffd/nd/unr/nonterm/meanT/burnt/ever/clr/intact/b240 got=(23, 66, 15, 11, 5, 6, 5, '146.1', 27049, 37736, 0, 19764, 2054) want=(23, 66, 15, 11, 5, 6, 5, '146.1', 27049, 37736, 0, 19764, 2054)
+  PASS [analysis] canonical+fresh 23 counted fmDRY vs fmOFF delta burnt/ever/intact got=(0, 0, 0) want=(0, 0, 0)
+  PASS [analysis] canonical+fresh 23 dedup fmOFF runs/r/d/ffd/nd/unr/nonterm/meanT/burnt/ever/clr/intact/b240 got=(20, 59, 14, 10, 4, 5, 2, '159.8', 23704, 32862, 0, 17138, 1703) want=(20, 59, 14, 10, 4, 5, 2, '159.8', 23704, 32862, 0, 17138, 1703)
+  PASS [analysis] canonical+fresh 23 dedup fmF runs/r/d/ffd/nd/unr/nonterm/meanT/burnt/ever/clr/intact/b240 got=(20, 57, 16, 7, 3, 4, 3, '142.3', 21744, 29846, 1233, 18921, 943) want=(20, 57, 16, 7, 3, 4, 3, '142.3', 21744, 29846, 1233, 18921, 943)
+  PASS [analysis] canonical+fresh 23 dedup fmF vs fmOFF delta burnt/ever/intact got=(-1960, -3016, 1783) want=(-1960, -3016, 1783)
+  PASS [analysis] canonical+fresh 23 dedup fmFS runs/r/d/ffd/nd/unr/nonterm/meanT/burnt/ever/clr/intact/b240 got=(20, 57, 15, 7, 3, 4, 4, '143.7', 21916, 30038, 1148, 18814, 1093) want=(20, 57, 15, 7, 3, 4, 4, '143.7', 21916, 30038, 1148, 18814, 1093)
+  PASS [analysis] canonical+fresh 23 dedup fmFS vs fmOFF delta burnt/ever/intact got=(-1788, -2824, 1676) want=(-1788, -2824, 1676)
+  PASS [analysis] canonical+fresh 23 dedup fmES runs/r/d/ffd/nd/unr/nonterm/meanT/burnt/ever/clr/intact/b240 got=(20, 60, 15, 8, 3, 3, 2, '150.7', 21810, 30460, 0, 19540, 1206) want=(20, 60, 15, 8, 3, 3, 2, '150.7', 21810, 30460, 0, 19540, 1206)
+  PASS [analysis] canonical+fresh 23 dedup fmES vs fmOFF delta burnt/ever/intact got=(-1894, -2402, 2402) want=(-1894, -2402, 2402)
+  PASS [analysis] canonical+fresh 23 dedup fmEFS runs/r/d/ffd/nd/unr/nonterm/meanT/burnt/ever/clr/intact/b240 got=(20, 57, 15, 8, 2, 3, 5, '139.5', 22056, 30378, 1095, 18527, 1084) want=(20, 57, 15, 8, 2, 3, 5, '139.5', 22056, 30378, 1095, 18527, 1084)
+  PASS [analysis] canonical+fresh 23 dedup fmEFS vs fmOFF delta burnt/ever/intact got=(-1648, -2484, 1389) want=(-1648, -2484, 1389)
+  PASS [analysis] canonical+fresh 23 dedup fmDRY runs/r/d/ffd/nd/unr/nonterm/meanT/burnt/ever/clr/intact/b240 got=(20, 58, 13, 10, 4, 5, 4, '144.1', 23704, 32862, 0, 17138, 1703) want=(20, 58, 13, 10, 4, 5, 4, '144.1', 23704, 32862, 0, 17138, 1703)
+  PASS [analysis] canonical+fresh 23 dedup fmDRY vs fmOFF delta burnt/ever/intact got=(0, 0, 0) want=(0, 0, 0)
+  PASS [analysis] canonical+fresh 23 fmOFF E1n/E1d/E2n/E2d got=(434, 10320, 625, 22080) want=(434, 10320, 625, 22080)
+  PASS [analysis] canonical+fresh 23 fmOFF deaths/eng/prev/streak/preempt/afterT/full/free got=(10, 0, 0, 0, 0, 5, 10, 0) want=(10, 0, 0, 0, 0, 5, 10, 0)
+  PASS [analysis] canonical+fresh 23 fmOFF engaged rows / after terminal / ext / clear got=(0, 0, 0, 0) want=(0, 0, 0, 0)
+  PASS [analysis] canonical+fresh 23 fmF E1n/E1d/E2n/E2d got=(386, 10320, 538, 22080) want=(386, 10320, 538, 22080)
+  PASS [analysis] canonical+fresh 23 fmF deaths/eng/prev/streak/preempt/afterT/full/free got=(8, 0, 0, 0, 4, 0, 8, 0) want=(8, 0, 0, 0, 4, 0, 8, 0)
+  PASS [analysis] canonical+fresh 23 fmF engaged rows / after terminal / ext / clear got=(4675, 2751, 0, 1715) want=(4675, 2751, 0, 1715)
+  PASS [analysis] canonical+fresh 23 fmFS E1n/E1d/E2n/E2d got=(399, 10320, 588, 22080) want=(399, 10320, 588, 22080)
+  PASS [analysis] canonical+fresh 23 fmFS deaths/eng/prev/streak/preempt/afterT/full/free got=(8, 0, 0, 0, 4, 0, 8, 0) want=(8, 0, 0, 0, 4, 0, 8, 0)
+  PASS [analysis] canonical+fresh 23 fmFS engaged rows / after terminal / ext / clear got=(4732, 2550, 0, 1774) want=(4732, 2550, 0, 1774)
+  PASS [analysis] canonical+fresh 23 fmES E1n/E1d/E2n/E2d got=(327, 10320, 533, 22080) want=(327, 10320, 533, 22080)
+  PASS [analysis] canonical+fresh 23 fmES deaths/eng/prev/streak/preempt/afterT/full/free got=(9, 0, 0, 3, 2, 1, 9, 0) want=(9, 0, 0, 3, 2, 1, 9, 0)
+  PASS [analysis] canonical+fresh 23 fmES engaged rows / after terminal / ext / clear got=(3349, 1741, 490, 0) want=(3349, 1741, 490, 0)
+  PASS [analysis] canonical+fresh 23 fmEFS E1n/E1d/E2n/E2d got=(398, 10320, 562, 22080) want=(398, 10320, 562, 22080)
+  PASS [analysis] canonical+fresh 23 fmEFS deaths/eng/prev/streak/preempt/afterT/full/free got=(9, 0, 0, 0, 5, 0, 9, 0) want=(9, 0, 0, 0, 5, 0, 9, 0)
+  PASS [analysis] canonical+fresh 23 fmEFS engaged rows / after terminal / ext / clear got=(4607, 2589, 87, 1656) want=(4607, 2589, 87, 1656)
+  PASS [analysis] canonical+fresh 23 fmDRY E1n/E1d/E2n/E2d got=(413, 10320, 602, 22080) want=(413, 10320, 602, 22080)
+  PASS [analysis] canonical+fresh 23 fmDRY deaths/eng/prev/streak/preempt/afterT/full/free got=(11, 0, 0, 4, 3, 2, 11, 0) want=(11, 0, 0, 4, 3, 2, 11, 0)
+  PASS [analysis] canonical+fresh 23 fmDRY engaged rows / after terminal / ext / clear got=(4440, 2542, 0, 0) want=(4440, 2542, 0, 0)
+  PASS [analysis] canonical+fresh 23 per-run r/d/ff/b/e/c/i/ext/clear/first-write (23 runs x 6 arms) got=[] want=[]
+
+B. TABLE NUMBERS vs firemech_report.txt (transcribed)
+  PASS [report 3.2] canonical 13 fmOFF burnt/ever/clear/intact/b240/intact-vs-OFF got=(16053, 22648, 0, 9852, 1395, None) want=(16053, 22648, 0, 9852, 1395, None)
+  PASS [report 3.2] canonical 13 fmF burnt/ever/clear/intact/b240/intact-vs-OFF got=(14351, 19929, 828, 11743, 613, 1891) want=(14351, 19929, 828, 11743, 613, 1891)
+  PASS [report 3.2] canonical 13 fmFS burnt/ever/clear/intact/b240/intact-vs-OFF got=(14657, 20268, 826, 11406, 708, 1554) want=(14657, 20268, 826, 11406, 708, 1554)
+  PASS [report 3.2] canonical 13 fmES burnt/ever/clear/intact/b240/intact-vs-OFF got=(15062, 21203, 0, 11297, 920, 1445) want=(15062, 21203, 0, 11297, 920, 1445)
+  PASS [report 3.2] canonical 13 fmEFS burnt/ever/clear/intact/b240/intact-vs-OFF got=(14622, 20338, 831, 11331, 665, 1479) want=(14622, 20338, 831, 11331, 665, 1479)
+  PASS [report 3.2] canonical 13 fmDRY burnt/ever/clear/intact/b240/intact-vs-OFF got=(16053, 22648, 0, 9852, 1395, 0) want=(16053, 22648, 0, 9852, 1395, 0)
+  PASS [report 3.2] fresh 10 fmOFF burnt/ever/clear/intact/b240/intact-vs-OFF got=(10996, 15088, 0, 9912, 659, None) want=(10996, 15088, 0, 9912, 659, None)
+  PASS [report 3.2] fresh 10 fmF burnt/ever/clear/intact/b240/intact-vs-OFF got=(10019, 13730, 589, 10681, 424, 769) want=(10019, 13730, 589, 10681, 424, 769)
+  PASS [report 3.2] fresh 10 fmFS burnt/ever/clear/intact/b240/intact-vs-OFF got=(10043, 13756, 528, 10716, 463, 804) want=(10043, 13756, 528, 10716, 463, 804)
+  PASS [report 3.2] fresh 10 fmES burnt/ever/clear/intact/b240/intact-vs-OFF got=(9783, 13666, 0, 11334, 513, 1422) want=(9783, 13666, 0, 11334, 513, 1422)
+  PASS [report 3.2] fresh 10 fmEFS burnt/ever/clear/intact/b240/intact-vs-OFF got=(10265, 14123, 465, 10412, 518, 500) want=(10265, 14123, 465, 10412, 518, 500)
+  PASS [report 3.2] fresh 10 fmDRY burnt/ever/clear/intact/b240/intact-vs-OFF got=(10996, 15088, 0, 9912, 659, 0) want=(10996, 15088, 0, 9912, 659, 0)
+  PASS [report 3.2] canonical+fresh 23 fmOFF burnt/ever/clear/intact/b240/intact-vs-OFF got=(27049, 37736, 0, 19764, 2054, None) want=(27049, 37736, 0, 19764, 2054, None)
+  PASS [report 3.2] canonical+fresh 23 fmF burnt/ever/clear/intact/b240/intact-vs-OFF got=(24370, 33659, 1417, 22424, 1037, 2660) want=(24370, 33659, 1417, 22424, 1037, 2660)
+  PASS [report 3.2] canonical+fresh 23 fmFS burnt/ever/clear/intact/b240/intact-vs-OFF got=(24700, 34024, 1354, 22122, 1171, 2358) want=(24700, 34024, 1354, 22122, 1171, 2358)
+  PASS [report 3.2] canonical+fresh 23 fmES burnt/ever/clear/intact/b240/intact-vs-OFF got=(24845, 34869, 0, 22631, 1433, 2867) want=(24845, 34869, 0, 22631, 1433, 2867)
+  PASS [report 3.2] canonical+fresh 23 fmEFS burnt/ever/clear/intact/b240/intact-vs-OFF got=(24887, 34461, 1296, 21743, 1183, 1979) want=(24887, 34461, 1296, 21743, 1183, 1979)
+  PASS [report 3.2] canonical+fresh 23 fmDRY burnt/ever/clear/intact/b240/intact-vs-OFF got=(27049, 37736, 0, 19764, 2054, 0) want=(27049, 37736, 0, 19764, 2054, 0)
+  PASS [report 3.2] dedup 20 fmEFS intact vs OFF got=1389 want=1389
+  PASS [report 3.2] dedup 20 fmF intact vs OFF got=1783 want=1783
+  PASS [report 3.2] dedup 20 fmES intact vs OFF got=2402 want=2402
+  PASS [report 3.2] canonical 13 fmF intact direction up/down/unchanged got=(11, 2, 0) want=(11, 2, 0)
+  PASS [report 3.2] canonical 13 fmFS intact direction up/down/unchanged got=(11, 2, 0) want=(11, 2, 0)
+  PASS [report 3.2] canonical 13 fmEFS intact direction up/down/unchanged got=(11, 2, 0) want=(11, 2, 0)
+  PASS [report 3.2] canonical 13 fmES intact direction up/down/unchanged got=(7, 6, 0) want=(7, 6, 0)
+  PASS [report 3.2] fresh 10 fmF intact direction up/down/unchanged got=(5, 1, 4) want=(5, 1, 4)
+  PASS [report 3.2] fresh 10 fmFS intact direction up/down/unchanged got=(5, 1, 4) want=(5, 1, 4)
+  PASS [report 3.2] fresh 10 fmEFS intact direction up/down/unchanged got=(5, 1, 4) want=(5, 1, 4)
+  PASS [report 3.2] fresh 10 fmES intact direction up/down/unchanged got=(4, 2, 4) want=(4, 2, 4)
+  PASS [report 3.2] fmF 23: changed runs / up / down range got=(19, 16, -9, -7) want=(19, 16, -9, -7)
+  PASS [report 3.3] 23 fmF engaged rows / after terminal got=(4675, 2751) want=(4675, 2751)
+  PASS [report 3.3] 23 fmFS engaged rows / after terminal got=(4732, 2550) want=(4732, 2550)
+  PASS [report 3.3] 23 fmES engaged rows / after terminal got=(3349, 1741) want=(3349, 1741)
+  PASS [report 3.3] 23 fmEFS engaged rows / after terminal got=(4607, 2589) want=(4607, 2589)
+  PASS [report 3.3] 23 fmDRY engaged rows / after terminal got=(4440, 2542) want=(4440, 2542)
+  PASS [report 5] canonical 13 counted fmOFF r/d/ffd/nd/nonterm/meanT got=(39, 10, 6, 1, 1, '151.9') want=(39, 10, 6, 1, 1, '151.9')
+  PASS [report 5] canonical 13 counted fmF r/d/ffd/nd/nonterm/meanT got=(38, 11, 6, 1, 1, '143.2') want=(38, 11, 6, 1, 1, '143.2')
+  PASS [report 5] canonical 13 counted fmFS r/d/ffd/nd/nonterm/meanT got=(36, 12, 6, 1, 2, '135.6') want=(36, 12, 6, 1, 2, '135.6')
+  PASS [report 5] canonical 13 counted fmES r/d/ffd/nd/nonterm/meanT got=(38, 12, 6, 0, 1, '139.5') want=(38, 12, 6, 0, 1, '139.5')
+  PASS [report 5] canonical 13 counted fmEFS r/d/ffd/nd/nonterm/meanT got=(38, 11, 6, 1, 1, '140.8') want=(38, 11, 6, 1, 1, '140.8')
+  PASS [report 5] canonical 13 counted fmDRY r/d/ffd/nd/nonterm/meanT got=(38, 10, 6, 1, 2, '134.2') want=(38, 10, 6, 1, 2, '134.2')
+  PASS [report 5] fresh 10 counted fmOFF r/d/ffd/nd/nonterm/meanT got=(29, 6, 4, 4, 1, '175.6') want=(29, 6, 4, 4, 1, '175.6')
+  PASS [report 5] fresh 10 counted fmF r/d/ffd/nd/nonterm/meanT got=(28, 7, 2, 3, 2, '158.8') want=(28, 7, 2, 3, 2, '158.8')
+  PASS [report 5] fresh 10 counted fmFS r/d/ffd/nd/nonterm/meanT got=(28, 6, 2, 3, 3, '164.3') want=(28, 6, 2, 3, 3, '164.3')
+  PASS [report 5] fresh 10 counted fmES r/d/ffd/nd/nonterm/meanT got=(29, 6, 3, 3, 2, '171.0') want=(29, 6, 3, 3, 2, '171.0')
+  PASS [report 5] fresh 10 counted fmEFS r/d/ffd/nd/nonterm/meanT got=(28, 6, 3, 2, 4, '157.2') want=(28, 6, 3, 2, 4, '157.2')
+  PASS [report 5] fresh 10 counted fmDRY r/d/ffd/nd/nonterm/meanT got=(28, 5, 5, 4, 3, '164.7') want=(28, 5, 5, 4, 3, '164.7')
+  PASS [report 5] canonical+fresh 23 counted fmOFF r/d/ffd/nd/nonterm/meanT got=(68, 16, 10, 5, 2, '162.0') want=(68, 16, 10, 5, 2, '162.0')
+  PASS [report 5] canonical+fresh 23 counted fmES r/d/ffd/nd/nonterm/meanT got=(67, 18, 9, 3, 3, None) want=(67, 18, 9, 3, 3, None)
+  PASS [report 5] canonical+fresh 23 counted fmF r/d/ffd/nd/nonterm/meanT got=(66, 18, 8, 4, 3, None) want=(66, 18, 8, 4, 3, None)
+  PASS [report 5] canonical+fresh 23 counted fmEFS r/d/ffd/nd/nonterm/meanT got=(66, 17, 9, 3, 5, '146.3') want=(66, 17, 9, 3, 5, '146.3')
+  PASS [report 5] canonical+fresh 23 counted fmFS r/d/ffd/nd/nonterm/meanT got=(64, 18, 8, 4, 5, None) want=(64, 18, 8, 4, 5, None)
+  PASS [report 5] canonical+fresh 23 counted fmDRY r/d/ffd/nd/nonterm/meanT got=(66, 15, 11, 5, 5, '146.1') want=(66, 15, 11, 5, 5, '146.1')
+  PASS [report 5] canonical+fresh 23 dedup fmOFF r/d/ffd/nd/nonterm/meanT got=(59, 14, 10, 4, 2, '159.8') want=(59, 14, 10, 4, 2, '159.8')
+  PASS [report 5] canonical+fresh 23 dedup fmES r/d/ffd/nd/nonterm/meanT got=(60, 15, 8, 3, 2, '150.7') want=(60, 15, 8, 3, 2, '150.7')
+  PASS [report 5] canonical+fresh 23 dedup fmF r/d/ffd/nd/nonterm/meanT got=(57, 16, 7, 3, 3, '142.3') want=(57, 16, 7, 3, 3, '142.3')
+  PASS [report 5] canonical+fresh 23 dedup fmEFS r/d/ffd/nd/nonterm/meanT got=(57, 15, 8, 2, 5, '139.5') want=(57, 15, 8, 2, 5, '139.5')
+  PASS [report 5] canonical+fresh 23 dedup fmFS r/d/ffd/nd/nonterm/meanT got=(57, 15, 7, 3, 4, '143.7') want=(57, 15, 7, 3, 4, '143.7')
+  PASS [report 5] canonical+fresh 23 dedup fmDRY r/d/ffd/nd/nonterm/meanT got=(58, 13, 10, 4, 4, '144.1') want=(58, 13, 10, 4, 4, '144.1')
+  PASS [report 5] canonical 13 counted fmF rescued positioning / writes got=(-1, 0) want=(-1, 0)
+  PASS [report 5] canonical 13 counted fmFS rescued positioning / writes got=(-1, -2) want=(-1, -2)
+  PASS [report 5] canonical 13 counted fmES rescued positioning / writes got=(-1, 0) want=(-1, 0)
+  PASS [report 5] canonical 13 counted fmEFS rescued positioning / writes got=(-1, 0) want=(-1, 0)
+  PASS [report 5] fresh 10 counted fmF rescued positioning / writes got=(-1, 0) want=(-1, 0)
+  PASS [report 5] fresh 10 counted fmFS rescued positioning / writes got=(-1, 0) want=(-1, 0)
+  PASS [report 5] fresh 10 counted fmES rescued positioning / writes got=(-1, 1) want=(-1, 1)
+  PASS [report 5] fresh 10 counted fmEFS rescued positioning / writes got=(-1, 0) want=(-1, 0)
+  PASS [report 5] canonical+fresh 23 dedup fmF rescued positioning / writes got=(-1, -1) want=(-1, -1)
+  PASS [report 5] canonical+fresh 23 dedup fmFS rescued positioning / writes got=(-1, -1) want=(-1, -1)
+  PASS [report 5] canonical+fresh 23 dedup fmES rescued positioning / writes got=(-1, 2) want=(-1, 2)
+  PASS [report 5] canonical+fresh 23 dedup fmEFS rescued positioning / writes got=(-1, -1) want=(-1, -1)
+  PASS [report 5] per-run rescued DRY - OFF got={'east/half/101': -1, 'east/half/404': 1, 'south/half/202': 1, 'south/half/404': -1, 'east/def/101': -1, 'south/half/909': -1} want={'east/half/101': -1, 'south/half/404': -1, 'east/def/101': -1, 'east/half/404': 1, 'south/half/202': 1, 'south/half/909': -1}
+  PASS [report 5] per-run rescued fmEFS - DRY got={'south/half/404': -1, 'east/def/101': 1} want={'south/half/404': -1, 'east/def/101': 1}
+  PASS [report 5] per-run rescued fmF - DRY got={'south/half/404': -1, 'east/def/101': 1} want={'south/half/404': -1, 'east/def/101': 1}
+  PASS [report 5] south/half/404 fmEFS vs fmDRY flipped victims got=['victim_2'] want=['victim_2']
+  PASS [report 6] 23 fmOFF deaths/engaged/prev/streak/preempted/afterT/full got=(10, 0, 0, 0, 0, 5, 10) want=(10, 0, 0, 0, 0, 5, 10)
+  PASS [report 6] 23 fmF deaths/engaged/prev/streak/preempted/afterT/full got=(8, 0, 0, 0, 4, 0, 8) want=(8, 0, 0, 0, 4, 0, 8)
+  PASS [report 6] 23 fmFS deaths/engaged/prev/streak/preempted/afterT/full got=(8, 0, 0, 0, 4, 0, 8) want=(8, 0, 0, 0, 4, 0, 8)
+  PASS [report 6] 23 fmES deaths/engaged/prev/streak/preempted/afterT/full got=(9, 0, 0, 3, 2, 1, 9) want=(9, 0, 0, 3, 2, 1, 9)
+  PASS [report 6] 23 fmEFS deaths/engaged/prev/streak/preempted/afterT/full got=(9, 0, 0, 0, 5, 0, 9) want=(9, 0, 0, 0, 5, 0, 9)
+  PASS [report 6] 23 fmDRY deaths/engaged/prev/streak/preempted/afterT/full got=(11, 0, 0, 4, 3, 2, 11) want=(11, 0, 0, 4, 3, 2, 11)
+  PASS [report 6] dedup 20 fmOFF deaths got=10 want=10
+  PASS [report 6] dedup 20 fmF deaths got=7 want=7
+  PASS [report 6] dedup 20 fmFS deaths got=7 want=7
+  PASS [report 6] dedup 20 fmES deaths got=8 want=8
+  PASS [report 6] dedup 20 fmEFS deaths got=8 want=8
+  PASS [report 6] dedup 20 fmDRY deaths got=10 want=10
+  PASS [report 6] per-run death-count change fmDRY vs OFF got={'east/half/101': -1, 'south/half/202': -1, 'south/half/404': 1, 'east/def/303': 1, 'east/half/606': -1, 'south/half/808': 1, 'south/half/909': 1} want={'south/half/404': 1, 'south/half/808': 1, 'south/half/909': 1, 'east/def/303': 1, 'east/half/101': -1, 'south/half/202': -1, 'east/half/606': -1}
+  PASS [report 6] per-run death-count change fmEFS vs OFF got={'south/half/202': -1, 'south/half/303': -1, 'south/half/404': 1, 'east/def/303': 1, 'east/half/606': -1, 'east/half/909': -1, 'south/half/808': 1, 'south/half/909': 1, 'south/half/1010': -1} want={'south/half/404': 1, 'south/half/808': 1, 'south/half/909': 1, 'east/def/303': 1, 'south/half/202': -1, 'south/half/303': -1, 'east/half/606': -1, 'east/half/909': -1, 'south/half/1010': -1}
+  PASS [report 6] per-run death-count change fmF vs OFF got={'south/half/202': -1, 'south/half/303': -1, 'south/half/404': 1, 'east/def/303': 1, 'east/half/606': -1, 'east/half/909': -1, 'south/half/606': -1, 'south/half/808': 1, 'south/half/909': 1, 'south/half/1010': -1} want={'south/half/404': 1, 'south/half/808': 1, 'south/half/909': 1, 'east/def/303': 1, 'south/half/202': -1, 'south/half/303': -1, 'east/half/606': -1, 'east/half/909': -1, 'south/half/1010': -1, 'south/half/606': -1}
+  PASS [report 7] canonical 13 fmOFF E1% / E2% got=('5.04', '3.52') want=('5.04', '3.52')
+  PASS [report 7] canonical 13 fmF E1% / E2% got=('4.31', '2.60') want=('4.31', '2.60')
+  PASS [report 7] canonical 13 fmFS E1% / E2% got=('4.62', '3.04') want=('4.62', '3.04')
+  PASS [report 7] canonical 13 fmES E1% / E2% got=('3.64', '2.92') want=('3.64', '2.92')
+  PASS [report 7] canonical 13 fmEFS E1% / E2% got=('4.44', '2.80') want=('4.44', '2.80')
+  PASS [report 7] canonical 13 fmDRY E1% / E2% got=('4.75', '3.37') want=('4.75', '3.37')
+  PASS [report 7] canonical 13 fmEFS searcher burning frames positioning / writes got=(-16, -17) want=(-16, -17)
+  PASS [report 7] fresh 10 fmOFF E1% / E2% got=('3.25', '1.94') want=('3.25', '1.94')
+  PASS [report 7] fresh 10 fmF E1% / E2% got=('3.08', '2.22') want=('3.08', '2.22')
+  PASS [report 7] fresh 10 fmFS E1% / E2% got=('3.00', '2.18') want=('3.00', '2.18')
+  PASS [report 7] fresh 10 fmES E1% / E2% got=('2.62', '1.75') want=('2.62', '1.75')
+  PASS [report 7] fresh 10 fmEFS E1% / E2% got=('3.19', '2.21') want=('3.19', '2.21')
+  PASS [report 7] fresh 10 fmDRY E1% / E2% got=('3.15', '1.89') want=('3.15', '1.89')
+  PASS [report 7] fresh 10 fmEFS searcher burning frames positioning / writes got=(-5, 2) want=(-5, 2)
+  PASS [report 7] canonical+fresh 23 fmOFF E1% / E2% got=('4.21', '2.83') want=('4.21', '2.83')
+  PASS [report 7] canonical+fresh 23 fmF E1% / E2% got=('3.74', '2.44') want=('3.74', '2.44')
+  PASS [report 7] canonical+fresh 23 fmFS E1% / E2% got=('3.87', '2.66') want=('3.87', '2.66')
+  PASS [report 7] canonical+fresh 23 fmES E1% / E2% got=('3.17', '2.41') want=('3.17', '2.41')
+  PASS [report 7] canonical+fresh 23 fmEFS E1% / E2% got=('3.86', '2.55') want=('3.86', '2.55')
+  PASS [report 7] canonical+fresh 23 fmDRY E1% / E2% got=('4.00', '2.73') want=('4.00', '2.73')
+  PASS [report 7] canonical+fresh 23 fmEFS searcher burning frames positioning / writes got=(-21, -15) want=(-21, -15)
+
+C. CHECK FUNCTIONS - positive and negative controls
+  PASS [report 3.1] canonical 13 CRN-attribution code on fmF vs fmOFF: identical/exact/violations got=(0, 13, 0) want=(0, 13, 0)
+  PASS [report 3.1] canonical 13 CRN-attribution code on fmFS vs fmOFF: identical/exact/violations got=(0, 13, 0) want=(0, 13, 0)
+  PASS [report 3.1] canonical 13 CRN-attribution code on fmES vs fmOFF: identical/exact/violations got=(0, 13, 0) want=(0, 13, 0)
+  PASS [report 3.1] canonical 13 CRN-attribution code on fmEFS vs fmOFF: identical/exact/violations got=(0, 13, 0) want=(0, 13, 0)
+  PASS [report 3.1] fresh 10 CRN-attribution code on fmF vs fmOFF: identical/exact/violations got=(3, 7, 0) want=(3, 7, 0)
+  PASS [report 3.1] fresh 10 CRN-attribution code on fmFS vs fmOFF: identical/exact/violations got=(3, 7, 0) want=(3, 7, 0)
+  PASS [report 3.1] fresh 10 CRN-attribution code on fmES vs fmOFF: identical/exact/violations got=(3, 7, 0) want=(3, 7, 0)
+  PASS [report 3.1] fresh 10 CRN-attribution code on fmEFS vs fmOFF: identical/exact/violations got=(3, 7, 0) want=(3, 7, 0)
+  PASS [report 3.1] canonical+fresh 23 CRN-attribution code on fmF vs fmOFF: identical/exact/violations got=(3, 20, 0) want=(3, 20, 0)
+  PASS [report 3.1] canonical+fresh 23 CRN-attribution code on fmFS vs fmOFF: identical/exact/violations got=(3, 20, 0) want=(3, 20, 0)
+  PASS [report 3.1] canonical+fresh 23 CRN-attribution code on fmES vs fmOFF: identical/exact/violations got=(3, 20, 0) want=(3, 20, 0)
+  PASS [report 3.1] canonical+fresh 23 CRN-attribution code on fmEFS vs fmOFF: identical/exact/violations got=(3, 20, 0) want=(3, 20, 0)
+  PASS [report 3.1] DRY check fmDRY vs fmOFF identical got=(23, 0) want=(23, 0)
+  PASS [control] DRY check detects fmEFS vs fmOFF (non-identical runs = write runs) got=20 want=20
+  PASS [control] CRN check detects a wrong control (fmES vs fmF): violations > 0 got=True want=True
+      e.g. east/half/101 first write 47, fire first differs at 39; east/half/202 first write 101, fire first differs at 96; east/half/303 first write 109, fire first differs at 105
+  PASS [control] gate check fmREF as gate arm vs fmOFF: outcome / prefix violations, steps compared got=(0, 0, 5520) want=(0, 0, 5520)
+  PASS [control] gate check on ungated fmF flags exactly the runs whose r/d differ (analysis per-run lines) got=['east/half/101', 'east/half/404', 'south/half/1010', 'south/half/202', 'south/half/404', 'south/half/909'] want=['east/half/101', 'east/half/404', 'south/half/1010', 'south/half/202', 'south/half/404', 'south/half/909']
+  PASS [control] ff_steps prefix before first log row, fmF vs fmOFF (by construction for any feature arm): violations (steps compared 0) got=0 want=0
+  PASS [control] ff_steps prefix before first log row, fmFS vs fmOFF (by construction for any feature arm): violations (steps compared 0) got=0 want=0
+  PASS [control] ff_steps prefix before first log row, fmES vs fmOFF (by construction for any feature arm): violations (steps compared 0) got=0 want=0
+  PASS [control] ff_steps prefix before first log row, fmEFS vs fmOFF (by construction for any feature arm): violations (steps compared 0) got=0 want=0
+  PASS [control] ff_steps prefix before first log row, fmDRY vs fmOFF (by construction for any feature arm): violations (steps compared 0) got=0 want=0
+  PASS [control] ff_steps check with the row limit removed detects fmDRY positioning: violations > 0 got=True want=True
+      e.g. east/half/101 ff_steps differ at step 1 (first row None, compared steps 1-240); east/half/202 ff_steps differ at step 1 (first row None, compared steps 1-240); east/half/303 ff_steps differ at step 1 (first row None, compared steps 1-240)
+      NOTE: every round-1 feature arm logs its first row at step 1 on every run, so the by-construction
+      prefix controls above compare 0 steps; the non-vacuous controls are fmREF (240 steps per run) and
+      the boundary controls below.
+      synthetic (differs from step 100): row 100 -> no violation | row 101 -> ['east/half/101 ff_steps differ at step 100 (first row 101, compared steps 1-100)']
+  PASS [control] prefix boundary: first row 100 passes (steps 1-99), first row 101 fails at step 100 got=(0, 99, 1, True) want=(0, 99, 1, True)
+  PASS [control] CRN boundary on synthetic divergence at 100: first write 100 / 101 / 99 / None -> exact,identical,viol got=[(1, 0, 0), (0, 0, 1), (0, 0, 1), (0, 0, 1)] want=[(1, 0, 0), (0, 0, 1), (0, 0, 1), (0, 0, 1)]
+
+D. IDENTITY CODE
+  fmOFF  == fmREF   PASS  23/23 identical (23 complete pairs of 23 expected; excluded tag, repo, wall_s)
+    east/half/101    identical (value); dict key order differs in burn_intervals
+    east/half/202    identical (value); dict key order differs in burn_intervals
+    east/half/303    identical (value); dict key order differs in burn_intervals
+    east/half/404    identical (value); dict key order differs in burn_intervals
+    east/half/505    identical (value); dict key order differs in burn_intervals
+    south/half/101   identical (value); dict key order differs in burn_intervals
+    south/half/202   identical (value); dict key order differs in burn_intervals
+    south/half/303   identical (value); dict key order differs in burn_intervals
+    south/half/404   identical (value); dict key order differs in burn_intervals
+    south/half/505   identical (value); dict key order differs in burn_intervals
+    east/def/101     identical (value); dict key order differs in burn_intervals
+    east/def/202     identical (value); dict key order differs in burn_intervals
+    east/def/303     identical (value); dict key order differs in burn_intervals
+    east/half/606    identical (value); dict key order differs in burn_intervals
+    east/half/808    identical (value); dict key order differs in burn_intervals
+    east/half/909    identical (value); dict key order differs in burn_intervals
+    east/half/1010   identical (value); dict key order differs in burn_intervals
+    south/half/606   identical (value); dict key order differs in burn_intervals
+    south/half/707   identical (value); dict key order differs in burn_intervals
+    south/half/808   identical (value); dict key order differs in burn_intervals
+    south/half/909   identical (value); dict key order differs in burn_intervals
+    south/half/1010  identical (value); dict key order differs in burn_intervals
+  PASS [report 1] fmOFF == fmREF (tag/repo/wall_s excluded) got=(23, 23) want=(23, 23)
+  PASS [report 1] runs whose burn_intervals key order differs (values equal) got=22 want=22
+      fmS vs fmOFF differing keys with only tag/repo/wall_s excluded: ['extra_params', 'params']
+  PASS [report 2] fmS vs fmOFF: runs complete, differing keys a subset of {params, extra_params} got=(13, True) want=(13, True)
+  PASS [report 2] fmS == fmOFF with params/extra_params excluded got=(13, 13) want=(13, 13)
+      fmE vs fmOFF differing keys with only tag/repo/wall_s excluded: ['extra_params', 'params']
+  PASS [report 2] fmE vs fmOFF: runs complete, differing keys a subset of {params, extra_params} got=(13, True) want=(13, True)
+  PASS [report 2] fmE == fmOFF with params/extra_params excluded got=(13, 13) want=(13, 13)
+      fmEF vs fmF differing keys with only tag/repo/wall_s excluded: ['extra_params', 'params']
+  PASS [report 2] fmEF vs fmF: runs complete, differing keys a subset of {params, extra_params} got=(13, True) want=(13, True)
+  PASS [report 2] fmEF == fmF with params/extra_params excluded got=(13, 13) want=(13, 13)
+  fmDRY  == fmOFF   FAIL  0/1 identical (1 complete pairs of 1 expected; excluded tag, repo, wall_s)
+    east/half/101    DIFFERS in absence_counters, absence_log, assigns, completions, eval, exit_starts, extra_params, ff_bind_steps, ff_steps, fire_cleared_unburned_final, firefight_counters, firefight_log, firefight_shadow, idle, params, partition_steps, planner, recycle_to_next_assign, recycles, rescue_event_counts, retargets, rtb_counters, rtb_log, stdout_lines, stdout_sha256, terminal_step, uav_actions, uav_steps, unassigns, victim_flee_hold_counts, victim_flee_log, victim_flee_moves_total, victim_holds, victim_leash_anchors, victim_leash_reanchors, victim_steps
+        absence_counters       2 differing sub-keys (removals_total, returns_total)
+        absence_log            first differing element #0 step 28 (len 6/8)
+        assigns                first differing element #3 step 77 (len 5/4)
+        completions            first differing element #0 step 28 (len 3/4)
+        eval                   5 differing sub-keys (dead, firefighter_deaths, rescue_rate, rescued, ...)
+        exit_starts            first differing element #0 step 26 (len 4/4)
+        extra_params           4 differing sub-keys (FF_FIREFIGHT_DRY_RUN, FF_FIREFIGHT_ENGAGED_RETREAT_RANGE, FF_FIREFIGHT_EXTINGUISH, FF_FIREFIGHT_FIREBREAK)
+        ff_bind_steps          first differing step 28 (len 240/240)
+        ff_steps               first differing step 1 (len 240/240)
+        fire_cleared_unburned_final 0 vs "<absent>"
+        firefight_counters     {"extinguished": 0, "cleared": 0, "cleared_unburned": 0} vs "<absent>"
+        firefight_log          [{"step": 1, "ff": "ff_unit_0", "action": "move", "engaged": vs "<absent>"
+        firefight_shadow       [[6, 39], [7, 37], [7, 38], [7, 39], [7, 40], [8, 36], [8, 3 vs "<absent>"
+        idle                   4 differing sub-keys (absent_steps, idle_edge_share, idle_edge_steps, idle_steps)
+        params                 4 differing sub-keys (FF_FIREFIGHT_DRY_RUN, FF_FIREFIGHT_ENGAGED_RETREAT_RANGE, FF_FIREFIGHT_EXTINGUISH, FF_FIREFIGHT_FIREBREAK)
+        partition_steps        first differing step 128 (len 240/240)
+        planner                first differing element #3 step 77 (len 6/6)
+        recycle_to_next_assign first differing element #0 (len 3/4)
+        recycles               first differing element #0 step 33 (len 3/4)
+        rescue_event_counts    7 differing sub-keys (casualty, dispatch_replacement_after_blocked, firefighter_off_grid, firefighter_returned, ...)
+        retargets              first differing element #0 step 78 (len 10/7)
+        rtb_counters           4 differing sub-keys (2500, 2501, 2502, 2503)
+        rtb_log                4 differing sub-keys (2500, 2501, 2502, 2503)
+        stdout_lines           59 vs 56
+        stdout_sha256          "8f94bce9228e4a9d5ebe2f734f4132271808960dfb434f955c3db4680e0 vs "a5483a645ac06ba8c97045b1ec4f32098922ac9e188a1440ca43733aa95
+        terminal_step          138 vs 127
+        uav_actions            first differing step 130 (len 240/240)
+        uav_steps              first differing step 129 (len 240/240)
+        unassigns              first differing element #0 step 135 (len 2/0)
+        victim_flee_hold_counts 2 differing sub-keys (no_candidate, no_candidate.leash_removed)
+        victim_flee_log        first differing element #24 step 102 (len 24/27)
+        victim_flee_moves_total 24 vs 27
+        victim_holds           first differing element #0 step 136 (len 3/0)
+        victim_leash_anchors   1 differing sub-keys (victim_0)
+        victim_leash_reanchors 1 differing sub-keys (victim_0)
+        victim_steps           first differing step 27 (len 240/240)
+  PASS [control] identity code detects fmDRY vs fmOFF (east/half/101): not identical got=0 want=0
+
+SELF-TEST SUMMARY: 275 checks, 275 PASS, 0 FAIL
+
+##############################################################################################################
+# PART 2 - FIRST LIVE READING of the f2 runs that existed (verbatim excerpts of --sample both)
+# pool state at the reading: total=243 valid=41 running=12 pending=190 launched=53 failed=0 gaveup=0 forkfail=0 free_kb=12460312 sims_boxwide=11 last_event_age=0s last_event_epoch=1789475474
+# excerpts: coverage, identity, by-construction checks, canonical 13 counted tables, canonical flips,
+# death list. Fresh and pooled tables are omitted here (no fresh f2 run was complete).
+##############################################################################################################
+FM2 PROBE-ARM ANALYSIS   queue _fm2probe_queue.txt (243 lines)
+COVERAGE (complete / pending / invalid of expected, all tuples in scope)
+  f2IDD   complete 13  pending  0  invalid 0  of 13
+  f2U0D   complete 13  pending 10  invalid 0  of 23  INCOMPLETE
+  f2U1D   complete 13  pending 10  invalid 0  of 23  INCOMPLETE
+  f2L3D   complete  0  pending 23  invalid 0  of 23  INCOMPLETE
+  f2L8D   complete  0  pending 23  invalid 0  of 23  INCOMPLETE
+  f2GD    complete  0  pending 23  invalid 0  of 23  INCOMPLETE
+  f2GW    complete  0  pending 23  invalid 0  of 23  INCOMPLETE
+  f2GF    complete  0  pending 23  invalid 0  of 23  INCOMPLETE
+  f2cOFF  complete  0  pending 23  invalid 0  of 23  INCOMPLETE
+  f2cES   complete  0  pending 23  invalid 0  of 23  INCOMPLETE
+  f2cF    complete  0  pending 23  invalid 0  of 23  INCOMPLETE
+  ref fmDRY  complete 23 of 23
+  ref fmEFS  complete 23 of 23
+  ref fmF    complete 23 of 23
+  ref fmOFF  complete 23 of 23
+
+IDENTITY f2IDD vs fmDRY (canonical 13; every field except tag, repo, wall_s; dicts by value)
+  f2IDD  == fmDRY   PASS  13/13 identical (13 complete pairs of 13 expected; excluded tag, repo, wall_s)
+    east/half/101    identical (value); dict key order differs in burn_intervals
+    east/half/202    identical (value); dict key order differs in burn_intervals
+    east/half/303    identical (value); dict key order differs in burn_intervals
+    east/half/404    identical (value); dict key order differs in burn_intervals
+    east/half/505    identical (value); dict key order differs in burn_intervals
+    south/half/101   identical (value); dict key order differs in burn_intervals
+    south/half/202   identical (value); dict key order differs in burn_intervals
+    south/half/303   identical (value); dict key order differs in burn_intervals
+    south/half/404   identical (value); dict key order differs in burn_intervals
+    south/half/505   identical (value); dict key order differs in burn_intervals
+    east/def/101     identical (value); dict key order differs in burn_intervals
+    east/def/202     identical (value); dict key order differs in burn_intervals
+    east/def/303     identical (value); dict key order differs in burn_intervals
+
+BY-CONSTRUCTION CHECKS (every complete pair in scope; n/m = passing runs / complete pairs)
+  DRY    f2IDD  fire_digests == fmOFF 240/240: 13/13
+  DRY    f2U0D  fire_digests == fmOFF 240/240: 13/13
+  DRY    f2U1D  fire_digests == fmOFF 240/240: 13/13
+  DRY    f2L3D  no complete pair yet (arm or fmOFF pending)
+  DRY    f2L8D  no complete pair yet (arm or fmOFF pending)
+  GATE_DRY f2GD   no complete pair yet (arm or fmOFF pending)
+  GATE   f2GW   no complete pair yet (arm or fmOFF pending)
+  GATE   f2GF   no complete pair yet (arm or fmOFF pending)
+  CRN    f2cES  no complete pair yet (arm or f2cOFF pending)
+  CRN    f2cF   no complete pair yet (arm or f2cOFF pending)
+
+==============================================================================================================
+SAMPLE canonical 13
+==============================================================================================================
+
+-- COUNTED --
+OUTCOMES   (ref rows: the reference on the arm's own present runs; delta = arm - ref)
+  arm      runs             rescued  dead  ffd nevdet nonterm mean_term
+  f2IDD    13/13                 38    10    6      1       2     134.2
+    fmDRY  paired 13             38    10    6      1       2     134.2   delta +0 / +0 / +0 / +0 / +0   runs with a victim flip 0
+  f2U0D    13/13                 40    10    4      1       0     144.3
+    fmOFF  paired 13             39    10    6      1       1     151.9   delta +1 / +0 / -2 / +0 / -1   runs with a victim flip 1
+    fmDRY  paired 13             38    10    6      1       2     134.2   delta +2 / +0 / -2 / +0 / -2   runs with a victim flip 4
+  f2U1D    13/13                 39    10    5      1       1     139.9
+    fmOFF  paired 13             39    10    6      1       1     151.9   delta +0 / +0 / -1 / +0 / +0   runs with a victim flip 2
+    fmDRY  paired 13             38    10    6      1       2     134.2   delta +1 / +0 / -1 / +0 / -1   runs with a victim flip 3
+  f2L3D    0/13 INCOMPLETE  no complete run yet
+  f2L8D    0/13 INCOMPLETE  no complete run yet
+  f2GD     0/13 INCOMPLETE  no complete run yet
+  f2GW     0/13 INCOMPLETE  no complete run yet
+  f2GF     0/13 INCOMPLETE  no complete run yet
+  f2cOFF   0/13 INCOMPLETE  no complete run yet
+  f2cES    0/13 INCOMPLETE  no complete run yet
+  f2cF     0/13 INCOMPLETE  no complete run yet
+
+FIRE END STATE   intact = 2500 - ever_burned - cleared per run
+  arm      runs               burnt    ever cleared  intact burning@240
+  f2IDD    13/13              16053   22648       0    9852        1395
+    fmDRY  paired 13          16053   22648       0    9852        1395   intact +0   per run up/down/unchanged 0/0/13
+  f2U0D    13/13              16053   22648       0    9852        1395
+    fmOFF  paired 13          16053   22648       0    9852        1395   intact +0   per run up/down/unchanged 0/0/13
+    fmDRY  paired 13          16053   22648       0    9852        1395   intact +0   per run up/down/unchanged 0/0/13
+  f2U1D    13/13              16053   22648       0    9852        1395
+    fmOFF  paired 13          16053   22648       0    9852        1395   intact +0   per run up/down/unchanged 0/0/13
+    fmDRY  paired 13          16053   22648       0    9852        1395   intact +0   per run up/down/unchanged 0/0/13
+  f2L3D    0/13 INCOMPLETE  no complete run yet
+  f2L8D    0/13 INCOMPLETE  no complete run yet
+  f2GD     0/13 INCOMPLETE  no complete run yet
+  f2GW     0/13 INCOMPLETE  no complete run yet
+  f2GF     0/13 INCOMPLETE  no complete run yet
+  f2cOFF   0/13 INCOMPLETE  no complete run yet
+  f2cES    0/13 INCOMPLETE  no complete run yet
+  f2cF     0/13 INCOMPLETE  no complete run yet
+
+DRONE STEPS ON A BURNING CELL   E1 searcher-only | E2 all-UAV  (_dcd4_analyze.summarize)
+  f2IDD    13/13            E1 262/5520 = 4.75%       E2 421/12480 = 3.37%
+    fmDRY  paired 13        E1 262/5520 = 4.75%       E2 421/12480 = 3.37%       numerators delta E1 +0 E2 +0
+  f2U0D    13/13            E1 263/5520 = 4.76%       E2 425/12480 = 3.41%
+    fmOFF  paired 13        E1 278/5520 = 5.04%       E2 439/12480 = 3.52%       numerators delta E1 -15 E2 -14
+    fmDRY  paired 13        E1 262/5520 = 4.75%       E2 421/12480 = 3.37%       numerators delta E1 +1 E2 +4
+  f2U1D    13/13            E1 265/5520 = 4.80%       E2 426/12480 = 3.41%
+    fmOFF  paired 13        E1 278/5520 = 5.04%       E2 439/12480 = 3.52%       numerators delta E1 -13 E2 -13
+    fmDRY  paired 13        E1 262/5520 = 4.75%       E2 421/12480 = 3.37%       numerators delta E1 +3 E2 +5
+  f2L3D    0/13 INCOMPLETE  no complete run yet
+  f2L8D    0/13 INCOMPLETE  no complete run yet
+  f2GD     0/13 INCOMPLETE  no complete run yet
+  f2GW     0/13 INCOMPLETE  no complete run yet
+  f2GF     0/13 INCOMPLETE  no complete run yet
+  f2cOFF   0/13 INCOMPLETE  no complete run yet
+  f2cES    0/13 INCOMPLETE  no complete run yet
+  f2cF     0/13 INCOMPLETE  no complete run yet
+
+FIREFIGHTER DEATHS (ff_steps dead flag, _firemech_analyze classification)
+  arm      runs             deaths engaged prev streak preempted  after_T full free-exit
+  f2IDD    13/13                 6       0    0      1         1        1    6         0
+    fmDRY  paired 13             6       0    0      1         1        1    6         0
+  f2U0D    13/13                 4       0    0      1         0        2    4         0
+    fmOFF  paired 13             6       0    0      0         0        3    6         0
+    fmDRY  paired 13             6       0    0      1         1        1    6         0
+  f2U1D    13/13                 5       0    0      0         1        1    5         0
+    fmOFF  paired 13             6       0    0      0         0        3    6         0
+    fmDRY  paired 13             6       0    0      1         1        1    6         0
+  f2L3D    0/13 INCOMPLETE  no complete run yet
+  f2L8D    0/13 INCOMPLETE  no complete run yet
+  f2GD     0/13 INCOMPLETE  no complete run yet
+  f2GW     0/13 INCOMPLETE  no complete run yet
+  f2GF     0/13 INCOMPLETE  no complete run yet
+  f2cOFF   0/13 INCOMPLETE  no complete run yet
+  f2cES    0/13 INCOMPLETE  no complete run yet
+  f2cF     0/13 INCOMPLETE  no complete run yet
+
+ENGAGEMENT AND PROBE COUNTERS   engaged rows: <=terminal / >terminal / in non-terminal runs
+  arm      runs             engaged    <=T     >T nonterm  wruns   ext clear | leash_dr gate_clsd eo_blockd dry_forc crn_draws
+  f2IDD    13/13               2790    831   1763     196      0     0     0 |       0         0         0        0         0
+    fmDRY  paired 13           2790    831   1763     196      0     0     0
+  f2U0D    13/13               1615    589   1026       0      0     0     0 |       0         0      2908        0         0
+    fmOFF  paired 13              0      0      0       0      0     0     0
+    fmDRY  paired 13           2790    831   1763     196      0     0     0
+  f2U1D    13/13               1636    548   1074      14      0     0     0 |       0         0      2736        0         0
+    fmOFF  paired 13              0      0      0       0      0     0     0
+    fmDRY  paired 13           2790    831   1763     196      0     0     0
+  f2L3D    0/13 INCOMPLETE  no complete run yet
+  f2L8D    0/13 INCOMPLETE  no complete run yet
+  f2GD     0/13 INCOMPLETE  no complete run yet
+  f2GW     0/13 INCOMPLETE  no complete run yet
+  f2GF     0/13 INCOMPLETE  no complete run yet
+  f2cOFF   0/13 INCOMPLETE  no complete run yet
+  f2cES    0/13 INCOMPLETE  no complete run yet
+  f2cF     0/13 INCOMPLETE  no complete run yet
+
+VICTIM FINAL-STATUS FLIPS AND PER-RUN DELTAS vs each reference (counted view; runs with any change)
+  f2IDD  vs fmDRY  (13 paired): none
+  f2U0D  vs fmOFF  (13 paired): east/half/404 r+0 d+0 ffd-1; south/half/202 r+1 d+0 ffd-1 [victim_0 assigned->rescued]
+  f2U0D  vs fmDRY  (13 paired): east/half/101 r+1 d-1 ffd+1 [victim_0 dead->rescued]; east/half/404 r-1 d+1 ffd-1 [victim_1 rescued->dead]; south/half/404 r+1 d+0 ffd-1 [victim_3 assigned->rescued]; east/def/101 r+1 d+0 ffd+0 [victim_3 assigned->rescued]; east/def/303 r+0 d+0 ffd-1
+  f2U1D  vs fmOFF  (13 paired): south/half/202 r+1 d+0 ffd-1 [victim_0 assigned->rescued]; south/half/303 r+0 d+0 ffd-1; south/half/404 r-1 d+0 ffd+1 [victim_3 rescued->assigned]
+  f2U1D  vs fmDRY  (13 paired): east/half/101 r+1 d-1 ffd+1 [victim_0 dead->rescued]; east/half/404 r-1 d+1 ffd+0 [victim_1 rescued->dead]; south/half/303 r+0 d+0 ffd-1; east/def/101 r+1 d+0 ffd+0 [victim_3 assigned->rescued]; east/def/303 r+0 d+0 ffd-1
+  f2L3D  vs fmOFF  no complete pair yet
+  f2L3D  vs fmDRY  no complete pair yet
+  f2L8D  vs fmOFF  no complete pair yet
+  f2L8D  vs fmDRY  no complete pair yet
+  f2GD   vs fmOFF  no complete pair yet
+  f2GD   vs fmDRY  no complete pair yet
+  f2GW   vs fmOFF  no complete pair yet
+  f2GW   vs fmEFS  no complete pair yet
+  f2GF   vs fmOFF  no complete pair yet
+  f2GF   vs fmF    no complete pair yet
+  f2cES  vs f2cOFF no complete pair yet
+  f2cF   vs f2cOFF no complete pair yet
+
+DEATH LIST (complete runs)
+  f2IDD   east/half/404    ff_unit_1 step  72 cell (31,49)   engaged False prev False streak False(  0 rows) preempted False(assign 53) row None     nbrs 3/3 (full) before: route_blocked after_terminal False
+  f2IDD   south/half/101   ff_unit_0 step  90 cell (11,13)   engaged False prev False streak False(  0 rows) preempted False(assign 57) row None     nbrs 4/4 (full) before: en_route after_terminal False
+  f2IDD   south/half/101   ff_unit_1 step 147 cell (4,27)    engaged False prev False streak False(  0 rows) preempted False(assign 102) row None     nbrs 4/4 (full) before: assigned after_terminal False
+  f2IDD   south/half/303   ff_unit_0 step 216 cell (48,2)    engaged False prev False streak True (113 rows) preempted False(assign 45) row retreat  nbrs 4/4 (full) before: available after_terminal True
+  f2IDD   south/half/404   ff_unit_1 step  72 cell (0,8)     engaged False prev False streak False(  0 rows) preempted True (assign 14) row None     nbrs 3/3 (full) before: route_blocked after_terminal False
+  f2IDD   east/def/303     ff_unit_1 step 141 cell (41,46)   engaged False prev False streak False(  0 rows) preempted False(assign 64) row None     nbrs 4/4 (full) before: route_blocked after_terminal False
+  f2U0D   east/half/101    ff_unit_1 step 195 cell (39,0)    engaged False prev False streak False(  0 rows) preempted False(assign 91) row None     nbrs 3/3 (full) before: available after_terminal True
+  f2U0D   south/half/101   ff_unit_0 step  90 cell (11,13)   engaged False prev False streak False(  0 rows) preempted False(assign 57) row None     nbrs 4/4 (full) before: en_route after_terminal False
+  f2U0D   south/half/101   ff_unit_1 step 159 cell (9,30)    engaged False prev False streak False(  0 rows) preempted False(assign 120) row None     nbrs 4/4 (full) before: route_blocked after_terminal False
+  f2U0D   south/half/303   ff_unit_0 step 216 cell (48,2)    engaged False prev False streak True (113 rows) preempted False(assign 45) row retreat  nbrs 4/4 (full) before: available after_terminal True
+  f2U1D   east/half/101    ff_unit_0 step 195 cell (39,0)    engaged False prev False streak False(  0 rows) preempted False(assign 90) row None     nbrs 3/3 (full) before: available after_terminal True
+  f2U1D   east/half/404    ff_unit_0 step  60 cell (19,49)   engaged False prev False streak False(  0 rows) preempted False(assign 53) row None     nbrs 3/3 (full) before: route_blocked after_terminal False
+  f2U1D   south/half/101   ff_unit_0 step 159 cell (9,30)    engaged False prev False streak False(  0 rows) preempted False(assign 120) row None     nbrs 4/4 (full) before: route_blocked after_terminal False
+  f2U1D   south/half/101   ff_unit_1 step  90 cell (11,12)   engaged False prev False streak False(  0 rows) preempted False(assign 57) row None     nbrs 4/4 (full) before: en_route after_terminal False
+  f2U1D   south/half/404   ff_unit_1 step  39 cell (8,22)    engaged False prev False streak False(  0 rows) preempted True (assign 14) row None     nbrs 4/4 (full) before: en_route after_terminal False

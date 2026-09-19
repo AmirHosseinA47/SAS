@@ -1,0 +1,475 @@
+firemech round 2 - TASK E: FIRE-ONLY OFFLINE REPLAY INSTRUMENT (outputs/_fm2_fire_replay.py)
+Date 2026-09-15, branch firefighter-fire-mechanic @ a3a24f1, .venv python 3.10.11 / mesa 1.2.1.
+Every number below was produced in this session by the tool or by read-only scripts over the raw
+harness JSONs and the replay outputs; the generated tables are appended verbatim (appendices A-E).
+No harness or probe-harness run was started; no existing file was modified; at most 2 replay
+processes ran at once and every start was gated on FreeVirtualMemory >= 4,000,000 kB (lowest value
+seen at a start: 10,000,212 kB).
+
+================================================================================================
+0. ANSWER FIRST
+================================================================================================
+Q: does a SINGLE extinguish already produce an intact change of whole-arm magnitude and random
+   sign (re-roll), while a single clear produces a small local change?
+
+EXTINGUISH - YES (20 fmES tuples, canonical 13 + fresh 7).
+  - |d_only| median 125 cells vs |d_all| (the whole arm) median 195; canonical alone 137 vs 133
+    (median ratio |d_only|/|d_all| 1.02 canonical, 0.84 both). Range -205..+494; sign +11/-7/0 2.
+  - Mechanism measured, not inferred: the first digest divergence is the write step 20/20; the
+    extinguished cell turns burnt at the next fire tick (first differing burnt set 1-3 steps
+    after the write in 18 runs), so from the tick after that it stops drawing and every
+    later-uid cell's draw shifts: stream shift 19/20, lag 4-6 steps in 18 of them (15 in one).
+    Burning differences leave the light cone in 18/20, AT the shift tick in 17 (one 3 steps
+    later), never before it (18/18). At that step most differing cells are already outside a
+    radius-6 cone (e.g. 75 of 89, 179 of 206). 50% of the final has_burned differences (2,586 of
+    5,144 cells) lie > 20 cells from the written cell; 74 lie within 3.
+  - Physical part alone (same replay with every draw pinned to the no-write run's value, so no
+    re-roll): d_pin = 0 in 16/20; nonzero -88, +307, +591, -2 (the two large ones are early
+    writes, steps 15 and 54); the pinned difference never leaves the cone (0/20, farthest
+    differing cell 24). Re-roll part |d_only - d_pin|: median 140.5, mean 181.3 (mean |d_pin| 49.4).
+  - "Random sign" needs one qualification: d_only is NOT independent of the arm. Pearson(d_only,
+    d_all) = 0.65 (Spearman 0.54), same sign 12 / opposite 6. The arm carries the SAME first
+    extinguish, hence the same shift at the same tick, so it inherits that re-roll; dropping only
+    the first extinguish gives an uncorrelated result (Pearson(d_drop, d_all) = -0.08, |d_drop -
+    d_all| median 195, max 665), and in that open-loop fire 345 of the 470 later recorded
+    extinguishes (73.4%) find no burning cell. The fmES arm's per-run intact change is largely the
+    re-roll its first extinguish draws.
+
+CLEAR - NO in the stock model; YES only for its physical effect (20 fmF tuples).
+  - Not small: |d_only| median 46.5, mean 68.2 (arm: median 128, mean 135.5), range -189..+213,
+    sign +9/-7/0 4, Pearson with the arm -0.42 (Spearman -0.14).
+  - Not local: 58% of the final has_burned differences (1,457 of 2,506) lie > 20 cells away.
+  - But its PHYSICAL effect is exactly the cleared cell: pinned d_pin is 0 in 18/20 and -1 in 2
+    (the cleared cell counts as cleared instead of burned, or as cleared where fire never came);
+    at most 1 final has_burned cell differs per run, at distance 0 (15 cells over 20 runs); never
+    leaves the cone. Everything else in d_only is re-roll (|d_only - d_pin| median 46.5).
+  - The re-roll is DELAYED, not absent: a firebreak cell keeps drawing, so the stream shifts only
+    when some burn-out timing differs - the cleared cell itself (5 runs: the 3 scorched clears at
+    lag 1-2, and 2 where the fire would have burned it out, lags 61 and 126) or another cell whose
+    burning history the clear changed physically (11 runs). Shift in 16/20 at lags 4,5,5
+    (scorched) and 36-140 (median of all 16: 106.5 steps); no shift by 240 in 4 (2 clears the
+    fire never reached, 2 with only the cell itself differing).
+  - That is why the light-cone test flags only 2/20 clears (both scorched): the cone covers the
+    whole 50x50 grid 34-51 steps after a write, and 12 of the 13 non-scorched shifts come later.
+    The shift detector (first differing burnt set) is what sees them.
+  - Inside the full firebreak schedule the first clear barely matters: |d_drop - d_all| median 1
+    (values 0 x5, 1 x9, 2, 7, 13, 19, 31, 126), no burning difference at all in 9/20, Pearson 0.98;
+    only 4 of 1,695 later clears fail to land (all in south/half/505, whose first clear was scorched).
+
+So the asymmetry round 1 saw per run (fmES coin-flip sign, fmF consistent) is not "extinguish
+re-rolls, firebreak is local". Both single writes re-roll the rest of the fire through the shared
+draw stream; an extinguish does it at the second tick after the write (18/20; the 2 exceptions had
+the cell on its last burning tick: one never shifted, one shifted 15 steps later via another
+cell), a clear only once some burn-out timing differs (median 106.5 steps later, 4/20 never).
+The physical effect of one write on the recorded fire is 0 for 16/20 extinguishes and <= 1 cell
+for 20/20 clears. Whether the fmF arm's consistent per-run gain is physical was NOT measured here
+(see 7, open questions).
+
+================================================================================================
+1. THE INSTRUMENT
+================================================================================================
+outputs/_fm2_fire_replay.py (new file). Modes (details in its docstring):
+  replay  --arm-json PATH --writes all|none|only-first|drop-first|prefix:N|only:i|drop:i
+          [--crn | --record-draws FILE | --pin-draws FILE] --out OUT.json
+  compare --compare A.json B.json [--json OUT]   (A/B = replay outputs or harness JSONs)
+  batch   --batch validate|study-canonical|study-fresh|pinned-canonical|pinned-fresh|crn-check
+          --outdir DIR --jobs 2      (subprocesses, <= 2 at once, free-commit gate)
+  report  --report validate|study|crn-check --outdir DIR [--json rows.json]
+Replay output: per-step digests, burning counts, burning on/off index lists per step, burnt_new
+per step, draws per tick, selected writes with applied flag, failures, final ever/cleared/intact/
+burnt/burning, final has_burned and cleared index lists, digest match vs the arm JSON, rng state
+hash after construction, steps_counter check, wall times.
+--pin-draws and --record-draws are additions beyond the brief; they are what separates the
+physical effect of a write from the draw-stream re-roll on the SAME recorded fire (--crn cannot,
+see 5).
+
+Replay outputs of this task (155 JSONs, 20 .draws files, batch logs) are in the session scratchpad,
+not in the repo (the brief allowed only the two named files):
+  C:/Users/ahrar/AppData/Local/Temp/claude/E--Projects-SAS/4822f5f0-3ec2-4a14-8aeb-d97eb91ddf5a/scratchpad/replay/
+They are reproducible with the batch commands in section 8.
+
+================================================================================================
+2. WHY EXACT REPLAY IS POSSIBLE (from the source)
+================================================================================================
+Construction: _ffr_harness.py main() reproduced - import order agents, common_fixed_variables,
+wildfire_model, apply_scenario_config, WildFireModel, serve_dashboard; params dict (scenario
+preset, _resolve_role_count_params(num_agents, 2, 2) for half / (None, None) for default,
+BATCH_SIZE 300, FIRE_SPREAD_MULTIPLIER 0.75, PROBABILITY_MAP False) + extra_params; the rebuilt
+dict is asserted equal to the JSON's recorded "params" (it was: 158 replay processes, all exit 0).
+rng = Random(seed) bound
+to cfv.SYSTEM_RANDOM, wf.SYSTEM_RANDOM, agents.random; apply_scenario_config; WildFireModel()
+under redirect_stdout; debug_log = False. The harness's observers are not installed: each calls
+the original and returns its result without drawing from any RNG, so leaving them out cannot move
+a draw (the digest matches below confirm it).
+
+What can touch Fire agents or the shared rng after construction (WildFireModel.step, 5738-5786):
+  datacollector.collect, BATCH_SIZE guard, _update_fire_tracker_sector_assignments, monitoring,
+  _run_pre_move_decision_cycle, _prepare_uav_directions_for_step, MR1/MR2, schedule.step(),
+  _run_post_move_decision_cycle, _update_unreachable_victims, _log_step_summary,
+  get_dashboard_state.
+  - RNG: in agents.py only Fire.__init__ (randint, construction), Fire.step (random.random()) and
+    Wind.change_direction (only when FIXED_WIND is False; it is True). In wildfire_model.py only
+    set_fire_agents (construction), _prepare_uav_directions_for_step (returns before its draw
+    whenever decision_dispatcher is set; __init__ always sets it, line 338) and
+    _make_ff_absence_rng (getstate(), consumes nothing). src_extension contains no "random" at all.
+  - Fire state writers: Fire.step, Fire.advance, and Firefighter._firefight_execute
+    (firefighter_extinguish / firefighter_remove_fuel), called from Firefighter.advance. Fire
+    agents are added to the schedule first (set_fire_agents before any UAV/unit), so every
+    Fire.advance runs before any write. No other writer of burning/burnt/fuel/has_burned/
+    steps_counter exists; the Wind object is never modified.
+  - probability_of_fire reads only Fire agents in the Moore-3 neighbourhood; other agents on the
+    grid are skipped, so their absence in the replay is irrelevant.
+  - For extinguish/clear plans the plan tuple is (kind, cell, cell), so the logged "target" is the
+    written cell. firefight_log "step" = evaluation_timesteps_counter, incremented at the start of
+    model.step(), i.e. the step whose post-step digest is fire_digests[step-1].
+Tick phase: Fire.step increments its own steps_counter before anything else, and ticks when
+steps_counter % FIRE_SPREAD_SPEED(3) == 0. Every Fire cell's steps_counter equalled the model
+step after every step in all 158 replay processes (0 mismatches), so ticks are steps 3, 6, ..., 240. A write
+at step t lands after that step's advance; the light-cone radius at step s is
+3 * (floor(s/3) - floor(t/3)) (Moore radius 3 per tick). Note: burn-out (burnt=True,
+burning=False) is set inside step(), so later-uid neighbours see it in the same tick; that still
+propagates at most 3 cells per tick, and the pinned replays confirm it (0/40 leave the cone).
+CAVEAT of the cone test: on 50x50 the cone covers the grid 32-51 steps after a write (study
+range), after which a departure cannot be seen; the burnt-set shift detector covers that.
+
+================================================================================================
+3. VALIDATION (required before the study) - ALL PASS
+================================================================================================
+Stock --writes none on fmOFF (4/4 at 240/240; final ever/cleared/intact == _firemech_analyze):
+  east/half/101 1572/0/928   south/half/404 2389/0/111   east/def/202 1171/0/1329
+  south/half/909 2085/0/415
+Stock --writes all (9/9 at 240/240, every selected write returned True, final == analyzer):
+  fmES  east/half/101 16 writes, south/half/404 11, east/def/202 19
+  fmF   east/half/404 71, south/half/404 10, east/def/303 8
+  fmEFS south/half/303 118 (15 ext + 103 clear), east/def/101 101 (5+96), south/half/505 88 (8+80)
+  442 selected writes, 0 failures, 0 steps_counter mismatches.
+Further checks run:
+  - Loader check (compare mode): each of the 13 validation replays vs its own harness JSON - no
+    burning-set difference at any of 240 steps (harness burn_intervals), 0 differing writes,
+    final has_burned identical, d_intact 0 (13/13).
+  - Round-1 attribution reproduced offline: the all-writes replay's first digest divergence from
+    fmOFF equals the first write step 9/9 (47, 14, 54, 10, 9, 172, 104, 27, 92).
+  - The 20 study no-write replays (with --record-draws) match fmOFF 240/240 and intact == analyzer
+    20/20; recorded non-NaN draw counts per tick equal the replay's own draws_per_tick (checked on
+    2 files: 160,423 and 179,235 draws).
+  - --pin-draws on the no-write replay of fmOFF east/half/101 with its own draws: 240/240 vs
+    fmOFF, 160,423 pinned draws, 0 fallback.
+  - OFF fire identity east/def/s == east/half/s: 240/240 digests for 101, 202, 303 (re-verified).
+  - Zero-write arm tuples (fmES and fmF at east/707, south/808, south/909): 240/240 vs fmOFF.
+Timing: first validation batch, in-process 37.7-63.1 s per replay (mean 52.1); over all 157 replay
+processes, wall including interpreter start and imports min 30 / mean 37.9 / max 65 s with 2
+concurrent and the 12-process pool running; model construction < 0.1 s. The same tuples' full
+harness runs (fmOFF/fmES/fmF/fmEFS) took 210.6-1155.2 s (wall_s in the JSONs; fmOFF 228.5-1030.0
+s). Batches: validate 13 jobs 338 s (12 run), study canonical 65 jobs 1,206 s, fresh 35 jobs
+643 s, pinned 26+14 jobs 483+267 s, crn-check 5 jobs 115 s.
+(Three of the four validation no-write outputs were later overwritten by their --record-draws
+re-runs in the study; both versions matched 240/240, which is why appendix A shows study walls
+29.6/36.7/40.3 s for them; the first-batch walls were 54.6/45.7/63.1 s.)
+
+================================================================================================
+4. STUDY DESIGN
+================================================================================================
+Coverage: COMPLETE, both samples. fmES tuples with >= 1 extinguish: 20 of 23 (all canonical 13,
+fresh 7); fmF tuples with >= 1 clear: 20 of 23 (same 20). Missing tuples have no write of that
+kind (east/half/707, south/half/808, south/half/909), and their fire equals fmOFF 240/240.
+Per tuple: stock only-first, stock drop-first, one stock no-write fmOFF replay with draws recorded
+(shared by fmES and fmF, since both arms' construction and fire at no writes equal fmOFF), and
+only-first with --pin-draws. 100 stock + 40 pinned study replays.
+Definitions (the analyzer's): ever = cells with has_burned; cleared = fuel <= 0 and not has_burned;
+intact = 2500 - ever - cleared; d_X = intact(X) - intact(fmOFF from _firemech_analyze).
+d_all uses the arm JSON through _firemech_analyze.run_summary (the arm IS writes=all; exact
+replay validated above). Comparisons of only-first use the no-write replay as the reference (it
+alone has burnt timing). "shift" = first tick whose draw set differs = (first step with a differing
+burnt set) + 3. "de-duplicated" excludes east/def (its OFF fire equals east/half).
+Round-1 numbers re-derived from the raw JSON here (all agree with outputs/firemech_report.txt 3.2):
+  fmES intact vs OFF: canonical +1,445 (7/6/0), fresh +1,422 (write tuples 4/2/1, plus 3 zero-write
+  tuples = 4/2/4), 23 counted +2,867, de-duplicated +2,402.
+  fmF: canonical +1,891 (11/2/0), fresh +769 (5/1/1 + 3 zero = 5/1/4), counted +2,660, de-dup +1,783.
+
+================================================================================================
+5. INSTRUMENT CHECKS AND LIMITS
+================================================================================================
+- --crn check (appendix E): fmF east/half/404 CRN only-first vs CRN no-write: stays inside the
+  cone (first_out None), d +6, 7 differing cells, farthest 6; the stock pair: d +60, 175 differing,
+  farthest 42. fmES east/half/101: the recorded first extinguish did NOT land on the CRN fire (cell
+  not burning there) - replaying a STOCK arm's writes on a CRN fire is not meaningful for
+  extinguishes. --crn is for writes recorded by a CRN arm (the f2 probe outputs, which this task
+  did not read), and its match against a closed-loop CRN harness run is NOT validated here.
+- --pin-draws is the stock fire with the re-roll switched off. Cells that draw in the ablation but
+  not in the recorded run (burnt there, not here) get crn_uniform values: 15,718 such draws over
+  the 40 pinned study replays (0 in the identity check). It is exact as an identity (240/240) and
+  respects causality (0/40 departures from the cone), but its nonzero d_pin values are one
+  realisation of the physical effect, not an expectation.
+- Open loop: the write schedule is fixed; units do not react to the changed fire. drop-first of
+  fmES is therefore mostly a schedule of misses (73.4% of its extinguishes do not land).
+- intact counts a cleared cell as not intact, so a clear the fire never reaches gives d = -1.
+- The light-cone test cannot see a departure after the cone covers the grid (32-51 steps after
+  the write in this study); read "leaves cone" together with "shift".
+
+================================================================================================
+6. RE-VERIFIED CONTEXT STATEMENTS
+================================================================================================
+- "EXTINGUISH makes a cell burnt one tick early so it stops drawing": partly. It turns burnt at the
+  NEXT tick after the write, which is earlier than its own burn-out by however many burning ticks
+  it had left (not necessarily one); in 1/20 (east/def/303, step 175) the cell was on its last
+  burning tick, burnt timing did not change, no shift occurred and d_only = 0; in 1/20
+  (south/half/101) the first burnt difference came 12 steps later at another cell. The first shifted draw belongs to the written cell's uid (e.g.
+  south/half/404: cell (10,38) = uid 538, shift at tick 18).
+- "A FIREBREAK cell keeps drawing; the stream shifts only when some burn-out timing differs":
+  confirmed (16 of 20 clears shift; 11 start at another cell's burnt timing, 5 at the cell's own).
+- "DRY == OFF 240/240 on 23/23": not re-checked here (not needed for this task).
+- Report C-1 "the first extinguish re-rolls the rest of the fire": confirmed and located (2 ticks
+  after the write). Round-1's per-run framing of the asymmetry needs the qualification in 0.
+
+================================================================================================
+7. OPEN QUESTIONS
+================================================================================================
+- Is fmF's consistent per-run gain physical? A pinned replay of the full fmF schedule
+  (--writes all --pin-draws, 20 tuples, ~7 min at 2 concurrent) would answer it for clears, which
+  land regardless of the fire's realisation (only 4/1,695 misses in drop-first). Not run.
+- For fmES/fmEFS the same pinned full-schedule replay is not meaningful open loop (most recorded
+  extinguishes would miss); a closed-loop CRN arm is needed.
+- --crn has not been validated against a closed-loop CRN harness run.
+
+================================================================================================
+8. REPRODUCTION
+================================================================================================
+  PY=.venv/Scripts/python.exe; D=<scratchpad>/replay
+  $PY outputs/_fm2_fire_replay.py --batch validate --outdir $D --jobs 2
+  $PY outputs/_fm2_fire_replay.py --batch study-canonical --outdir $D --jobs 2
+  $PY outputs/_fm2_fire_replay.py --batch study-fresh --outdir $D --jobs 2
+  $PY outputs/_fm2_fire_replay.py --batch pinned-canonical --outdir $D --jobs 2
+  $PY outputs/_fm2_fire_replay.py --batch pinned-fresh --outdir $D --jobs 2
+  $PY outputs/_fm2_fire_replay.py --batch crn-check --outdir $D --jobs 2
+  $PY outputs/_fm2_fire_replay.py --report validate|study|crn-check --outdir $D
+  single pair: $PY outputs/_fm2_fire_replay.py --compare $D/rp_fmES_south_half_404_only-first.json \
+               $D/rp_fmOFF_south_half_404_none.json
+(appendix C/D came from two throwaway read-only scripts over the study rows and replay outputs:
+correlations, drop-first landing counts, first-shift cell attribution, wall/failure summaries.)
+
+================================================================================================
+APPENDIX A. VALIDATION (generated: --report validate; then compare-mode loader/attribution checks)
+================================================================================================
+VALIDATION  (digest match vs the arm JSON's fire_digests; final state vs _firemech_analyze.run_summary)
+  arm    tuple            writes  digest    sel fail ctrbad   wall (construct+replay) | replay ever/cleared/intact | analyzer ever/cleared/intact | same
+  fmOFF  east/half/101    none   240/240      0    0      0  36.7s ( 0.1+ 35.6) | 1572/  0/ 928               | 1572/  0/ 928                   | True
+  fmOFF  south/half/404   none   240/240      0    0      0  29.6s ( 0.0+ 28.5) | 2389/  0/ 111               | 2389/  0/ 111                   | True
+  fmOFF  east/def/202     none   240/240      0    0      0  40.3s ( 0.0+ 39.2) | 1171/  0/1329               | 1171/  0/1329                   | True
+  fmOFF  south/half/909   none   240/240      0    0      0  49.8s ( 0.0+ 48.6) | 2085/  0/ 415               | 2085/  0/ 415                   | True
+  fmES   east/half/101    all    240/240     16    0      0  59.6s ( 0.0+ 58.4) | 1394/  0/1106               | 1394/  0/1106                   | True
+  fmES   south/half/404   all    240/240     11    0      0  46.3s ( 0.0+ 45.1) | 2172/  0/ 328               | 2172/  0/ 328                   | True
+  fmES   east/def/202     all    240/240     19    0      0  62.3s ( 0.0+ 61.1) | 1296/  0/1204               | 1296/  0/1204                   | True
+  fmF    east/half/404    all    240/240     71    0      0  51.6s ( 0.0+ 50.5) | 1919/ 71/ 510               | 1919/ 71/ 510                   | True
+  fmF    south/half/404   all    240/240     10    0      0  44.5s ( 0.0+ 43.3) | 2315/ 10/ 175               | 2315/ 10/ 175                   | True
+  fmF    east/def/303     all    240/240      8    0      0  48.9s ( 0.0+ 47.8) | 2002/  0/ 498               | 2002/  0/ 498                   | True
+  fmEFS  south/half/303   all    240/240    118    0      0  58.3s ( 0.0+ 57.1) | 1255/ 74/1171               | 1255/ 74/1171                   | True
+  fmEFS  east/def/101     all    240/240    101    0      0  54.6s ( 0.0+ 53.5) | 1297/ 81/1122               | 1297/ 81/1122                   | True
+  fmEFS  south/half/505   all    240/240     88    0      0  37.7s ( 0.0+ 36.4) | 1081/ 46/1373               | 1081/ 46/1373                   | True
+  wall total per replay: min 29.6  mean 47.7  max 62.3 s
+
+replay vs its own harness JSON (loader check: burning sets from burn_intervals, writes, final)
+  fmOFF  east/half/101   none  digest 240/240 first_burning_diff None differing_writes 0 d_intact +0 has_burned_symdiff 0
+  fmOFF  south/half/404  none  digest 240/240 first_burning_diff None differing_writes 0 d_intact +0 has_burned_symdiff 0
+  fmOFF  east/def/202    none  digest 240/240 first_burning_diff None differing_writes 0 d_intact +0 has_burned_symdiff 0
+  fmOFF  south/half/909  none  digest 240/240 first_burning_diff None differing_writes 0 d_intact +0 has_burned_symdiff 0
+  fmES   east/half/101   all   digest 240/240 first_burning_diff None differing_writes 0 d_intact +0 has_burned_symdiff 0
+  fmES   south/half/404  all   digest 240/240 first_burning_diff None differing_writes 0 d_intact +0 has_burned_symdiff 0
+  fmES   east/def/202    all   digest 240/240 first_burning_diff None differing_writes 0 d_intact +0 has_burned_symdiff 0
+  fmF    east/half/404   all   digest 240/240 first_burning_diff None differing_writes 0 d_intact +0 has_burned_symdiff 0
+  fmF    south/half/404  all   digest 240/240 first_burning_diff None differing_writes 0 d_intact +0 has_burned_symdiff 0
+  fmF    east/def/303    all   digest 240/240 first_burning_diff None differing_writes 0 d_intact +0 has_burned_symdiff 0
+  fmEFS  south/half/303  all   digest 240/240 first_burning_diff None differing_writes 0 d_intact +0 has_burned_symdiff 0
+  fmEFS  east/def/101    all   digest 240/240 first_burning_diff None differing_writes 0 d_intact +0 has_burned_symdiff 0
+  fmEFS  south/half/505  all   digest 240/240 first_burning_diff None differing_writes 0 d_intact +0 has_burned_symdiff 0
+arm (all writes) replay vs fmOFF harness: first divergence must be the first write step
+  fmES   east/half/101   first write step 47 (extinguish) first_digest_div 47 first_burning_diff 47 first_out_of_cone 51
+  fmES   south/half/404  first write step 14 (extinguish) first_digest_div 14 first_burning_diff 14 first_out_of_cone 18
+  fmES   east/def/202    first write step 54 (extinguish) first_digest_div 54 first_burning_diff 54 first_out_of_cone 55
+  fmF    east/half/404   first write step 10 (clear) first_digest_div 10 first_burning_diff 84 first_out_of_cone None
+  fmF    south/half/404  first write step 9 (clear) first_digest_div 9 first_burning_diff 69 first_out_of_cone None
+  fmF    east/def/303    first write step 172 (clear) first_digest_div 172 first_burning_diff 177 first_out_of_cone 177
+  fmEFS  south/half/303  first write step 104 (clear) first_digest_div 104 first_burning_diff 111 first_out_of_cone None
+  fmEFS  east/def/101    first write step 27 (clear) first_digest_div 27 first_burning_diff 63 first_out_of_cone None
+  fmEFS  south/half/505  first write step 92 (clear) first_digest_div 92 first_burning_diff 96 first_out_of_cone 96
+
+================================================================================================
+APPENDIX B. STUDY PER RUN AND DISTRIBUTIONS (generated: --report study)
+================================================================================================
+STUDY  intact deltas vs fmOFF (d = replay or arm intact - fmOFF intact, analyzer definition)
+  div = first digest divergence of only-first vs the no-write replay (== fmOFF); shift = first tick
+  whose draw stream differs (first differing burnt set + 1 tick); out = first step a burning difference
+  lies outside the light cone (r = cone radius then, maxd = farthest outside cell); symdiff = final
+  has_burned cells that differ, bucketed by Chebyshev distance from the written cell
+  burn1 = first step a burning state differs; cover = step the cone first covers the whole grid (after it
+  no departure is detectable); d_pin = only-first with every draw pinned to the no-write run's value
+  (physical effect only), pout = its first out-of-cone step (must be -), psym/pmax = its final symdiff and
+  farthest differing cell; sc = first clear hit a scorched cell
+  arm  set   tuple             nW first    cell  sc  d_all d_only d_drop  d_pin |  div burn1 shift cover   out  (r/maxd) symdif <=3/4-10/11-20/>20 |  pout  psym pmax   fb
+  ES   canon east/half/101     16    47   32,41   -   +178   -101     +0     +0 |   47    47    51    87    51      6/17    199 0/3/119/77      |     -     0 None   46
+  ES   canon east/half/202     39   101   39,13   -   +133   +157   +184    -88 |  101   101   105   138   105      6/27    353 4/76/110/163    |     -    88   13   68
+  ES   canon east/half/303     32   109   25,42   -    -20    +19    -69     +0 |  109   109   114   150   114      6/42    209 0/13/94/102     |     -     0 None  557
+  ES   canon east/half/404     15    15   14,42   -   +388    -52    +44   +307 |   15    15    21    57    21      6/15    422 11/110/66/235   |     -   307   23 5628
+  ES   canon east/half/505     18   111   28,38   -    +77   +144   +180     +0 |  111   111   117   150   117      6/38    150 1/102/41/6      |     -     0 None   33
+  ES   canon south/half/101     5   207   19,38   -     -3    -14     +3     +0 |  207   207   222   246   225     18/19     22 0/8/14/0        |     -     0 None    7
+  ES   canon south/half/202    25   124   17,17   -   -212    -25    -93     +0 |  124   124   129   156   129      6/32    213 0/25/79/109     |     -     0 None   21
+  ES   canon south/half/303    29   106    24,0   -    -58   -137    +66     +0 |  106   106   111   156   111      6/12    275 0/0/11/264      |     -     0 None    0
+  ES   canon south/half/404    11    14   10,38   -   +217   +222     +5     +0 |   14    14    18    51    18      6/10    270 0/59/38/173     |     -     0 None  147
+  ES   canon south/half/505    45   100    21,2   -   +280   +434    -49     +0 |  100   100   105   147   105      6/13    436 0/0/90/346      |     -     0 None    0
+  ES   canon east/def/101      40    33   31,40   -   +591   +494    -48     +0 |   33    33    39    75    39      6/18    494 26/176/148/144  |     -     0 None   81
+  ES   canon east/def/202      19    54   36,26   -   -125   +217   -215   +591 |   54    54    60    90    60      6/13    405 0/47/266/92     |     -   591   24 7208
+  ES   canon east/def/303       6   175   48,47   -     -1     +0     -1     +0 |  175   175     -   222     -         -      0 0/0/0/0         |     -     0 None    0
+  ES   fresh east/half/606     27    44   33,44   -   +492   +310    -10     +0 |   44    44    48    87    48      6/18    330 0/17/103/210    |     -     0 None   96
+  ES   fresh east/half/808     35    85    31,7   -    -37     +2   -480     +0 |   85    85    90   126    90      6/36    198 0/0/91/107      |     -     0 None  297
+  ES   fresh east/half/909     34   121   15,26   -   +339    +54   -326     -2 |  121   121   126   156   126      6/34    156 20/68/27/41     |     -     2    4   45
+  ES   fresh east/half/1010    39    51   34,38   -   +614   +372    -16     +0 |   51    51    57    90    57      6/22    402 11/151/186/54   |     -     0 None  839
+  ES   fresh south/half/606    24    45   28,38   -   +246   -113   -160     +0 |   45    45    51    84    51      6/38    181 1/68/78/34      |     -     0 None   23
+  ES   fresh south/half/707     2   205    47,6   -     +0     +0     +0     +0 |  205   205   210   252     -         -      0 0/0/0/0         |     -     0 None    0
+  ES   fresh south/half/1010   29    67    18,0   -   -232   -205   +313     +0 |   67    67    72   117    72      6/31    429 0/0/0/429       |     -     0 None    0
+  F    canon east/half/101     82    39   26,44   n     -9   +102    -11     +0 |   39    72   168    84     -         -    171 1/46/57/67      |     -     1    0   29
+  F    canon east/half/202    143    96    37,8   n   +209     -1   +210     -1 |   96     -     -   138     -         -      0 0/0/0/0         |     -     0 None    0
+  F    canon east/half/303     74   105   25,46   n   +127     -4   +128     +0 |  105   135   168   153     -         -     99 1/29/15/54      |     -     1    0   30
+  F    canon east/half/404     71    10    9,42   n   +165    +60   +166     +0 |   10    99   150    51     -         -    175 1/22/16/136     |     -     1    0   32
+  F    canon east/half/505    117    78    24,0   n    +30    -59    +30     +0 |   78    90   141   129     -         -     70 3/2/0/65        |     -     1    0  104
+  F    canon south/half/101     1    41   25,43   n     -7     -7     +0     +0 |   41   141   174    84     -         -     50 4/21/9/16       |     -     1    0   14
+  F    canon south/half/202    87   119   14,20   n    +98     +0    +98     +0 |  119   216   240   153     -         -      1 1/0/0/0         |     -     1    0    1
+  F    canon south/half/303   125   104    28,0   n   +138    +37   +138     +0 |  104   123   168   153     -         -    154 1/0/27/126      |     -     1    0   25
+  F    canon south/half/404    10     9    7,41   n    +64    +56    +95     +0 |    9   102   135    51     -         -    171 2/42/29/98      |     -     1    0   39
+  F    canon south/half/505    84    94    15,5   y   +199   +213   +325     +0 |   94    99    99   138    99      6/17    351 0/0/64/287      |     -     0 None    0
+  F    canon east/def/101      84    27   26,43   n   +233   +116   +234     +0 |   27   108   135    72     -         -    135 1/41/39/54      |     -     1    0   59
+  F    canon east/def/202     129    51   38,31   n   +515   -187   +516     +0 |   51    69    87    90     -         -    460 1/0/243/216     |     -     1    0  165
+  F    canon east/def/303       8   172   46,41   y   +129   +129   +116     +0 |  172   177   177   219   177       6/8    129 0/0/0/129       |     -     0 None    0
+  F    fresh east/half/606    113    38   31,49   n   +292   -189   +293     +0 |   38    96   144    87     -         -    240 1/3/106/130     |     -     1    0   30
+  F    fresh east/half/808    121    81    27,5   n    +33    +20    +34     +0 |   81   180   192   126     -         -     67 1/11/39/16      |     -     1    0   15
+  F    fresh east/half/909     86    47   25,48   n     -9     +0     -8     +0 |   47    96     -    93     -         -      1 1/0/0/0         |     -     1    0    0
+  F    fresh east/half/1010   158    46   30,41   n    +37   +184    +56     +0 |   46   132   153    87     -         -    231 9/108/51/63     |     -     1    0   79
+  F    fresh south/half/606   129    38   25,43   n   +277     -1   +278     -1 |   38     -     -    81     -         -      0 0/0/0/0         |     -     0 None    0
+  F    fresh south/half/707     7   203    43,5   y     +0     +0     +0     +0 |  203   207   207   246     -         -      0 0/0/0/0         |     -     0 None    0
+  F    fresh south/half/1010   86    69    14,0   n   +139     +0   +139     +0 |   69    81     -   120     -         -      1 1/0/0/0         |     -     1    0    0
+
+DISTRIBUTIONS
+  ES   canon n=13 | d_all: med|.|    133 sum  +1445 pos/neg/0 7/6/0 | d_only: med|.|   137 sum  +1358 pos/neg/0 7/5/1 range [-137,+494] | |d_only|/|d_all| med 1.02 | sign(d_only)=sign(d_all) 8, opposite 4
+                  | only-first: digest div == write step 13/13 | stream shift <= 240: 12/13 (lag after write med 5.00) | leaves cone: 12/13 (lag med 5.00; out step >= shift tick 12/12) | final has_burned symdiff total 3448, >20 cells away 1711 | d_drop-d_all med|.| 119
+                  | lag write->first differing burnt set: [1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 12] | lag write->first burning difference: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+                  | first write scorched (clear only) 0 | only-first with no burning difference at all 0 | only-first final has_burned identical 1
+                  | drop-first vs the arm: no burning difference at all 0/13 | final has_burned identical 1/13 | symdiff total 3340 | |d_drop-d_all| values [0, 6, 49, 51, 90, 103, 119, 124, 178, 212, 329, 344, 639]
+                  | shift before the cone covers the grid (departure detectable): 12/13, of which leave the cone 12 | no shift <= 240: 1
+                  | pinned (physical only) n=13: d_pin med|.| 0 sum +810 range [-88,+591] pos/neg/0 2/1/10 | pinned leaves cone 0 | fallback draws total 13796 | re-roll part d_only-d_pin med|.| 144 | d_pin symdiff total 986 max dist 24
+  ES   fresh n= 7 | d_all: med|.|    246 sum  +1422 pos/neg/0 4/2/1 | d_only: med|.|   113 sum   +420 pos/neg/0 4/2/1 range [-205,+372] | |d_only|/|d_all| med 0.53 | sign(d_only)=sign(d_all) 4, opposite 2
+                  | only-first: digest div == write step 7/7 | stream shift <= 240: 7/7 (lag after write med 5) | leaves cone: 6/7 (lag med 5.00; out step >= shift tick 6/6) | final has_burned symdiff total 1696, >20 cells away 875 | d_drop-d_all med|.| 502
+                  | lag write->first differing burnt set: [1, 2, 2, 2, 2, 3, 3] | lag write->first burning difference: [0, 0, 0, 0, 0, 0, 0]
+                  | first write scorched (clear only) 0 | only-first with no burning difference at all 0 | only-first final has_burned identical 1
+                  | drop-first vs the arm: no burning difference at all 0/7 | final has_burned identical 1/7 | symdiff total 3217 | |d_drop-d_all| values [0, 406, 443, 502, 545, 630, 665]
+                  | shift before the cone covers the grid (departure detectable): 7/7, of which leave the cone 6 | no shift <= 240: 0
+                  | pinned (physical only) n=7: d_pin med|.| 0 sum -2 range [-2,+0] pos/neg/0 0/1/6 | pinned leaves cone 0 | fallback draws total 1300 | re-roll part d_only-d_pin med|.| 113 | d_pin symdiff total 2 max dist 4
+  ES   both  n=20 | d_all: med|.| 195.00 sum  +2867 pos/neg/0 11/8/1 | d_only: med|.| 125.00 sum  +1778 pos/neg/0 11/7/2 range [-205,+494] | |d_only|/|d_all| med 0.84 | sign(d_only)=sign(d_all) 12, opposite 6
+                  | only-first: digest div == write step 20/20 | stream shift <= 240: 19/20 (lag after write med 5) | leaves cone: 18/20 (lag med 5.00; out step >= shift tick 18/18) | final has_burned symdiff total 5144, >20 cells away 2586 | d_drop-d_all med|.| 195.00
+                  | lag write->first differing burnt set: [1, 1, 1, 1, 2, 2, 2, 2, 2, 2, 2, 2, 3, 3, 3, 3, 3, 3, 12] | lag write->first burning difference: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+                  | first write scorched (clear only) 0 | only-first with no burning difference at all 0 | only-first final has_burned identical 2
+                  | drop-first vs the arm: no burning difference at all 0/20 | final has_burned identical 2/20 | symdiff total 6557 | |d_drop-d_all| values [0, 0, 6, 49, 51, 90, 103, 119, 124, 178, 212, 329, 344, 406, 443, 502, 545, 630, 639, 665]
+                  | shift before the cone covers the grid (departure detectable): 19/20, of which leave the cone 18 | no shift <= 240: 1
+                  | pinned (physical only) n=20: d_pin med|.| 0.00 sum +808 range [-88,+591] pos/neg/0 2/2/16 | pinned leaves cone 0 | fallback draws total 15096 | re-roll part d_only-d_pin med|.| 140.50 | d_pin symdiff total 988 max dist 24
+  ES   dedup n=17 | d_all: med|.|    212 sum  +2402 pos/neg/0 10/6/1 | d_only: med|.|   113 sum  +1067 pos/neg/0 9/7/1 range [-205,+434] | |d_only|/|d_all| med 0.76 | sign(d_only)=sign(d_all) 11, opposite 5
+                  | only-first: digest div == write step 17/17 | stream shift <= 240: 17/17 (lag after write med 5) | leaves cone: 16/17 (lag med 5.00; out step >= shift tick 16/16) | final has_burned symdiff total 4245, >20 cells away 2350 | d_drop-d_all med|.| 212
+                  | lag write->first differing burnt set: [1, 1, 1, 1, 2, 2, 2, 2, 2, 2, 2, 2, 3, 3, 3, 3, 12] | lag write->first burning difference: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+                  | first write scorched (clear only) 0 | only-first with no burning difference at all 0 | only-first final has_burned identical 1
+                  | drop-first vs the arm: no burning difference at all 0/17 | final has_burned identical 1/17 | symdiff total 5676 | |d_drop-d_all| values [0, 6, 49, 51, 103, 119, 124, 178, 212, 329, 344, 406, 443, 502, 545, 630, 665]
+                  | shift before the cone covers the grid (departure detectable): 17/17, of which leave the cone 16 | no shift <= 240: 0
+                  | pinned (physical only) n=17: d_pin med|.| 0 sum +217 range [-88,+307] pos/neg/0 1/2/14 | pinned leaves cone 0 | fallback draws total 7807 | re-roll part d_only-d_pin med|.| 137 | d_pin symdiff total 397 max dist 23
+  F    canon n=13 | d_all: med|.|    129 sum  +1891 pos/neg/0 11/2/0 | d_only: med|.|    59 sum   +455 pos/neg/0 7/5/1 range [-187,+213] | |d_only|/|d_all| med 0.50 | sign(d_only)=sign(d_all) 7, opposite 5
+                  | only-first: digest div == write step 13/13 | stream shift <= 240: 12/13 (lag after write med 86.00) | leaves cone: 2/13 (lag med 5.00; out step >= shift tick 2/2) | final has_burned symdiff total 1966, >20 cells away 1248 | d_drop-d_all med|.| 1
+                  | lag write->first differing burnt set: [2, 2, 33, 60, 60, 61, 105, 118, 123, 126, 130, 137] | lag write->first burning difference: [5, 5, 12, 18, 19, 30, 33, 81, 89, 93, 97, 100]
+                  | first write scorched (clear only) 2 | only-first with no burning difference at all 1 | only-first final has_burned identical 1
+                  | drop-first vs the arm: no burning difference at all 5/13 | final has_burned identical 5/13 | symdiff total 419 | |d_drop-d_all| values [0, 0, 0, 1, 1, 1, 1, 1, 2, 7, 13, 31, 126]
+                  | shift before the cone covers the grid (departure detectable): 3/13, of which leave the cone 2 | no shift <= 240: 1
+                  | pinned (physical only) n=13: d_pin med|.| 0 sum -1 range [-1,+0] pos/neg/0 0/1/12 | pinned leaves cone 0 | fallback draws total 498 | re-roll part d_only-d_pin med|.| 59 | d_pin symdiff total 10 max dist 0
+  F    fresh n= 7 | d_all: med|.|     37 sum   +769 pos/neg/0 5/1/1 | d_only: med|.|     1 sum    +14 pos/neg/0 2/2/3 range [-189,+184] | |d_only|/|d_all| med 0.30 | sign(d_only)=sign(d_all) 2, opposite 2
+                  | only-first: digest div == write step 7/7 | stream shift <= 240: 4/7 (lag after write med 106.50) | leaves cone: 0/7 (lag med None; out step >= shift tick 0/0) | final has_burned symdiff total 540, >20 cells away 209 | d_drop-d_all med|.| 1
+                  | lag write->first differing burnt set: [1, 103, 104, 108] | lag write->first burning difference: [4, 12, 49, 58, 86, 99]
+                  | first write scorched (clear only) 1 | only-first with no burning difference at all 1 | only-first final has_burned identical 2
+                  | drop-first vs the arm: no burning difference at all 4/7 | final has_burned identical 5/7 | symdiff total 58 | |d_drop-d_all| values [0, 0, 1, 1, 1, 1, 19]
+                  | shift before the cone covers the grid (departure detectable): 1/7, of which leave the cone 0 | no shift <= 240: 3
+                  | pinned (physical only) n=7: d_pin med|.| 0 sum -1 range [-1,+0] pos/neg/0 0/1/6 | pinned leaves cone 0 | fallback draws total 124 | re-roll part d_only-d_pin med|.| 0 | d_pin symdiff total 5 max dist 0
+  F    both  n=20 | d_all: med|.| 128.00 sum  +2660 pos/neg/0 16/3/1 | d_only: med|.| 46.50 sum   +469 pos/neg/0 9/7/4 range [-189,+213] | |d_only|/|d_all| med 0.50 | sign(d_only)=sign(d_all) 9, opposite 7
+                  | only-first: digest div == write step 20/20 | stream shift <= 240: 16/20 (lag after write med 106.50) | leaves cone: 2/20 (lag med 5.00; out step >= shift tick 2/2) | final has_burned symdiff total 2506, >20 cells away 1457 | d_drop-d_all med|.| 1.00
+                  | lag write->first differing burnt set: [1, 2, 2, 33, 60, 60, 61, 103, 104, 105, 108, 118, 123, 126, 130, 137] | lag write->first burning difference: [4, 5, 5, 12, 12, 18, 19, 30, 33, 49, 58, 81, 86, 89, 93, 97, 99, 100]
+                  | first write scorched (clear only) 3 | only-first with no burning difference at all 2 | only-first final has_burned identical 3
+                  | drop-first vs the arm: no burning difference at all 9/20 | final has_burned identical 10/20 | symdiff total 477 | |d_drop-d_all| values [0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 7, 13, 19, 31, 126]
+                  | shift before the cone covers the grid (departure detectable): 4/20, of which leave the cone 2 | no shift <= 240: 4
+                  | pinned (physical only) n=20: d_pin med|.| 0.00 sum -2 range [-1,+0] pos/neg/0 0/2/18 | pinned leaves cone 0 | fallback draws total 622 | re-roll part d_only-d_pin med|.| 46.50 | d_pin symdiff total 15 max dist 0
+  F    dedup n=17 | d_all: med|.|     98 sum  +1783 pos/neg/0 13/3/1 | d_only: med|.|    20 sum   +411 pos/neg/0 7/6/4 range [-189,+213] | |d_only|/|d_all| med 0.48 | sign(d_only)=sign(d_all) 7, opposite 6
+                  | only-first: digest div == write step 17/17 | stream shift <= 240: 13/17 (lag after write med 107) | leaves cone: 1/17 (lag med 5; out step >= shift tick 1/1) | final has_burned symdiff total 1782, >20 cells away 1058 | d_drop-d_all med|.| 1
+                  | lag write->first differing burnt set: [1, 2, 60, 60, 61, 103, 104, 108, 118, 123, 126, 130, 137] | lag write->first burning difference: [4, 5, 12, 12, 19, 30, 33, 49, 58, 86, 89, 93, 97, 99, 100]
+                  | first write scorched (clear only) 2 | only-first with no burning difference at all 2 | only-first final has_burned identical 3
+                  | drop-first vs the arm: no burning difference at all 7/17 | final has_burned identical 8/17 | symdiff total 364 | |d_drop-d_all| values [0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 2, 7, 19, 31, 126]
+                  | shift before the cone covers the grid (departure detectable): 2/17, of which leave the cone 1 | no shift <= 240: 4
+                  | pinned (physical only) n=17: d_pin med|.| 0 sum -2 range [-1,+0] pos/neg/0 0/2/15 | pinned leaves cone 0 | fallback draws total 398 | re-roll part d_only-d_pin med|.| 20 | d_pin symdiff total 13 max dist 0
+
+================================================================================================
+APPENDIX C. CORRELATIONS, DROP-FIRST LANDING, PINNED/SHIFT DETAILS (generated, read-only script)
+================================================================================================
+fmES both n=20  pearson(d_only,d_all)=0.65 spearman=0.54 | pearson(d_drop,d_all)=-0.08 spearman=-0.07
+    mean|d_only| 153.6  mean|d_all| 212.2  mean|d_pin| 49.4  mean|d_only-d_pin| 181.3
+    drop-first: selected writes 470, not applied 345 (73.4%)
+    only-first final has_burned symdiff 5144 cells: <=3 from write 74, >20 2586 (50%)
+    pinned nonzero: [('east/half/202', 101, -88, 88, 13), ('east/half/404', 15, 307, 307, 23), ('east/def/202', 54, 591, 591, 24), ('east/half/909', 121, -2, 2, 4)]
+    no-shift rows: [('east/def/303', 175, 0, 0)]
+    shift lag (steps) sorted: [4, 4, 4, 4, 5, 5, 5, 5, 5, 5, 5, 5, 6, 6, 6, 6, 6, 6, 15]
+    out-of-cone rows: [('east/half/101', 47, 51, 51, 75, 89), ('east/half/202', 101, 105, 105, 37, 50), ('east/half/303', 109, 114, 114, 57, 78), ('east/half/404', 15, 21, 21, 29, 48), ('east/half/505', 111, 117, 117, 77, 101), ('south/half/101', 207, 222, 225, 6, 68), ('south/half/202', 124, 129, 129, 45, 57), ('south/half/303', 106, 111, 111, 11, 21), ('south/half/404', 14, 18, 18, 12, 28), ('south/half/505', 100, 105, 105, 17, 33), ('east/def/101', 33, 39, 39, 82, 97), ('east/def/202', 54, 60, 60, 52, 70), ('east/half/606', 44, 48, 48, 84, 103), ('east/half/808', 85, 90, 90, 85, 103), ('east/half/909', 121, 126, 126, 73, 78), ('east/half/1010', 51, 57, 57, 94, 114), ('south/half/606', 45, 51, 51, 179, 206), ('south/half/1010', 67, 72, 72, 143, 161)]
+    scorched rows: []
+fmES dedup n=17  pearson(d_only,d_all)=0.64 spearman=0.57 | pearson(d_drop,d_all)=-0.15 spearman=-0.18
+    mean|d_only| 138.9  mean|d_all| 207.4  mean|d_pin| 23.4  mean|d_only-d_pin| 162.2
+    drop-first: selected writes 408, not applied 299 (73.3%)
+    only-first final has_burned symdiff 4245 cells: <=3 from write 48, >20 2350 (55%)
+    pinned nonzero: [('east/half/202', 101, -88, 88, 13), ('east/half/404', 15, 307, 307, 23), ('east/half/909', 121, -2, 2, 4)]
+    no-shift rows: []
+    shift lag (steps) sorted: [4, 4, 4, 4, 5, 5, 5, 5, 5, 5, 5, 5, 6, 6, 6, 6, 15]
+    out-of-cone rows: [('east/half/101', 47, 51, 51, 75, 89), ('east/half/202', 101, 105, 105, 37, 50), ('east/half/303', 109, 114, 114, 57, 78), ('east/half/404', 15, 21, 21, 29, 48), ('east/half/505', 111, 117, 117, 77, 101), ('south/half/101', 207, 222, 225, 6, 68), ('south/half/202', 124, 129, 129, 45, 57), ('south/half/303', 106, 111, 111, 11, 21), ('south/half/404', 14, 18, 18, 12, 28), ('south/half/505', 100, 105, 105, 17, 33), ('east/half/606', 44, 48, 48, 84, 103), ('east/half/808', 85, 90, 90, 85, 103), ('east/half/909', 121, 126, 126, 73, 78), ('east/half/1010', 51, 57, 57, 94, 114), ('south/half/606', 45, 51, 51, 179, 206), ('south/half/1010', 67, 72, 72, 143, 161)]
+    scorched rows: []
+fmF both n=20  pearson(d_only,d_all)=-0.42 spearman=-0.14 | pearson(d_drop,d_all)=0.98 spearman=0.98
+    mean|d_only| 68.2  mean|d_all| 135.5  mean|d_pin| 0.1  mean|d_only-d_pin| 68.2
+    drop-first: selected writes 1695, not applied 4 (0.2%)
+    only-first final has_burned symdiff 2506 cells: <=3 from write 29, >20 1457 (58%)
+    pinned nonzero: []
+    no-shift rows: [('east/half/202', 96, -1, 0), ('east/half/909', 47, 0, 1), ('south/half/606', 38, -1, 0), ('south/half/1010', 69, 0, 1)]
+    shift lag (steps) sorted: [4, 5, 5, 36, 63, 63, 64, 106, 107, 108, 111, 121, 126, 129, 133, 140]
+    out-of-cone rows: [('south/half/505', 94, 99, 99, 47, 57), ('east/def/303', 172, 177, 177, 1, 1)]
+    scorched rows: [('south/half/505', 94, 99, 99, 213), ('east/def/303', 172, 177, 177, 129), ('south/half/707', 203, 207, None, 0)]
+fmF dedup n=17  pearson(d_only,d_all)=-0.24 spearman=-0.12 | pearson(d_drop,d_all)=0.96 spearman=0.98
+    mean|d_only| 54.9  mean|d_all| 107.8  mean|d_pin| 0.1  mean|d_only-d_pin| 54.8
+    drop-first: selected writes 1477, not applied 4 (0.3%)
+    only-first final has_burned symdiff 1782 cells: <=3 from write 27, >20 1058 (59%)
+    pinned nonzero: []
+    no-shift rows: [('east/half/202', 96, -1, 0), ('east/half/909', 47, 0, 1), ('south/half/606', 38, -1, 0), ('south/half/1010', 69, 0, 1)]
+    shift lag (steps) sorted: [4, 5, 63, 63, 64, 106, 107, 111, 121, 126, 129, 133, 140]
+    out-of-cone rows: [('south/half/505', 94, 99, 99, 47, 57)]
+    scorched rows: [('south/half/505', 94, 99, 99, 213), ('south/half/707', 203, 207, None, 0)]
+
+================================================================================================
+APPENDIX D. ALL REPLAY OUTPUTS: WALL, DIGEST MATCHES, WRITE LANDING (generated, read-only script)
+================================================================================================
+crn    none        n= 2 wall min/mean/max 32.5/35.5/38.5 s | digest-meaningful 0, 240/240 0 | selected writes 0, not applied 0 | counter mismatches 0
+crn    only-first  n= 2 wall min/mean/max 32.2/35.1/38.1 s | digest-meaningful 0, 240/240 0 | selected writes 2, not applied 1 | counter mismatches 0
+pin    none        n= 1 wall min/mean/max 35.3/35.3/35.3 s | digest-meaningful 0, 240/240 0 | selected writes 0, not applied 0 | counter mismatches 0
+        pin counts: [('fmOFF_east_half_101_none_pin', {'pinned': 160423, 'fallback': 0})] ... fallback total 0
+pin    only-first  n=40 wall min/mean/max 28.8/35.3/42.9 s | digest-meaningful 0, 240/240 0 | selected writes 40, not applied 0 | counter mismatches 0
+        pin counts: [('fmES_east_def_101_only-first_pin', {'pinned': 160403, 'fallback': 81}), ('fmES_east_def_202_only-first_pin', {'pinned': 179024, 'fallback': 7208}), ('fmES_east_def_303_only-first_pin', {'pinned': 139095, 'fallback': 0})] ... fallback total 15718
+        runs with non-applied selected writes: []
+rec    none        n=20 wall min/mean/max 29.2/35.3/40.5 s | digest-meaningful 20, 240/240 20 | selected writes 0, not applied 0 | counter mismatches 0
+stock  all         n= 9 wall min/mean/max 37.7/51.5/62.3 s | digest-meaningful 9, 240/240 9 | selected writes 442, not applied 0 | counter mismatches 0
+stock  drop-first  n=40 wall min/mean/max 28.3/34.7/41.1 s | digest-meaningful 0, 240/240 0 | selected writes 2165, not applied 349 | counter mismatches 0
+        runs with non-applied selected writes: [('rp_fmES_east_def_101_drop-first.json', 35), ('rp_fmES_east_def_202_drop-first.json', 11), ('rp_fmES_east_half_1010_drop-first.json', 26), ('rp_fmES_east_half_101_drop-first.json', 15), ('rp_fmES_east_half_202_drop-first.json', 34), ('rp_fmES_east_half_303_drop-first.json', 21), ('rp_fmES_east_half_404_drop-first.json', 11), ('rp_fmES_east_half_505_drop-first.json', 15), ('rp_fmES_east_half_606_drop-first.json', 23), ('rp_fmES_east_half_808_drop-first.json', 27), ('rp_fmES_east_half_909_drop-first.json', 20), ('rp_fmES_south_half_1010_drop-first.json', 21), ('rp_fmES_south_half_101_drop-first.json', 2), ('rp_fmES_south_half_202_drop-first.json', 21), ('rp_fmES_south_half_303_drop-first.json', 18), ('rp_fmES_south_half_404_drop-first.json', 5), ('rp_fmES_south_half_505_drop-first.json', 28), ('rp_fmES_south_half_606_drop-first.json', 12), ('rp_fmF_south_half_505_drop-first.json', 4)]
+stock  none        n= 1 wall min/mean/max 49.8/49.8/49.8 s | digest-meaningful 1, 240/240 1 | selected writes 0, not applied 0 | counter mismatches 0
+stock  only-first  n=40 wall min/mean/max 28.8/35.0/40.2 s | digest-meaningful 0, 240/240 0 | selected writes 40, not applied 0 | counter mismatches 0
+        runs with non-applied selected writes: []
+process wall (batch log, incl. interpreter start + imports): n=157 min 30 mean 37.9 max 65 s
+
+================================================================================================
+APPENDIX E. PIN IDENTITY AND CRN CHECK (generated: --report crn-check)
+================================================================================================
+PIN IDENTITY  fmOFF east/half/101 --writes none --pin-draws <its own recorded draws>: digest 240/240 vs fmOFF, first burning diff None, pinned 160423 fallback 0
+CRN CHECK  (a CRN replay's single write can act only physically: its burning difference must never
+            leave the light cone; the stock pair is shown for contrast)
+  fmF   east/half/404   CRN   first_div 10 first_out_of_cone None stream_shift_tick 72 d_intact +6 symdiff 7 max_dist 6
+  fmF   east/half/404   stock first_div 10 first_out_of_cone None d_intact +60 symdiff 175 max_dist 42
+  fmES  east/half/101   CRN   first_div None first_out_of_cone None stream_shift_tick None d_intact +0 symdiff 0 max_dist None
+  fmES  east/half/101   stock first_div 47 first_out_of_cone 51 d_intact -101 symdiff 199 max_dist 41

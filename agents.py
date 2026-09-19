@@ -1059,9 +1059,11 @@ def base_station_waypoint_fix() -> bool:
 
 # --- Fire mechanic (round 1) configuration ------------------------------------
 # Read through `cfv` at call time for the same reason as the base-station
-# accessors above. UNLIKE them, every fallback here is the OFF value, which is
-# also what common_fixed_variables ships: this feature is dark by default, so a
-# missing or unparseable override must not arm it.
+# accessors above. UNLIKE them, every ACTION fallback here is the OFF value, which
+# is also what common_fixed_variables ships: this feature is dark by default, so a
+# missing or unparseable override must not arm it. ff_firefight_mission_gate is the
+# ONE DELIBERATE EXCEPTION (round 2): it cannot arm anything by itself, and its
+# conservative value is ON, so its fallback is 1.
 
 def ff_firefight_extinguish() -> bool:
     """True when idle firefighters may extinguish burning front cells."""
@@ -1100,6 +1102,29 @@ def ff_firefight_dry_run() -> bool:
         return int(getattr(cfv, "FF_FIREFIGHT_DRY_RUN", 0)) != 0
     except (TypeError, ValueError):
         return False
+
+
+def ff_firefight_mission_gate() -> bool:
+    """True when a unit may engage ONLY after every victim is rescued or dead.
+
+    Round 2. This is what makes the feature rescue-neutral by construction: while
+    any victim can still be dispatched to, every unit behaves exactly as it does
+    with the feature off, so no rescue outcome can change. 0 restores round 1's
+    policy, any idle unit at any time (outputs/firemech2_part1.txt 4.2).
+
+    The fallback is ON, unlike every action switch above: this switch cannot arm
+    the feature, so a junk override may only ever make it more conservative. Only
+    an EXACT zero (0, 0.0, "0", False) turns it off; anything unparseable or
+    non-integral - 0.5, "", None, a missing attribute - falls back to ON.
+    """
+    raw = getattr(cfv, "FF_FIREFIGHT_MISSION_GATE", 1)
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return True
+    if isinstance(raw, float) and raw != value:
+        return True
+    return value != 0
 
 
 # Orthogonal offsets in a FIXED order for the victim's flee scan. The same four
@@ -2357,6 +2382,12 @@ class Firefighter(mesa.Agent):
         available = getattr(self.model, "_firefighter_available_for_dispatch", None)
         if not callable(available) or not available(self):
             return None
+        # The mission gate sits HERE deliberately: after the eligibility test and
+        # before the suppression and dry-run reads below, so a gate-closed step
+        # touches no further accessor and creates no model attribute (the dry-run
+        # branch would create _firefight_shadow).
+        if ff_firefight_mission_gate() and not self._firefight_mission_resolved():
+            return None
         buffer = IDLE_RETREAT_SAFETY_BUFFER
         suppress = ff_firefight_engaged_retreat_range()
         extinguish = extinguish and suppress < FIREFIGHT_EXTINGUISH_REACH
@@ -2429,6 +2460,34 @@ class Firefighter(mesa.Agent):
         ctx["plan"] = plan
         ctx["T"] = t_cand if plan is not None else buffer
         return ctx
+
+    def _firefight_mission_resolved(self) -> bool:
+        """True when every managed victim is rescued or dead - the mission gate.
+
+        Both statuses are absorbing whatever any unit does afterwards: a rescued
+        victim is off the grid with rescued=True, and a dead one is refused by
+        finalize_rescue and by every dispatch path, so once this returns True no
+        victim outcome, all_victims_terminal or terminal_step can change again. The
+        looser predicate the round-2 probes used (no victim UNRESOLVED, i.e. counting
+        'unreachable' and 'cancelled' as resolved) is NOT absorbing in that sense: an
+        unreachable victim is still alive on the grid, still flees and can still burn,
+        so fire written after it opened could change that victim's recorded outcome
+        (outputs/_fm2_audit_gate.txt, paths P1-P3).
+
+        A model with no managed victims at all counts as resolved: there is no rescue
+        to protect. A real WildFireModel always populates the dict at reset.
+        Pure read - no RNG, no mutation, no attribute created.
+        """
+        managed = getattr(self.model, "managed_victims", None)
+        if not isinstance(managed, dict):
+            return True
+        for state in managed.values():
+            if state is None:
+                continue
+            status = str(getattr(state, "status", "") or "").strip().lower()
+            if status not in ("rescued", "dead"):
+                return False
+        return True
 
     def _firefight_exit_guard(
         self,

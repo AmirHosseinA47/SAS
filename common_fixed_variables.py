@@ -185,15 +185,26 @@ VICTIM_SEARCHER_HAZARD_RETREAT_RANGE = 99
 # FF_FIREFIGHT_DRY_RUN keeps every decision and suppresses every fire write (the
 # targeting then treats the would-be-written cell as done), which isolates the
 # behaviour from its effect on the fire.
-# ALL OFF BY DEFAULT, and every accessor fallback in agents.py is the OFF value, so
-# a missing or junk override cannot arm anything. With both action switches 0 no
-# firefighter code path changes. Overridable per run through apply_scenario_config
-# like every other scenario parameter, and read at call time. Deterministic - it
-# draws from no RNG.
+# FF_FIREFIGHT_MISSION_GATE (round 2) is WHEN a unit may engage: 1 = only once every
+# managed victim's status is rescued or dead, 0 = round 1's policy (any idle unit, any
+# time). The gate is what makes the feature rescue-neutral BY CONSTRUCTION - before it
+# opens no unit moves differently and no fire write lands, so no victim outcome can
+# change - at the price of giving up every effect before the mission is decided
+# (outputs/firemech2_part1.txt sections 1 and 4).
+# THE ACTION SWITCHES ARE ALL OFF BY DEFAULT, and their accessor fallbacks in agents.py
+# are the OFF value, so a missing or junk override cannot arm anything. With both action
+# switches 0 no firefighter code path changes. FF_FIREFIGHT_MISSION_GATE IS THE ONE
+# DELIBERATE EXCEPTION to that rule: it cannot arm the feature (that still needs
+# EXTINGUISH or FIREBREAK), and its conservative value is 1. Only an EXACT zero
+# (0, 0.0, "0", False) turns the gate off; anything unparseable or non-integral falls
+# back to 1, so a typo can only make the feature more rescue-neutral, never less.
+# Overridable per run through apply_scenario_config like every other scenario parameter,
+# and read at call time. Deterministic - it draws from no RNG.
 FF_FIREFIGHT_EXTINGUISH = 0
 FF_FIREFIGHT_FIREBREAK = 0
 FF_FIREFIGHT_ENGAGED_RETREAT_RANGE = 3
 FF_FIREFIGHT_DRY_RUN = 0
+FF_FIREFIGHT_MISSION_GATE = 1
 
 # Base station (feature 3). A set of 5x5 depots - shipped as two, NW and SE (see
 # BASE_STATION_DEPOTS) - that the UAV team and the firefighters launch from, that a

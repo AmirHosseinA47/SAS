@@ -1,0 +1,311 @@
+firemech round 2, Part 1 - STATIC AUDIT OF THE MISSION GATE PREDICATE
+Question: is 'no victim unresolved' (_count_unresolved_victims == 0) absorbing, and can a
+victim outcome still change after it opens? Two auditors read the code independently; a third
+reconciled them against the source. Read-only, no simulation. Agent output, reformatted.
+================================================================================================
+
+------------------------------------------------------------------------------------------------
+AUDIT#1   VERDICT B
+------------------------------------------------------------------------------------------------
+The proposal claims two things. Only half holds.
+
+1. The count part holds. Once _count_unresolved_victims reaches 0 it stays 0. No path takes a victim from any resolved state back to a state the helper counts as unresolved: every reachable resolved state keeps a sticky flag (rescued=True, or cancelled=True for dead and unreachable), and the only writers that clear flags (assign 4601/4605, finalize 4794/4798) are refused for flagged victims (rescue_planner.py:550-559, rescue_executor.py:380-382, 4777-4783). The rescued count is also frozen once the gate is open, since finalize refuses every cancelled victim.
+
+2. The outcome part fails. "Once it opens no victim outcome can change" is false for the reported outcomes, which are managed status (serve_dashboard.py:343-362):
+
+(a) Unreachable -> dead. An unreachable victim is alive, flees, and dies if fire reaches it (5164-5201). Idle firefighting changes the fire, so it can flip this. Precondition: the gate opens while at least one victim is unreachable, geographically isolated (30-step streak) or never detected (210-step streak), and the fire later reaches it. This needs nothing unusual. It is possible in any D run where the gate opens with unreachable > 0, though how often it actually flips is not knowable statically.
+
+(b) A bound unit whose fate depends on fire. A unit can stay bound to an unreachable victim: mark_unreachable unbinds nobody, the escape sweep releases one non-route_blocked claimant, and the stale clear at mode 1 skips bound units. Fire-dependent route reopening leads to carry-out: the victim leaves the grid and stays "unreachable" instead of possibly dying. Fire-dependent death of the bound unit leads to reset_victim_pending: "unreachable" becomes "confirmed", reported as candidate. In D this needs a repeated-pair route_blocked binding (3602-3604) plus an escape-sweep mark that frees the other unit, which is rarer.
+
+A runtime check would settle frequency. In the seed-matched feature-on/off harness:
+- Snapshot per-victim managed status and flags at the first step the gate is open, and compare with the final status per victim, not just the rescued count.
+- On every step with helper == 0, log each live firefighter with rescued_victim, target_pos, assigned or exiting set, and the status of the victim it points at.
+- Count victim casualty events ("[Casualty] victim_") after the gate opened.
+- Flag any run where a victim that was unreachable at gate-open ends dead, candidate, or carried off-grid differently between the on and off arms.
+
+------------------------------------------------------------------------------------------------
+AUDIT#2   VERDICT B
+------------------------------------------------------------------------------------------------
+Half the claim holds, half does not.
+
+What holds:
+- The helper count is absorbing. The only writer that removes the resolving marks is assign (wildfire_model.py:4597-4605), and every assign passes select_rescue_assignment plus `_victim_needs_rescue`, which exclude rescued, dead, cancelled and unreachable victims.
+- The reset relabel changes status only. Unreachable victims keep cancelled/unreachable=True, and dead/rescued statuses are guarded.
+- No victim is ever removed from managed_victims.
+- The evaluator's RESCUED count is frozen from the moment the helper reads 0. finalize_rescue refuses cancelled victims, which covers both dead and unreachable.
+- "Before the gate opens everything behaves as feature-off" also holds: the count starts at NUM_VICTIMS and nothing drives it to 0 early.
+
+What fails is "no victim outcome can change any more". The concrete paths:
+(P1) Any victim that is 'unreachable' when the gate opens stays alive on the grid. The casualty sweep (:5166) can still kill it, and the fire the engaged unit is modifying decides whether it does. Evaluator: unreachable -> dead.
+(P2) Units can stay bound to an unreachable victim. Route_blocked claimants are never released on either unreachable path (:3675, :4711-4766, :5043-5054; at the default ROUTE_BLOCK_STALE_CLEAR=1 they are never stale-released). A second claimant can be left by the single-pair unassign. Such a unit can resume when its route reopens and carry the victim off-grid (:2925-2936), which removes its chance of dying. Or the unit can die, which relabels the victim to 'confirmed' (:4692) and makes the evaluator count 'candidate'.
+(P3) The same relabel makes the helper and the evaluator/dashboard disagree, so terminal_step can still move after the gate opens.
+
+Likelihood in scenario D (4 victims, 2 firefighters, serve_dashboard.py:41) cannot be read from the code:
+- P1 needs the gate to open with at least one unreachable victim on the grid (geographic isolation, or never_detected at step 210 or later).
+- P2 needs the route_blocked latch or a double claim at the moment of marking. Both shapes are documented in-code for D runs (:3700-3704, D/east/half 303 and D/south/half 303), but not their frequency on this path.
+
+Runtime check that would settle it, in the seed-matched harness:
+- At the first step the helper returns 0, snapshot every victim's state.status, rescued/cancelled/unreachable flags, marker.status and marker.pos, and every firefighter's assigned, rescued_victim, target_pos, exiting and status.
+- At the horizon, diff per-victim evaluator status against that snapshot and against the feature-off arm.
+- Assert the rescued count never differs (the code says it cannot).
+- Count runs with an unreachable victim whose marker.pos is not None, or a firefighter bound to a resolved victim, at gate opening. Any dead/unreachable/candidate difference is a realized hole.
+
+------------------------------------------------------------------------------------------------
+RECONCILE   VERDICT B
+------------------------------------------------------------------------------------------------
+Both audits reach B, and on the facts that matter they are right. Re-reading the code resolved every point: nothing contradicted either audit's core paths. The corrections are minor: the horizon default (300, not 240), the flag-blind _victim_needs_rescue, and whether a firefighter clause is needed in the strict predicate.
+
+What holds (by construction):
+(i) The helper count is absorbing: once 0, it stays 0.
+- Every reachable resolved state carries a sticky flag: rescued=True, or cancelled=True for dead and unreachable, with unreachable=True as well for unreachable.
+- The only runtime writers that clear those flags are assign (4601/4605) and finalize (4794/4798). Both refuse flagged victims (rescue_planner.py:552-559 with snapshot 3295-3312, rescue_executor.py:380-382, 4777-4783/5437-5443).
+- The death write at 5199 clears unreachable but sets cancelled=True in the same block.
+- No victim is added or removed after init, and the MAPE executor's status writes never run (victim_id is always "").
+(ii) The evaluated rescued count is frozen from the moment the helper reads 0, because finalize refuses cancelled victims.
+(iii) Before the gate opens, behaviour is identical to feature-off, provided the gate sits in _firefight_prepare, the only entry point of the feature.
+
+What fails: "once it opens no victim outcome can change any more". The evaluation (serve_dashboard.py:343-362) reports by status, and after the gate opens three transitions remain possible:
+P1. unreachable -> dead. A live unreachable victim on the grid can still burn (5164-5201) and still flees (agents.py:1182-1191). Idle firefighting changes the Fire agents that decide both.
+- Precondition: the gate opens with at least one unreachable victim still on the grid.
+- In D this needs nothing unusual. The gate cannot open until every victim is resolved, and unreachable is one of the ways a victim gets there.
+P2. Units bound to an unreachable victim.
+- Route_blocked claimants are never released on either unreachable path. The sweep releases only one non-route_blocked claimant, and the default stale clear skips bound units.
+- Such a unit either carries the victim off-grid when fire reopens its route (the status stays unreachable and death is no longer possible), or dies on a burning cell. Death relabels the victim unreachable -> confirmed (4690-4692), which the evaluation counts as candidate.
+- Precondition in D: a repeated-pair route_blocked binding (3602-3604) or a double claim at the moment of marking, plus an idle second unit. Both binding shapes are documented in the code for D runs (3700-3704), but not how often they occur on this path.
+P3. The P2 relabel makes the helper (resolved) and the status-based evaluation and dashboard (candidate, non-terminal) disagree. A later death then moves candidate -> dead and sets terminal_step after the gate opened.
+
+How often these occur in scenario D cannot be read from the code. Runtime check, in the seed-matched feature-on/off harness:
+- At the first step the helper returns 0, snapshot per victim: state.status, the rescued/cancelled/unreachable flags, marker.status and marker.pos.
+- At the same step, snapshot per firefighter: assigned, rescued_victim id, target_pos, exiting, status, dead.
+- At the horizon, diff each victim's evaluated status against that snapshot and against the feature-off arm.
+- Assert the rescued count is identical, as the code guarantees.
+- Count runs with gate open and an unreachable marker with pos not None (P1 exposure), and runs with gate open and a live unit bound to a resolved victim (P2 exposure).
+- Count "[Casualty] victim_" events after gate opening, and any unreachable -> dead/candidate difference between arms. Any such difference is a realized hole.
+
+Rescue-neutral in the narrow sense (rescued count) is supported by the code. Outcome-neutral (the dead/unreachable/candidate split, and terminal_step) is not.
+
+HELPER AS QUOTED BY THE AUDIT
+src_extension/adaptation/local_adaptation_generator.py:116
+TERMINAL_VICTIM_STATUSES = frozenset({"rescued", "dead", "unreachable", "cancelled"})
+
+src_extension/adaptation/local_adaptation_generator.py:727-753
+def _count_unresolved_victims(simulation: Any | None) -> int:
+    managed = getattr(simulation, "managed_victims", None) if simulation is not None else None
+    if not isinstance(managed, dict):
+        return 0
+    markers = getattr(simulation, "victim_marker_agents", None)
+    unresolved = 0
+    for vid, state in managed.items():
+        if state is None:
+            continue
+        status = str(getattr(state, "status", "") or "").strip().lower()
+        if status in TERMINAL_VICTIM_STATUSES:
+            continue
+        if bool(getattr(state, "rescued", False)):
+            continue
+        if bool(getattr(state, "dead", False)):
+            continue
+        if bool(getattr(state, "cancelled", False)):
+            continue
+        if bool(getattr(state, "unreachable", False)):
+            continue
+        if isinstance(markers, dict) and vid in markers:
+            marker = markers[vid]
+            marker_status = str(getattr(marker, "status", "") or "").strip().lower()
+            if marker_status in TERMINAL_VICTIM_STATUSES:
+                continue
+        unresolved += 1
+    return unresolved
+
+Facts checked against the code (both audits agree on these):
+- Victims are created only at init, with status "candidate" (wildfire_model.py:820-842). No code deletes or replaces entries in managed_victims or victim_marker_agents.
+- The helper's state.dead test never matches. The only `.dead =` writes are on firefighter markers (agents.py:1470; wildfire_model.py:2414, 2498, 5269).
+- What each resolved state looks like:
+  - rescued: status "rescued" + rescued=True (4786/4790)
+  - unreachable: status "unreachable" + unreachable=True + cancelled=True (4719/4723/4727)
+  - dead: status "dead" + cancelled=True + rescued=False + unreachable=False (5183-5199)
+  - The status "cancelled" is written only by rescue_executor.py:588, which never runs.
+- The evaluation counts victims by status only (serve_dashboard.py:343-362, used by evaluate_scenarios.py:146): rescued, dead, unreachable, and everything else as candidate.
+
+PATHS EXAMINED
+
+  LOCATION     wildfire_model.py:4580-4616 (apply_physical_rescue_command, action "assign"), reached only through rescue_executor.py:400-412
+  TRANSITION   Sets status "assigned", unreachable=False, cancelled=False, confirmed=True; marker "assigned". Does not touch rescued. This is the only runtime writer that clears the unreachable/cancelled flags, apart from finalize and the death write at 5199.
+  PRECONDITION The decision always comes from select_rescue_assignment, called at 3618 (incident handler), 5082 (dispatch wrapper) and rescue_executor.py:187. Its needy filter drops any victim marked rescued, dead, cancelled or unreachable (rescue_planner.py:552-559). The snapshot ORs the state flags with the marker status (wildfire_model.py:3295-3312). There is also a second guard: `if callable(needs_rescue) and not needs_rescue(vid, victim_marker): return ... victim_does_not_need_rescue` (rescue_executor.py:380-382).
+  FIRES ON A RESOLVED VICTIM: NO, for every reachable resolved state. Every such state carries a flag the snapshot exports: rescued=True, cancelled=True, unreachable=True, or state status "dead". It also covers a victim relabelled "confirmed" that still has cancelled/unreachable=True.
+
+  LOCATION     wildfire_model.py:4674-4702 (unassign with metadata reset_victim_pending)
+  TRANSITION   Managed status becomes "confirmed" unless it is dead or rescued: `if victim_status not in ("dead", "rescued"): victim_state.status = "confirmed"` (4690-4692). Marker becomes "confirmed" with no guard (4700). The cancelled/unreachable flags are not touched.
+  PRECONDITION Two callers.
+(a) The route_blocked incident at 3606-3614. It is enqueued only if `_victim_needs_rescue` is true (5112-5113) and is processed immediately (5124). A repeated (ff, vid) pair returns first (3602-3604).
+(b) The firefighter casualty at 5259-5268: a live unit on a burning cell with rescued_victim set, whatever that victim's status.
+The other unassign callers pass metadata={} and write no victim fields: the claimant release (3785), the stale clear (3981), _unassign_firefighter (4844) and the escape sweep (5046).
+  FIRES ON A RESOLVED VICTIM: YES, via (b), on an UNREACHABLE victim that still has a bound unit when that unit burns.
+- Status goes unreachable -> confirmed. The flags stay set, so the helper still counts the victim resolved and it cannot be re-dispatched.
+- The evaluation moves it from unreachable to candidate.
+- DEAD victim, same sweep: the victim loop (5164) runs before the firefighter loop (5238), so only the marker becomes "confirmed" and the status stays dead. The outcome does not change.
+- RESCUED victim: status is guarded, and its claimants are released at 3589.
+- Via (a): not reachable on a resolved victim at enqueue time.
+
+  LOCATION     wildfire_model.py:4711-4766 (mark_unreachable)
+  TRANSITION   Non-terminal -> cancelled=True, unreachable=True, status/marker "unreachable", rescue_assigned=False. Writes no firefighter field.
+  PRECONDITION Two sources.
+- Escape sweep (5070). It skips terminal victims (rescue_planner.py:491-494); `terminal` includes all four flags and the marker status (wildfire_model.py:4970-4977).
+- Planner decision (rescue_executor.py:349-372). It is reached when select_rescue_assignment finds no available unit, no off-grid unit is returning, and the reason is neither initial nor blocked (rescue_planner.py:600-623). It only ever picks needy victims.
+  FIRES ON A RESOLVED VICTIM: NO. It is not a reverse path. It is the source of the resolved-while-bound state described in assigned_resolved_channel.
+
+  LOCATION     wildfire_model.py:4768-4800 (finalize_rescue), reached from the rescue_complete incident at 3539-3593, enqueued only by _finalize_rescued_victim (5421-5462), whose only callers are the drain at 2922 and 2959
+  TRANSITION   Sets rescued=True, status "rescued", cancelled=False, unreachable=False; marker "rescued".
+  PRECONDITION Refused if dead or cancelled by flag or status: 3559-3570, 4777-4783 and 5437-5450 (`getattr(state, "cancelled", False) ... return`). A victim that is already rescued only triggers a claimant release (3547-3558).
+  FIRES ON A RESOLVED VICTIM: NO. Unreachable victims (cancelled=True from 4719) and dead victims (cancelled=True from 5191) are refused. So the evaluated rescued count cannot change once the helper reads 0.
+
+  LOCATION     wildfire_model.py:5164-5208 (_check_fire_casualties, victim loop)
+  TRANSITION   Marker "dead"; state status "dead", rescued=False, cancelled=True, unreachable=False, unreachable_cause cleared; victim_dead incident enqueued.
+  PRECONDITION The marker status is not dead or rescued (`if status in ("dead", "rescued"): continue`, 5166), the marker is on the grid (5168-5170), and its cell is burning. Rescued markers are removed from the grid in the same drain that finalizes them (2928-2931).
+  FIRES ON A RESOLVED VICTIM: YES, on UNREACHABLE victims and on victims relabelled "confirmed" that keep their flags. Those markers stay on the grid, alive, and still flee (agents.py:1182-1191; G3 skips only ("dead", "rescued")).
+- For the helper this is resolved -> resolved.
+- The evaluation changes: unreachable -> dead, or candidate -> dead.
+- It also re-kills a dead corpse whose marker was relabelled "confirmed" (no change).
+- It cannot reach a rescued victim.
+
+  LOCATION     wildfire_model.py:4922-5072 (_update_unreachable_victims) + rescue_planner.py:458-520 (unreachable_escape_victims)
+  TRANSITION   Unresolved -> unreachable after a geographic streak of at least 30 (UNREACHABLE_STREAK_STEPS) or a never-detected streak of at least 210 (UNDETECTED_STREAK_STEPS). Before marking, it unassigns at most ONE claimant: `pair = self._find_active_firefighter_for_victim(vid, marker)` (5043-5054).
+  PRECONDITION The victim is not terminal and not productively served. For the geographic cause it is also not BFS-reachable from any living, non-exiting unit (4934-4950); for the undetected cause it was never confirmed and never assigned.
+_find_active_firefighter_for_victim requires assigned=True, skips `status in ("dead", "route_blocked")` (3672-3676) and returns only the first match. It does not check exiting, so a sole carrier is found and dropped.
+  FIRES ON A RESOLVED VICTIM: NO. Terminal victims only have their streaks reset. It is not a reverse path, but it leaves route_blocked claimants and any second claimant bound.
+
+  LOCATION     wildfire_model.py:5464-5532 (_sync_victim_agent_status), run each post-move cycle (adaptation_manager.py:185)
+  TRANSITION   Marker only. Skipped if the marker or state is dead (5488-5491). rescued -> "rescued"; status unreachable/cancelled -> same; otherwise confirmed/assigned/status. The only managed write is rescue_assigned=False (5514). The dispatch fallback is off (`_allow_sync_victim_dispatch_fallback = False`, 384-386) and would be planner-filtered anyway.
+  PRECONDITION Every step.
+  FIRES ON A RESOLVED VICTIM: It never writes status or the rescued/cancelled/unreachable flags. It makes a marker non-terminal only when the managed status is already non-terminal (e.g. "confirmed" with flags), and the flags keep that victim resolved. No reverse path.
+
+  LOCATION     wildfire_model.py:2919-2937 (_process_pending_agent_removals, Victim branch)
+  TRANSITION   `agent.status = "rescued"` with no guard; the marker is removed from the grid and schedule. This happens even when _finalize_rescued_victim refused (cancelled, 5437-5443).
+  PRECONDITION A unit that is still bound reaches its exit cell carrying the victim (agents.py:1686-1695). In the firefighter branch, hand_over needs _victim_is_rescued, which is false for an unreachable victim, so the carrier is recycled in place (2970-2994, 2385-2414).
+  FIRES ON A RESOLVED VICTIM: YES, on an UNREACHABLE victim carried out by a unit still bound to it.
+- The state stays "unreachable" and the evaluation still says unreachable. The sync at 5499-5501 later puts the marker back to "unreachable", with pos None.
+- The victim can no longer die, so this path decides unreachable versus dead.
+
+  LOCATION     wildfire_model.py:1276-1311 (_detect_victims_in_uav_radius); 2703-2723 (_try_dispatch_unresolved_confirmed_victims); 5074-5089 (_dispatch_firefighter_to_victim)
+  TRANSITION   Detection: confirmed=True, marker "confirmed", victim_confirmed incident. Re-dispatch: planner pairing.
+  PRECONDITION Detection skips victims with dead/cancelled/rescued flags, or with state or marker status in {dead, cancelled, rescued, unreachable} (1277-1287), and needs `not already_known`. Both dispatch routes go through select_rescue_assignment.
+  FIRES ON A RESOLVED VICTIM: NO.
+Reconciliation note: _victim_needs_rescue (3251-3268) does NOT test the cancelled/unreachable flags, so a relabelled "confirmed" victim that keeps its flags passes it (2711, 5112, 3831/3863). The planner filter (rescue_planner.py:556-559) still yields action "none", so no assign follows.
+
+  LOCATION     src_extension/execution/rescue_executor.py:552-592 (_apply_victim_state, via RescueExecutor.execute :94-103, called at decision_dispatcher.py:121)
+  TRANSITION   delay -> status "delayed"; cancel -> status "cancelled". No guard, so any status would be overwritten.
+  PRECONDITION Needs a truthy decision.victim_id. RescuePlanner.plan sets `victim_id=_entity_id(selected, params, "victim_id", "victim")` (rescue_planner.py:124, 383-390).
+- The rescue_decision options carry no victim_id parameter (rescue_adaptation_generator.py:234-303).
+- AdaptationOption has no `victim` field (adaptation_option_objects.py:20-33).
+- The bridge RescueDecision at wildfire_model.py:4148 is only stored; latest_physical_rescue_decision has no reader.
+- execute_physical_dispatch (rescue_executor.py:161) has no runtime caller.
+  FIRES ON A RESOLVED VICTIM: DORMANT at a3a24f1, so victim_id is always "". If it were ever activated, the flags would keep resolved victims resolved for the helper, but their evaluated status would change.
+
+  LOCATION     src_extension/knowledge/victim_runtime_model.py:97,114,133,163
+  TRANSITION   VictimBeliefRecord.status: candidate/detected/confirmed/lost_contact
+  PRECONDITION A separate belief catalog.
+  FIRES ON A RESOLVED VICTIM: N/A. Not read by the helper, the planner snapshot or the evaluation.
+
+
+A UNIT BOUND TO A RESOLVED VICTIM
+YES. Both audits agree, and the code confirms it. A live firefighter can stay bound (assigned=True, rescued_victim and target_pos set, possibly exiting) to a victim the helper counts as resolved (unreachable). Fire that another unit's firefighting changes can still decide that victim's reported outcome.
+
+1) Nothing releases claimants when a victim becomes unreachable.
+- mark_unreachable (4711-4766) writes victim fields only.
+- The escape sweep unassigns one non-route_blocked claimant at most (5043-5054, lookup 3669-3683).
+- _release_other_claimants is called only for victim_dead (3532) and rescue_complete (3555, 3589). The in-code note at 2805-2809 says: "When the last victim is marked UNREACHABLE the helper is never called at all".
+- At the default ROUTE_BLOCK_STALE_CLEAR = 1 (common_fixed_variables.py:576), assigned route_blocked units are skipped by both revalidation lists: `stale` needs `stale_mode >= 2 or not assigned` (2764), and `blocked` skips assigned (2767). _clear_stale_route_blocks also skips bound units below mode 2 (3968-3970).
+
+2) How a unit ends up bound this way.
+- A second route_blocked raise on the same pair returns before the unassign: `if attempt_key in self._blocked_replacement_attempted: return` (3603-3604). The set is never cleared (only 372/3603/3605).
+- While bound and route_blocked the unit is invisible to _find_active_firefighter_for_victim, so the victim still looks needy. It then scores `assigned=False`, hence not served, in the escape sweep (4987-5017), and a 30-step geographic streak marks it unreachable with the unit still bound.
+- A second, non-route_blocked claimant (the double claim, 3694-3699) is also left bound, because the sweep releases only the first match.
+- Once the victim is unreachable, later route_blocked raises enqueue nothing (5112-5113).
+
+3) What the bound unit does after the gate opens.
+- It is not idle: _firefight_prepare returns None when `self.target_pos or self.exiting`, or when _firefighter_available_for_dispatch fails (agents.py:2355-2359; wildfire_model.py:3237-3249). So it never firefights.
+- It keeps tracking the victim: _refresh_target_from_victim stops only for VICTIM_TERMINAL_STATUSES = ("dead", "rescued") (agents.py:1115, 1575-1580).
+- It keeps calling _move_toward, which is "Raise the signal but keep moving" (2282-2285), and clears itself once a fire-free path exists (2327-2330).
+- On arrival it sets exiting and carries the victim (1648-1721). In the drain, finalize is refused (5437-5443), the marker becomes "rescued" and leaves the grid (2925-2936), and the status stays "unreachable".
+
+4) Outcomes the idle unit's extinguish/firebreak writes can change through this channel.
+- (a) Carried off-grid (stays unreachable) versus burned first (unreachable -> dead, 5164-5201).
+- (b) The bound unit dies on a burning cell during approach. reset_victim_pending (5259-5268, 4690-4692) relabels unreachable -> confirmed, which the evaluation counts as candidate.
+- (c) The bound unit dies while carrying. The victim shares its cell, and the victim loop runs first, so the victim becomes dead.
+- No path makes the victim rescued: finalize refuses cancelled=True, and only assign clears it.
+
+5) D shape (2 firefighters, serve_dashboard.py:41).
+- FF_A is route_blocked and bound to V on a repeated pair; FF_B is idle. V is marked unreachable after 30 unserved, BFS-isolated steps; the other three victims are resolved; the gate opens, FF_B firefights, FF_A stays bound.
+- FF_B is idle even if the sweep just released it: that unassign leaves marker status "en_route", which passes the availability check (3237-3249).
+- The planner mark_unreachable variant (casualty replacement with no available unit) leaves one unit dead and the other bound, so no unit is idle until the bound one is freed. By then V is either carried out (outcome frozen) or dead.
+
+6) Settled points.
+- _check_rescue_assignment_invariant only logs, and ignores route_blocked units (adaptation_manager.py:226, 247-249), so it neither repairs nor detects this.
+- Dead and rescued victims are cleanly released: victim_dead is processed at 5313 in the same sweep; rescue_complete at 3589.
+- An idle unit can never be bound: every unassign and recycle nulls assigned, target_pos and rescued_victim together (4650-4654, 2407-2413).
+
+
+OTHER CHANNELS
+1) Unreachable victims stay alive on the grid (the broadest channel; both audits).
+- Only a carry-out by a still-bound unit removes an unreachable marker.
+- The casualty sweep skips only dead/rescued markers (5166). The flee rule also moves them: G3 skips only ("dead", "rescued"), and its comment says an "unreachable" or "cancelled" victim "is still alive and still flees" (agents.py:1182-1191).
+- So if the gate opens with any unreachable victim still on the grid, the engaged unit's fire writes can flip that victim between unreachable and dead. Helper and rescued count are unaffected.
+- Geographically isolated victims had no fire-free BFS path for 30 steps, so they sit next to fire by construction.
+- Correction to Audit 2: the default horizon is --steps 300 (evaluate_scenarios.py:194), not 240. A never_detected victim is marked at step 210 at the earliest, leaving up to 90 steps of exposure at the default (30 at --steps 240).
+
+2) Helper and evaluator disagree after the reset_victim_pending relabel.
+- The victim has status "confirmed" with unreachable/cancelled=True. The helper counts it resolved through the flags; _build_evaluation counts it as candidate (serve_dashboard.py:361-362).
+- all_victims_terminal is status-based (dashboard_state_builder.py:138-139), so evaluate_scenarios' terminal_step (140-144) can still be unset while the gate is open. A later death then moves candidate -> dead and sets terminal_step.
+- This relabelled victim is permanently skipped by the escape sweep (flags make it terminal, 4970-4977) and never re-dispatched (rescue_planner.py:556-559). It does satisfy _victim_needs_rescue (3251-3268 ignores the flags), which keeps _any_victim_needs_rescue True and feeds route-block revalidation. That changes firefighter status handling, not victim outcomes.
+
+3) Dead marker over a live managed state: does not occur. The marker "dead" write (5175) and the state "dead" write (5183) sit in the same block.
+- The reverse does occur: state "dead" with marker "confirmed", when a unit bound to the victim dies in the same sweep (unguarded 4700, before the victim_dead release at 5313). The sync skips state dead (5490-5491), so it persists.
+- The corpse then passes G3 and can flee, and 5166-5183 can re-kill it idempotently.
+- Outcome-neutral: status "dead" is absorbing. Assign is filtered (snapshot "dead" at 3299-3304), reset is guarded (4690), mark_unreachable sources exclude it, and finalize refuses it.
+
+4) Rescued is absorbing. rescued=True is set, the marker is off-grid (pos None skips 5168-5170), status is guarded at 4690, and assign/finalize are filtered.
+
+5) Horizon marking: none. "horizon_unresolved" is only read (serve_dashboard.py:357, dashboard_state_builder.py:136). The escape docstring says leftover victims "are left as-is" (rescue_planner.py:473). No end-of-run writer exists.
+
+6) Marker-only resolution (terminal marker over an unflagged, non-terminal state) needs finalize to raise inside `_process_rescue_incidents`, which swallows exceptions (3657-3661). Both drain branches call _finalize_rescued_victim before the unguarded marker write at 2925, and incident processing is enabled (384). Not reachable in normal flow.
+
+7) Direction of every evaluated count after the helper reads 0 (derived from the writers above):
+- rescued: frozen
+- dead: can only increase
+- unreachable: can only decrease (to dead, or to candidate via relabel); mark_unreachable cannot fire because no victim is non-terminal
+- candidate: can increase (relabel) or decrease (death)
+
+8) Non-victim metrics, such as firefighter deaths (serve_dashboard.py:364-366) and burnt cells, remain free to change under any predicate.
+
+9) Pre-gate identity: every feature effect enters through Firefighter._firefight_prepare (agents.py:2341-2364; all ff_firefight_* readers are in agents.py). A gate evaluated there, reading the side-effect-free helper, leaves pre-gate behaviour identical.
+
+
+STRICTER PREDICATES CONSIDERED
+S1 (closes P1, P2 and P3): open only when every managed victim has state.status in {"rescued", "dead"}.
+- Test status, not state.dead, which is never written.
+- Both statuses are absorbing whatever any unit does. Rescued: rescued=True, marker off-grid, status guarded at 4690, and assign/finalize are filtered. Dead: finalize refuses (3559-3570, 4777-4783), the snapshot marks it dead (3299-3304), reset is guarded (4690), mark_unreachable sources exclude it, and 5183 only rewrites "dead".
+- No evaluated victim status, and so no all_victims_terminal or terminal_step, can change after it opens.
+- Adding "no live firefighter with assigned/rescued_victim/target_pos/exiting set" is REDUNDANT for victim outcomes. Here Audit 2 is right, and Audit 1 concedes it is "nearly implied":
+  - claimants of dead victims are released in the same sweep (3532 via 5313);
+  - claimants of rescued victims are released at 3589, or recycled in the drain;
+  - even a straggler cannot change an absorbing status.
+  The clause is harmless as a belt-and-braces guard, but closes nothing.
+- Cost:
+  - never opens in any run that ends with an unreachable victim (geographic or never_detected), a relabelled "confirmed" victim, or any victim still candidate at the horizon;
+  - in D it opens only after the last of the 4 victims is rescued or burned, so engagement shrinks to the tail of all-terminal runs;
+  - the share of D runs excluded must be measured (the gate-open snapshot above gives it directly).
+
+S2 (closes P2 and P3 only): helper == 0 AND no live firefighter bound (assigned, rescued_victim, target_pos or exiting set).
+- Absorbing, because no new binding can form once the helper is 0.
+- Removes the carry-out and relabel paths.
+- Leaves P1 open: an unbound unreachable victim on the grid can still be killed or spared by the changed fire.
+- Cost: opening is delayed while any unit stays bound. At ROUTE_BLOCK_STALE_CLEAR=1 a route_blocked unit bound to an unreachable victim can stay bound to the horizon, so the gate may never open in those runs.
+
+S3 (closes P1, P2 and P3; derived from the same code): S2 AND every victim whose status is not rescued/dead has marker.pos None.
+- A carried-out unreachable victim is off-grid and cannot burn (5168-5170). With no bound unit, nothing can relabel it.
+- Opens in slightly more runs than S1, but only where an unreachable victim was carried out, which itself needs the rare P2 binding. In practice it costs about the same as S1.
+
+Recommendation implied by the code:
+- To keep the helper gate, restate the claim as "rescued-count-neutral" (supported) and report the dead/unreachable/candidate split and terminal_step as feature-affected.
+- To claim full victim-outcome neutrality, S1 is the minimal clean predicate.
+- No predicate makes firefighter deaths or burnt cells neutral.

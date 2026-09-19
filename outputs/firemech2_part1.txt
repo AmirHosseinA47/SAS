@@ -1,0 +1,1012 @@
+================================================================================
+FIRE MECHANIC, ROUND 2 - PART 1: DIAGNOSIS AND ARBITRATION DESIGN
+Design document. No source file has been modified. STOPPED FOR CONFIRMATION.
+================================================================================
+
+BRANCH   firefighter-fire-mechanic
+HEAD     a3a24f1, as expected. `git diff --stat 003ed91 a3a24f1` outside outputs/ is
+         EMPTY, and outputs/_ffr_harness.py is unchanged too (what 003ed91..a3a24f1
+         does change is the round-1 run outputs and reports under outputs/). So every fm* arm
+         from the canonical and fresh waves (head=003ed91, dirty_tracked=0) is an exact
+         a3a24f1 reference under the same harness. Two exceptions, both checked:
+         fmREF ran against the 6adeb4f worktree with the pool at head=e8b911b
+         dirty_tracked=4. Which harness file it used is not recorded; the repo-root one
+         the pool defaults to already carried the feature block by then (mtime 07:20 <
+         POOL START 07:35), and that block only fires when the feature's log exists, so
+         it is inert on a pre-feature checkout - and round 1 measured fmREF == fmOFF
+         23/23 either way. The
+         12 rb18 runs (fmOFF/fmEFS/fmF east/half 111-444) ran at 003ed91 with
+         dirty_tracked=1 (the analysis script).
+TREE     No tracked file modified (`git status --porcelain --untracked-files=no`: 0
+         lines, re-checked after every wave). At the start there were 21 untracked
+         leftovers: heartbeat .stop sentinels, *_state.txt, two flip pytest logs and the
+         quarantine directory. This part added only new untracked files (the
+         outputs/_fm2* scripts and reports, this document, and run outputs under f2 tags).
+RUNNING  At the start: NOTHING (no python.exe, pytest or pool; tasklist and
+         Win32_Process both checked). During Part 1 two probe pools ran and finished
+         (ALL_DCD4_COMPLETE 243/243 at 16:20 and 143/143 at 18:37 on 2026-09-15), and
+         288 offline fire replays ran for section 3.4 (at most 2 at a time, each gated
+         on free commit). Nothing is running now (re-checked 2026-09-19: 0 python.exe,
+         0 tracked-file modifications).
+ENV      sys.version       3.10.11 (tags/v3.10.11:7d4cc5a, Apr  5 2023, 00:38:17) [MSC v.1929 64 bit (AMD64)]
+         mesa.__version__  1.2.1   (E:\Projects\SAS\.venv\Scripts\python.exe; both pool logs'
+                                    ENV lines agree)
+
+QUARANTINE (checked first, as asked)
+  outputs/_firemech_rewound_20260914/ holds 691 files: `ls | wc -l` is 346 entries at
+  the top level, one of which is the _ffr_logs directory, so 345 files sit at the top
+  level and 346 in _ffr_logs/. They cover the rewound attempt's harness JSON and stdout under the tags
+  fmDRY fmE fmEF fmEFS fmES fmF fmFS fmOFF fmREF fmS fmsmoke*, plus its queues, state
+  files and wave logs.
+  - Still quarantined: nothing in it was moved (its directory mtime is 2026-09-15
+    07:15, before both waves), and nothing inside it was read. Its directory NAME is
+    visible to the non-recursive os.listdir in _dcd4_analyze/_dcd4_seeds, which folds
+    the token 20260914 into a seed screen; no seed can collide with it, so it is inert.
+  - Unreachable by this round's tools:
+      the pool validator (_dcd4_validate.py) opens outputs/_ffr_<name>.json and
+      outputs/_ffr_logs/<name>.out by exact path
+      _firemech_analyze opens exact paths only; its import of _dcd4_analyze brings in
+      that module's non-recursive os.listdir of outputs/
+      _dcd4_analyze, _firemech_rbgate, _ffr_rbcompare and _ir_rbmerge use non-recursive
+      glob/listdir of outputs/ itself
+      every new round-2 script opens explicit paths under outputs/; the only directory
+      listing any of them does is _fm2_verify_replay.py's os.listdir of its own
+      scratchpad, outside the repo
+  - The live hazard is a PREFIX glob on the route_blocked shards: _ffr_rbcompare.py and
+    _ir_rbmerge.py both match _rblatch_camp2_<tag>*_D_<wind>.json, and
+    _firemech_rbgate.py matches _rblatch_camp2_<tag>?_D_*.json. All three are
+    non-recursive over outputs/ itself. Every round-2 tag uses the new prefix f2, and
+    both queue generators refuse a tag that is a prefix of another. What the evidence
+    shows: both pools' VALIDATE lines report all 386 queued f2 run names MISSING
+    (243/243, 143/143), so nothing stale was adopted; and no _rblatch_camp2_f2* shard
+    exists (0 of the 105 _rblatch_camp2_*.json shards; a 106th name carries the prefix,
+    the log _rblatch_camp2_run.log), so those globs have nothing to pick up. The
+    quarantine itself was not enumerated - the basis for that part is simply that the
+    f2 prefix is new to this round.
+  - Process incident, disclosed: one verification agent ran a recursive grep from the
+    repo root. It traversed the quarantine and printed matching FILE NAMES, which were
+    filtered out. No content from the directory was read or used.
+
+
+================================================================================
+0. IN ONE PAGE
+================================================================================
+  THE CRUX, ANSWERED: ANY ENGAGEMENT BEFORE THE MISSION IS DECIDED CAN COST A RESCUE,
+  AND NO SPATIAL OR PER-UNIT ARBITRATION PREVENTS IT. A better chooser (c) is a false
+  lead. A spatial commitment limit (a) and a reserve (b) do not remove the loss. What
+  removes it, by construction, is a commitment limit in TIME: no unit engages until
+  every victim is rescued or dead.
+    - The loss is a re-timing of the whole rescue chain. It starts in the first 14-16
+      steps, when both idle units walk toward the fire before any victim is confirmed.
+      There is no systematic latency cost to arbitrate away: calls are 5.4 cells
+      CLOSER on average (section 1.4).
+    - Measured counterfactuals, dry (fire untouched), 23 runs, rescued (OFF 68):
+          only unit 0 engages 68     only unit 1 engages 68
+          leash 3 cells       67     leash 8 cells       69     both units 66
+      Every one flips individual victims in both directions:
+        - one unit instead of two keeps the south/909 loss
+        - leash 3 differs from OFF on 5 of the 9 items round 1 changed and adds a loss
+      Under common random numbers the full policy's positioning costs 6 rescues
+      (72 -> 66) and adds 6 unit deaths. The cost is real on average, and it is not
+      bounded by any spatial rule tested.
+    - The gate "engage only when no victim is unresolved" gave every victim's final
+      status identical to its control on 161 of 161 gated runs (7 arms x 23: f2GD f2GW
+      f2GF f2GES, and CRN f2cGW f2cGF f2cGES).
+        - It never opened before terminal_step.
+        - In the three wave-1 gate arms, unit trajectories were identical to OFF until
+          the gate opened, at terminal_step + 1 on every run where it opened.
+  SOUTH/404 (the write-caused loss) is the fire's shared random stream, not a
+  firebreak acting on the rescue:
+    - Ten clears at steps 9-16 delay the burn-out of one cell, (8,35). At the re-roll
+      tick that cell is 42 cells from victim_0, whose survival decides the loss, and 13
+      from victim_2.
+    - The delay shifts the draw stream at tick 84, and the rest of the fire re-rolls.
+    - Victim_0 then lives 48 steps longer and holds the last living unit, so victim_2
+      is never reached.
+    - Closed-loop bisection: all three distinct re-rolled fires that were run lose
+      victim_2. The unperturbed fire rescues it.
+  EXTINGUISH'S COIN FLIP is the same stream shift. An extinguished cell stops drawing
+  two ticks after the write, and the fire outside the physical light cone differs from
+  that tick (17 of 18 runs). With per-cell random numbers (CRN) the sign is ONE-SIDED:
+  16 up / 0 down / 7 unchanged (pre-registered rule: "H1 + H4").
+  WHAT THIS DOES AND DOES NOT CORRECT IN ROUND 1 (section 3.4): a pure draw-stream
+  shift, with no write at all, moves final intact by a median 155 cells with NO
+  systematic sign, so round 1's per-run consistency counts are weaker evidence than
+  they look. But firebreak's ungated stock gain is NOT an artifact: replayed on the
+  same fire with pinned draws it is +1,209 of its +1,783 over 17 tuples. Under CRN,
+  closed loop, firebreak is instead about 0 - an unresolved disagreement between two
+  validated instruments.
+
+  RECOMMENDED DESIGN (for confirmation)
+    POLICY  FF_FIREFIGHT_MISSION_GATE = 1: an idle unit may engage only when EVERY
+            managed victim's status is "rescued" or "dead". The static audit showed
+            the obvious helper (_count_unresolved_victims) is not outcome-neutral
+            (section 4.2).
+    CONFIG  extinguish + retreat suppression (E=1, K=1), firebreak OFF. It is the
+            only configuration whose intact gain holds on BOTH seed sets in BOTH
+            instruments under the gate.
+    NO completion threshold. Under the gate a preemption cannot happen; ungated, the
+            data say it trades a certain dispatch delay for a small fire gain (section 5).
+  PRE-REGISTERED FOR PART 3 (projection from the probe arm, strict predicate applied):
+                    rescued/dead      ff deaths   intact vs OFF (per run up/down/unchanged)
+    stock  canon    39/10 = OFF       6 -> 4      +1,269 (8/1/4)
+           fresh    29/6  = OFF       4 -> 3        +639 (5/0/5)
+    CRN    canon    = OFF (CRN)       7 -> 8        +166 (5/0/8)
+           fresh    = OFF (CRN)       5 -> 5         +73 (4/0/6)
+  (Each instrument's strict-closed set is computed from its OWN control: 7 runs in
+  stock, 5 under CRN, and they are not the same runs.)
+  THE TRADE, STATED PLAINLY:
+    - The gate keeps about TWO THIRDS of the stock effect (+1,908 of +2,867) but only a
+      SIXTH of the CRN one (+239 of +1,379), over 23 runs. By the instrument section 3.3
+      calls the physical one, most of the effect is given up. Work counts follow the
+      stock picture: 343 of 490 extinguishes survive the gate, 324 under the strict
+      predicate.
+    - The full round-1 configuration fails the both-samples test under the gate: stock
+      canonical +366 but fresh -129; CRN canonical +15 but fresh -93 (-78 overall,
+      5 up / 10 down).
+    - Arbitration can recover the rescue only by giving up everything firefighting
+      does before the mission is decided, and that is where most of the physical
+      effect is.
+
+
+================================================================================
+PART 1 - DIAGNOSIS
+================================================================================
+
+INSTRUMENTS BUILT THIS PART (none touches source; each validated before use)
+  I1 outputs/_fm2_probe_harness.py - out-of-tree probe wrapper
+     - Runs _ffr_harness.py unchanged, in the same process, after wrapping
+       Firefighter._firefight_prepare, the dry-run accessor and ONE line of Fire.step.
+     - Each wrap reads its FM2P_* key at call time from --set, so keys are recorded and
+       validated like any --set.
+     - Pass-through proven: f2IDD (fmDRY config through the wrapper, no key) equals
+       fmDRY on every recorded value on 13/13 canonical runs. burn_intervals key order
+       differs, as between any two processes (round 1).
+     - Keys:
+         ENGAGE_ONLY=<unit>  only that unit engages
+         LEASH=N             drop move plans more than N cells (manhattan) from the
+                             idle-streak anchor
+         GATE=resolved       engage only when _count_unresolved_victims == 0
+         WRITE_BEFORE=s      writes land only on steps < s, DRY afterwards
+         CRN=1               Fire.step's draw becomes a pure function of (seed, cell
+                             uid, tick)
+  I2 outputs/_fm2_fire_replay.py - fire-only offline replay of a recorded arm
+     - Replays with the arm's recorded writes, and optionally with pinned draws: each
+       cell reuses the value it drew in the no-write run.
+     - 13/13 validation replays match the recorded fire digests 240/240; 442 writes
+       landed.
+     - An independent re-implementation by the verifier matched as well.
+     - About 38 s per replay, against 210-1,155 s per harness run.
+  I3 outputs/_fm2_analyze.py and outputs/_fm2_wave2_read.py - probe-arm readers
+     - Per-run metrics come from _firemech_analyze.run_summary (round-1 definitions).
+     - Self-test 275/275 against the round-1 numbers.
+     - By-construction checks: DRY fire == OFF, gate outcome and prefix identity, CRN
+       attribution.
+  I4 Diagnosis reports, each followed by an INDEPENDENT adversarial verifier. The
+     verifier re-derived the claims from raw JSON with its own code. Its corrections
+     are applied below.
+       outputs/_fm2_diag_positioning.txt   _fm2_diag_south404.txt   _fm2_diag_extvar.txt
+       outputs/_fm2_diag_priority.txt      _fm2_diag_replay.txt
+  PROBE WAVES (pool outputs/_dcd4_pool.sh, HARNESS=_fm2_probe_harness.py, TAGPFX=f2,
+  head=a3a24f1, dirty_tracked=0):
+    wave 1  outputs/_fm2probe_queue.txt   243 runs  0 failed
+            f2IDD f2U0D f2U1D f2L3D f2L8D f2GD f2GW f2GF f2cOFF f2cES f2cF
+    wave 2  outputs/_fm2probe2_queue.txt  143 runs  0 failed
+            f2cEFS f2cDRY f2cGW f2cGF f2cGES f2GES, f2b404s{9,12,13,14,16}
+    Canonical 13 lines are queued before fresh 10 in both waves. Arms ending in D are
+    DRY; W / F / ES = full / firebreak-only / extinguish+S; a leading c = CRN fire.
+  SEED PROVENANCE (unchanged from round 1, restated because it limits every claim)
+    - canonical 13 = east/half and south/half 101-505, plus east/def 101-303
+    - fresh 10 = east/half and south/half 606-1010
+    - east/def/s shares its OFF fire with east/half/s, so 23 runs are 20 fire worlds
+      over 10 seeds; de-duplicated figures drop east/def
+    - east/half/s and south/half/s share the ignition cell and fuel map, so seed-paired
+      runs are not independent
+    - 8 of the fresh tuples ran in pre-round-1 rounds on other code
+    - The two sets share no seed. A direction is called a result only when both agree.
+    - CRN arms are a different fire realisation of the same tuples. They are a second
+      instrument, not a third sample.
+
+
+--------------------------------------------------------------------------------
+1. THE POSITIONING LOSS (fmDRY vs fmOFF; outputs/_fm2_diag_positioning.txt)
+--------------------------------------------------------------------------------
+1.1 WHAT CHANGED (round-1 lists re-derived: MATCH)
+  9 of 23 runs differ in rescued, dead, ff_deaths or a victim's final status.
+  Counted rescued 68 -> 66, de-duplicated 59 -> 58. Fire digests are identical
+  240/240 on 23/23.
+    rescue losses  east/half/101  v0 rescued -> dead
+                   south/half/404 v3, east/def/101 v3, south/half/909 v3
+                                  rescued -> still assigned at 240
+    rescue gains   east/half/404  v1 dead -> rescued
+                   south/half/202 v0 assigned -> rescued
+    ff deaths +1   south/404 (ff_unit_1 s72), south/808 (ff_unit_0 s51),
+                   south/909 (ff_unit_0 s36), east/def/303 (ff_unit_1 s141)
+    ff deaths -1   east/101, south/202, east/606 (the OFF unit deaths do not happen)
+    de-duplicated ff deaths: 10 -> 10. In distinct fire worlds positioning changes
+    one rescue and no net unit deaths.
+
+1.2 ONE PATTERN UNDERLIES ALL 23 RUNS
+  - Both units are engaged on their step-1 row on 23/23 runs (46/46 units) and walk
+    toward the fire.
+  - The first dispatch comes at step 14-16. The called unit is then a median 14 cells
+    from its berth, and the two units stand 1 cell apart (21/23 runs).
+  - The rescue timeline (events only) first differs INSIDE that first-dispatch window
+    on 23/23 runs:
+      20 runs: a first-dispatch contact, completion or death moved
+      3 runs: the first assign went to the other unit
+  - Victims and UAVs do not react to firefighter positions first. The first planner
+    decision per victim is identical on 23/23, and the UAV series diverges only after
+    the rescue timeline does (steps 95-233, never on 9 runs).
+    Caveat: this is a planner-decision proxy for detection; no direct detection field
+    exists.
+
+1.3 PER AFFECTED RUN - the brief's four questions
+  Columns: WHO went to the fire, from where, at what step | WHERE it would have been
+  at the call (OFF) | HOW MUCH FURTHER | would a DIFFERENT unit (measured, 1.5) have
+  avoided it.
+  Positions are post-step cells; distance is manhattan unit -> victim at the ok assign.
+  south/half/909  v3 lost + ff_unit_0 death    [first dispatch; mechanism M1]
+    WHO     both units from step 1; ff_unit_0 called at s14 from (10,39), 14 cells out
+    OFF     (2,45), the berth
+    FURTHER CLOSER, 51 vs 65. DRY walked down x=10 into the west flank and died at
+            (9,23) s36. OFF walked down x=2: contact s203, rescued s218.
+            Verifier: OFF's attempt on this call also stalled (158 frames, route_blocked
+            at s171) and spent more frames at fire distance <= 1 (16 vs 7). DRY reached
+            the fire edge 12 steps earlier.
+    OTHER   stood 1 cell away at (9,39), d=52
+    PROBE   NOT avoided by either single-unit arm (both lose v3 and a unit); avoided by
+            leash 3 and leash 8
+  south/half/808  ff_unit_0 death             [first dispatch; M1]
+    WHO     ff_unit_0 called s14 from (6,35) (OFF (2,45)); d 51 vs 65; route_blocked
+            s49, died s51 at (14,17). OFF's attempt never reached the victim either
+            (the victim died s144 in both arms), but the unit survived.
+    OTHER   at (5,35), d=52
+    PROBE   death kept by unit-0-only, leash 3 and leash 8 (leash 8 also gains v0);
+            unit-1-only gains v0 with no death
+  south/half/404  v3 lost + ff_unit_1 death    [first dispatch; M3+M1]
+    WHO     chooser took ff_unit_1 at (8,42), d=56, over ff_unit_0 at (6,41), d=57;
+            OFF took ff_unit_0 from the berth, d=65
+    FURTHER CLOSER by 9. ff_unit_1 route_blocked s58, died s72 at (0,8). v3 waited
+            to s208 and was not reached. OFF re-assigned v3 at s118 and rescued it s189.
+    PROBE   avoided by unit-0-only; lost by unit-1-only, leash 3 and leash 8
+  east/half/101  v0 lost                       [re-timed chain; M2]
+    WHO     both units from s1. The first rescues finished 14-15 steps EARLY (contacts
+            26/66 vs 40/81), so ff_unit_0 returned at s75, not s90.
+    OFF     no unit free at s77/s85 (planner delayed); assigned at s90
+    FURTHER +4 at the call (d 28 vs 24; the unit had been idle 2 steps, 2 cells out);
+            contact 1 step sooner. The contact cell (35,14) exits EAST on a 14/14 tie;
+            OFF's (36,12) exits SOUTH. The DRY escort spent 12 frames at fire distance
+            <= 1, route_blocked s135, victim dead s138.
+    PROBE   avoided by EVERY probe arm (both single-unit arms, both leashes, gate)
+  east/def/101  v3 lost                        [later call; M3+M1]
+    WHO     ff_unit_0 not dispatched for 86 steps, walked 28 cells out, took v0 at s86
+            (nearer than ff_unit_1)
+    CALL    v3's s117 call then went to ff_unit_1: engaged, 12 cells out, at (36,48),
+            d=56 (OFF: ff_unit_0 from the berth, d=65). It crept along the fire edge
+            for 124 frames and never reached the victim.
+    PROBE   avoided by every probe arm
+  east/def/303  ff_unit_1 death                 [M2 with a unit swap]
+    WHO     the step-1 walk went south along x=2; at s49 v0 went to ff_unit_0 (OFF
+            ff_unit_1)
+    DIED    ff_unit_1 became a second claimant at s63/64, 19 route_blocked frames,
+            died s141. It was not engaged at its own call.
+    PROBE   leash 3 keeps a death; the others avoid it
+  GAINS (same mechanisms, helpful direction)
+    east/half/404 v1  M1 in the first-dispatch window (s16, the run's second call):
+                      unit 11 cells out, d 20 vs 25,
+                      contact s41; OFF route_blocked, victim died s48
+    south/half/202 v0 M2: first rescue 13 steps early; v0 assigned s68 not s81; OFF's
+                      unit died en route s207
+    east/half/606     M1 at a later call, 32 cells out: no rescue lost, OFF's unit
+                      death avoided (the victim ends unresolved instead of dead)
+
+1.4 NO SYSTEMATIC LATENCY COST
+  Per victim, first ok assign (n=81), DRY - OFF:
+    distance at the call   mean -5.44, median -6 (54 shorter, 18 longer, 9 equal)
+    assign -> contact      mean -5.90 steps (n=62: 44 faster, 11 slower, 7 equal; the
+                           split shifts by about 1 each way with the contact
+                           definition, the mean/median/n do not)
+  Completions shared by both arms come mean 6.05 steps EARLIER (45 earlier, 16 later).
+  62 of 104 DRY ok assigns (59.6%) land on an engaged unit; their median displacement
+  from the idle anchor is 14 cells (the source report's median 15 is over a different
+  set - all calls inside a feature-log idle streak). Yet all ok assigns average 35.6
+  cells in DRY vs 38.3 in OFF (n 104 / 105; the ~2.6-cell gap holds under every
+  convention tried), because units walk toward the fire, which is where victims are.
+  At the calls that LOST a rescue, DRY's unit was closer in 3 of 4 (-9, -9, -14) and
+  +4 in the fourth. The loss is not "the unit was far away at the call".
+
+1.5 THE CRUX - WOULD A DIFFERENT UNIT, OR A BOUNDED COMMITMENT, HAVE AVOIDED IT?
+  Measured, not argued. DRY arms keep the fire identical to OFF 240/240 (checked on
+  every run of every arm), so only positions move.
+                         rescued dead ffd | vs OFF, victim flips by run (23 runs)
+    fmOFF                  68     16   10 |
+    fmDRY (both engage)    66     15   11 | 9 runs changed (1.1)
+    f2U0D unit 0 only      68     16   10 | south/202 +1, south/909 -1; deaths +1 south/808, south/909, -1 east/404, south/202
+    f2U1D unit 1 only      68     16   10 | south/202 +1, south/808 +1, south/404 -1, south/909 -1; deaths +1 south/404, south/909, -1 south/202, south/303
+    f2L3D leash 3          67     16   12 | east/303 -1 (NEW), south/202 +1, south/404 -1; deaths +1 east/def/303, south/404, south/808, -1 east/606
+    f2L8D leash 8          69     17   10 | south/101 +1, south/202 +1, south/808 +1, south/404 -1, east/909 -1 (NEW: victim_0 dies); deaths -2 south/101, +1 south/404, south/808
+    f2GD  gate             68     16    7 | victims identical 23/23; deaths -1 on east/101, east/404, south/303 (all post-terminal)
+  Split canonical / fresh (rescued):
+    OFF 39/29   DRY 38/28   U0 40/28   U1 39/29   L3 38/29   L8 40/29   GD 39/29
+  Under the second instrument (CRN fire, wave 2): full-policy positioning f2cDRY 66
+  vs f2cOFF 72 rescued; ff deaths 18 vs 12.
+  ANSWER
+    - A DIFFERENT UNIT: sometimes, never reliably.
+        east/101 and east/def/101: either single unit avoids the loss
+        south/404: only unit 0 avoids it
+        south/909: neither does; the chooser still sends the flank unit, 13-15 cells
+                   closer (U0 51 vs 66, U1 52 vs 65; pre-registered before the
+                   probe ran, and it held)
+      At the first dispatch the other unit stands 1 cell away and is exactly 1 cell
+      farther on 22/23 runs. The Manhattan-nearest chooser (rescue_planner.py
+      select_rescue_assignment) already picks the closer one.
+      => (c) A DISTANCE-AWARE CHOOSER IS A FALSE LEAD. There is no latency cost for it
+         to minimise, and no alternative unit at the moment that matters.
+    - A COMMITMENT LIMIT: no.
+        - A 3-cell leash still differs from OFF on 5 of the 9 items fmDRY changed, adds
+          a new loss (east/303 v1) and adds 2 unit deaths.
+        - An 8-cell leash nets +1 but adds a new victim loss of its own (east/909
+          victim_0 dies).
+        - There is no dose-response. A 3-cell head start is enough to re-time the chain.
+      => (a) a spatial limit bounds the distance, not the outcome.
+    - A RESERVE: neutral on the pooled total, not by construction.
+        - The single-unit arms total exactly OFF's 68 by cancellation.
+        - Unit-0-only is +1 canonical / -1 fresh, so it fails "on either sample" by
+          chance even with the fire untouched.
+        - With two units it also halves the work.
+      => (b) does not protect a rescue it happens to disturb.
+    - Engagement before the mission is decided costs rescues and unit deaths ON
+      AVERAGE, in both fire realisations:
+          stock  rescued -2, ffd +1
+          CRN    rescued -6, ffd +6
+      Individual outcomes flip in both directions under every spatial rule. The only
+      rule measured to be identical to its control on every victim is the TIME limit:
+      f2GD / f2GW / f2GF / f2GES / f2cGW / f2cGF / f2cGES, 161/161 runs.
+
+
+--------------------------------------------------------------------------------
+2. SOUTH/HALF/404 - THE WRITE-CAUSED LOSS (outputs/_fm2_diag_south404.txt, verified)
+--------------------------------------------------------------------------------
+  OUTCOMES   fmOFF 3/1/0   fmDRY 2/1/1   fmEFS 1/2/1 (rescued/dead/ff deaths)
+             fmFS is value-identical to fmEFS; fmF differs only in the K/T/exit_guard
+             log fields. Round 1's "fmF identical" holds.
+  THE VICTIM victim_2: rescued at s115 in OFF and s205 in DRY; alive and unrescued
+             ("assigned") at 240 in fmEFS.
+  THE WRITES 10 firebreak clears, 0 extinguishes, 0 on scorched cells, steps 9-16, in
+             the band x 6-9, y 40-43:
+               (7,41)@9 (8,42)@10 (8,41)@11 (6,41),(7,42)@12 (7,40),(8,43)@13
+               (9,42)@14 (6,40)@15 (6,42)@16
+             The fire digest diverges from fmDRY at step 9, the first write
+             (attribution holds). The burning SET first differs only at tick 69.
+  THE CAUSAL CHAIN
+    (1) PHYSICAL, TINY, LOCAL
+          - (7,40), cleared at s13, does not ignite at tick 69.
+          - The difference walks (7,37)/(8,40) at 72, (8,37) at 75, (8,35) at 78:
+            1-2 cells at once, all within Chebyshev 5 of a cleared cell.
+          - At tick 78, (8,35)'s ignition probability falls from 0.707 to 0.176 (raw
+            0.943 -> 0.235). The SAME random number must lie in [0.176, 0.707), so
+            fmDRY ignites it and fmEFS does not, and its burn-out slips:
+              DRY interval [78,81]      EFS interval [87,90]
+    (2) STREAM SHIFT
+          - At tick 84 fmEFS has ONE extra drawing cell (id 435).
+          - 772 of the 1,021 cells with a non-zero ignition probability in either arm
+            (1,020 counting either arm alone) read a different number on that tick -
+            every one of them at a uid above 435.
+          - The difference jumps from 0 to 251 cells, up to Chebyshev 40 (manhattan 66)
+            from the writes.
+          - 250 of those 251 have identical own state and ignition probability in both
+            arms: pure re-roll.
+    (3) AGENTS FOLLOW THE RE-ROLLED FIRE
+          - Every decision and position matches through step 83. victim_holds differs
+            from step 70, but only in its n_fire_cells count.
+          - First divergences: UAV fire distances s84, ff_unit_0's route s86,
+            victim_2 s87, victim_3 s90, victim_0 s97.
+    (4) THE LOSS
+          - ff_unit_1 dies at s72 in BOTH arms (the positioning loss of section 1).
+            ff_unit_0 is on victim_0 from s71.
+          - DRY: victim_0 dies s162 at (49,23), the same step and cell as OFF.
+            ff_unit_0 goes to victim_2 from (40,26), 41 cells, and rescues it at s205.
+          - EFS: the re-rolled fire lets victim_0 flee along the edge, and it dies s210
+            at (49,34). ff_unit_0 is sent from (42,34), 45 cells away, with 30 steps
+            left. It cannot arrive.
+          - The same re-roll kills victim_3 at s159 (the extra death).
+  NOT THE MECHANISM
+    - No rescuer route and no route_blocked record diverges BEFORE the re-roll: ff_steps
+      are identical through step 85, and the route_blocked replacements at 58 and 71
+      happen identically in both arms. Every later difference (fmDRY's ff_unit_0 block
+      at 151-161, the 150-vs-210 re-assignment) is downstream of the tick-84 re-roll,
+      not of the writes acting on dispatch.
+    - The physical-only fire (fmEFS writes with fmDRY's per-cell draws) stays inside
+      x 0-10, y 32-49. On their DRY paths it comes no closer than 42 cells to
+      victim_0, 59 to victim_3, and 10 to ff_unit_0 and victim_2.
+    - Verifier's caveat, kept: fire-tracker UAV 2501 passes within 1 cell of a
+      physical-only difference at s132. A physical-only closed loop was not run for
+      this tuple, so "the physics alone would change nothing" is NOT established.
+  CLOSED-LOOP BISECTION (FM2P_WRITE_BEFORE=s: writes land only on steps < s)
+       s   r/d/ffd  fire                        victim_2
+       9   2/1/1    == fmDRY                    rescued     identical to fmDRY on every behavioural field
+                                                             except the firefight_log dry flag and the fm2p
+                                                             record (params carry the arm's own switch)
+      12   1/1/1    new realisation             unreachable same behaviour as s=13 (step-12 writes neutral)
+      13   1/1/1    new realisation             unreachable
+      14   1/2/1    new realisation             confirmed, not reached
+      16   1/2/1    == fmEFS dynamics           assigned    identical to fmEFS on every behavioural field
+    - Every write prefix RUN CLOSED-LOOP that re-rolls the fire loses victim_2: three
+      distinct fires from four prefix runs. Three further prefixes (s=10, 11, 15) each
+      re-roll offline but were never run closed-loop.
+    - The unperturbed fire (OFF and DRY) is the draw in which victim_0 dies early and
+      frees the last unit.
+    - No single write "causes" the loss. (7,40)@13 alone reproduces fmEFS's re-roll
+      tick, but the prefixes without it lose victim_2 too.
+  WHAT IT MEANS
+    - The one piece of evidence that "the mechanic itself costs a rescue" is the stock
+      model's re-roll acting on a run left with one living unit.
+    - Under CRN, writes at matched behaviour cost no rescues over 23 runs:
+        f2cEFS 69 vs f2cDRY 66 counted
+        61 vs 61 de-duplicated
+    - Round 1's route_blocked gate records for seed 404 match this exactly:
+      3 -> 1 = -1 positioning (victim_3) and -1 writes (victim_2), with no new latch.
+    - Under the recommended gate nothing is written before terminal, so this loss cannot
+      occur: every gated arm reproduces its own control at south/404 - the four stock
+      gated arms 3/1 (= fmOFF), the three CRN gated arms 2/2 (= f2cOFF).
+
+
+--------------------------------------------------------------------------------
+3. EXTINGUISH'S VARIANCE (outputs/_fm2_diag_extvar.txt, _fm2_diag_replay.txt; verified)
+--------------------------------------------------------------------------------
+3.1 THE ROUND-1 NUMBERS REPRODUCE
+  fmES intact vs OFF, per run up/down/unchanged:
+    canonical 7/6/0, fresh 4/2/4
+    pooled +2,867 (+2,402 de-duplicated)
+  fmF is up on 16 of its 19 changed runs.
+
+3.2 WHY: THE DRAW STREAM SHIFTS TWO TICKS AFTER THE WRITE (mechanism H1)
+  - An extinguished cell still draws on the first fire tick after the write, turns
+    burnt there, and stops drawing on the second. From that tick every later cell (uid
+    order) reads a different number.
+  - Measured on 20 fmES writing runs:
+      the stream shifts at that tick on 18/20; the 2 exceptions extinguished a cell
+      with 1 fuel left, which burns out on the same tick as in OFF anyway
+      on 17 of the 18, the fire already differs OUTSIDE the physical light cone at the
+      shift tick (median 61 cells outside, 20 inside)
+      one tick earlier, the write's own physical difference was 0-4 cells
+  - Instruments were validated before use:
+      0 non-ignition interval boundaries off a fire tick in fmOFF (an extinguish ends
+      its own cell's interval on the write step by construction: 359 such boundaries in
+      fmES, 0 in fmF)
+      0 out-of-cone differences before the reconstructed shift
+      a negative control with teeth: 22 of 27 runs show below-shift-uid cells one tick
+      later
+  - FIREBREAK: a never-burned clear keeps drawing. Its stream shifts only when some
+    burn-out timing changes: on the 17 fmF runs whose first write is a never-burned
+    clear, 36-133 steps after it (median 52), after a median 26 clears. Scorched clears
+    shift within 4-5 steps, like extinguish; scorched-first runs are only 3 tuples (the
+    median of 19.5 clears pools all 20 fmF writing runs).
+  - Before the shift the physics is ONE-SIGNED in every arm: 0 cells burn in an arm
+    that do not burn in OFF.
+  - SINGLE-WRITE REPLAYS (I2):
+      - One extinguish, all later writes removed, moves final intact by a median 125
+        cells, against 195 for the whole arm (canonical, 13 runs: 137 vs 133; fresh,
+        the 7 runs that extinguish at all: 113 vs 246). The two are not independent:
+        the arm contains the same first extinguish and inherits its re-roll
+        (Pearson 0.65).
+      - With pinned draws the same single extinguish leaves final intact unchanged on
+        16/20. It still changes other cells' burn timing on 17/20 (verifier's
+        correction); that timing change is what triggers the shift.
+  - No per-run feature predicts fmES's sign at corrected significance (14 tested, n=16
+    changed runs). An early first extinguish leans up (rho -0.50, p 0.043), but that is
+    underpowered, not evidence of unpredictability.
+  - H3 as "extinguishing cells that were about to burn out" is refuted:
+      46 of the 443 extinguishes whose cell's initial fuel is recoverable - pooling the
+      arms in which that cell burns out naturally and is never written - had exactly 1
+      fuel left (490 extinguishes in all; narrower recovery rules give 344/36, 394/43)
+      16 of the first 20 extinguished cells re-ignited later in OFF; the other 3 with a
+      known fate burnt out in the same spell
+      69% of extinguishes come after terminal_step, but lateness does not predict the
+      sign (AUC 0.47)
+  - H2 (physical front redirection) cannot be separated on stock data: a redirected
+    cell needs a burn-out timing change, which shifts the stream one tick later.
+
+3.3 THE DECIDING TEST: COMMON RANDOM NUMBERS, CLOSED LOOP (f2cOFF / f2cES / f2cF)
+  - The decision rule was frozen in code (outputs/_fm2_diag_extvar.py prereg_verdict)
+    before any CRN RESULT existed: the rule file's last change is 14:42, the first f2c*
+    output 15:04. The probe wave itself was already running.
+  - Validity: 0 attribution violations; 0 fire differences outside the light cone in
+    either writing arm => VALID.
+        arm vs f2cOFF    intact counted / de-dup   per run up/down/unchanged (de-dup)   canon / fresh (counted)
+        f2cES  (E+S)      +1,379 / +936             13 / 0 / 7   sign test p 0.0001      +1,199 (11/0/2) / +180 (5/0/5)
+        f2cF   (F)            -1 / -148              7 / 9 / 4   NOT consistent          +195 (5/5/3)   / -196 (3/6/1)
+  - VERDICT OF THE PRE-REGISTERED RULE: H1 + H4. The stock coin flip was the re-roll.
+    Extinguish's own effect is one-signed, and smaller than stock suggests.
+  - ANSWER TO THE BRIEF: it is NOT that extinguishing one cell redirects the front
+    unpredictably. It IS the random-number reshuffle downstream of the first write.
+    With the reshuffle removed, extinguish helps on every run it changes, in both seed
+    sets.
+
+3.4 HOW MUCH OF A STOCK-MODEL INTACT CHANGE IS PHYSICAL?
+  Two same-realisation instruments answer this. Both are validated: the k = 0 replay
+  reproduces fmOFF 240/240 on all 20 tuples, with 0 mismatches between the consumed
+  values, the regenerated stream and an independently recorded stream (30,688,953
+  values checked). Full output: outputs/_fm2_rng_offset.txt.
+  (i) A PURE DRAW-STREAM OFFSET (no write at all). From fire tick T, every draw is taken
+      k positions later (k > 0) or earlier (k < 0) in the run's own stream. 200 arms:
+      T in {30, 60, 90, 93}, k in {+1, -1, +3, -3}, 20 tuples.
+      - IT IS ENORMOUS: |intact difference| median 155, mean 206; the SIGNED difference
+        has sd 276. The final has_burned symmetric difference has median 284.5 cells.
+        Only 10 of 200 arms leave intact unchanged.
+      - IT HAS NO DIRECTION. Per (T, k) the mean ranges -49 to +144, and the paired
+        contrast d(+|k|) - d(-|k|), which cancels the run's own luck, gives
+          T=30 |k|=1  mean  -10.8  p 0.91      T=90 |k|=1  mean   -7.5  p 0.88
+          T=30 |k|=3  mean  -76.2  p 0.29      T=93 |k|=1  mean  +58.2  p 0.34
+          T=60 |k|=1  mean +115.8  p 0.047
+        My working hypothesis - that consecutive uids are neighbours, so an offset
+        biases spread along the grid axis - is REFUTED. Two nominal p < 0.05 results
+        stand: the T=60 contrast above, and a wind interaction (T=90, c_south - c_east,
+        0/10 runs, p 0.002). With 5 contrasts (10 counting the per-wind splits) one
+        nominal 0.047 is expected; neither is explained, and both are flagged rather
+        than interpreted.
+      => A single-draw shift is worth a couple of hundred intact cells of NOISE, with
+         no systematic sign.
+  (ii) PINNED FULL SCHEDULES (physics only, same fire, same recorded writes). 17 fmF
+      tuples with a write; every replay matches the arm's fire 240/240 before pinning.
+        stock (the arm)     +1,783        pinned (physics only)   +1,209
+        residual            +574 (mean +33.8 per run, 10 up / 6 down / 1 zero)
+      The residual is statistically indistinguishable from the pure re-roll baseline of
+      the same tuples: difference mean -7.5, p 0.89.
+      => FIREBREAK'S UNGATED STOCK GAIN IS MOSTLY PHYSICAL on this realisation, about
+         two thirds of it; the rest is the re-roll. It is NOT an artifact.
+      The same test on fmES is NOT interpretable: 68% of its recorded extinguishes do
+      not land in the pinned fire (an extinguish needs its cell burning at that step),
+      against 7.8% of firebreak clears. Extinguish's instrument stays the closed-loop
+      CRN arm.
+  WHAT THE TWO INSTRUMENTS AGREE AND DISAGREE ON
+    - AGREE: stock per-run intact differences carry a noise term of sd about 200-350
+      cells. Round 1's per-run "consistency" counts are therefore weaker evidence than
+      they look, and a per-run sign is not a reliable read of a physical effect.
+    - AGREE: extinguish has a real, one-signed physical effect (CRN 16 up / 0 down).
+    - DISAGREE ON FIREBREAK'S SIZE: pinned-on-the-stock-realisation says +1,209 over 17
+      tuples (about +71 per run); the CRN closed loop says about 0 (ungated -1 counted,
+      8 up / 11 down; gated -227). The two measure different counterfactuals - the
+      pinned test replays the schedule the units built against the STOCK fire, while
+      the CRN arm lets units build a different band against a different fire. The
+      disagreement is UNRESOLVED and is reported as such.
+    - It does not change this round's choice: under the gate, firebreak-bearing
+      configurations fail to rise on both samples in BOTH instruments (4.4), while
+      gated extinguish rises in both.
+
+
+================================================================================
+PART 2 - DESIGN
+================================================================================
+
+--------------------------------------------------------------------------------
+4. ARBITRATION
+--------------------------------------------------------------------------------
+4.1 THE OPTIONS, WITH THE EVIDENCE (23 runs; stock unless marked CRN)
+  option                         measured by       rescued  dead  ffd   intact vs OFF        verdict
+  control                        fmOFF               68      16   10         -
+  round-1 full (ungated EFS)     fmEFS               66      17    9   +1,979 (16/3/4)      fails rescued
+  (a) commitment limit 3 cells   f2L3D (dry)         67      16   12        0 (dry)          does not bound outcome
+      commitment limit 8 cells   f2L8D (dry)         69      17   10        0 (dry)          does not bound outcome
+  (b) reserve: one unit only     f2U0D / f2U1D (dry) 68/68   16   10        0 (dry)          neutral by cancellation only
+  (c) distance-aware chooser     argument (1.4-1.5)   -       -    -        -                FALSE LEAD
+  (d) TIME LIMIT (gate), EFS     f2GW                68      16    6     +237 (7/11/5)       rescue-neutral; fire lost
+      gate, firebreak only       f2GF                68      16    7     +279 (7/12/4)       rescue-neutral; fire lost
+      gate, extinguish+S         f2GES               68      16    7   +1,884 (14/3/6)      rescue-neutral; fire kept
+      gate, extinguish+S (CRN)   f2cGES              72=     14=  13     +248 (10/0/13)      rescue-neutral; one-signed
+      gate, EFS (CRN)            f2cGW               72=     14=  10      -78 (5/10/8)
+      gate, firebreak (CRN)      f2cGF               72=     14=  10     -227 (4/11/8)
+  (72= / 14=: identical to f2cOFF.)
+  - The brief's rule: "if any engagement costs a rescue, (a) or (b) is the answer and
+    (c) is a false lead."
+  - The measured answer: (c) is a false lead. (a) and (b) as spatial / per-unit rules
+    do not prevent the cost.
+  - (a) taken to its limit IN TIME prevents it by construction. That is option (d).
+
+4.2 THE POLICY: A MISSION GATE, WITH THE STRICT PREDICATE
+  RULE
+    An idle unit may engage only when every managed victim's status is "rescued" or
+    "dead". Before that, _firefight_prepare returns None, which is exactly the
+    feature-off path for that unit. After that, every idle unit engages as in round 1.
+  WHY NOT THE PROBE'S HELPER (_count_unresolved_victims == 0)
+    Static audit: two independent auditors plus reconciliation, all verdict B. Code
+    cites are in the audit.
+    - HOLDS
+        The helper count is absorbing: once 0, it stays 0. Every resolved state keeps a
+        sticky flag, and the only writers that clear flags (assign, finalize) refuse
+        flagged victims.
+        So the RESCUED COUNT is frozen from the moment it opens.
+    - FAILS, three paths
+        P1  An "unreachable" victim is alive, still flees, and still burns
+            (_check_fire_casualties skips only dead/rescued). Fire writes after the gate
+            opens can turn unreachable into dead.
+        P2  A unit can stay bound to a victim marked unreachable (route_blocked claimants
+            are not released). If it dies, the victim is relabelled "confirmed", which
+            the evaluation counts as candidate.
+        P3  After that relabel the dashboard's all_victims_terminal and terminal_step can
+            still change.
+    - MEASURED EXPOSURE
+        On 4 of the 20 runs where the probe gate opened, it opened at steps 211-216 with
+        an unreachable (never-detected) victim still on the grid:
+          east/def/101, east/half/707, south/half/606, south/half/1010
+        No outcome changed on this sample, but the hole is live in scenario D.
+  THE STRICT PREDICATE (the audit's S1) CLOSES P1-P3
+    "rescued" and "dead" are both absorbing whatever any unit does:
+      rescued  rescued=True, marker off-grid, status guarded
+      dead     finalize refuses it, reset is guarded, casualty rewrite is idempotent
+    So no evaluated victim status, all_victims_terminal or terminal_step can change
+    after it opens.
+    COST (measured)
+      - It never opens on those same 4 runs. It also never opens on south/half/101,
+        where the helper opens at s159 but both units are already dead, nor on
+        south/half/202 and south/half/808, where neither predicate opens. On the
+        remaining 16 runs the two open at the same step (16 + 4 + 1 + 2 = 23).
+      - Work given up: engaged rows 2,751 -> 2,650 (-3.7%) and writes 1,383 -> 1,325
+        for EFS; 343 -> 324 extinguishes for ES.
+      - Intact effect of dropping the strict-closed runs' post-gate work (the projection
+        in section 0 applies it): stock +24 (that work had netted -24); CRN -9. The
+        strict-closed set is computed per instrument and is NOT the same runs: 7 in
+        stock (4 of them with any work), 5 under CRN (1 with any work).
+    The added clause "no firefighter bound" is redundant for victim outcomes (audit).
+  WHAT IS STILL NOT NEUTRAL, BY DESIGN
+    Firefighter deaths and the fire itself after the gate opens. Those are the
+    mechanic's effect, and they are measured (4.4, 4.5).
+
+4.3 WHICH UNIT ENGAGES AND HOW FAR IT COMMITS, ONCE THE GATE IS OPEN
+  ALL idle units, no leash, no reserve, no chooser. Once every victim is rescued or
+  dead:
+    - no dispatch can occur (the planner has no needy victim), so there is no rescue
+      latency to protect and nothing to arbitrate over
+    - positioning after that point changed no victim on 161/161 gated runs; it moves
+      unit deaths only (4.5)
+  More units engaging is EXPECTED to raise the fire effect, but that is UNTESTED: no
+  gated reserve arm was run, and the only reserve arms (f2U0D / f2U1D) are dry, so their
+  fire is identical to OFF by construction.
+
+4.4 THE CONFIGURATION UNDER THE GATE: EXTINGUISH + SUPPRESSION, FIREBREAK OFF
+  intact vs control, canonical / fresh, per run up/down/unchanged:
+                   stock                              CRN
+    gated EFS      +366 (5/6/2)  / -129 (2/5/3)       +15 (3/4/6)   / -93 (2/6/2)
+    gated F        +291 (6/5/2)  / -12  (1/7/2)       -86 (2/5/6)   / -141 (2/6/2)
+    gated ES     +1,283 (9/1/3)  / +601 (5/2/3)      +166 (5/0/8)   / +82 (5/0/5)
+  - Only gated ES rises on BOTH seed sets in BOTH instruments. Under CRN it never
+    lowers intact (10/0/13 over 23 runs).
+  - Firebreak-bearing configurations fall on fresh in both instruments. A gated
+    firebreak would fail "untouched vegetation still rises".
+  - Why firebreak loses under the gate (a reading, not a proof): a cleared cell counts
+    against intact by construction, a band only pays if it closes, and after
+    terminal_step the fire is large and the band rarely closes. Ungated firebreak does
+    have a physical effect (3.4 (ii)), so this is about WHEN the work happens, not
+    about firebreak being inert. Extinguish removes burning cells and stops re-burning:
+    16 of 20 first-extinguished cells re-ignited later in OFF.
+  - Extinguish work kept under the gate: 343 extinguishes vs 490 ungated (fmES); 55% of
+    ungated extinguishes already came after the strict gate would open.
+
+4.5 FIREFIGHTER DEATHS, DRONE EXPOSURE, ROUTE_BLOCKED - WHAT THE GATE DOES
+  DEATHS (23 runs)
+    - Before the gate opens they are identical to OFF by construction.
+    - After it opens (all post-terminal):
+        f2GD  (dry, positioning only)  10 -> 7   OFF's idle deaths on east/101,
+                                                 east/404, south/303 do not occur;
+                                                 east/909's death shifts s189 (36,0)
+                                                 -> s168 (43,1)
+        f2GES (writes)                 10 -> 7   OFF's deaths on east/404, south/303,
+                                                 east/909 do not occur; east/101's
+                                                 death shifts s195 -> s198
+        f2cGES (CRN)                   12 -> 13  east/808 removed; added south/half/505
+                                                 (s165, (48,0)) and east/half/1010
+                                                 (s201, (35,10)); timing shifts on
+                                                 east/def/303 and south/606
+    - Every death that differs from the control in f2GES, f2cGES and f2cGW: NOT engaged
+      on the death step, a retreat row with suppression latched on the step before,
+      T=3. There are six such deaths (f2GES east/101 s198; f2cGES south/505 s165,
+      east/1010 s201, east/def/303 s147, south/606 s186; f2cGW east/def/303 s171). By
+      the firefighters' own 4-connected neighbourhood, five of the six are fully
+      enclosed - four of those at the grid edge, the interior one at (35,10) - and the
+      sixth, f2cGW east/def/303, is cornered at (49,49) with one free neighbour.
+    - f2GW (10 -> 6) and f2GF (10 -> 7) add no death of their own. f2GW only removes
+      four control deaths; f2GF removes three and shifts east/half/909's from s189
+      (36,0) to s156 (48,0), after its gate opened at s123.
+    - This is round 1's pre-registered suppression exposure (R1): the leash-edge /
+      enclosure retreat. Round 1's fmES had one such unmatched death (east/half/505).
+    - Stock shows no cost (-3). CRN shows +1 (+2 added, -1 removed). It is a RESIDUAL
+      RISK of extinguish's suppression requirement, reported as such. It cannot affect
+      any victim.
+    - The round-1 split ("positioning adds deaths, writes remove two net") becomes:
+        positioning (f2GD - OFF)   -3, all post-terminal
+        writes (f2GES - f2GD)      0 net in stock (a different three OFF deaths removed,
+                                   one shifted)
+        CRN has no gated-DRY arm; it shows +1 net for the whole policy
+  DRONE STEPS ON A BURNING CELL (23 runs, canonical+fresh; interior-hazard E1
+  searcher-only / E2 all-UAV)
+    f2GES 4.04% / 2.68%   vs fmOFF 4.21% / 2.83%
+    f2cGES 3.31% / 2.28%  vs f2cOFF 3.40% / 2.33%
+    The rbgate-18 figures (control 3.55% / 2.42%) are measured in Part 3.
+  ROUTE_BLOCKED GATE (prediction)
+    - The gate can change nothing before every victim is rescued or dead. Rescued/dead
+      on the 18 rbgate seeds must equal the shipped default (fmgOFF == flgD) seed for
+      seed, so no new failure is possible.
+    - The four known regressions (east/707, south/101, south/202, south/404) stay
+      EXACTLY as at the default. That includes south/202 4 -> 3, which round 1's
+      positioning had "cured" by chance, and south/404 back from 1 to 3.
+    - ff_deaths on those seeds may differ, post-terminal only.
+
+
+--------------------------------------------------------------------------------
+5. THE PRIORITY QUESTION - IS A COMPLETION THRESHOLD WORTH ANYTHING?
+   (outputs/_fm2_diag_priority.txt, verified; the verifier corrected its value side)
+--------------------------------------------------------------------------------
+  UNDER THE RECOMMENDED DESIGN: MOOT, BY CONSTRUCTION.
+    - A preemption needs a dispatch, and none can occur after every victim is rescued or
+      dead.
+    - Extinguish is also atomic (one write, one step), so there is nothing to complete.
+  UNGATED (so the maintainer can judge the alternative)
+    PREEMPTIONS
+      - fmEFS has 66 preemptions of an engaged unit (65 distinct). 23 of the 66 (22
+        distinct) interrupt firebreak work - a clear in the last 10 steps; 43 are units
+        still walking; 42 of the 66 are the step <= 20 dispatch wave. 0 come after
+        terminal_step.
+      - Partial work persists, but "another unit finishes it" is mostly false. After a
+        work preemption:
+          nobody cleared within manhattan 5 again   13 of 22
+          the other unit did                         6 (median +1.5 steps)
+          the same unit came back                    6 (median +16.5)
+        The last two overlap on 3 events (13 + 6 + 6 counts 25 of 22). The fire burned
+        uncleared cells of that region in 14 of the 21 events with a non-empty R3 (one
+        of the 22 has none).
+    VALUE OF FINISHING
+      - The ARCHIVED estimate is the realised-chain dependence in
+        outputs/_fm2_diag_priority.txt: 7 cells (R3) and 12 (R5) over the 22 events,
+        against the arm's +1,979. On that number the value side is "moot".
+      - That estimate is a FLOOR: it counts a cell as not dependent whenever any
+        alternative ignition parent existed, however weak.
+      - A verifier's paired fire-only Monte Carlo put the value at a few hundred cells
+        (+264 for R3, +502 for R5). THAT RUN WAS NOT ARCHIVED - no script or output for
+        it exists under outputs/ - so this document does not rely on it. If the trade
+        ever needs deciding, it must be re-run and archived. The same applies to that
+        pass's "21 of 22 segments sit upwind or on a flank", which an independent
+        bearing proxy did not reproduce (it gives 14 of 22).
+    COST
+      - A certain dispatch delay of at least the remaining segment: median 8.5 steps,
+        max 13, on 22 of the 105 dispatches (23 preemption events). That is +24% on the median 35-step
+        assign->contact.
+      - Of the 13 rescued victims behind work preemptions, 6 had fire reach the unit's
+        realised route sooner than the delay (plausible risk, not demonstrated harm; a
+        delayed unit would route differently).
+      - 1 had fire reach its own contact cell sooner: east/half/404 victim_1, the
+        victim this very preemption saved relative to OFF.
+  VERDICT: DO NOT BUILD IT.
+    - With the gate there is nothing for it to do.
+    - Without the gate it would add a SYSTEMATIC latency cost, where the data show none
+      exists today (1.4), in exchange for an archived 7-12 cells (one unarchived
+      estimate said a few hundred) on a firebreak configuration that, per 4.4, falls on
+      the fresh set in both instruments and so would fail G3.
+
+
+--------------------------------------------------------------------------------
+6. KILL SWITCH AND ARM SEPARABILITY
+--------------------------------------------------------------------------------
+6.1 THE NEW SWITCH
+  common_fixed_variables.py
+    FF_FIREFIGHT_MISSION_GATE = 1
+  Accessor ff_firefight_mission_gate() in agents.py, read at CALL time like the other
+  FF_FIREFIGHT_* accessors.
+    1 = the strict gate (4.2)
+    0 = round-1 policy: any idle unit, any time
+    anything else (junk, None) -> 1
+  Why the junk fallback is 1 and not 0:
+    - The round-1 rule "fallbacks are the OFF value" exists so a typo cannot ARM the
+      feature. NOTE: that rule is written into two comment blocks (agents.py:1060-1063,
+      common_fixed_variables.py:188-190) and into the name of an existing test,
+      test_every_switch_ships_off_and_every_fallback_is_off. Both comments become
+      inaccurate for this family the moment the switch lands, so the change must update
+      them and record the exception deliberately.
+    - This switch cannot arm anything; the feature still needs EXTINGUISH or FIREBREAK.
+    - Its conservative value is 1: a typo can only make the feature more
+      rescue-neutral, never less.
+    - A unit test pins it.
+  SHIPPED THIS ROUND: the feature stays OFF (EXTINGUISH 0, FIREBREAK 0, RANGE 3, DRY 0),
+  with MISSION_GATE defaulting to 1. The next round's flip is then only E=1, K=1.
+
+6.2 WHERE IT SITS
+  Firefighter._firefight_prepare, immediately after the
+  _firefighter_available_for_dispatch return (agents.py:2359) and BEFORE the suppression
+  read at :2361. That pins the no-attribute guarantee: the dry-run branch at :2366-2372
+  creates model._firefight_shadow (the assignment is at :2372), so a gate placed after
+  that branch would create the attribute on a gate-closed DRY run. (The eligibility test is `self.pos is None or self.target_pos or
+  self.exiting`, then the dispatch predicate.)
+    FEATURE OFF  prepare still returns on its first two accessor reads, BEFORE the gate
+                 accessor is called. The kill-switch path is byte-for-byte the round-1
+                 path.
+    GATE CLOSED  returns None: advance() runs the pre-feature code for that unit. No
+                 attribute is created, no log row is written, nothing is printed, no RNG
+                 is touched.
+    PREDICATE    managed = getattr(model, "managed_victims", None)
+                 open iff isinstance(managed, dict) and every state's
+                 str(state.status).strip().lower() is "rescued" or "dead"
+                 Pure read, no RNG; 4 entries in scenario D.
+    NOT A DICT   A model with no managed_victims attribute (not a dict): OPEN.
+    EMPTY DICT   Vacuously open: a scenario with no victims has no rescue to protect.
+                 A real WildFireModel always has a populated dict
+                 (wildfire_model.py:820-827: every victim from init, status
+                 "candidate"), so neither fallback fires in a real run.
+    THE TESTS    THIS BREAKS THE ROUND-1 TEST FILE, and the fallbacks do not save it.
+                 tests/test_firefighter_fire_mechanic.py drives the REAL WildFireModel
+                 through its _model() helper (its docstring says so): 23 of its 25 test
+                 functions (25 of the 34 collected cases) build a real model whose
+                 victims - 5, the module default, not scenario D's 4 - are all at status
+                 "candidate", so the strict gate is CLOSED in every case that exercises
+                 the mechanic. _firefight_prepare returns None throughout, so every case
+                 asserting that work HAPPENED fails, while the "nothing happens" cases
+                 still pass. The exact count is an unrun static estimate (~13 of 34),
+                 measured only after the edit below. The other 2 functions (9 cases)
+                 assert switch defaults and fallbacks and build no model at all.
+                 The fix is one line in that helper: _model() already takes the feature
+                 switches, so it passes FF_FIREFIGHT_MISSION_GATE=0 and keeps testing
+                 the MECHANIC, while new cases test the GATE. Part 3 must therefore EDIT
+                 tests/test_firefighter_fire_mechanic.py, and G6's "no new test
+                 failures" is judged after that edit. D4 offers the alternative (ship
+                 the switch default at 0).
+  No change to Fire, the planner, the executor, the harness or any other module.
+
+6.3 SEPARABILITY - THE IDENTITIES PART 3 WILL PROVE (value identity, round-1 standard)
+  f3OFF    new code, no --set                        == fmOFF (a3a24f1)    23/23   KILL SWITCH
+  f3RFULL  E=1 F=1 K=1 MISSION_GATE=0                == fmEFS (round-1 full) 23/23 round-1-full is reproducible
+  f3RES    E=1 K=1 MISSION_GATE=0                    == fmES               23/23   the chosen config, ungated
+  f3GATE   E=1 K=1 (gate default 1)                  THE GATE ARM
+  f3GDRY   E=1 K=1 DRY=1 (gate 1)                    positioning-only attribution after the gate opens
+  (No tag is a prefix of another - the queue generators refuse that, because
+  _ffr_rbcompare.py and _ir_rbmerge.py glob _rblatch_camp2_<tag>*.)
+  CROSS-CHECK  f3GATE vs the probe arm f2GES
+    == f2GES on the 16 runs where helper and strict predicate open at the same step,
+    and on south/half/202 and south/half/808 where neither opens
+    == fmOFF on the 4 strict-closed runs and on south/half/101 (params excepted)
+    This shows the in-tree gate is the measured design.
+  Every new arm is compared with fmOFF (control), fmEFS (round-1 full) and fmES (same
+  config ungated).
+
+
+================================================================================
+PART 3 PLAN (for confirmation; nothing is run until confirmed)
+================================================================================
+  ORDER    implementation + unit tests
+           -> full pytest (baseline 8 failed / 615 passed; the failing NAME SET is
+              compared)
+           -> canonical 13 wave (f3OFF f3RFULL f3RES f3GATE f3GDRY), analysed
+           -> fresh 10 wave (same arms)
+           -> route_blocked gate
+           -> report
+  POOLS    outputs/_dcd4_pool.sh with a NEW tag prefix f3 (checked unused; no tag a prefix
+           of another). New STEM, LOG and queue files. The harness is unchanged, so there
+           is no instrument drift and fmOFF remains a same-instrument reference.
+  RBGATE   _rblatch_campaign2.py shards through outputs/_dcd4rb_pool.sh:
+             f3gOFF (instrument parity: must equal fmgOFF field for field)
+             f3gGATE
+           Plus the 4 rb18 harness tuples east/half 111-444 for f3OFF and f3GATE.
+           Read with _ffr_rbcompare.py --new <tag> --old ihrest (expected G1 NEW set =
+           the known four) and --new f3gGATE --old fmgOFF.
+  REPORTED PER ARM (canonical, fresh, counted and de-duplicated)
+    - rescued / dead / ffd / never_detected / terminal_step
+    - untouched vegetation (intact) at step 240 beside burnt_cells, ever_burned, cleared,
+      burning@240
+    - firefighter deaths, each with engaged / previous-row / suppressed / pre- or
+      post-gate classification
+    - E1 / E2 (interior-hazard definitions) on canonical+fresh and on the rbgate 18
+    - route_blocked gate
+    - failing test names
+    - The CRN counterparts (f2cGES vs f2cOFF) are reported beside the stock gate result
+      as the physical instrument. They are probe runs of the same policy, not Part 3
+      arms.
+  GATE (as briefed), evaluated on f3GATE
+    G1 kill switch f3OFF == fmOFF value-identical 23/23; also f3RFULL == fmEFS and
+       f3RES == fmES
+    G2 RESCUED DOES NOT DECREASE vs 6adeb4f on either sample. fmREF == fmOFF (round 1),
+       so vs fmOFF. Pre-registered: equal on every run by construction (39 / 29).
+    G3 untouched vegetation rises. Pre-registered: canonical +1,269 (8/1/4), fresh +639
+       (5/0/5). CRN corroboration +166 (5/0/8) / +73 (4/0/6).
+       Note the gate does NO work at all on 7 of the 23 runs (4 strict-closed, plus
+       south/half/101, south/half/202, south/half/808), so the fresh expectation rests
+       on 6 working runs and the canonical one on 10.
+    G4 ff deaths do not increase without an explained reason. Pre-registered: 10 -> 7
+       (6 -> 4 canonical, 4 -> 3 fresh). Each death classified.
+    G5 no NEW route_blocked failures. Pre-registered: rescued/dead identical to fmgOFF
+       on all 18 seeds.
+    G6 no NEW test failures (name set), judged AFTER the required edit to
+       tests/test_firefighter_fire_mechanic.py (6.2 THE TESTS)
+  WALL TIME (measured rates: ~6-7 min per harness run, 12 concurrent)
+    harness waves 115 + 8 runs  ~70-80 min
+    rbgate shards               ~50-60 min
+    full pytest                 ~41 min
+    total with analysis         about 3.5 h
+
+
+================================================================================
+DECISIONS NEEDED BEFORE IMPLEMENTATION
+================================================================================
+  D1 POLICY: the mission gate, a commitment limit in time, instead of a spatial leash,
+     a reserve or a chooser. Rescue neutrality is by construction; most of the physical
+     fire effect is given up (section 0, THE TRADE). The alternative is to ship the
+     ungated policy and accept rescued moving by re-roll (round 1: 68 -> 66). That fails
+     G2 as written.
+  D2 PREDICATE: the strict one (every victim rescued or dead), not
+     _count_unresolved_victims. It costs ~4% of the work, on the 4 runs where the probe
+     gate opened with an unreachable victim still on the grid, and it closes the audited
+     P1-P3 holes.
+  D3 CONFIGURATION: extinguish + suppression (E=1, K=1), firebreak OFF.
+       - Gated EFS / F fail "vegetation rises" on fresh in both instruments, which
+         would put G3 at risk.
+       - Suppression carries the residual post-terminal death risk in 4.5 (CRN +1).
+       - If firebreak must stay in, the pre-registered G3 expectation for gated EFS
+         under the same strict projection is canonical +376 (5/5/3), fresh -103 (2/3/5):
+         FAIL. (Raw probe-arm deltas: +366 / -129.)
+  D4 SWITCH: FF_FIREFIGHT_MISSION_GATE, default 1, junk -> 1; a missing or empty
+     managed_victims counts as OPEN (it cannot occur in a real run).
+     THIS REQUIRES EDITING tests/test_firefighter_fire_mechanic.py: 23 of its 25 test
+     functions drive the real model, whose 5 victims are all unresolved, so a default of
+     1 closes the gate in every case that exercises the mechanic (an unrun estimate is
+     ~13 of the 34 collected cases failing). The intended fix is one line in its
+     _model() helper, FF_FIREFIGHT_MISSION_GATE=0, plus new cases for the gate itself.
+     THE ALTERNATIVE, if you would rather not touch round-1 tests: ship the switch
+     default at 0 and let the next round's flip set MISSION_GATE=1 together with E and
+     K. Same code, same Part 3 arms; only the default and the test edit differ.
+  D5 NO COMPLETION THRESHOLD (section 5).
+  D6 PART 3 PLAN AND COST as above (~3.5 h), with the CRN probe arms as the reported
+     physical instrument.
+  D7 ROUND-1 RECORD: correct outputs/firemech_report.txt's firebreak / extinguish
+     asymmetry and the south/404 attribution as in sections 2, 3 and 3.4. This would be
+     an appended CORRECTION block (round-1 style), not an edit of the round-1 text.
+
+
+================================================================================
+CORRECTIONS TO ROUND 1 AND TO THE BRIEF'S FRAMING
+================================================================================
+  C-1 "Idle units walk toward the fire, so rescues start from firefighting positions"
+      is the wrong mechanism.
+        - Calls are closer, not farther (1.4).
+        - The loss is the re-timing that starts with the walk before the first
+          dispatch.
+        - It still costs on average in both fire realisations (stock -2, CRN -6), and
+          no spatial arbitration removes it.
+  C-2 south/404's write-caused loss is not a firebreak acting on the rescue. It is a
+      stream re-roll triggered by one burn-out delay, 42 cells from the victim whose
+      survival decides it (section 2).
+  C-3 Extinguish's coin flip is the fire model's shared random stream. Under per-cell
+      draws extinguish is one-signed (16 up / 0 down).
+  C-4 Round 1's per-run "direction" counts overstate the evidence: a pure draw-stream
+      shift with no write moves intact by a median 155 cells (signed sd 276) with no
+      systematic sign (3.4 (i)). Firebreak's ungated gain is nevertheless mostly
+      physical on the stock realisation (+1,209 of +1,783 pinned, 3.4 (ii)); under CRN
+      it is about 0. That disagreement is open.
+  C-5 south/202's round-1 "no longer regresses" is removed by the gate. It was a
+      re-timing, and the gate restores the shipped default.
+  C-6 A gate on _count_unresolved_victims is rescued-count-neutral but not
+      outcome-neutral. Unreachable victims still burn (4.2).
+  Analyst-level corrections applied from the verifiers:
+    - the extvar "19 of 20 re-ignited" is 16 of 20
+    - the replay "physical effect is zero / only the cleared cell" holds for final
+      intact only; timing changes on 17/20 and 13/20
+    - the priority "value is moot" uses a floor estimate (MC +264 / +502)
+    - the positioning "five runs swap which unit dies" is 2; the other 3 are the same
+      units at different steps
+
+
+================================================================================
+ARTIFACTS OF THIS PART (all untracked, new; no existing file modified)
+================================================================================
+  outputs/firemech2_part1.txt                        this document
+  outputs/_fm2_probe_harness.py                      I1 probe wrapper (FM2P_* keys)
+  outputs/_fm2_queue.py, _fm2probe_queue.txt         wave 1 (243 runs)
+  outputs/_fm2_queue2.py, _fm2probe2_queue.txt       wave 2 (143 runs)
+  outputs/_fm2probe_wave.log, _fm2probe2_wave.log    pool logs (ENV, head=a3a24f1, dirty_tracked=0)
+  outputs/_fm2probe{,2}_state.txt, _fm2probe{,2}_hb_*.stop   pool state and heartbeat sentinels
+  outputs/_ffr_f2*_*.json / .stdout.txt, _ffr_logs/f2*   the 386 probe runs
+  outputs/_fm2_fire_replay.py, _fm2_diag_replay.txt  I2 replay instrument and study
+  outputs/_fm2_analyze.py (+_selftest.txt), _fm2_wave2_read.py   I3 readers
+  outputs/_fm2_diag_{positioning,south404,extvar,priority}.{py,txt}  diagnoses
+  outputs/_fm2_verify_{positioning,south404,extvar,priority,probeanalyzer,replay}.py  verifiers
+  outputs/_fm2_audit_gate.txt                        the static gate audit (2 auditors + reconciliation)
+  outputs/_fm2_rng_offset.py, _fm2_rng_pinned.py     same-realisation RNG controls
+  outputs/_fm2_rng_offset.txt                        their combined output (288 replays;
+                                                     regenerated from the replay JSON after
+                                                     the agent that ran them was interrupted)
