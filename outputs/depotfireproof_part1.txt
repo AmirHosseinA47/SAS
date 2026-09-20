@@ -1,0 +1,281 @@
+================================================================================
+NON-BURNABLE DEPOT CELLS - PART 1: MEASUREMENT AND DESIGN
+An addition the maintainer made to the base-mark round, mid-round.
+================================================================================
+Repo / HEAD : E:\Projects\SAS, d3640e3 (the display items sit on branch basemark
+              and are NOT bundled with this - see the verdict).
+Runtime     : 3.10.11 / mesa 1.2.1. NO simulation was run for this document: every
+              number is from the EXISTING corpus (the 27 recorded f3OFF harness
+              runs = d3640e3 at the shipped default, value-identical to fmOFF
+              23/23) or from the six base-mark traces, or is a file:line reading.
+Tools       : outputs/_dfp_corpus.py  -> outputs/_dfp_corpus_f3OFF.txt
+              outputs/_dfp_corpus2.py -> outputs/_dfp_corpus2.txt
+Verified    : a first draft of this document went to an adversarial verifier, who
+              recomputed everything from the 27 JSONs and re-opened every citation:
+              17 findings, all folded in. The one that mattered most: the
+              attribution test as I first wrote it would have FAILED IN EVERY RUN
+              by construction (section 4). The central mechanical claim survived.
+
+--------------------------------------------------------------------------------
+VERDICT, BY THE MAINTAINER'S OWN RULE
+--------------------------------------------------------------------------------
+"If it is rare, the behavioural effect is near-zero ... If it is common, this is a
+real change to fire spread and must be gated as one."
+
+IT IS NOT MERELY COMMON - EVERY FIRE THAT SPREADS AT ALL REACHES A DEPOT. In the
+existing corpus a depot cell burns in 25 of 27 runs (22 of 24 DISTINCT fires), and
+the two exceptions are not fires that missed: in both, the fire died on its first
+tick and exactly ONE cell ever burned. In 19 of 27 runs the first depot cell ignites
+while rescue outcomes can still move (17 strictly before a recorded terminal step,
+2 in runs with no terminal step at all); in 6 it ignites after.
+
+So this is a fire-spread change. It needs ITS OWN GATED ROUND, on its own branch
+and commit. The display items (banner, table cell) stay a separate, display-only
+commit with their own value-identity proof against d3640e3, exactly as the
+maintainer asked: "keep the display items separate rather than bundling a
+fire-spread change into a rendering commit."
+
+This document is that round's Part 1. Nothing is implemented. Decisions: section 6.
+
+--------------------------------------------------------------------------------
+1. HOW OFTEN, WHERE, AND WHEN FIRE REACHES A DEPOT - the existing corpus
+--------------------------------------------------------------------------------
+Source: burn_intervals ("x,y" -> [[start, end], ...]), fire_ground_final
+([has_burned, burnt, burning] per cell at step 240) and terminal_step in each of
+the 27 recorded runs outputs/_ffr_f3OFF_*.json. Depots: NW = cells x 0-4, y 45-49;
+SE = x 45-49, y 0-4.
+
+                                                     all 27 runs   the 23-run gate sample
+   a depot cell ever burns                               25             22
+      (distinct fire histories)                       22 of 24       19 of 20
+   the fire died on tick 1, one cell ever burned          2              1
+      east_half_444, east_half_707                                  east_half_707
+   first depot ignition before a recorded terminal       17             14
+   ... in a run with NO terminal step                     2              2
+      south_half_202, south_half_808
+   ... after the terminal step                            6              6
+   step of the first depot ignition       min 33 / median 114 / max 198   54 / 117 / 198
+   the SE depot / the NW depot                        25 / 3
+
+TWO SAMPLING FACTS that change how these read:
+  - The 27 are the canonical 13 + fresh 10 PLUS four "rb18 extras" (east/half 111,
+    222, 333, 444), which the fire-mechanic round ran only so E1/E2 could be read on
+    the 18 route_blocked seeds. The gate arms in section 4 run the 23. The earliest
+    ignition (step 33) and one of the two dead fires are extras.
+  - The 27 hold 24 DISTINCT fires: east_def_101 / 202 / 303 share their fire with
+    east_half_101 / 202 / 303 (same seed, different role split). Fire-only
+    statistics count three fires twice; "before terminal" is legitimately per run,
+    because terminal_step depends on the role split.
+
+It is overwhelmingly the SE depot, and fire takes nearly all of it: 22 of the 25
+runs burn all 25 SE cells, the other 3 burn 24. East and south winds drive fire
+toward SE. West and north winds are NOT in this corpus (they are unmeasured at the
+shipped default altogether); in the base-mark traces the two runs with those winds
+burned the NW depot instead (west/101: 49.2% of NW cell-steps burnt). So "NW in 3
+of 27" is a property of the corpus's winds, not of the depot.
+
+Consistent with the dcd4 round's 14 of 23 same-cell burning-step stays being UAVs
+charging in a burning depot: the depot burns in essentially every run with a fire.
+
+--------------------------------------------------------------------------------
+2. THE TWO EFFECTS, KEPT APART
+--------------------------------------------------------------------------------
+2.1 BOOKKEEPING - attributable arithmetic, and it is TWO numbers, not one
+   50 cells (2.0% of the 2,500-cell grid) can no longer burn. The harness records
+   each cell's FINAL state, so the split is recoverable today, per run:
+
+      depot cells that EVER burn          682 over 27 runs   mean 25.3 (0-47)
+      ... of which at step 240: BURNT     432                mean 16.0 (0-24)
+                                SCORCHED  214                mean  7.9
+                                BURNING    36                mean  1.3
+      (sum(burnt) over all 2,500 cells equals eval.burnt_cells in 27 of 27 runs)
+
+   So BY CONSTRUCTION, in a run where fire reaches a depot:
+      untouched vegetation rises by that run's EVER-burned count   (mean +25.3)
+      burnt_cells falls by that run's BURNT-at-240 count           (mean -16.0)
+   - two different numbers. Both are listed per run in outputs/_dfp_corpus2.txt
+   (e.g. east_def_101: 25 ever, 20 burnt), so each can be subtracted exactly.
+   One caution: a fuel-less never-burned cell is counted as UNTOUCHED VEGETATION
+   by the ground counts (has_burned 0, burnt 0, burning 0), although it has no
+   fuel. "Intact" rises without a single tree being saved.
+   This arithmetic is exact only for the DEPOT-CELL component. The rest of the
+   grid is 2.2.
+
+2.2 BEHAVIOURAL - and exactly where it starts
+   The mechanic the maintainer named already exists: Fire.firefighter_remove_fuel
+   (agents.py:154-164) sets fuel = 0 on an ignitable cell and nothing else. Read
+   with Fire.step (agents.py:89-115) it has a property that makes ATTRIBUTION
+   possible rather than merely correlation:
+     - it draws NO random number, and Fire.__init__ has already drawn the cell's
+       fuel (agents.py:23) before it runs - so clearing at init shifts nothing;
+     - a fuel-less cell KEEPS DRAWING its number on every fire tick
+       (agents.py:103; probability_of_fire returns 0 at :84-85, so it never
+       ignites). A BURNT cell, by contrast, returns early WITHOUT drawing (:91-95);
+     - a neighbour's ignition probability reads only is_burning() of adjacent
+       cells (agents.py:72), never their fuel.
+   THEREFORE the real arm's BURNING and BURNT state equals the control's exactly,
+   cell for cell, until the first tick on which a depot cell WOULD have ignited.
+   The corpus gives that tick per run. A verifier searched every reader of .fuel /
+   get_fuel / get_prob / cell_prob in agents.py, wildfire_model.py, src_extension
+   and the top-level modules and found no counter-path: the Smoke object captures
+   fuel at construction, before any init-time clear; wildfire_model.py and
+   src_extension never read fuel; the rest is rendering. THREE CONDITIONS, which
+   hold for every planned arm but must be said:
+     (a) FIXED_WIND must be True (common_fixed_variables.py:10). With it False,
+         Wind.apply_wind draws once per (fuelled cell, burning neighbour) inside
+         probability_of_fire's fuel > 0 branch; a fuel-less depot cell would skip
+         those draws and shift the shared stream BEFORE any depot ignition. No
+         runner overrides FIXED_WIND.
+     (b) the fire mechanic must be off: agents.py:2417 reads fuel to build its
+         plan, so with FF_FIREFIGHT_* armed the depot cells drop out of planning
+         from step 0.
+     (c) "cell for cell" is about burning / burnt. Depot FUEL differs from step 0,
+         and depot cell_prob from first exposure - which matters for the
+         instrument (section 4).
+   After that tick two things separate the arms: (1) PHYSICAL - neighbours of the
+   depot lose igniting neighbours. Spread uses a Moore radius-3 neighbourhood cut
+   at EUCLIDEAN distance 3 (distance_rate, common_fixed_variables.py:633-638), so
+   34 cells around a corner block (39 within Moore 3, 5 of them beyond Euclidean 3
+   of every depot cell) see a lower ignition probability while the depot would
+   have been burning. A corner block shields nothing BEHIND it - behind it is the
+   map edge - so this is a local dent, not a firebreak across the fire's path.
+   (2) STREAM OFFSET - from the first burn-OUT that differs between the arms (at
+   the latest the first depot burn-out; possibly an earlier neighbour that only
+   ignited because of a burning depot cell) one arm has a cell that has stopped
+   drawing and the other does not. From there the two arms consume the shared RNG
+   stream at different rates and everything downstream is re-rolled.
+   That second effect is the one fire-mechanic round 2 measured: a pure
+   draw-stream offset with NO write moves final intact by a median of 155 cells
+   (signed sd 276) with no systematic sign. So per-run signs on rescued / dead
+   after the divergence step are NOISE, and nothing below may be read run by run.
+
+--------------------------------------------------------------------------------
+3. DESIGN
+--------------------------------------------------------------------------------
+3.1 WHERE. wildfire_model.reset(): set_fire_agents() runs at :182, the station is
+    built at :191. Immediately after :191, for every cell of every depot, call the
+    EXISTING firefighter_remove_fuel() on that cell's Fire agent. No new write
+    path. Its precondition (not burning, not burnt, fuel > 0) holds for all 50
+    cells at init: the ignition cell is drawn with margin 10 from every edge
+    (set_fire_agents, :2275-2277) and a depot lies within 5 of a corner.
+    Both depots. A cell with no Fire agent (DENSITY_PROB < 1) is skipped.
+3.2 KILL SWITCH. BASE_STATION_FIREPROOF in common_fixed_variables.py, shipped 1,
+    read through an accessor in agents.py at call time like every other
+    base-station setting. 0 = today's behaviour: the loop is not entered, nothing
+    is written, and the run must equal d3640e3 on every recorded value except
+    tag / repo / wall_s and the arm's own params - the identity rule round 3 used.
+    (The repo's recorded hazard applies: base-station accessors fall back to the
+    SHIPPED value, so a junk override arms the feature. Say so in the comment, as
+    the flip round did.)
+3.3 DRY ARM. BASE_STATION_FIREPROOF_DRY_RUN = 1: the depot cells are identified and
+    logged but firefighter_remove_fuel is NOT called. Nothing about the fire
+    changes, so every recorded fire value - digests included - must equal the
+    control's.
+3.4 A DISPLAY CONSEQUENCE THAT TOUCHES THE BASE-MARK BANNER. A never-burned cell
+    with fuel 0 renders VEGETATION_COLORS[0] = #414141 on both surfaces
+    (normalize_fuel_values(0) = 0) - the same hex as FIRE_COLORS[0], with no legend
+    entry. The whole depot floor would be a permanent dark grey, #4d3354 under the
+    0.22 tint. For the banner: the white keyline stays at 10.95:1; the #770099
+    field would sit on its weakest MAP-MODE ground, 17.22 dE (16.80 in probability
+    mode). The honest comparison is not with tinted green but with what a depot
+    floor already is for much of a run - tinted burnt, 18.68 dE, 18.3% of SE
+    cell-steps today: 18.68 -> 17.22, made permanent. The mark still passes on its
+    black/white pair. Decision 6.3.
+3.5 A HARNESS NOTE FOR THAT ROUND. outputs/_ffr_harness.py:810 assumes "fuel
+    exhausted on a cell that never burned: only a firebreak produces it", and
+    fire_cleared_unburned_final counts such cells. With this shipped ON both are
+    off by up to 50 whenever the fire mechanic is armed.
+
+--------------------------------------------------------------------------------
+4. VALIDATION PLAN (for the maintainer to confirm before anything is built)
+--------------------------------------------------------------------------------
+Arms, seed-matched on the canonical 13 + fresh 10, outputs/_ffr_harness.py:
+   dfpOFF  switch 0            == d3640e3's f3OFF on every recorded value (3.2), 23/23
+   dfpDRY  switch 1, dry 1     every fire value identical to dfpOFF, 23/23
+   dfpON   switch 1            the real arm
+   + dfpON (and its control) on the four rb18 extras, so E1 / E2 can be read on the
+     same 18 gate seeds as the 3.55% / 2.42% control - the gate sample alone cannot
+   + the route_blocked gate on dfpON: outputs/_ffr_rbcompare.py --new <tag> --old
+     ihrest, 18 seeds in 4 shards. REQUIRED - simulation source changes.
+Budget: 3 x 23 + 4 + 18 = 91 runs at the least, 95-99 if dfpOFF and dfpDRY also run
+the extras as round 3's arms did; about 6 min each, 12 at a time (commit-limited):
+one wave of ~10 minutes per arm-shard, roughly 90 minutes in all.
+
+THE ATTRIBUTION INSTRUMENT - corrected. The harness's per-step fire digest hashes
+FUEL as well as burning and burnt (outputs/_ffr_harness.py:482). dfpON changes the
+fuel of 50 cells at init, so its digest differs from the control's at the FIRST
+recorded step of EVERY run. A prediction registered on that digest - which is what
+my first draft did - fails 23 of 23 by construction and proves nothing. The
+attribution must be registered on a fuel-blind observable: the per-step BURNING
+sets, reconstructible offline from burn_intervals, which the harness already
+records per cell. (The dfpDRY == dfpOFF digest identity is unaffected: DRY changes
+no fuel.)
+
+PRE-REGISTERED, on the 23:
+   - ATTRIBUTION: in each of the 22 runs with a depot ignition, dfpON's per-step
+     burning set first differs from dfpOFF's AT that run's first depot ignition
+     step in the control (listed per run in outputs/_dfp_corpus2.txt; the earliest
+     is 54, south_half_1010). Before that step the two are identical.
+   - east_half_707, where the fire dies on tick 1: dfpON equals dfpOFF on every
+     recorded value EXCEPT fire_digests / fire_final_digest (fuel is hashed) and the
+     arm's params. It is a VACUOUS null - no burning cell ever comes near a depot -
+     and is recorded as such, not as evidence.
+   - BOOKKEEPING, depot-cell component only: in dfpON zero depot cells ever burn;
+     the control's per-run ever-burned and burnt-at-240 counts are the exact shifts.
+     NO one-signed inequality is registered on the whole grid: the guaranteed term
+     is ~25 cells and the re-roll noise is ~155 with no sign.
+   - the 6 runs whose first depot ignition is after terminal_step cannot change
+     rescued, dead or never_detected, by construction. (Supported on the corpus:
+     across the 25 runs with a terminal step, no victim row changes after it.)
+Reported per the brief: rescued, dead, ff_deaths, never_detected, terminal_step,
+burnt_cells, untouched vegetation, and drone steps in fire - E1 searcher-only and
+E2 all-UAV, interior-hazard definition (control 3.55% / 2.42% on the 18 gate seeds;
+4.21% / 2.83% on the 23).
+
+THE GATE, as the maintainer wrote it, with two readings made explicit:
+   - drone steps in fire FALLS
+   - rescued does not decrease - judged POOLED and against the dfpDRY decomposition,
+     not run by run (2.2). If pooled rescued falls, the pinned-draw fire replay from
+     fire-mechanic round 2 (outputs/_fm2_fire_replay.py) separates a physical loss
+     from a re-roll.
+   - the burnt_cells and vegetation shifts fully accounted for as bookkeeping, any
+     behavioural remainder named
+   - no NEW route_blocked failures beyond the four known. CAUTION: east/707,
+     south/101, south/202, south/404 are the CONTROL's set, and G1 is a PER-SEED
+     rule. By the verifier's count 11 of the 18 gate seeds have their first depot
+     ignition while outcomes can still move - including three of the four known
+     regressions (south/101, south/202, south/404) - so their fires re-roll and a
+     per-seed rescued can move either way as noise. Pre-register: only the 7
+     non-re-rolled seeds are expected unchanged by construction; a NEW G1 seed
+     among the 11 is adjudicated by the pinned-draw replay before it counts as a
+     failure.
+   - no NEW test failures, by NAME SET
+
+--------------------------------------------------------------------------------
+5. WHAT I DID NOT DO, AND WHY
+--------------------------------------------------------------------------------
+I did not implement this inside the base-mark round. Its gate is a different KIND
+of gate (seed-matched outcome waves and the route_blocked campaign, against a
+display round's value-identity), its evidence would triple the commit, and a
+fire-spread change riding in a rendering commit is exactly what the maintainer
+ruled out. The display items were already mid-validation against an untouched
+d3640e3 worktree when the addition arrived; they finished on their own.
+
+--------------------------------------------------------------------------------
+6. DECISIONS FOR THE MAINTAINER
+--------------------------------------------------------------------------------
+6.1 CONFIRM THE SEPARATE ROUND: own branch off main (after or independent of the
+    base-mark merge), arms, instrument and gate as in section 4.
+6.2 SWITCH DEFAULT: ship BASE_STATION_FIREPROOF = 1 if the gate passes (the
+    maintainer's stated intent), 0 otherwise - the fire mechanic's precedent of
+    shipping OFF on a failed gate item.
+6.3 THE GREY DEPOT FLOOR (3.4): accept #414141 under the tint (it reads as a paved
+    pad, and says truthfully "nothing here can burn"), or give fuel-less depot
+    ground its own colour and legend entry - a display change that belongs in that
+    round, measured against the palette like every other mark.
+6.4 WINDS: the corpus has no west or north runs. If the change is meant to protect
+    the NW depot as well, the gate sample should include at least a west and a
+    north arm, or the report must say NW is unmeasured.
+6.5 THE PER-SEED G1 RULE under a re-rolled fire (section 4): confirm the
+    pinned-draw adjudication, or say how a noise-driven new G1 seed should be
+    treated.
