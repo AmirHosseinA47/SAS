@@ -2110,6 +2110,72 @@ class UAVExecutor:
         except (TypeError, ValueError):
             return 0
 
+    _OFFGRID_GUARD_SHIPPED = 1
+
+    def _offgrid_guard_level(self) -> int:
+        """VICTIM_SEARCHER_HAZARD_GATE_BOUNDS_FIX, read at call time from the
+        common_fixed_variables MODULE (not the import-time names above) so a
+        per-run override through apply_scenario_config is visible - the same
+        contract as _hazard_retreat_range.
+          0      off. THE KILL SWITCH.
+          1      substitute the reverse, (direction + 2) % 4
+          >= 2   substitute via _first_boundary_safe_direction
+
+        THE KILL SWITCH IS AN EXACT INTEGRAL ZERO, and the float test is why. A
+        bare `int(x)` truncates: `--set VICTIM_SEARCHER_HAZARD_GATE_BOUNDS_FIX=0.5`
+        reaches this through _ffr_harness._parse_value as the FLOAT 0.5, `int(0.5)`
+        is 0, and the run would silently take the OFF path while params recorded
+        0.5 - a non-zero value disarming the feature with nothing anywhere saying
+        so. That is the dead-input defect class this repo has hit three times
+        (the fire mechanic's mission gate, BASE_STATION_FIREPROOF, and
+        _hazard_retreat_range directly above, which still carries it). The
+        fallback is the SHIPPED value, like agents.base_station_fireproof, and
+        carries the same recorded hazard: a junk override ARMS this rather than
+        disarming it.
+        """
+        raw = getattr(
+            _cfv, "VICTIM_SEARCHER_HAZARD_GATE_BOUNDS_FIX", self._OFFGRID_GUARD_SHIPPED
+        )
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            return self._OFFGRID_GUARD_SHIPPED
+        if isinstance(raw, float) and raw != value:
+            return self._OFFGRID_GUARD_SHIPPED
+        return value
+
+    def _offgrid_guard_direction(self, agent: Any, direction: int) -> int:
+        """Legality guard for the hazard gate's two unvalidated fall-throughs.
+
+        Returns `direction` UNCHANGED unless it leaves the grid, so it is a
+        no-op on every step whose direction is already legal and an exact
+        pass-through when the switch is 0. It writes no state and draws from no
+        RNG, which is what makes the OFF arm value-identical to 737b6c7.
+
+        _can_check_bounds is required: _direction_in_bounds fails PERMISSIVE
+        (it returns True when pos or the model is None), which is why the
+        executor's own idiom - _direction_danger_level at :1732 and
+        _first_boundary_safe_direction at :4720 - always wraps it.
+        """
+        level = self._offgrid_guard_level()
+        if level <= 0:
+            return direction
+        try:
+            direction = int(direction)
+        except (TypeError, ValueError):
+            return direction
+        if not self._can_check_bounds(agent):
+            return direction
+        if self._direction_in_bounds(agent, direction):
+            return direction
+        if level >= 2:
+            return self._first_boundary_safe_direction(agent, direction)
+        # The reverse of an off-grid direction is always in bounds: the offending
+        # coordinate is at 0 or max, so negating the step lands at 1 or max-1
+        # with the other coordinate unchanged and already in bounds. It is also
+        # the unique strictly-inward move at every non-corner boundary cell.
+        return (direction + 2) % 4
+
     def _victim_edge_blocked_direction(self, agent: Any, direction: int) -> bool:
         model = self._resolve_model(agent)
         pos = getattr(agent, "pos", None)
@@ -2318,6 +2384,15 @@ class UAVExecutor:
             retreat = self._retreat_to_safe_interior_direction(agent)
             if retreat is not None:
                 return retreat, "victim_search_hazard_retreat"
+            # SITE A of the legality guard. The retreat found nothing, so the
+            # upstream direction would be returned with no bounds test. See
+            # VICTIM_SEARCHER_HAZARD_GATE_BOUNDS_FIX. Distinguishing label, so
+            # the firing is hooked directly in uav_actions rather than derived;
+            # it CONTAINS the old label, which is what _movement_category_for_action
+            # substring-matches on.
+            guarded = self._offgrid_guard_direction(agent, chosen_dir)
+            if guarded != chosen_dir:
+                return guarded, "victim_search_hazard_retreat_oob_oncell"
             return chosen_dir, "victim_search_hazard_retreat"
 
         if self._victim_wind_blocked_direction(agent, chosen_dir):
@@ -2399,6 +2474,13 @@ class UAVExecutor:
         retreat = self._retreat_to_safe_interior_direction(agent)
         if retreat is not None:
             return retreat, "victim_search_hazard_retreat"
+        # SITE B of the legality guard. best_dir is provably still chosen_dir
+        # here: any direction the loop above assigned had already passed
+        # _strict_path_lookahead_safe, so the identical re-test at the `if`
+        # above would have returned it. Same guard, same reasons as SITE A.
+        guarded = self._offgrid_guard_direction(agent, best_dir)
+        if guarded != best_dir:
+            return guarded, "victim_search_hazard_retreat_oob_ranked"
         return best_dir, "victim_search_hazard_retreat"
 
     def _sync_wind_search_execution_state(

@@ -1,0 +1,1116 @@
+================================================================================
+SEARCHERFIX - PART 1
+Fix the victim-searcher boundary livelock: a legality guard on the hazard
+gate's two unvalidated fall-through returns.
+DESIGN ROUND. NO IMPLEMENTATION. NO SIMULATION RUN.
+================================================================================
+
+BRANCH / HEAD AS FOUND
+  git branch --show-current  -> main
+  git log --oneline -1       -> 737b6c7  "non-burnable depots, maintainer
+                                rulings and three cross-checks folded into the
+                                report"                              MATCH
+  The shared checkout was NOT on `searcherfire`. It was on main at the expected
+  commit, tracked tree clean (only untracked outputs/ scratch files).
+
+WHICH WORKING ARRANGEMENT, AS REQUIRED BY THE BRIEF
+  A FRESH BRANCH CUT FROM MAIN, in the shared checkout:
+      git checkout -b searcherfix main      -> searcherfix @ 737b6c7
+  NOT a worktree. The brief permits either; a branch was chosen because the
+  shared checkout was already on main at the exact base commit, and because the
+  two-checkout arrangement carries a hazard the pool validator does not check
+  (it does not verify which repo a run came from). Nothing was switched away
+  from anyone: `searcherfire` was never checked out, and this round reads it
+  only through `git show searcherfire:<path>`, which reads blobs, not the tree.
+
+ENVIRONMENT (as required)
+  sys.version     : 3.10.11 (tags/v3.10.11:7d4cc5a, Apr  5 2023, 00:38:17)
+                    [MSC v.1929 64 bit (AMD64)]
+  mesa.__version__: 1.2.1
+  interpreter     : E:\Projects\SAS\.venv\Scripts\python.exe
+
+SIMULATION COST
+  ZERO runs. Everything below is source reading, exact offline replication of
+  two filters in a scratch script, and offline re-analysis of the committed
+  corpus. One pytest baseline run was started (see section 7.10); it had not
+  finished when this report was written and is reported as PENDING.
+
+FORBIDDEN DIRECTORY - CONTACT REPORT, AS REQUIRED
+  outputs/_firemech_rewound_20260914/ was never read, listed, opened, moved,
+  committed or referenced by the orchestrator, and no path or content from it
+  appears anywhere in this report or in any finding it rests on.
+  HOWEVER, CONTACT MUST BE REPORTED. Of the sixteen sub-agents used this round,
+  FIVE disclosed that one or more of their commands was a RECURSIVE grep rooted
+  at the repository (or at outputs/) WITHOUT `--exclude-dir`, filtered only
+  afterwards with a downstream `grep -v`. Such a command's traversal would have
+  descended into that directory and opened any *.py file inside it.
+      call-site-role-audit      6 such commands
+      choice-rule-design        3
+      anti-oscillation-design   4
+      gate-return-audit         1
+      part3-measurement-plan    1
+  In every case the results were discarded by the downstream filter before
+  display; no line from that path entered any agent's context, and no finding
+  depends on one. Eleven agents (including every adversarial verifier but none
+  by luck - they were instructed the same way) report clean, explicitly-excluded
+  searches.
+  THIS IS THE FOURTH ROUND WITH INCIDENTAL GREP CONTACT, all filtered, nothing
+  used. The pattern is now recurring often enough to be a process defect rather
+  than an accident: a prohibition enforced by a downstream filter is not a
+  prohibition on traversal. RECOMMENDATION for future rounds: agents must be
+  told to pass `--exclude-dir=_firemech_rewound_20260914` (or to scope to
+  src_extension/, tests/ and named root files) as a hard rule, and "I filtered
+  it afterwards" must be treated as contact, which is how it is reported here.
+
+VERIFICATION POSTURE OF THIS REPORT
+  Eight independent read-only audits, each followed by an adversarial verifier
+  instructed to REFUTE it. 16 agents, 0 errors. The verifiers refuted 35 claims
+  in total and corrected many more. EVERY refutation that bears on the design is
+  incorporated below, and the ones that changed a decision are called out by
+  name. Where a claim survived only as "likely", it is labelled.
+  The orchestrator independently re-derived, and did not merely accept: the two
+  fall-through sites, the move() refusal, the direction encoding, the margin-3
+  edge arithmetic at all ten pin cells, the latch, the battery arithmetic, the
+  role dispatch, and the pin definition.
+
+================================================================================
+1. REQUIREMENT 1 - THE SITES, QUOTED IN FULL, AND THE REFUSAL PATH
+================================================================================
+
+1.1 `_apply_victim_searcher_hazard_gate`, src_extension/execution/uav_executor.py
+    Quoted in full, verbatim, lines 2307-2402. (Note the path: the file is at
+    src_extension/execution/uav_executor.py, not at the repository root.)
+
+  2307    def _apply_victim_searcher_hazard_gate(
+  2308        self, agent: Any, chosen_dir: int, action: str,
+  2309    ) -> tuple[int, str]:
+  2310        """Final safety pass on a victim searcher's chosen direction, in order:
+  2311        strict hazard on the current cell -> retreat; edge-blocked direction ->
+  2312        retreat; the hazard retreat rule (VICTIM_SEARCHER_HAZARD_RETREAT_RANGE,
+  2313        see _hazard_retreat_range); the 3-cell strict lookahead, passing the
+  2314        chosen direction through or re-ranking the safe ones. Returns
+  2315        (direction, action label)."""
+  2316        pos = getattr(agent, "pos", None)
+  2317        if pos is not None and self._strict_victim_hazard_level((int(pos[0]), int(pos[1]))) > 0:
+  2318            retreat = self._retreat_to_safe_interior_direction(agent)
+  2319            if retreat is not None:
+  2320                return retreat, "victim_search_hazard_retreat"
+  2321            return chosen_dir, "victim_search_hazard_retreat"     <== SITE A
+  2322
+  2323        if self._victim_wind_blocked_direction(agent, chosen_dir):
+  2324            retreat = self._retreat_to_safe_interior_direction(agent)
+  2325            if retreat is not None:
+  2326                if "retarget_to_interior" in action or "retarget" in action:
+  2327                    return retreat, "victim_search_wind_aware_retarget_to_interior"
+  2328                return retreat, action
+  2329
+  2330        model = self._resolve_model(agent)
+  2331        ws = _wind_search_state(model, self.uav_id) if model is not None else {}
+  2332        if int(ws.get("pocket_streak", 0) or 0) >= WIND_POCKET_CAMP_THRESHOLD:
+  2333            ws["hazard_buffer_level"] = 2
+  2334            ws["force_coverage_escape"] = True
+  2335
+  2336        model = self._resolve_model(agent)
+  2337        pos = getattr(agent, "pos", None)
+  2338        retreat_range = self._hazard_retreat_range()
+  2339        if pos is not None and model is not None:
+  2340            cell = (int(pos[0]), int(pos[1]))
+  2341            if retreat_range > 0:
+  2342                # Interior hazard retreat: on every gated step (range >= 99), or
+  2343                # when the nearest strict fire/smoke cell is within `retreat_range`
+  2344                # cells, the chosen direction is replaced by the retreat - the
+  2345                # strictly safe neighbour furthest from any hazard. Edge handling
+  2346                # is the edge-blocked filter (margin 3) inside the retreat and the
+  2347                # candidate filters; no edge test is needed here. Until the grid
+  2348                # size became readable (2026-09-06) the edge test below read 0.0
+  2349                # everywhere and this fired on every gated step by accident; the
+  2350                # constant makes that behaviour deliberate and switchable.
+  2351                retreat_now = (
+  2352                    retreat_range >= 99
+  2353                    or self._min_strict_hazard_distance(cell) <= float(retreat_range)
+  2354                )
+  2355            else:
+  2356                # Range 0: the edge-only gate - a searcher within 2 cells of a grid
+  2357                # edge steps back toward the interior.
+  2358                retreat_now = self._distance_from_boundary(cell[0], cell[1], model) <= 2.0
+  2359            if retreat_now:
+  2360                retreat = self._retreat_to_safe_interior_direction(agent)
+  2361                if retreat is not None:
+  2362                    if "retarget_to_interior" in action or "retarget" in action:
+  2363                        return retreat, "victim_search_wind_aware_retarget_to_interior"
+  2364                    return retreat, action
+  2365
+  2366        if self._strict_path_lookahead_safe(agent, chosen_dir):
+  2367            return chosen_dir, action
+  2368
+  2369        model = self._resolve_model(agent)
+  2370        fire_cells = self._collect_strict_active_fire_cells(model)
+  2371        smoke_cells = self._collect_strict_smoke_cells(model)
+  2372        best_dir = chosen_dir
+  2373        best_score = -float("inf")
+  2374        for direction in range(4):
+  2375            if self._victim_wind_blocked_direction(agent, direction):
+  2376                continue
+  2377            if not self._strict_path_lookahead_safe(agent, direction):
+  2378                continue
+  2379            cell = self._next_cell_for_direction(agent, direction)
+  2380            if cell is None:
+  2381                continue
+  2382            score = (
+  2383                self._distance_from_boundary(cell[0], cell[1], model) * 10.0
+  2384                if retreat_range == 0
+  2385                else 0.0
+  2386            )
+  2387            score += self._min_strict_hazard_distance(cell, fire_cells, smoke_cells) * 5.0
+  2388            if direction == chosen_dir:
+  2389                score += 0.5
+  2390            if score > best_score:
+  2391                best_score = score
+  2392                best_dir = direction
+  2393
+  2394        if self._strict_path_lookahead_safe(agent, best_dir):
+  2395            if best_dir != chosen_dir:
+  2396                return best_dir, "victim_search_hazard_retreat"
+  2397            return best_dir, action
+  2398
+  2399        retreat = self._retreat_to_safe_interior_direction(agent)
+  2400        if retreat is not None:
+  2401            return retreat, "victim_search_hazard_retreat"
+  2402        return best_dir, "victim_search_hazard_retreat"           <== SITE B
+
+1.2 THE TWO FALL-THROUGH SITES, ISOLATED
+
+  SITE A - uav_executor.py:2317-2321
+      if pos is not None and self._strict_victim_hazard_level((int(pos[0]), int(pos[1]))) > 0:
+          retreat = self._retreat_to_safe_interior_direction(agent)
+          if retreat is not None:
+              return retreat, "victim_search_hazard_retreat"
+          return chosen_dir, "victim_search_hazard_retreat"      # UNVALIDATED
+
+  SITE B - uav_executor.py:2372 + 2399-2402
+      best_dir = chosen_dir                                      # :2372
+      ...
+      retreat = self._retreat_to_safe_interior_direction(agent)
+      if retreat is not None:
+          return retreat, "victim_search_hazard_retreat"
+      return best_dir, "victim_search_hazard_retreat"            # UNVALIDATED
+
+  CONFIRMED: both return a direction on which NO bounds test has been performed.
+
+1.3 THE UNVALIDATED RETURN IS CONFIRMED, AND THE ENUMERATION IS EXHAUSTIVE
+  The gate has ELEVEN return statements: 2320, 2321, 2327, 2328, 2363, 2364,
+  2367, 2396, 2397, 2401, 2402. Exactly TWO of them (2321, 2402) can hand back
+  an out-of-bounds direction. The other nine are each safe by a NAMED test:
+    2320, 2327, 2328, 2363, 2364, 2401   return `retreat`, which both loops of
+        `_retreat_to_safe_interior_direction` (2246-2305) filter through
+        `_victim_wind_blocked_direction` (2261, 2291) - an alias for
+        `_victim_edge_blocked_direction` (2243-2244) - and through
+        `_strict_victim_hazard_level` (2264, 2294), which grades an
+        out-of-bounds cell 3 (1845-1846).
+    2367                                 guarded by `_strict_path_lookahead_safe`
+        (2366), which re-tests the edge filter (2133) and `_cell_in_bounds` on
+        each look-ahead cell (2147).
+    2396, 2397                           guarded by the same predicate applied
+        to `best_dir` at 2394.
+
+  THREE SHARPENINGS THE ADVERSARIAL PASS ESTABLISHED, all accepted:
+
+  (a) :2397 IS DEAD CODE. Reaching 2369 requires
+      `_strict_path_lookahead_safe(agent, chosen_dir)` to be False at 2366.
+      The loop at 2374-2392 therefore cannot assign `chosen_dir` (it is filtered
+      out at 2377-2378). So `best_dir == chosen_dir` at 2394 implies the loop
+      assigned nothing, which implies the 2394 predicate is False - the same
+      predicate that was False at 2366 - so control goes to 2399, never 2397.
+      Eleven returns, TEN of them live.
+
+  (b) AT :2402, `best_dir` IS PROVABLY EXACTLY `chosen_dir`. Any direction the
+      loop assigns has just passed `_strict_path_lookahead_safe` at 2377; the
+      identical re-test at 2394 would therefore pass and the function would have
+      returned at 2396. Reaching 2402 implies the loop assigned nothing and
+      `best_dir` is still its 2372 initialiser.
+      CONSEQUENCE: SITE A and SITE B RETURN THE SAME VALUE, `chosen_dir`. The
+      fix is ONE substitution rule applied at two places, not two rules.
+
+  (c) THE RETREAT'S BOUNDS SAFETY RESTS ON THE MARGIN-3 FILTER, NOT ON THE
+      HAZARD LEVEL. `_strict_victim_hazard_level` delegates to `_cell_in_bounds`
+      (1701-1713), which reads `self._model` directly and RETURNS TRUE when the
+      model is None (1704). With `self._model` unset an off-grid neighbour
+      grades 0, not 3. The guarantee therefore comes from
+      `_victim_edge_blocked_direction`, with the hazard level as a second line
+      that degrades permissively. On a real run
+      (wildfire_model.py:169-179 always sets grid/HEIGHT/WIDTH) both hold.
+
+1.4 THE move() REFUSAL PATH, QUOTED IN FULL - agents.py:822-856
+
+  822    def move(self):
+  823        # vectors for moving to different positions, based on 4 directions = [0, 1, 2, 3] = [right, down, left, up].
+  824        # For example, if direction 1 is chosen, then the UAV moves 0 cells in x-axis, and -1 cell in y-axis
+  825        move_x = [1, 0, -1, 0]
+  826        move_y = [0, -1, 0, 1]
+  827        moved = False
+  828
+  829        # Feature 3: a docked UAV holds its berth. This has to sit above the
+  830        # pipeline check below, because there is no "stay" action anywhere in the
+  831        # model - all four selected_dir values are moves, and even the executor's
+  832        # own hold commits a direction and walks the agent off the pad.
+  833        if self.rtb_docked:
+  834            self.execution_action = "rtb_docked_hold"
+  835            return False
+  836
+  837        pipeline_active = False
+  838        try:
+  839            pipeline_active = bool(
+  840                getattr(self.model, "_is_extension_pipeline_active", lambda: False)()
+  841            )
+  842        except Exception:
+  843            pipeline_active = False
+  844        if pipeline_active and not getattr(self, "execution_direction_applied", False):
+  845            self.execution_action = "no_managed_direction_hold"
+  846            return False
+  847
+  848        # it calculates the position the corresponding UAV will move to
+  849        pos_to_move = (self.pos[0] + move_x[self.selected_dir], self.pos[1] + move_y[self.selected_dir])
+  850        # checks if the position to move is inside the grid bounds, and that the UAV doesn't have other UAV nearby. If
+  851        # so, the UAV moves
+  852        if not self.model.grid.out_of_bounds(pos_to_move) and self.not_UAV_adjacent(pos_to_move):
+  853            self.model.grid.move_agent(self, tuple(pos_to_move))
+  854            moved = True
+  855
+  856        return moved
+
+  The refusal at :852 is SILENT: no exception, no log, `moved` is simply False,
+  the agent's position is unchanged, and the caller (`advance`, :867) proceeds.
+  NOTE THE SECOND CONJUNCT. `move()` requires BOTH in-bounds AND
+  `not_UAV_adjacent` (agents.py:393-399, which tests occupancy of the
+  DESTINATION cell). A bounds-only guard therefore guarantees the direction is
+  legal, NOT that the move succeeds. This is load-bearing and is carried into
+  the gate items in section 7.
+
+1.5 DIRECTION ENCODING, PINNED THREE WAYS
+  uav_executor.py:46-47   _MOVE_X = [1, 0, -1, 0]; _MOVE_Y = [0, -1, 0, 1]
+  agents.py:823           "[0, 1, 2, 3] = [right, down, left, up]"
+  agents.py:825-826       identical vectors
+  => 0 = EAST (+x), 1 = SOUTH (-y), 2 = WEST (-x), 3 = NORTH (+y).
+
+  DEFECT RECORDED IN PASSING: tests/test_victim_searcher_hazard_retreat.py:31
+  reads `EAST, NORTH, WEST, SOUTH = 0, 1, 2, 3`. Direction 1 is SOUTH and
+  direction 3 is NORTH, so the N/S labels in that file are SWAPPED. The test's
+  behaviour is correct (it uses the integers) but the only test file that pins
+  this gate's direction choice mis-names the two directions most relevant to
+  this round - 4 of the 10 pins are on a north or south edge. Cosmetic, but it
+  makes the east-bias discussion in the diagnosis hard to audit. Fixing it is a
+  one-line rename and is proposed as part of Part 2.
+
+================================================================================
+2. THE MECHANISM, RE-DERIVED - AND IT IS SHARPER THAN THE DIAGNOSIS STATES
+================================================================================
+
+The diagnosis says "the hazard geometry does not change from step to step, so
+the same illegal direction is re-emitted every step". That is true but it is not
+the whole mechanism, and the difference matters for the fix.
+
+2.1 THE MARGIN-3 FILTER IS STRUCTURALLY STARVED AT A BOUNDARY
+  `_victim_edge_blocked_direction` (2113-2128) blocks a direction whenever
+      dist_before <= 3  AND  dist_after <= dist_before
+  where dist is min(x, y, x_max-x, y_max-y). Inside the 4-cell boundary band
+  this admits ONLY a strictly-inward move.
+  Replicated exactly in a scratch script on a 50x50 grid, at the ten recorded
+  pin cells:
+
+      cell      survivors of the edge filter   in-bounds dirs   off-grid dirs
+      (27, 0)   N                              E,W,N            S
+      (49,12)   W                              S,W,N            E
+      (49,24)   W                              S,W,N            E
+      (39,49)   S                              E,S,W            N
+      ( 0, 0)   NONE                           E,N              S,W
+      (49,42)   W                              S,W,N            E
+      (49,38)   W                              S,W,N            E
+      (23, 0)   N                              E,W,N            S
+      (49, 3)   W                              S,W,N            E
+      (49, 1)   W                              S,W,N            E
+
+  NINE of the ten leave exactly ONE candidate. The corner (0,0) leaves ZERO -
+  `_retreat_to_safe_interior_direction` is STRUCTURALLY INCAPABLE of returning
+  anything there, whatever the fire is doing, because a 4-connected move cannot
+  increase the minimum boundary distance from a corner. The same total dead zone
+  covers every cell where min(x, x_max-x) == min(y, y_max-y) <= 3, i.e. all four
+  corners and the near-corner diagonal cells (1,1), (2,2), (3,3) and mirrors.
+  Verified: (3,3) -> NONE; (4,4) -> all four survive.
+
+  THE CONSEQUENCE THAT DRIVES THE DESIGN. A pin does not require "every
+  neighbour burning". It requires only that the ONE admitted candidate is
+  hazardous - or, at a corner, nothing at all. AND: any fix that reuses the
+  retreat, or the :2374 ranking loop, will find NOTHING at exactly the moment
+  the guard is needed, because both apply this same filter. The guard must use
+  a legality-only candidate test that ignores the margin-3 filter.
+
+2.2 THE CLOSED LATCH - why the SAME direction re-fires, byte for byte
+  Traced in source and confirmed end to end:
+
+   (1) uav_executor.py:344 (and :912)
+         chosen_dir = int(getattr(agent, "selected_dir", 0))
+       chosen_dir is initialised from the agent's PREVIOUS direction.
+   (2) :949 `_choose_best_direction` filters candidates on `_direction_in_bounds`
+       (:4275), wind-blocked, lookahead and hazard level. At a hazard-surrounded
+       boundary cell every candidate is filtered out.
+   (3) :4364 falls through to `_exploration_fallback`, whose own filters
+       (:4388 bounds, :4392 `_victim_search_cell_is_safe`) also reject
+       everything, leaving `scored` empty - and then:
+         uav_executor.py:4450    return int(getattr(agent, "selected_dir", 0))
+       THE PREVIOUS DIRECTION, RETURNED UNVALIDATED. This is the origin of the
+       off-grid `chosen_dir`, and it is a THIRD unvalidated return the diagnosis
+       does not name.
+   (4) the gate's retreat returns None, so SITE A / SITE B hand that direction
+       straight back.
+   (5) uav_executor.py:436 -> :144
+         agent.selected_dir = int(chosen_dir)
+       with no bounds test of any kind.
+   (6) agents.py:852 refuses it; the position is unchanged; go to (1).
+
+  A CLOSED FOUR-NODE LATCH. This is why the recorded direction is IDENTICAL on
+  every step of a pin (south on every step 86-112 at (27,0)) - pure geometry
+  would permit the planner to re-pick; the latch guarantees it cannot.
+
+  WHY THIS MATTERS FOR THE FIX. The latch is broken at exactly one point by the
+  guard: once a LEGAL direction is committed at (5), the same starvation next
+  step re-emits THAT LEGAL direction. Repetition of a legal direction is
+  straight-line motion, not alternation. The mechanism that makes the bug a
+  livelock is the same mechanism that makes the guarded behaviour a straight
+  line. This is the strongest single argument for the guard - see section 4 for
+  its precise limits, which the adversarial pass narrowed.
+
+2.3 WHY IT IS SEARCHER-ONLY - a structural proof, not the measured zero
+  uav_executor.py:416-434 is a three-armed dispatch:
+      :417  if base_return_leg (action == "rtb_waypoint"):  pass
+      :419  elif victim searcher and action != "hold":      -> the gate (:425)
+      :428  elif action != "hold" and not (hold_escape & fire_tracker):
+                                                            -> _apply_final_direction_safety
+  `_apply_final_direction_safety` (1832) -> `_safe_direction_or_escape`
+  (1811-1830) ranks ALL FOUR directions with NO `continue` filters:
+      `_direction_danger_level` (1731-1739) returns 3 for OUT-OF-BOUNDS,
+      2 high fire, 1 smoke, 0 clear;
+      the loop takes the strict minimum level, tie-broken by
+      `_direction_escape_score` (1772).
+  An off-grid direction scores 3 and is strictly worse than any in-bounds one,
+  so it can be returned only if all four are off-grid - impossible on a grid of
+  side >= 2. THAT HELPER CANNOT BE STARVED. This is the code-level reason for
+  the diagnosis's measured "zero off-grid refusals in 23,422 tracker-steps".
+
+  CORRECTION THE ADVERSARIAL PASS FORCED, and it narrows the claim:
+  the dispatch has a THIRD arm and a hole. `rtb_waypoint` (:417-418) takes
+  NEITHER the gate NOR `_apply_final_direction_safety`, for EITHER role; and an
+  action of literally `"hold"` fails both :419 and :428, so it also takes
+  neither. So the correct statement is:
+      ON THE ORDINARY (non-return, non-hold) PATH, THE VICTIM SEARCHER IS THE
+      ONLY ROLE WHOSE COMMITTED DIRECTION IS NEVER BOUNDS-VALIDATED.
+  The `rtb_waypoint` and `hold` arms are unvalidated for every role. They do not
+  bite today (their producers bounds-filter, and the measured off-grid refusals
+  are 657/657 searchers carrying the gate's label), but they are real and are
+  recorded here as OUT OF SCOPE for this round - see section 8.
+
+2.4 ROLE REACHABILITY - PROVEN, closing the diagnosis's own open item
+  The diagnosis explicitly declined to prove the five non-primary call sites
+  unreachable by a tracker. Proven now:
+    :425                    guarded at :419 by `_role_is_victim_searcher(role)`.
+    :1277,:1297,:1347,:1474 all inside `if role_kind == "victim":`
+                            (uav_executor.py:923), whose sibling
+                            `if role_kind == "fire":` opens at :1481.
+    :1967                   inside `_apply_retarget_with_pathfinding_fallback`
+                            (:1953), whose only two callers (:1344, :1369) are
+                            inside that same victim block.
+  `_role_kind` (862-868) classifies any role containing "fire" as "fire", and
+  the runtime role vocabulary is exactly {fire_tracker, victim_searcher}
+  (wildfire_model.py:1013-1018).
+  => THE GUARD CANNOT FIRE FOR A FIRE TRACKER. This is now a source proof, not
+  an inference from a measured zero.
+  CAVEAT the verifier added and which is accepted: the gate can run TWICE in one
+  step (once inside `_resolve_direction_intent`, again at :425). The guard must
+  therefore be IDEMPOTENT - it is, because a legal direction passes through it
+  unchanged - and the "no-op on 98.9%" figure is per STEP, not per INVOCATION.
+
+2.5 HOW MUCH OF THE SEARCHER'S BEHAVIOUR THIS CAN TOUCH AT ALL
+  The searcher's dominant path SKIPS the gate: :424 exempts
+  `victim_search_escape_bfs` and pathfinding-routed `retarget_to_interior`, and
+  the project's own measurement (memory note uav-offgrid-and-corner-facts,
+  probe outputs/_bs_egress.py) puts that at 37-39 of 40 steps on a stock run.
+  So the gate is reached on a small minority of searcher-steps, and the guard
+  fires on the off-grid subset of those (~1.1% of searcher-steps).
+  THIS IS A SCOPE BOUND AND IT SUPPORTS THE BRIEF'S OWN EXPECTATION: expect the
+  pins to clear and exposure to move little.
+
+================================================================================
+3. REQUIREMENT 2 - THE GUARD. WHAT IT RETURNS, AND WHY
+================================================================================
+
+3.1 THE DECISION
+  SHAPE (a): THE BEST LEGAL ALTERNATIVE, BY A RULE THAT ADDS NO PREFERENCE.
+  Specifically: substitute the REVERSE of the offending direction,
+  `(chosen_dir + 2) % 4`, using the file's existing bounds idiom.
+  NOT a hold. NOT a hazard-scored pick.
+
+3.2 WHY NOT A HOLD
+  A hold is not available as a distinct action. agents.py:829-832 states it:
+  "there is no 'stay' action anywhere in the model - all four selected_dir
+  values are moves, and even the executor's own hold commits a direction and
+  walks the agent off the pad." The only way to express a hold is to emit a
+  direction that `move()` refuses - WHICH IS THE BUG. A hold would be
+  positionally identical to the livelock, would preserve the zero-coverage step
+  the round exists to remove, and would leave `selected_dir` stale (feeding the
+  latch at 2.2 and corrupting `uav_last_failed_dir`). Rejected.
+
+3.3 WHY THE REVERSE, AND WHY IT NEEDS NO SCORE
+  A PROOF, not a preference. The guard fires only when the cell in direction d
+  is out of bounds. That can happen only when the offending coordinate is at an
+  extreme (0 or max) and d points outward. Moving by the negation takes that
+  coordinate to 1 or max-1 - inside - with the other coordinate unchanged and
+  already in bounds. Therefore:
+      `(chosen_dir + 2) % 4` IS ALWAYS IN BOUNDS, AND ALWAYS STRICTLY INCREASES
+      THE DISTANCE TO THE BOUNDARY THE UAV IS PRESSED AGAINST.
+  This holds at corners too (it fixes one axis; a second firing fixes the other).
+  Consequences:
+    - no candidate scan that can come back empty - unlike every existing helper
+      in the gate, which is exactly what starved at the boundary (2.1);
+    - no tie to break, so no score that can flip between steps;
+    - NO PREFERENCE OF ANY KIND IS ADDED. It is not local hazard avoidance
+      (rejected #1): it reads no fire or smoke state. It is not a scorched
+      penalty (rejected #2): it reads no ground history. It does not touch
+      VICTIM_SEARCHER_HAZARD_RETREAT_RANGE, which stays at 99 (rejected #3).
+  Worked example: (27,0), chosen_dir 1 (south, off-grid) -> 3 (north) -> (27,1).
+
+3.4 THE DELIBERATE DEPARTURE FROM THE DIAGNOSIS - stated plainly
+  The diagnosis's scoped rule is "substitute any legal in-bounds direction;
+  prefer one onto non-burning ground when one exists", citing 65.7% of pinned
+  steps having such an option.
+  THAT PREFERENCE HAS ALMOST NOWHERE TO ACT, and where it acts it costs the
+  proof. At every NON-CORNER boundary cell the strictly-inward direction is
+  UNIQUE and equals `(chosen_dir+2)%4` (table in 2.1). So "prefer non-burning"
+  can only be exercised by declining the inward move and stepping ALONG the
+  edge - keeping the searcher on the outermost ring, where the guard can fire
+  again next step and where the retreat stays starved. The preference buys one
+  cleaner cell and sells the monotone property that makes the guard analysable.
+  DECISION: buy the proof, not the preference, at the default rung. The cost is
+  bounded and disclosed: UAVs are fire-immune (`_check_fire_casualties`,
+  wildfire_model.py, has no UAV branch), and the status quo is standing on that
+  cell for up to 26 steps with 92 of 160 pinned steps already on burning ground.
+  The worst case is ONE extra burning step per firing, against a dwell the fix
+  removes outright.
+  BUT THE ALTERNATIVE IS NOT DISCARDED - it is made a measurable rung. See 3.6.
+
+3.5 WHAT "LEGAL" MEANS, PRECISELY: IN-BOUNDS ONLY
+  Not in-bounds AND unoccupied. Reasons:
+    - there is no executor-side equivalent of `not_UAV_adjacent`. Verified: it
+      is defined only at agents.py:393-399 and has no counterpart under
+      src_extension/. Honouring the second conjunct of agents.py:852 needs new
+      code reading `model.grid.get_cell_list_contents`;
+    - occupancy within a step is order-dependent, and reading other UAVs'
+      committed positions mid-step is a determinism hazard this round should not
+      introduce;
+    - the UAV-blocked mode is the BERTH JAM (diagnosis section 3.5), which
+      affects trackers MORE than searchers and is explicitly a separate problem.
+      Extending the guard to occupancy would widen this round into it.
+  THE HONEST CONSEQUENCE, and the adversarial pass is right to insist on it:
+      the guard guarantees the DIRECTION is legal; it does NOT guarantee the
+      MOVE succeeds. If the substituted inward cell is occupied, agents.py:852
+      still refuses, and the searcher still does not move - the same
+      non-progress signature with the refusal reason changed from out-of-bounds
+      to occupancy.
+  This is why section 7 pre-registers a NEW-MODE gate item: searcher UAV-BLOCKED
+  runs / burning-steps (13 / 68 today) must not rise. Off-grid refusals -> 0 is
+  guaranteed by construction; pins -> 0 is guaranteed under the diagnosis's own
+  pin definition (which requires an off-grid refusal); converting an off-grid
+  pin into an occupancy pin would be a FAILURE and the gate must be able to see
+  it.
+
+3.6 THE RULE, STATED SO IT CAN BE IMPLEMENTED WITHOUT FURTHER DECISIONS
+
+  New private helper on UAVExecutor:
+
+      def _offgrid_guard_direction(self, agent: Any, direction: int) -> int:
+          """Legality guard for the hazard gate's two unvalidated fall-throughs.
+          Returns `direction` unchanged unless it leaves the grid."""
+          level = self._offgrid_guard_level()
+          if level <= 0:
+              return direction                      # OFF: exact pass-through
+          if not self._can_check_bounds(agent):
+              return direction                      # cannot test: unchanged
+          if self._direction_in_bounds(agent, direction):
+              return direction                      # already legal: unchanged
+          if level >= 2:
+              return self._first_boundary_safe_direction(agent, direction)
+          return (int(direction) + 2) % 4           # rung 1: the reverse
+
+  and, at the two sites, behind the switch:
+
+      :2321   return self._offgrid_guard_direction(agent, chosen_dir), <label>
+      :2402   return self._offgrid_guard_direction(agent, best_dir),   <label>
+
+  NOTES ON EACH PIECE, all forced by findings above:
+   - `_can_check_bounds` (4730-4739) is REQUIRED. `_direction_in_bounds`
+     (4770-4787) FAILS PERMISSIVE - it returns True when `pos` is None (4772)
+     or the model is None (4777) - which is exactly why the executor's own
+     idiom wraps it (see :1732-1733, :4720-4721). Calling it bare would make
+     "the substitute is guaranteed legal" false in the degenerate case.
+   - `_direction_in_bounds` is preferred over `_cell_in_bounds` because it
+     resolves the model via `_resolve_model(agent)` (4776) rather than reading
+     `self._model` directly (1702). ITS FALLBACK IS DEFECTIVE - see 8.2 - but
+     that fallback is dead on a real model, where `grid.out_of_bounds` is
+     callable and is the SAME predicate agents.py:852 uses.
+   - rung 2 reuses `_first_boundary_safe_direction` (4719-4725), which already
+     exists, is already applied by `_direction_toward` (4717), and scans
+     (chosen, chosen+1, chosen+3, chosen+2) - the REVERSAL LAST. It is the
+     file's own bounds-substitution idiom. Using it makes the fix a CONSISTENCY
+     fix rather than a new rule.
+   - the guard is idempotent (a legal direction passes through), which 2.4
+     requires because the gate can run twice in a step.
+   - it draws from no RNG and writes no state.
+
+3.7 THE EAST-BIAS CONCERN, downgraded on evidence
+  The diagnosis flags direction 0 (EAST) winning ties on first-wins ordering at
+  :2285-2288 as a "plausible contributing mechanism, not proven". The
+  adversarial pass narrowed it correctly: first-wins arbitrates only on an EXACT
+  tie, and at retreat range 99 the score is `_min_strict_hazard_distance * 5.0`,
+  which ties across candidates only when the hazard set is EMPTY
+  (`_min_strict_hazard_distance` returns the constant 99.0 only at :2225-2226,
+  `if not hazards`). At the recorded pins fire is adjacent, so an east-first
+  scan would usually NOT decide. The concern is real but weak.
+  THE RECOMMENDED RULE IS IMMUNE TO IT EITHER WAY: rung 1 has no scan and no
+  tie; rung 2's scan is anchored on `chosen_dir`, not on absolute east.
+
+================================================================================
+4. REQUIREMENT 3 - ANTI-OSCILLATION
+================================================================================
+
+4.1 WHAT THE TWO PRIOR ROUNDS ACTUALLY FOUND (verified, not paraphrased)
+  _move_toward round (outputs/moveoscillation_part1.txt): 0 of 144 guard
+  counterfactuals strictly better, 75 equal-or-worse, 62/62 episodes already
+  repaired by the board or by `_survival_move`. Reversals near a barrier are
+  usually the code's own improving pick.
+  last_cell round (outputs/lastcell_part1.txt, lastcell_report.txt): the guard
+  is LOAD-BEARING (~91% of its firings cost nothing); the defect was its
+  UNCONDITIONAL application; the fix was a structural-redundancy gate, not a
+  tuned threshold. Its recorded conclusion: "THE GUARD IS NOT THE PROBLEM. ITS
+  UNCONDITIONAL APPLICATION IS."
+  BOTH ROUNDS ARGUE AGAINST ADDING STATEFUL ANTI-OSCILLATION HERE.
+
+4.2 WHAT THE GUARD PROVES BY ITSELF - stated precisely, after refutation
+  CLAIM AS ORIGINALLY DRAFTED: "the guard is acyclic".
+  THAT CLAIM DOES NOT SURVIVE COMPOSITION AND IS WITHDRAWN. The correct,
+  defensible property is narrower:
+      NO TWO CONSECUTIVE GUARD-EMITTED MOVES CAN REVISIT A CELL, because the
+      reverse of an off-grid direction strictly increases the offending
+      coordinate and the guard NEVER emits an outward direction.
+  That is a genuine and useful property. It is NOT an anti-oscillation proof for
+  the gate as a whole, and it is not presented as one.
+
+4.3 THE ONE OSCILLATION SHAPE THAT IS REACHABLE - named, not hidden
+  The guard pushes the searcher inward off the edge. At the inward cell the
+  guard DOES NOT FIRE, because the upstream direction there is in bounds. The
+  pre-existing, UNGUARDED, in-bounds fall-through at :2321 can then hand back a
+  direction pointing back out - which is exactly how the worked-example searcher
+  reached (27,0) from (27,1) at step 85 in the first place. Result: a two-cell
+  alternation (edge cell <-> inward cell).
+  A MEMORY INSIDE THE GUARD CANNOT PREVENT THIS, because the guard does not fire
+  on the return leg at all. State here would be cost with no benefit - precisely
+  the shape the last_cell round condemned.
+  A SECOND SHAPE, from 3.5: if the substituted inward cell is occupied, the move
+  is refused and the searcher repeats in place - non-progress with the refusal
+  reason changed.
+
+4.4 WHY NO STATE IS ADDED, AND WHAT CATCHES THE ALTERNATION INSTEAD
+  Three existing mechanisms, all verified in source this round:
+   (a) `sweep_no_move_streak` - local_adaptation_generator.py:1333-1337,
+       incremented when the committed position is unchanged, RESET ON ANY
+       MOVEMENT; escape at :1369 when it reaches WIND_SWEEP_NO_MOVE_ESCAPE = 5
+       (:78). This is the FAST immobility escape.
+   (b) `pocket_streak` - counts steps inside a +/-2 anchor box and does NOT
+       reset on movement; at WIND_POCKET_CAMP_THRESHOLD it drives :2332-2334.
+       This is the SLOW one, and it is the one that survives a 2-cycle.
+   (c) `compute_oscillation_score` - src_extension/knowledge/
+       local_path_context_model.py:68-91 - a LIVE, IN-SIMULATION detector
+       scoring BOTH direction reversals at lag 2 and positional ping-pong at
+       lag 2.
+  THE HONEST ACCOUNTING, and this is a real behavioural consequence of the fix
+  that must be disclosed rather than argued away:
+    - today's FREEZE scores 0 on (c) - positions are all equal so the ping-pong
+      term's `last_positions[index] != last_positions[index-1]` is False, and a
+      constant direction has no opposite pair. A 2-cycle scores toward 1.0.
+      SO THE FIX DOES NOT MERELY CHANGE AN OFFLINE SIGNATURE: IT TURNS ON A LIVE
+      INPUT THE MODEL CURRENTLY CANNOT SEE. That is arguably the point - the
+      model can finally perceive the problem - but it is a behaviour change and
+      it is pre-registered for measurement in 7.4.
+    - the fix DISARMS (a) on formerly-pinned steps, because the UAV now moves.
+      It is the faster escape, and losing it is a genuine cost. (b) survives a
+      2-cycle and is unaffected.
+    - `_uav_stuck_counts` is likewise disarmed while the UAV moves. It has FOUR
+      consumers, not two (uav_executor.py:583, :1076; wildfire_model.py:1737,
+      :1840 -> LocalPathContextModel -> the UAV_STUCK trigger in
+      local_uav_analyzer.py). Whether any of them changes outcomes is a
+      MEASUREMENT question and is pre-registered; "no live repair mechanism is
+      lost" is NOT established and is not claimed.
+  NET POSITION: the guard's worst case (a 2-cycle) is caught by the same slow
+  camping detector that today's freeze trips, at the same rate, AND it newly
+  trips a live oscillation score that a freeze does not. It cannot be worse than
+  the livelock on this axis. Its expected case resolves in one step.
+
+4.5 HOW OSCILLATION WILL BE MEASURED - pre-registered, definitions fixed now
+  Measured on RECORDED POSITIONS, never on intent. Recorded fields (verified in
+  outputs/_ffr_harness.py:541-548): `uav_steps[t]` rows are
+      [uid, cell, role, selected_dir, battery, base_state]
+  SEMANTICS, corrected by the adversarial pass and load-bearing for the
+  arithmetic: `selected_dir[t]` IS THE DIRECTION APPLIED IN STEP t (written
+  pre-move at uav_executor.py:144, consumed in the same step inside `advance()`).
+  An implementer who reads it as "the direction applied next step" will shift the
+  pairing by one and compute the wrong firing set.
+
+  FIRING SET (computed on the OFF arm; this is the changed-step set):
+      for UAV row j at index t: p = uav_steps[t-1][j][1], d = uav_steps[t][j][3];
+      FIRE(t,j) iff role == 'victim_searcher' and p + (_MOVE_X[d], _MOVE_Y[d])
+      lies outside [0,HEIGHT) x [0,WIDTH).
+      This is exactly the diagnosis's off-grid-refusal counter.
+  REVERSAL: on realised positions. delta (0,0) is a HOLD - skipped WITHOUT
+      clearing the previous direction; otherwise m_t is the index whose
+      (_MOVE_X, _MOVE_Y) equals delta; REVERSAL iff (m_prev + 2) % 4 == m_t.
+  TIGHT REVERSAL: additionally requires strict step adjacency,
+      pos[t-1] == pos[t+1] != pos[t] with consecutive indices.
+      Both "any gap" and "tight" are reported, per arm.
+  LONGEST ALTERNATION: over each UAV's position sequence, the maximal run
+      [i..j] with len(set(run)) <= 2 and at least 2 position changes inside it.
+      Reported as a LENGTH (count and max), per arm, and separately for runs
+      containing at least one CHANGED step.
+  ATTRIBUTION IS MANDATORY: every NEW tight reversal must be opened and each of
+      its two legs attributed by action label and by membership in FIRE. The
+      last_cell round's entire +29 turned out to be one unit on an untouched
+      path. A reversal counts against this fix only if at least one leg is a
+      guard-substituted step.
+  AGAINST THE TARGET, not merely against position: using
+      `partition_steps[t]['targets'][uid]`, for every dwell/alternation run ask
+      whether Manhattan distance to the hooked target ever strictly decreased.
+      The figure to beat is the diagnosis's 94/94 never-decreased. A two-cell
+      alternation with the same property is NOT a fix and the gate must fail.
+  CAVEAT: `uav_steps` has no pre-step-1 frame, so step 1 is not evaluable for an
+      intent or a reversal.
+
+================================================================================
+5. REQUIREMENT 4 - CAN IT STRAND?
+================================================================================
+
+5.1 WHAT THE route_blocked LATCH ACTUALLY WAS (70e1b33, then 4795708)
+  `ff_marker.status = "route_blocked"` is a PERSISTENT STATUS FIELD on a
+  firefighter marker, read by dispatch gates as a property of the unit alone,
+  whose only in-run clear path required a dispatch that the flag itself refused.
+  A circular dependency: correctly released, permanently undispatchable. Fixed
+  by an external release pass and then ROUTE_BLOCK_STALE_CLEAR = 1.
+  THE SHAPE TO LOOK FOR: (i) a persistent field, (ii) that gates future
+  eligibility, (iii) whose clear path is blocked by the field itself.
+
+5.2 THE SEARCHER PATH HAS NO SUCH FIELD - enumerated
+  Every piece of state a direction or action label feeds:
+    `uav_last_failed_dir`     wildfire_model.py:1092-1095 - SET when the cell is
+        unchanged, POPPED when it changes. Self-clearing on movement, which is
+        the EXACT OPPOSITE of the route_blocked shape. Its only consumer is a
+        -6.0 score penalty and a filter (`_is_failed_direction`, :4461).
+        NOTE: during a pin that penalty is never even reached, because
+        `_exploration_fallback`'s `scored` list is empty - the one mechanism
+        that could have broken the latch is bypassed exactly when it is needed.
+    `uav_visit_counts`        wildfire_model.py:1090 - increments the pinned
+        cell every step, inflating `_visit_penalty` there. With the guard the
+        visits spread. Benign; a real behavioural difference; recorded.
+    `_uav_stuck_counts`       wildfire_model.py:3134-3158 - increments on a
+        refused move, RESET TO 0 on a successful one. Self-clearing.
+    `sweep_no_move_streak`    reset on any movement. Self-clearing.
+    `pocket_streak`           does not reset on movement; expires by its own
+        threshold logic. Not eligibility-gating.
+    `saturated_until` / target blacklists - both expire on a cooldown
+        (WIND_SATURATE_COOLDOWN_STEPS = 12, WIND_TARGET_BLACKLIST_COOLDOWN = 15).
+    `_victim_escape_memory`   a committed escape direction + step counter,
+        cleared when distance to target improves by 3 (uav_executor.py:974-987).
+  ONE CORRECTION THE ADVERSARIAL PASS FORCED, accepted:
+    `hazard_buffer_level` IS persistent with a SELF-EXEMPTING clear path -
+    local_adaptation_generator.py:1392-1393 resets it only `if ... < 2`, and 2
+    is exactly the value :2333 writes. So the blanket "no persistent field" is
+    wrong. But it does not gate DISPATCH eligibility (searchers have no dispatch
+    machinery); it permanently loosens the retreat buffer. It is therefore NOT
+    the route_blocked shape, and the claim is narrowed to:
+        NO STATE ON THE SEARCHER PATH GATES FUTURE DISPATCH ELIGIBILITY.
+
+5.3 CAN THE GUARD LEAVE A SEARCHER WORSE OFF THAN THE LIVELOCK DID?
+  ANSWER: NO, on every axis this round could enumerate - with two disclosed
+  costs and one residual that Part 3 must measure.
+   - It cannot create an unescapable state. Under the livelock the searcher ran
+     its planner every step and escaped when the fire cleared (step 113, via
+     `victim_search_escape_bfs`, which is exempt from the gate at :424). The
+     guard does not touch the planner, the target hook, dispatch eligibility, or
+     any clearing condition. Every escape route open today stays open.
+   - Its worst case (a 2-cycle) trips the same slow camping detector the freeze
+     trips, and additionally trips a live oscillation score the freeze does not
+     (4.4). It is strictly more visible to the model, not less.
+   - The guard destroys its own firing precondition ON ANY ACCEPTED MOVE. On an
+     occupancy refusal it repeats - equivalent to today, not worse.
+  COST 1 - BATTERY, quantified and corrected.
+     agents.py:369-375: every step -0.1; if moved, a further -0.2. So a refused
+     step costs 0.1 and a successful one 0.3.
+     The worked example checks out exactly: 26 refused steps x 0.1 = 2.6,
+     matching the recorded 74.2 -> 71.6.
+     THE BOUND MUST BE TAKEN OVER REFUSALS, NOT PINS - the guard converts EVERY
+     out-of-bounds refusal, not only the long same-cell ones. Using the
+     diagnosis's own counts: 113 off-grid refusals at dcD -> at most
+     113 x 0.2 = 22.6 extra battery points across that arm; 657 across the wider
+     167-record population -> at most 131.4. PER-UAV maximum is NOT established
+     and must be MEASURED, not asserted. Thresholds at risk: low 30.0, critical
+     15.0 (agents.py:286-287). At BASE_STATION_MODE 3 a depot recharges at
+     5.0/step, so a UAV that returns recovers quickly.
+     This is a real cost of the fix and is pre-registered in 7.8.
+  COST 2 - the loss of the fast `sweep_no_move_streak` escape on formerly-pinned
+     steps (4.4). Pre-registered.
+  RESIDUAL - the UAV_STUCK trigger and its three other consumers change state.
+     Whether that changes any outcome is a measurement question, pre-registered.
+
+================================================================================
+6. REQUIREMENT 5 - KILL SWITCH, AND VALUE-IDENTITY WHEN OFF
+================================================================================
+
+6.1 THE CONSTANT
+  NAME      VICTIM_SEARCHER_HAZARD_GATE_BOUNDS_FIX
+  LOCATION  common_fixed_variables.py, immediately after
+            VICTIM_SEARCHER_HAZARD_RETREAT_RANGE (:165), with its own doc block
+            in the style of :140-164.
+  The prefix ties it to the retreat range it guards; `_FIX` is this repo's
+  existing suffix for a defect fix behind a kill switch (BASE_STATION_DOCK_FIX,
+  cfv:475).
+
+6.2 TYPE: AN ORDINAL LADDER, NOT A BOOLEAN
+    0  OFF. THE KILL SWITCH. Both returns behave exactly as at 737b6c7.
+    1  ON, REVERSE ONLY. When the fall-through direction leaves the grid,
+       substitute `(chosen_dir + 2) % 4`. Provably legal, monotone inward,
+       adds NO preference of any kind.
+    2  ON, NEAREST-INDEX SCAN. Substitute via the file's existing
+       `_first_boundary_safe_direction` (4719-4725): (chosen, chosen+1,
+       chosen+3, chosen+2), reversal last. This can select a non-inward legal
+       move and so gives up the monotone property.
+  WHY A LADDER, and this is the round's central methodological point: rungs 1
+  and 2 are NOT the same experiment. The substitution fires on ~1.1% of
+  searcher-steps, and on 65.7% of those a non-burning legal option exists - so
+  the rungs genuinely diverge. More importantly, rung 2 is the one that edges
+  toward a hazard/geometry PREFERENCE, the family of rejected approach #1.
+  Bundling them would make it impossible to attribute an outcome to either, and
+  would leave the round unable to answer whether the preference the diagnosis
+  suggested is worth anything. This is the dock-fix round's stated rationale for
+  an ordinal ladder (cfv:453-456), applied here.
+  PROPOSED DEFAULT: 1. Rung 2 is run as a measured arm, not shipped blind.
+
+6.3 THE ACCESSOR - ONLY AN EXACT INTEGRAL ZERO DISABLES
+  The recurring defect this must not repeat: the fire mechanic's mission gate
+  and BASE_STATION_FIREPROOF both shipped a fallback that silently disagreed
+  with its stated default, via `int(0.5) == 0`. The canonical correct pattern is
+  `base_station_fireproof()` at agents.py:1064-1086. Copy its shape exactly:
+
+      def _offgrid_guard_level(self) -> int:
+          """VICTIM_SEARCHER_HAZARD_GATE_BOUNDS_FIX, read at call time from the
+          cfv MODULE so a per-run override through apply_scenario_config is
+          visible - the same contract as _hazard_retreat_range (:2098-2111).
+          THE KILL SWITCH IS AN EXACT INTEGRAL ZERO. A bare int() truncates:
+          --set ...=0.5 arrives as the FLOAT 0.5, int(0.5) is 0, and the run
+          would silently take the OFF path while params recorded 0.5. The
+          fallback is the SHIPPED value, like every other accessor here, which
+          carries the same recorded hazard: a junk override ARMS this rather
+          than disarming it."""
+          raw = getattr(_cfv, "VICTIM_SEARCHER_HAZARD_GATE_BOUNDS_FIX", _SHIPPED)
+          try:
+              value = int(raw)
+          except (TypeError, ValueError):
+              return _SHIPPED
+          if isinstance(raw, float) and raw != value:
+              return _SHIPPED
+          return value
+
+  where `_SHIPPED` is the module-level shipped default and MUST be kept in sync
+  with it in all three places (getattr default and both fallbacks) - the
+  adversarial pass caught a draft that hardcoded 2 while recommending 1, which
+  would have made the docstring false. Behaviour: 0 -> OFF; 0.5 -> SHIPPED (not
+  OFF); "0" -> 0 OFF; None / "off" -> SHIPPED; 1, 2 -> as written.
+  RESIDUAL HOLE, disclosed: `isinstance(raw, float)` catches only float
+  instances, so `Decimal("0.5")` or `Fraction(1,2)` would still truncate to 0
+  and disarm. NOT reachable through the harness - outputs/_ffr_harness.py's
+  `_parse_value` only ever yields bool/None/int/float/str - but reachable
+  through a direct `apply_scenario_config(...)`. Inherited from the canonical
+  pattern; recorded, not fixed here.
+
+6.4 VALUE-IDENTITY WHEN OFF
+  The guard's first statement is the switch read, and it returns `direction`
+  unchanged before touching anything else. It performs no state write, reads no
+  model state on the OFF path, and draws from no RNG (verified: the gate, its
+  helpers and `_wind_search_state`'s module contain no `random` use). The OFF
+  arm therefore executes exactly the code 737b6c7 executes.
+  TERMINOLOGY, as the brief requires: the project's criterion is
+  VALUE-IDENTITY, not byte-identity, because one dict's key order varies between
+  processes.
+  ONE ASYMMETRY TO KEEP IN MIND FOR PART 2, found by the adversarial pass:
+  SITE A (:2321) returns BEFORE the `ws["hazard_buffer_level"] = 2` /
+  `ws["force_coverage_escape"] = True` write at :2330-2334; SITE B (:2402) is
+  reached AFTER it. The two guard sites therefore operate on different
+  wind_state. This does not affect identity when OFF (neither site is altered),
+  but it means the two sites are not interchangeable and must be tested
+  separately.
+
+6.5 THE ACTION LABEL - the direct hook the diagnosis asked for
+  The diagnosis's LIMIT 1 asks a fix round to HOOK the two return sites directly
+  rather than derive which fired. The harness already records the action label
+  per UAV-step (`uav_actions[t]` rows are [uid, action, burning, vis_smoke,
+  active_smoke, fire_dist], outputs/_ffr_harness.py:623), so the label IS the
+  per-step channel. PROPOSAL: on a guard firing, emit a label that CONTAINS the
+  original, distinguishing the two sites:
+      victim_search_hazard_retreat_oob_oncell   (SITE A - own cell hazardous)
+      victim_search_hazard_retreat_oob_ranked   (SITE B - ranking loop starved)
+  Containment matters: `_movement_category_for_action` (:166-168) substring-
+  matches `"hazard"`, so the movement category is unchanged.
+  PRE-REGISTERED TEST CONSEQUENCE: tests/test_wind_aware_corridor_search.py:287-
+  293 asserts `action in {...}` - an EXACT set - and it calls
+  `_resolve_direction_intent`, which CONTAINS four of the six gate call sites
+  (the function spans 905-1521). Both new labels must be added to that set. This
+  is a DECLARED, INTENTIONAL test change, not a regression, and it is listed
+  here so it cannot later be mistaken for one.
+
+================================================================================
+7. PART 3 PRE-REGISTRATION - every gate item, tool, field and definition
+================================================================================
+
+7.0 ARMS AND SETUP
+  Freeze the diagnosis tools into outputs/ at this round's commit - they exist
+  only on `searcherfire`:
+      git show searcherfire:outputs/_sf_cat.py      > outputs/_sf_cat.py
+      git show searcherfire:outputs/_sf_analyze.py  > outputs/_sf_analyze.py
+  Verified reusable at 737b6c7 unchanged (both are pure offline readers over
+  outputs/*.json; `_sf_cat.load` handles UTF-16 and UTF-8).
+  ARMS, all at the searcherfix branch head, same checkout, seed-matched:
+      sfOFF   VICTIM_SEARCHER_HAZARD_GATE_BOUNDS_FIX = 0   (the baseline)
+      sfON    = 1   (reverse-only, the proposed default)
+      sfSCAN  = 2   (nearest-index scan, the attribution arm)
+  EVERY queue line MUST carry `--uav-actions`. Without it the harness writes
+  `"uav_actions": null` and `_sf_analyze` raises TypeError, because its guard is
+  `if "uav_actions" in run`, which is True for a null.
+  Reuse outputs/_dcd4_pool.sh (no bare wait, validator skip, orphan adoption).
+  One wave at a time.
+
+7.1 KILL SWITCH VALUE-IDENTITY
+  sfOFF vs a 737b6c7 arm on the canonical 13, value-identical (not byte-). If a
+  0/N identity comes back with identical differing fields and no eval field,
+  that is a harness schema change, not a regression.
+
+7.2 PRIMARY GATE - ZERO PINS. RE-BASELINED, AND THE BRIEF'S FORM IS NOT HONEST
+  THE BRIEF SAYS: "all 10 known pins must clear". THAT IS NOT A VALID GATE AT
+  737b6c7, and this is the single most important finding of the round after the
+  mechanism itself.
+  WHY: the diagnosis was measured at 6281542, BEFORE the depot-fireproof commit
+  6668368. BASE_STATION_FIREPROOF = 1 makes 50 of 2,500 cells non-ignitable -
+  a FIRE-SPREAD change. Measured offline this round over the dfpB/dfpON tuples:
+  the burning-cell set first differs at EXACTLY the control's first depot-
+  ignition step in all 34 tuples that have one, with zero divergence and
+  byte-equal uav_steps in the 3 that do not. POST-FIREPROOF RUNS ARE DIFFERENT
+  WORLDS.
+  RE-MEASURED, on the post-fireproof records that exist:
+      of the 10 diagnosis pins, 7 have a post-fireproof record
+        4 reproduce step-for-step identically
+        3 ARE ALREADY ABSENT, with no fix applied at all
+      3 have no post-fireproof record and are unknown.
+  THE HONEST GATE:
+    G1 PRIMARY, STRUCTURAL and immune to world drift: in sfON, the count of
+       off-grid refused steps carrying the hazard-retreat label must be EXACTLY
+       0, in every run, every tuple. A bounds-validated direction makes it
+       impossible; anything else is a bug in the implementation.
+    G2 COMPARATIVE, re-baselined: compute the pin set on sfOFF at this commit
+       using `_sf_analyze.pins()`. THAT set must clear in sfON. The diagnosis's
+       10 are carried as a CROSS-REFERENCE only, with the 4/3/3 split above
+       stated explicitly so no one reads a vanished pin as a fix.
+    G3 NO NEW DWELL RUN: no same-cell occupancy run in sfON that is absent in
+       sfOFF, by the D2 classification, reported by cause (TRANSIT / OFF-GRID /
+       UAV-BLOCKED).
+  PER-PIN REPORTING, as the brief requires: unit, the step it pinned, the step
+  it moved - taken from `_sf_analyze.pins()`, whose key is
+  (wind, roles, seed, uid, cell) and whose record carries the start step.
+  PIN DEFINITION, re-verified first-hand from the tool: a maximal run of
+  consecutive steps for one victim_searcher on the SAME cell where each step is
+  an off-grid refusal (cell == previous cell AND cell + MOVE[selected_dir]
+  outside the grid).
+
+7.3 THE THREE LIVELOCK SIGNATURES
+   (a) multi-step burning dwells carrying the hazard-retreat label - from
+       `uav_actions[t][j][1]` plus `_sf_cat` ground category plus same-cell runs.
+       Today 431/431.
+   (b) out-of-bounds refusals by searchers - the FIRING SET of 4.5. Today 113 at
+       dcD; 657 across the 167-record population. NOTE THESE ARE DIFFERENT
+       POPULATIONS and must not be conflated: pre-register 113 -> 0 on the 57
+       shipped-default tuples (the diagnosis's own gate), and treat 657 -> 0 as
+       a separate wider check requiring the wider re-run.
+   (c) dwell runs that never reduce distance to the hooked target - from
+       `partition_steps[t]['targets'][uid]`. Today 94/94 (25/25 de-duplicated).
+
+7.4 OSCILLATION - definitions fixed in 4.5. Additionally report the live
+    `compute_oscillation_score` consequence: the fraction of formerly-pinned
+    UAV-steps whose score moves off 0, since a freeze scores 0 and a 2-cycle
+    does not. This is a disclosed behaviour change, not a gate failure by
+    itself, but an unexplained rise is.
+
+7.5 DRONE STEPS IN FIRE, interior-hazard definition, searcher-only (E1) and
+    all-UAV (E2), on the 18 route_blocked seeds. Current shipped baseline after
+    the fireproof round: E1 2.50% / E2 1.61%.
+    Direct sum over `uav_actions[t][j][2]` (the burning bit of the cell the UAV
+    stands on), split by role from `uav_steps[t][j][2]`.
+    EXPECTATION, stated in advance so a null is not read as failure: the
+    diagnosis measured only 0.14 pp of genuine search-component improvement
+    available under CRN. Expect the pins to clear and exposure to move little.
+    CAVEAT on quoting the recoverable figure: 92 burning steps is the 57-tuple
+    de-duplicated pin table; 99 is the dcD+d4D 53-tuple D2 off-grid row; 66 (of
+    which +54 is dcD-attributable growth) is the seed-matched decomposition.
+    None of them is "the" expected effect without naming the arm.
+    PROVENANCE CAVEAT to carry: the "18 route_blocked seeds" are 18 tuples but
+    only 13 distinct seeds; a seed under two winds is one world.
+
+7.6 DETECTION TIMING - THE COST THE FIX EXISTS TO RECOVER
+    `det_max_first_seen`: the step at which the LAST victim first enters a
+    searcher's observation box. Purely geometric replay of recorded positions -
+    confirmed computable offline from `victim_steps[t]` rows [vid, cell, status]
+    (harness :522-529) and `uav_steps[t]` positions, with
+    UAV_OBSERVATION_RADIUS = 8 (cfv:629) giving a 17x17 box.
+    Report BEFORE (sfOFF) and AFTER (sfON), per arm and per seed.
+    Reference values: partial rho +0.465 / +0.442 / +0.438 across three pools,
+    strengthening under the fire-size control; tertile means 73.2 / 89.2 / 115.7
+    steps.
+    PRE-REGISTERED AS THE HEADLINE OUTCOME, per the brief - this, not exposure,
+    is what the fix is for. Also pre-registered: mean instantaneous coverage,
+    because the diagnosis's own LIMIT 7 says a fix round should re-measure
+    coverage as a gate item rather than inherit the number.
+    DO NOT pool `det_max_first_seen` with the status-based detection variables
+    (det_mean_first, det_max_first); they are a different measurement and are a
+    role-composition artefact.
+
+7.7 SEED-MATCHED SAMPLES, canonical first, then fresh 10.
+    PROVENANCE, carried forward and stated in the report: "the 41" are 27
+    distinct runs; 8 of the "fresh 10" had run in earlier rounds; the five
+    shipped-default arms pool to 113 records but only 57 distinct tuples.
+    Count distinct SEEDS before pooling, not tuples.
+
+7.8 PER-ARM OUTCOMES: rescued, dead, ff_deaths, never_detected, terminal_step.
+    PLUS, because they are costs this fix introduces: mean and max battery at
+    horizon per searcher, count of low/critical transitions, and return-to-base
+    trips. And note the recorded defect in `eval.never_detected` - it undercounts
+    roughly threefold, because a victim that dies while still 'candidate' is
+    booked to eval.dead; report the corrected count alongside.
+
+7.9 ROUTE_BLOCKED GATE: outputs/_ffr_rbcompare.py --new <tag> --old ihrest.
+    Four seeds regress at the shipped default (east/707, south/101, south/202,
+    south/404). Confirm that same set and nothing new.
+
+7.10 TEST BASELINE at 737b6c7: 8 failed / 650 passed.
+    REPORT THE FAILING NAME SET, not the count - this project has three recorded
+    cases where counts agreed while sets differed.
+    STATUS: a full `pytest -q` was started on the searcherfix branch at
+    737b6c7 and had NOT COMPLETED when this design was written. The name set is
+    therefore PENDING and must be captured before Part 2 changes any code, so
+    that the comparison is against a set measured on this checkout.
+    KNOWN, DECLARED CHANGE: tests/test_wind_aware_corridor_search.py:287-293
+    must gain the two new labels (6.5). Plus the proposed N/S constant rename in
+    tests/test_victim_searcher_hazard_retreat.py:31 (1.5).
+    NEW TESTS TO ADD (none exist for this branch - that file's docstring at
+    :11-14 says the gate's "current cell is hazard" branch cannot fire under its
+    fake model): an invariant test that for all 4 edges and all 4 corners, and
+    all 4 values of chosen_dir, with every in-bounds neighbour hazardous, the
+    gate returns a direction whose next cell is in bounds; a positive control
+    reproducing (27,0) with chosen_dir 1 and asserting the returned direction is
+    3; and a kill-switch test asserting 0 / 0.5 / "0" / None / junk behave as
+    6.3 specifies.
+
+================================================================================
+8. RISKS, OPEN QUESTIONS AND THINGS DELIBERATELY LEFT OUT
+================================================================================
+
+8.1 A PRE-EXISTING int(0.5) DEFECT IN THE VERY FUNCTION THIS ROUND TOUCHES
+  `_hazard_retreat_range` (uav_executor.py:2098-2111) is
+      max(0, int(getattr(_cfv, "VICTIM_SEARCHER_HAZARD_RETREAT_RANGE", 0)))
+  inside a try/except returning 0. Executed:
+      0   -> 0 edge-only        0.5  -> 0 edge-only (SILENT)
+      '0' -> 0 edge-only        None -> 0 edge-only
+      'off' -> 0 edge-only      99   -> 99 armed      '99' -> 99 armed
+  So `--set VICTIM_SEARCHER_HAZARD_RETREAT_RANGE=0.5` silently selects range 0,
+  which is the WORST setting measured (3.45% against the shipped 2.59%), with
+  nothing anywhere saying so. This is a live instance of the exact defect class
+  the brief warns about, sitting in the function this round edits. It is NOT
+  fixed here - changing it would alter the meaning of an existing switch and
+  belongs in its own round - but it is recorded, and the new accessor does not
+  repeat it.
+
+8.2 `_direction_in_bounds` HAS A DIMENSION-SWAPPED FALLBACK
+  wildfire_model.py:169 builds `MultiGrid(HEIGHT, WIDTH, False)`, and :106-108
+  states "x is the HEIGHT axis and y is the WIDTH axis ... getting these the
+  wrong way round is silently inert only while the grid is square."
+      `_cell_in_bounds` (1713):      0 <= cell[0] < height and cell[1] < width
+      `_direction_in_bounds` (4787): 0 <= nx < width  and  ny < height
+  The second is TRANSPOSED. Both fallbacks are DEAD on a real model, where
+  `grid.out_of_bounds` is callable, and both are inert while WIDTH == HEIGHT ==
+  50. This is the dimension-fix round's exact defect class, latent. Recorded;
+  the guard uses `_direction_in_bounds` behind `_can_check_bounds` for its
+  model-resolution behaviour, and does not depend on the defective fallback.
+
+8.3 A THIRD UNVALIDATED RETURN, DELIBERATELY OUT OF SCOPE
+  `_exploration_fallback` (uav_executor.py:4450) returns the agent's previous
+  `selected_dir` unvalidated when starved. It is the ORIGIN of the off-grid
+  direction (2.2). It is NOT guarded in this round because it is reached by all
+  roles through `_choose_best_direction`, so guarding it would change tracker
+  behaviour, break the "cannot fire for a tracker" property, and widen the
+  value-identity surface far beyond a searcher-only fix. RECORDED AS A CANDIDATE
+  FOR ITS OWN ROUND. The gate guard is sufficient because the gate is the last
+  thing that touches the direction before it is committed.
+
+8.4 THE `rtb_waypoint` AND `hold` DISPATCH ARMS (2.3) bypass both post-filters
+  for every role. Not exercised by the pins; out of scope; recorded.
+
+8.5 WHAT THIS FIX DOES NOT ADDRESS, restated from the diagnosis
+  The berth jam (section 3.5, 13 searcher / 20 tracker events), the return-leg
+  exposure (56 steps), and the depot component (47 steps, already handled by the
+  fireproof round). Three separate problems; they stay separate.
+
+8.6 OPEN QUESTIONS THIS ROUND COULD NOT CLOSE
+  (i) DOES THE 2-CYCLE ACTUALLY MATERIALISE? It requires the upstream
+      `chosen_dir` at the inward cell to point back outward, which comes from
+      `_resolve_direction_intent` and cannot be predicted from source. THE
+      CHEAPEST BOUND IS OFFLINE AND SHOULD BE RUN BEFORE ANY WAVE: on the
+      existing records, for each pin, read `uav_steps[t][j][3]` at the inward
+      cell on the step BEFORE the pin began, and count how many of the pins have
+      an outward intent there. That converts the risk from speculative to
+      measured without a simulation.
+  (ii) WEST AND NORTH WINDS ARE UNMEASURED in the whole corpus. Six of the ten
+      pins are on the east edge; a west-wind check is genuinely informative.
+  (iii) The searcher's gate-reach ratio (2.5) is inherited from a memory note
+      and was not re-verified this round. It bounds how much the fix can touch.
+
+================================================================================
+9. DECISIONS REQUIRING CONFIRMATION BEFORE PART 2
+================================================================================
+  D1  THE GATE MUST BE RE-BASELINED (7.2). "All 10 pins clear" is not valid at
+      737b6c7: 3 of the 7 with records are ALREADY GONE without any fix, because
+      depot-fireproof changed the worlds. Proposed replacement: G1 structural
+      zero + G2 re-measured sfOFF pin set + G3 no new dwell run.
+  D2  THE DEFAULT RUNG. Proposed 1 (reverse-only, no preference), with rung 2
+      run as an attribution arm. This DEPARTS from the diagnosis's suggested
+      "prefer non-burning ground", for the reason in 3.4 - at every non-corner
+      boundary cell that preference can only be exercised by giving up the
+      monotone-inward property.
+  D3  "LEGAL" MEANS IN-BOUNDS ONLY (3.5). The guard cannot guarantee the move
+      succeeds; an occupancy refusal remains possible. Accepting this keeps the
+      round out of the berth jam, at the price of a gate item (G3/7.3) rather
+      than a guarantee.
+  D4  THE ACTION LABEL CHANGES on fired steps, and two tests change knowingly
+      (6.5, 7.10). Alternative: keep the label identical and lose the direct
+      per-site hook the diagnosis's LIMIT 1 asks for.
+  D5  ANTI-OSCILLATION IS PROVEN ONLY PARTIALLY BY ARGUMENT (4.2). The strong
+      claim was withdrawn under refutation. The 2-cycle is reachable; the design
+      relies on existing detectors plus Part 3 measurement, as the brief
+      requires. The offline pre-check in 8.6(i) should be run first.
+  D6  SCOPE: `_exploration_fallback`:4450, the `rtb_waypoint`/`hold` arms, the
+      `_hazard_retreat_range` int(0.5) defect and the `_direction_in_bounds`
+      axis swap are all RECORDED AND LEFT ALONE. Confirm that is wanted.
+
+================================================================================
+END OF PART 1 - STOPPING HERE FOR CONFIRMATION, AS INSTRUCTED.
+No source file has been modified. The only file this round writes into the repo
+is this report.
+================================================================================

@@ -28,7 +28,16 @@ from src_extension.execution.uav_executor import UAVExecutor
 from test_uav_executor import _FakeAgent, _bfs_test_model, _next_pos
 
 ACTION = "victim_search_wind_aware"
-EAST, NORTH, WEST, SOUTH = 0, 1, 2, 3
+# Direction encoding, per agents.py:823 "[0,1,2,3] = [right, down, left, up]"
+# and _MOVE_X=[1,0,-1,0] / _MOVE_Y=[0,-1,0,1]: 1 is SOUTH (-y) and 3 is NORTH
+# (+y). This file previously named them the other way round, which made every
+# assertion below read as the opposite compass direction from the one the model
+# actually takes. The names here and their use sites were swapped together, so
+# every assertion still pins exactly the integer it always pinned - only the
+# compass word attached to it changed. 4 of the 10 recorded searcher pins are on
+# a north or south edge, so reading this file with the labels reversed is how a
+# future round would get the pin geometry backwards.
+EAST, SOUTH, WEST, NORTH = 0, 1, 2, 3
 
 
 def _model(fire_cells=None):
@@ -91,7 +100,7 @@ def test_range_always_retreats_away_from_the_fire(monkeypatch, searcher):
     direction, label = _gate(executor, agent, EAST)
     # the retreat: the neighbour furthest from the fire; north, west and south tie
     # at 11 and the first in index order wins
-    assert direction == NORTH
+    assert direction == SOUTH
     assert label == ACTION
     assert _fire_distance(_next_pos(agent.pos, direction), fire) > _fire_distance(agent.pos, fire)
 
@@ -103,7 +112,7 @@ def test_finite_range_fires_only_when_the_fire_is_within_range(monkeypatch, sear
     assert _gate(far, agent_far, EAST) == (EAST, ACTION)
     near, agent_near = searcher((25, 20), fire)    # fire 5 away
     direction, label = _gate(near, agent_near, EAST)
-    assert direction == NORTH
+    assert direction == SOUTH
     assert label == ACTION
 
 
@@ -113,7 +122,7 @@ def test_retarget_label_is_kept_when_the_retreat_fires(monkeypatch, searcher):
     direction, label = executor._apply_victim_searcher_hazard_gate(
         agent, EAST, "victim_search_wind_aware_retarget",
     )
-    assert direction == NORTH
+    assert direction == SOUTH
     assert label == "victim_search_wind_aware_retarget_to_interior"
 
 
@@ -122,13 +131,13 @@ def test_range_zero_still_retreats_inward_at_the_edge(monkeypatch, searcher):
     executor, agent = searcher((20, 1))            # one cell from the y=0 edge, no fire
     # every direction that does not increase the edge distance is edge-blocked
     # (margin 3), so the only candidate is south, into the interior
-    assert _gate(executor, agent, NORTH) == (SOUTH, ACTION)
+    assert _gate(executor, agent, SOUTH) == (NORTH, ACTION)
 
 
 def test_always_on_keeps_edge_handling_through_the_edge_filter(monkeypatch, searcher):
     monkeypatch.setattr(cfv, "VICTIM_SEARCHER_HAZARD_RETREAT_RANGE", 99)
     executor, agent = searcher((20, 1))
-    assert _gate(executor, agent, NORTH) == (SOUTH, ACTION)
+    assert _gate(executor, agent, SOUTH) == (NORTH, ACTION)
 
 
 def test_retreat_scoring_is_hazard_only_when_on(monkeypatch, searcher):
@@ -139,7 +148,7 @@ def test_retreat_scoring_is_hazard_only_when_on(monkeypatch, searcher):
     monkeypatch.setattr(cfv, "VICTIM_SEARCHER_HAZARD_RETREAT_RANGE", 0)
     # edge-scored: the inward step (south) wins on 14*D + 18 even though it is the
     # step toward the fire
-    assert executor._retreat_to_safe_interior_direction(agent) == SOUTH
+    assert executor._retreat_to_safe_interior_direction(agent) == NORTH
     monkeypatch.setattr(cfv, "VICTIM_SEARCHER_HAZARD_RETREAT_RANGE", 99)
     # hazard-only: east, north and west tie at 8 cells from the fire, east wins
     # the tie; south (6 cells) is never chosen
@@ -149,5 +158,5 @@ def test_retreat_scoring_is_hazard_only_when_on(monkeypatch, searcher):
 def test_range_zero_gate_is_unchanged_far_from_edge_and_fire(monkeypatch, searcher):
     monkeypatch.setattr(cfv, "VICTIM_SEARCHER_HAZARD_RETREAT_RANGE", 0)
     executor, agent = searcher((25, 25))
-    for direction in (EAST, NORTH, WEST, SOUTH):
+    for direction in (EAST, SOUTH, WEST, NORTH):
         assert _gate(executor, agent, direction) == (direction, ACTION)

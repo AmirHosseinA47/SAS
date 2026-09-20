@@ -290,6 +290,12 @@ def test_executor_retargets_when_planner_requests_new_wind_target() -> None:
         "victim_search_wind_aware",
         "victim_search_wind_aware_sweep",
         "victim_search_hazard_retreat",
+        # searcherfix: the legality guard on the gate's two unvalidated
+        # fall-throughs relabels the steps it fires on, so the firing is
+        # hooked in uav_actions instead of derived. Both contain the old
+        # label. See VICTIM_SEARCHER_HAZARD_GATE_BOUNDS_FIX.
+        "victim_search_hazard_retreat_oob_oncell",
+        "victim_search_hazard_retreat_oob_ranked",
     }
     assert isinstance(chosen_dir, int)
 

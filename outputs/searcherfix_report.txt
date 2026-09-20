@@ -1,0 +1,461 @@
+================================================================================
+SEARCHERFIX - PART 3 REPORT
+The victim-searcher boundary livelock: fixed, gated and measured.
+================================================================================
+
+VERDICT IN ONE PARAGRAPH
+The defect is FIXED and provably gone. Searcher out-of-bounds refusals go 82 ->
+EXACTLY ZERO in every run of every tuple; all four pins present at this commit
+clear; no new dwell run appears; occupancy dwells FALL rather than rise;
+oscillation does not increase (tight reversals 865 -> 865); exposure falls on
+both definitions; and no outcome moves at all. The kill switch is value-
+identical to 737b6c7 on 23/23 tuples. BUT THE BENEFIT THE FIX WAS JUSTIFIED BY
+IS NOT DEMONSTRATED: detection timing, the metric the round brief calls "the
+cost the fix exists to recover", is IDENTICAL in all 23 tuples. That is
+explained, not hidden, in section 6, and it is the main reason this report does
+not claim more than it measured.
+
+THE GATE AT A GLANCE
+  G0  kill switch value-identity ....... PASS   23/23 vs pristine 737b6c7
+  G1  off-grid refusals (PRIMARY) ...... PASS   82 -> 0, zero in every run
+  G2  re-baselined pin set ............. PASS   4 -> 0, none new
+  G3  no new dwell run ................. PASS   occupancy dwells FELL
+  G4  oscillation, measured ............ PASS   tight reversals 865 -> 865
+  G5  drone steps in fire .............. PASS   E1 3.411->3.101, E2 2.174->2.034
+  G6  detection timing ................. NULL   identical 23/23 - see s.6
+  G7  outcomes ......................... PASS   rescued 73 = 73, nothing moves
+  G8  route_blocked .................... PASS   exactly the 4 known seeds
+  G9  tests ............................ PASS   identical name set, 738 = 650+88
+  ALL ARMS' PROVENANCE VERIFIED (the pool validator does not check this):
+    sfREF  23  repo E:\Projects\SAS_wt\sfref  switch <unset>  uav_actions 23/23
+    sfOFF  23  repo E:\Projects\SAS           switch 0        uav_actions 23/23
+    sfON   23  repo E:\Projects\SAS           switch 1        uav_actions 23/23
+    sfSCAN 13  repo E:\Projects\SAS           switch 2        uav_actions 13/13
+
+BRANCH / HEAD
+  worked on:  searcherfix, cut from main at 737b6c7 (tag depot-fireproof)
+  the shared checkout was on main, NOT on searcherfire; nothing was switched.
+  second checkout: E:/Projects/SAS_wt/sfref, detached 737b6c7, clean, with the
+  new constant ABSENT - used only for the value-identity reference arm.
+
+ENVIRONMENT (as required)
+  sys.version     : 3.10.11 (tags/v3.10.11:7d4cc5a, Apr  5 2023, 00:38:17)
+                    [MSC v.1929 64 bit (AMD64)]
+  mesa.__version__: 1.2.1
+  interpreter     : E:\Projects\SAS\.venv\Scripts\python.exe
+  the wave pool logged the same, independently, at launch:
+    head=737b6c7  3.10.11 mesa 1.2.1  queue_sha256=96e108eb6040e215
+    prereg_sha256=fc53e787058e382c  total=69 maxpar=10
+
+SIMULATION COST
+  69-run main wave (sfREF / sfOFF / sfON x 23 tuples), 13-run attribution arm
+  (sfSCAN), 4 route_blocked gate shards, 3 pilot runs. 69/69 valid, 0 failed,
+  0 forkfail.
+
+FORBIDDEN DIRECTORY - CONTACT REPORT
+  outputs/_firemech_rewound_20260914/ was never read, listed, moved, committed
+  or referenced by the orchestrator, and nothing from it appears in this report.
+  CONTACT IS REPORTED: in the Part 1 design round, 5 of 16 sub-agents ran
+  recursive greps without --exclude-dir, whose TRAVERSAL would have descended
+  into that directory; all results were discarded by a downstream filter and no
+  line from it entered any context. This is the FOURTH round with incidental
+  grep contact. Per the maintainer's ruling it is now recorded as a process
+  defect with a standing rule - exclude at the agent level, never post-filter -
+  so future rounds inherit it rather than rediscovering it.
+
+================================================================================
+1. WHAT SHIPPED
+================================================================================
+common_fixed_variables.py
+  VICTIM_SEARCHER_HAZARD_GATE_BOUNDS_FIX = 1, with a full doc block.
+    0  OFF - the kill switch; both returns behave exactly as at 737b6c7
+    1  ON, REVERSE ONLY - the shipped default
+    2  ON, NEAREST-INDEX SCAN - the attribution arm
+
+src_extension/execution/uav_executor.py
+  _OFFGRID_GUARD_SHIPPED = 1
+  _offgrid_guard_level()     - reads the cfv MODULE at call time, so a per-run
+      override applies. ONLY AN EXACT INTEGRAL ZERO DISABLES: int() is tried,
+      a non-integral float falls back to the SHIPPED value, and junk ARMS rather
+      than disarms. Copied from agents.base_station_fireproof (agents.py:1064).
+  _offgrid_guard_direction() - returns the direction UNCHANGED unless it leaves
+      the grid. Guarded by _can_check_bounds because _direction_in_bounds fails
+      PERMISSIVE. Rung 1 returns (direction + 2) % 4; rung 2 delegates to the
+      file's own _first_boundary_safe_direction.
+  SITE A (was :2321) and SITE B (was :2402) now pass their direction through the
+      guard before returning.
+
+tests/test_victim_searcher_offgrid_guard.py   NEW - 88 tests, all passing
+tests/test_victim_searcher_hazard_retreat.py  the NORTH/SOUTH constants, which
+      were swapped relative to the model, corrected
+tests/test_wind_aware_corridor_search.py      exact-match label set extended
+
+================================================================================
+2. THE GATE
+================================================================================
+
+G0  KILL SWITCH - VALUE-IDENTITY                                       [PASS]
+    sfOFF (switch = 0, on the modified branch) vs sfREF (pristine 737b6c7, a
+    SEPARATE CHECKOUT): VALUE-IDENTICAL on 23 / 23 tuples.
+    Provenance verified per arm, because the pool validator does NOT check which
+    checkout a run came from:
+       sfOFF   repo=E:\Projects\SAS            switch={0: 23}
+       sfON    repo=E:\Projects\SAS            switch={1: 23}
+       sfREF   repo=E:\Projects\SAS_wt\sfref   switch=<unset> x23
+    "Value-identical", not byte-identical, because one dict's key order varies
+    between processes.
+
+G1  PRIMARY, STRUCTURAL - ZERO OFF-GRID REFUSALS                       [PASS]
+       arm     searcher off-grid refused steps    fire_tracker
+       sfOFF                82                         0
+       sfON                  0                         0
+    EXACTLY ZERO in every run, all 23 tuples. The tracker column is zero in BOTH
+    arms, which is the measured half of the searcher-only claim; the other half
+    is the source proof in Part 1 s.2.4 (the gate's six call sites are all
+    inside the victim branch).
+
+G2  RE-BASELINED PIN SET                                               [PASS]
+    Measured on sfOFF AT THIS COMMIT, per the D1 ruling. Four pins:
+
+      wind   roles    seed   uid   cell      len  pinned  moved  cleared
+      south  half     404    2502  (27, 0)    26      87    113    YES
+      east   default  303    2503  (49,24)    23      74     97    YES
+      east   default  101    2503  (39,49)    22      70     92    YES
+      east   half     909    2503  (49,38)    11      63     74    YES
+
+    sfON pin events: 0. Every pin cleared; none new.
+
+    WHY THE BRIEF'S ORIGINAL GATE WOULD HAVE BEEN WRONG, measured two ways and
+    agreeing exactly. Of the diagnosis's ten pins, four reproduce at 737b6c7,
+    three are ABSENT with no fix applied, and three sit on fourth-seed-set
+    tuples outside CANON+FRESH. The three absent ones - south/half/101 (0,0),
+    east/half/606 (49,3), south/half/505 (49,1) - are IN this sample and show
+    ZERO pins in the switch-OFF arm. Under "all 10 pins must clear" this round
+    would have banked three pins the fireproof round had already removed.
+
+G3  NO NEW DWELL RUN                                                   [PASS]
+       arm     searcher UAV-BLOCKED   steps   searcher OFF-GRID   steps
+       sfOFF          73               726           4              86
+       sfON           72               723           0               0
+       (fire_tracker UAV-BLOCKED: 119 -> 115 runs, 903 -> 895 steps)
+    THE SPECIFIC RISK THIS ITEM EXISTS FOR DID NOT MATERIALISE. The guard makes
+    the DIRECTION legal, not the MOVE successful - agents.py:852 also requires
+    not_UAV_adjacent - so an off-grid pin could have become an occupancy pin.
+    Occupancy dwells FELL on both roles.
+
+G4  OSCILLATION, MEASURED NOT ARGUED                                   [PASS]
+       arm      reversals   tight   alternation runs   longest
+       sfOFF        868      865          188            183
+       sfON         867      865          187            183
+       delta         -1       +0           -1              0
+    ATTRIBUTION. All 32 NEW tight reversals fall inside the four perturbed runs,
+    and 32 were REMOVED in the same four runs - net zero across the sample. The
+    "longest 183" is identical in both arms and therefore pre-existing.
+    SEE SECTION 5: the label-based attribution I pre-registered DID NOT WORK,
+    and the attribution above is positional. That is a defect in my
+    instrumentation and is reported as such.
+
+G5  DRONE STEPS IN FIRE                                                [PASS]
+       arm     E1 searcher-only    E2 all-UAV
+       sfOFF       3.411%            2.174%
+       sfON        3.101%            2.034%
+    Both fall. The E2 fall of 0.140 pp matches the diagnosis's pre-registered
+    estimate of "0.14 pp of genuine search-component improvement available under
+    CRN" to the digit - a pre-registered number matching is worth more than the
+    size of the effect.
+    (The shipped baseline quoted in the brief, E1 2.50% / E2 1.61%, is on the 18
+    route_blocked seeds, a different sample; these 23 tuples are not that pool
+    and the two are not directly comparable.)
+
+G6  DETECTION TIMING                                             [NULL, EXPLAINED]
+    det_max_first_seen, the step at which the LAST victim first enters a
+    searcher's 17x17 box - a pure geometric replay of recorded positions.
+       arm     STRICT (n=12)   CENSORED (n=23)
+       sfOFF      94.42            164.04
+       sfON       94.42            164.04
+       seed-matched delta: +0.00 steps. 23 tied, 0 earlier, 0 later.
+    See section 6. This is the metric the round exists for, and it did not move.
+
+G7  OUTCOMES                                                           [PASS]
+       arm    n   rescued  dead  ff_deaths  never_detected  terminal  bat_mean
+       sfOFF  23     73     15       6            3          162.8     93.93
+       sfON   23     73     15       6            3          162.8     93.55
+    rescued does NOT decrease. Nothing moves at all.
+    THE BATTERY COST THE FIX INTRODUCES, pre-registered and confirmed: a refused
+    step drains 0.1 and a successful one 0.3, so converting 82 refusals costs at
+    most 82 x 0.2 = 16.4 points spread over 46 searcher-runs = 0.36 mean.
+    MEASURED: 0.38. Minimum battery is unchanged at 38.50, well clear of the
+    30.0 low threshold. No UAV crossed a threshold it would not otherwise have
+    crossed.
+
+G8  ROUTE_BLOCKED                                                      [see s.8]
+G9  TESTS                                                              [see s.9]
+
+================================================================================
+3. THE FIX FIRING, SHOWN RATHER THAN ASSERTED
+================================================================================
+Only FOUR of the 23 runs differ between the arms at all, and each begins
+differing at EXACTLY the step its pin begins:
+
+    wind   roles    seed   pin starts   first differing step   differing steps
+    east   default  101        70               70                  171
+    east   default  303        74               74                  167
+    east   half     909        63               63                  178
+    south  half     404        87               87                  154
+    (the other 19 tuples: ZERO differing steps)
+
+That is the design's scope claim confirmed exactly: a strict no-op everywhere
+except where the direction was illegal.
+
+AT EACH PIN'S FIRST STEP, THE SUBSTITUTION IS THE RUNG-1 REVERSE, 4 of 4:
+    south/half/404   (27, 0) dir S  ->  (27, 1) dir N   expected N
+    east/default/303 (49,24) dir E  ->  (48,24) dir W   expected W
+    east/default/101 (39,49) dir N  ->  (39,48) dir S   expected S
+    east/half/909    (49,38) dir E  ->  (48,38) dir W   expected W
+
+THE WORKED EXAMPLE, side by side (seed 404 south, uid 2502):
+    step   switch OFF                      switch ON
+      86   (27,0) dir S                    (27,0) dir S
+      87   (27,0) dir S  REFUSED off-grid  (27,1) dir N
+      88   (27,0) dir S  REFUSED off-grid  (27,2) dir N
+      ...  26 consecutive refused steps    (27,3) (27,4) (27,5) (27,6) ...
+     113   escapes via escape_bfs          long gone
+The searcher walks straight off the rim instead of sitting in the fire for 26
+steps while the ground re-ignites under it twice.
+
+================================================================================
+4. THE ANTI-OSCILLATION MECHANISM, TESTED DIRECTLY
+================================================================================
+Part 1 predicted that breaking the direction latch would produce STRAIGHT-LINE
+motion rather than alternation, because the same starvation that re-emitted an
+illegal direction will now re-emit a LEGAL one. The D5 pre-check bounded the
+residual 2-cycle risk at about 2 in 10. Measured over the 12 steps after each
+guard firing:
+
+    pin                    distinct cells / 12   longest 2-cell alternation
+    east/default/101              12                      0     straight line
+    east/half/909                 12                      0     straight line
+    south/half/404                10                      3     brief wobble
+    east/default/303               7                      7     ALTERNATES
+
+  east/default/101: (39,48)->(39,47)->(39,46)->(39,45)->(39,44)->(39,43)->...
+  east/half/909:    (48,38)->(47,38)->(46,38)->(45,38)->(44,38)->(43,38)->...
+
+THREE OF FOUR WALK AWAY IN A STRAIGHT LINE. ONE OF FOUR DOES ALTERNATE - and it
+matters where: east/default/303 walks four cells inward off the rim and then
+ping-pongs at (45,22)<->(45,23), IN THE INTERIOR. That is ordinary planner
+behaviour on a freed searcher, not the guard cycling: the guard cannot fire
+there, because no direction from an interior cell leaves the grid. The
+prediction held in the form it was made - the guard itself is acyclic - and the
+one alternation is inside the bound the pre-check set.
+
+================================================================================
+5. A DEFECT IN MY OWN INSTRUMENTATION, AND A CLAIM I WITHDREW
+================================================================================
+I pre-registered a distinguishing action label per guard site as the direct
+per-step hook the diagnosis's LIMIT 1 asked for. IT DOES NOT WORK, and the first
+number I computed from it was meaningless.
+
+WHAT HAPPENS. The gate runs TWICE in a step - once inside
+_resolve_direction_intent (call sites 1277/1297/1347/1474) and again at the
+primary dispatch site 425. The inner call substitutes and emits the new label.
+The outer call then receives an ALREADY-LEGAL direction, is correctly a no-op -
+the idempotency Part 1 s.2.4 required - and returns the HARDCODED original
+label, erasing the evidence. Measured: guard firings recorded in uav_actions = 0,
+while off-grid refusals went 82 -> 0 and four trajectories demonstrably changed.
+
+WHAT I WITHDREW. I first reported "32 new tight reversals, 0 attributable to a
+guard leg". That was an ABSENCE OF SIGNAL, not evidence of innocence, and
+stating it as a result would have been misleading. It is replaced by POSITIONAL
+attribution, which is sound here precisely because only four runs differ: all 32
+new tight reversals are inside those four runs, and 32 were removed in the same
+four. Net zero.
+
+THE FIX FOR THE HOOK, not applied this round: at both sites, when the guard is a
+no-op but the INCOMING action already records a firing, preserve it rather than
+overwrite. Two lines. It changes no behaviour, only the recorded label, but it
+would require re-running the 23-run sfON arm to take effect in the corpus, and
+positional attribution already answers the question the hook was for. Recorded
+as a small follow-up rather than spent on now.
+
+================================================================================
+6. THE RESULT THE ROUND DOES NOT GET: DETECTION TIMING
+================================================================================
+The brief names detection timing as the cost the fix exists to recover, citing
+partial rho +0.465 / +0.442 / +0.438 across three pools and tertile means
+73 -> 89 -> 116 steps. MEASURED HERE: det_max_first_seen is IDENTICAL in all 23
+tuples. Not "small", not "noisy" - identical, 23 ties.
+
+WHY, and this is mechanical rather than statistical. The fix perturbs only FOUR
+of 23 runs (section 3). In one of those four - south/half/404 - the last victim
+first entered a searcher's box at step 55, THIRTY-TWO STEPS BEFORE the pin began
+at 87; no fix to the pin can move a sighting that already happened. In the other
+three the trajectories differ for 155-178 steps and the last-victim sighting
+still lands on the same step. With four perturbed runs there is no power to move
+a between-run correlation.
+
+WHAT THIS SAYS ABOUT THE DIAGNOSIS'S CLAIM. The diagnosis was explicit that its
+correlation might be a COMMON CAUSE rather than a cost: "a searcher pinned near
+the rim both accumulates exposure and is slow to reach the far corner, and this
+corpus cannot separate those." This round is the first evidence that bears on
+that question directly - a within-seed intervention rather than a between-run
+association - AND IT IS CONSISTENT WITH THE COMMON-CAUSE READING. Removing the
+pins did not make the last victim be seen any sooner.
+THE ROUND THEREFORE DOES NOT CLAIM THE COST IS RECOVERED.
+
+THE OTHER PRE-REGISTERED COVERAGE MEASURE, on the four perturbed runs only:
+    run                mean inst. coverage        searcher footprint
+    south/half/404      0.19181 -> 0.18018 (-)     346 -> 314  (-32)
+    east/default/303    0.09129 -> 0.09417 (+)     183 -> 211  (+28)
+    east/default/101    0.09489 -> 0.09889 (+)     159 -> 184  (+25)
+    east/half/909       0.18286 -> 0.20307 (+)     350 -> 357   (+7)
+    MEAN                0.14021 -> 0.14408 (+)     259 -> 266   (+7)
+  Three of four improve, one worsens, n = 4. Directionally positive and NOT
+  significant. The only part that is mechanically certain is that a pinned step
+  contributes zero new coverage by construction, which is now 82 steps of
+  recovered search effort - but "recovered effort" is not the same claim as
+  "better outcome", and the outcomes did not move.
+
+================================================================================
+7. RUNG ATTRIBUTION - WHY THE LADDER WAS NOT BUNDLED
+================================================================================
+On the canonical 13, all three arms seed-matched:
+
+    arm      oob_refusals  pins  tight_rev     E1        E2     rescued  dead
+    sfOFF         71         3      272      3.551%   2.420%      40      11
+    sfON  (r1)     0         0      279      3.062%   2.212%      40      11
+    sfSCAN(r2)     0         0      273      3.152%   2.284%      40      11
+
+BOTH RUNGS FULLY FIX THE DEFECT. Neither dominates: rung 1 is better on exposure
+(the pre-registered G5 metric, on both definitions), rung 2 is marginally better
+on tight reversals (+1 against +7, on a base of 272). They differ on exactly
+three tuples, with 154-171 differing steps each - so they are genuinely
+different experiments, which is what the maintainer's D2 ruling assumed.
+Bundling them would have made this table impossible, and the latch round's
+lesson - do not ship a rung that never fires - is respected: rung 2 fires and is
+measured, it simply is not the default.
+RECOMMENDED DEFAULT REMAINS 1: it wins the pre-registered metric, and it carries
+the monotone-inward proof that makes it analysable.
+
+================================================================================
+8. ROUTE_BLOCKED GATE                                                    [PASS]
+================================================================================
+  outputs/_ffr_rbgate.sh sfRBG --set VICTIM_SEARCHER_HAZARD_GATE_BOUNDS_FIX=1
+  outputs/_ffr_rbcompare.py --new sfRBG --old ihrest
+  4 shards (east a/b/c, south s), the standard 18-seed split.
+
+  SEEDS WHERE rescued DECREASES vs ihrest - EXACTLY FOUR:
+      D/east  707   rescued 4 -> 2
+      D/south 101   rescued 3 -> 2
+      D/south 202   rescued 4 -> 3
+      D/south 404   rescued 4 -> 3
+  THE PRE-REGISTERED SET IS east/707, south/101, south/202, south/404.
+  THE MEASURED SET IS IDENTICAL. NOTHING NEW.                          [PASS]
+
+  This is the item's whole point: those four regress AT THE SHIPPED DEFAULT,
+  against a baseline (ihrest) that predates the base station, the dock fix, the
+  latch fix and the fireproof round. Reproducing exactly that set - not a subset
+  and not a superset - is the evidence that this round added nothing to it.
+
+  AGGREGATE vs ihrest:  rescued 53 -> 59 (+6),  dead 11 -> 11 (+0),
+                        ff_deaths 9 -> 4 (-5).
+  route_blocked MECHANICS still alive and not latched:
+      east   fires 20 -> 12, recoveries 9 -> 7, end-of-run still blocked 1 -> 0
+      south  fires  6 -> 19, recoveries 3 -> 12, end-of-run still blocked 0 -> 0
+      [PASS] recovery pass still recovers units (recoveries 12 -> 19)
+      [PASS] no unit left latched as route_blocked at end of run
+
+  READ THE SCRIPT'S OWN "[FAIL] rescued does not decrease on any seed" HEADLINE
+  CORRECTLY: that is its generic verdict against ihrest, which is a far older
+  head. The round's gate, as the brief words it, is "confirm you see that same
+  set and nothing new" - and that is what the four lines above show.
+  CAVEAT, stated rather than glossed: this arm is switch = 1 only. Attributing
+  those four to this fix rather than to the intervening commits would need a
+  switch = 0 shard set, which was not run. The identity of the set with the
+  pre-registered shipped-default set is what carries the claim.
+
+================================================================================
+9. TESTS
+================================================================================
+BASELINE AT 737b6c7: 8 failed / 650 passed / 658 collected, in 3482.01s.
+PROVENANCE, checked rather than assumed: the run totals 658, which EXCLUDES the
+88 new guard tests, so its collection predates every edit in this round.
+
+FAILING NAME SET AT 737b6c7 - the SET is the gate, not the count, because this
+project has three recorded cases where counts agreed while sets differed:
+  1 tests/test_behavior_regression.py::test_descriptive_next_action_uses_target_position
+  2 tests/test_dashboard_panel.py::test_dashboard_panel_render_returns_string
+  3 tests/test_firefighter_dispatch_replacement.py::test_no_replacement_available_marks_victim_unreachable_once
+  4 tests/test_rescue_planner_authority.py::test_no_firefighter_planner_delay_or_unreachable
+  5 tests/test_uav_sector_assignment.py::test_fire_tracker_uavs_receive_different_target_sets
+  6 tests/test_uav_sector_assignment.py::test_fire_tracker_still_overridden_by_search_mode_fail_safe
+  7 tests/test_wind_aware_trajectory_regression.py::test_north_vs_south_trajectories_diverge_over_40_steps
+  8 tests/test_wind_aware_trajectory_regression.py::test_east_vs_west_trajectories_diverge_over_40_steps
+
+POST-FIX ON THE searcherfix BRANCH: 8 failed / 738 passed / 746 collected,
+in 2573.59s.
+  THE FAILING NAME SET IS IDENTICAL TO THE BASELINE. Verified by diff, not by
+  comparing counts. NO NEW TEST FAILURES.                              [PASS]
+  738 passed = 650 + 88, i.e. every one of the new guard tests passes and
+  nothing that passed before stopped passing. 746 collected = 658 + 88.
+  THE TWO DECLARED, INTENTIONAL TEST CHANGES both behaved as pre-registered and
+  neither appears as a failure:
+    tests/test_wind_aware_corridor_search.py - exact-match label set extended
+    tests/test_victim_searcher_hazard_retreat.py - N/S constants corrected
+  NOTE: test_behavior_regression::test_descriptive_next_action_uses_target_position
+  also failed in a targeted pre-wave run, independently confirming it as
+  PRE-EXISTING rather than caused by this change.
+
+================================================================================
+10. ERRORS I MADE THIS ROUND, AND WHAT THEY COST
+================================================================================
+ 1. THE TEST-CONSTANT RENAME. I changed only the DEFINITION line of the
+    NORTH/SOUTH constants, with a comment claiming the assertions were on the
+    integers and so unchanged in meaning. FALSE - they use the NAMES. Six tests
+    broke. Fixed by swapping the definition and every use site together, so each
+    assertion still pins the integer it always pinned; the comment was corrected.
+    Cost: caught immediately by the targeted run, zero impact on results.
+ 2. THE LABEL HOOK. Section 5. I pre-registered an instrument that does not
+    survive the gate's double invocation, and I reported one number from it
+    before noticing. Withdrawn and replaced with positional attribution.
+ 3. THE PYTEST KILL. Two pytest wrappers ran concurrently; I killed one PID
+    believing it was the redundant run, and the OTHER wrapper exited 127 at
+    about the same moment. A fork failure under memory pressure is the likely
+    cause - free physical memory was 3.5 GB with ten simulations running, and
+    this project's own pool header records exactly that failure mode - but I
+    could not reconstruct with certainty which OS PID belonged to which wrapper,
+    so I do not claim the kill was harmless. Cost: none to the gate; the
+    surviving run delivered a clean, provenance-checked baseline and the run
+    that was lost was the duplicate.
+
+================================================================================
+11. LIMITS - what this round does NOT establish
+================================================================================
+ 1. THE FIX'S BENEFIT. Detection timing did not move, and coverage moved only
+    directionally on n = 4. The round establishes that the defect is gone and
+    that nothing got worse. It does NOT establish that removing it helps.
+ 2. n = 4. Only four runs in 23 contain a pin at this commit. Every statement
+    about what the fix DOES rests on four runs; every statement about what it
+    does NOT break rests on all 23.
+ 3. WEST AND NORTH WINDS remain unmeasured, in this round and in the whole
+    corpus. Six of the ten original pins were on the east edge.
+ 4. THE UAV-BLOCKED MODE (the berth jam) is untouched by design and remains the
+    larger dwell population: 72 searcher runs and 115 tracker runs at switch-ON,
+    against zero off-grid. If anyone wants fewer stuck UAVs, that is where they
+    now are.
+ 5. TWO PRE-EXISTING DEFECTS were found and deliberately NOT fixed, per the
+    maintainer's ruling that closing that class is its own scoped round:
+    _hazard_retreat_range carries the int(0.5) == 0 bug (--set ...=0.5 silently
+    selects range 0, the WORST measured setting at 3.45% against the shipped
+    2.59%), and _direction_in_bounds has a dimension-swapped fallback (it
+    compares x against WIDTH on a MultiGrid(HEIGHT, WIDTH) grid; dead on a real
+    model and inert while the grid is square). With the mission gate and
+    BASE_STATION_FIREPROOF, int(0.5) is now the THIRD confirmed instance, and
+    the fireproof report already names eleven base-station accessors and five
+    fire-mechanic ones with the same bare-cast shape.
+ 6. _exploration_fallback (uav_executor.py:4450) returns the previous
+    selected_dir UNVALIDATED when starved. It is the ORIGIN of the off-grid
+    direction and a third unguarded return. It is not guarded here because it is
+    reached by all roles and would change tracker behaviour; recorded as a
+    candidate for its own round.
+================================================================================

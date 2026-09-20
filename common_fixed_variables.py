@@ -164,6 +164,57 @@ VICTIM_FLEE_MAX_DISPLACEMENT = 6
 # applies. Deterministic - it draws from no RNG.
 VICTIM_SEARCHER_HAZARD_RETREAT_RANGE = 99
 
+# VICTIM_SEARCHER_HAZARD_GATE_BOUNDS_FIX - the legality guard on the two
+# fall-through returns of _apply_victim_searcher_hazard_gate
+# (src_extension/execution/uav_executor.py:2321 and :2402). Derivation, the three
+# rejected alternatives and the full gate: outputs/searcherfix_part1.txt.
+#
+# THE DEFECT. When no safe in-bounds neighbour exists the retreat returns None
+# and the gate hands back the UPSTREAM direction with no bounds test, labelled
+# victim_search_hazard_retreat. At a grid edge that direction leaves the grid,
+# agents.py move() refuses it on out_of_bounds, the geometry is unchanged, and
+# the same illegal direction is re-emitted every step. Measured: 10 distinct
+# pins over 57 shipped-default tuples, longest 26 consecutive refused steps, ALL
+# on a boundary; 657/657 out-of-bounds refusals are victim searchers and none is
+# a tracker in 23,422 tracker-steps.
+#   0  OFF. THE KILL SWITCH. Both returns behave exactly as at 737b6c7, and a run
+#      is value-identical to that commit.
+#   1  ON, REVERSE ONLY - the shipped default. When the fall-through direction
+#      leaves the grid it is replaced by (direction + 2) % 4. That reverse is
+#      PROVABLY always in bounds (an off-grid step means the offending coordinate
+#      is at an extreme, so negating it lands at 1 or max-1) and it strictly
+#      increases the distance to the boundary the UAV is pressed against, at
+#      corners too. It adds NO preference of any kind: it reads no fire, no
+#      smoke and no ground history.
+#   2  ON, NEAREST-INDEX SCAN - the attribution arm. Substitutes via the
+#      executor's own _first_boundary_safe_direction, scanning (chosen,
+#      chosen+1, chosen+3, chosen+2) and taking the first in-bounds one. This can
+#      pick a non-inward legal move and so gives up the monotone-inward property
+#      that makes rung 1 analysable. Kept SEPARATE, not bundled, because it is
+#      the rung that edges toward a preference and the two are not the same
+#      experiment.
+#
+# WHY THE RETREAT ITSELF IS UNTOUCHED. Turning it down is a measured-harmful
+# third option: range 99 (shipped) 2.59% < range 6 3.10% < range 0 3.45% of
+# searcher steps on burning ground. The feature causing the pins is the best
+# setting measured, so this guards only the fall-through.
+#
+# SCOPE. It fires only when the returned direction is out of bounds - a no-op on
+# every step whose direction is already legal (~98.9% of searcher-steps) - and it
+# cannot fire for a fire tracker, which never reaches this gate: the primary call
+# site is role-guarded at uav_executor.py:419 and the other five sit inside the
+# `role_kind == "victim"` block at :923. It makes the DIRECTION legal, not the
+# MOVE successful: agents.py:852 also requires not_UAV_adjacent, so an occupancy
+# refusal remains possible and is a pre-registered gate item.
+#
+# ONLY AN EXACT INTEGRAL ZERO DISABLES IT. Read at call time from this module
+# through uav_executor._offgrid_guard_level, so an apply_scenario_config override
+# applies; its fallback is the SHIPPED value, which carries the recorded hazard
+# that a junk override ARMS this rather than disarming it. A bare int() would
+# truncate 0.5 to 0 and silently take the OFF path - the defect class this repo
+# has now hit three times. Deterministic; draws from no RNG.
+VICTIM_SEARCHER_HAZARD_GATE_BOUNDS_FIX = 1
+
 # Firefighter fire mechanic (round 1, outputs/firemech_part1.txt). An IDLE
 # firefighter - one the rescue dispatcher counts as available and that has no
 # target - works against the fire front; any rescue assignment preempts it on its
