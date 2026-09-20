@@ -100,8 +100,12 @@ def _slim_panel(p):
         # nearest_fire_dist is in this whitelist deliberately: a field missing from
         # it is dropped with no error, no warning and no test failure - the browser
         # simply renders nothing. See outputs/basestation_part1.txt section 6.4.
+        # `exiting` (base-mark round, option d+): the builder already computes it;
+        # the "fire d / r" cell needs it to state the unit's OWN retreat range,
+        # which is NONE while it carries a victim out. It is the only payload key
+        # this round adds. See outputs/basemark_part1.txt section 5.4.
         "firefighter_view": [{k: f.get(k) for k in ["id", "position", "alive", "assigned", "route_blocked", "status",
-                                                    "nearest_fire_dist"]}
+                                                    "nearest_fire_dist", "exiting"]}
                              for f in p.get("firefighter_view", [])],
         "alert_list": [{k: a.get(k) for k in ["step", "severity", "alert_type", "target_id", "message"]}
                        for a in p.get("alert_list", [])[-8:]],
@@ -648,7 +652,7 @@ function applyPreset(k,s){if(k==='custom')return;
   victims.value=s[k].NUM_VICTIMS;ffs.value=s[k].NUM_FIREFIGHTERS;}
 
 document.getElementById('probtoggle').onclick=function(){probMode=!probMode;this.classList.toggle('on',probMode);
-  this.textContent='Probability map: '+(probMode?'on':'off');if(curFrame)render(curFrame);};
+  this.textContent='Probability map: '+(probMode?'on':'off');if(curFrame){render(curFrame);setLegend();}};
 
 document.getElementById('randseed').onchange=function(){seed.disabled=this.checked;};
 document.getElementById('run').onclick=async function(){
@@ -718,9 +722,17 @@ function fovSwatch(){
   if(VFR>0)s+='<span><i class="sw" style="'+core+';transform:rotate(45deg)"></i>victim flee radius ('+VFR+', manhattan)</span>';
   return s;
 }
-function setLegend(){const FOVSW=fovSwatch();document.getElementById('maplegend').innerHTML=probMode
-  ?'<span><i class="sw" style="background:#ffffff"></i>low prob</span><span><i class="sw" style="background:#636363"></i>med</span><span><i class="sw" style="background:#000000;border:1px solid #444"></i>high</span><span><i class="sw" style="background:#00FFFF"></i>victim-searcher</span><span><i class="sw" style="background:#FF00FF"></i>fire-tracker</span>'+FOVSW
-  :'<span><i class="sw" style="background:#fe5501"></i>fire</span><span><i class="sw" style="background:#ababab"></i>smoke</span><span><i class="sw" style="background:#2b2b2b"></i>burnt (spent)</span><span><i class="sw" style="background:#895e00"></i>scorched (re-ignites)</span><span><i class="sw" style="background:#770099"></i>base station</span><span><i class="sw" style="background:#FF00FF"></i>fire-tracker</span><span><i class="sw" style="background:#00FFFF"></i>victim-searcher</span><span><i class="sw" style="background:#FFFF00"></i>victim</span><span><i class="sw" style="background:#00FFCC"></i>firefighter</span><span><i class="sw" style="background:#ffd75a"></i>assigned-to</span>'+FOVSW;}
+// Three-tone chip for the base station - the banner's tones in the banner's
+// order: #770099 field, 1px #FFFFFF keyline, 1px #000000 casing. Same rule as
+// fovSwatch: a flat swatch cannot describe a multi-tone mark. It appears in BOTH
+// legend branches, because the depot block and its banner are drawn in
+// probability mode too (the old flat chip was in the normal branch only).
+function baseSwatch(){
+  return '<span><i class="sw" style="background:#770099;border:1px solid #FFFFFF;outline:1px solid #000000;border-radius:0"></i>base station</span>';
+}
+function setLegend(){const FOVSW=fovSwatch(),BASESW=baseSwatch();document.getElementById('maplegend').innerHTML=probMode
+  ?'<span><i class="sw" style="background:#ffffff"></i>low prob</span><span><i class="sw" style="background:#636363"></i>med</span><span><i class="sw" style="background:#000000;border:1px solid #444"></i>high</span><span><i class="sw" style="background:#00FFFF"></i>victim-searcher</span><span><i class="sw" style="background:#FF00FF"></i>fire-tracker</span>'+BASESW+FOVSW
+  :'<span><i class="sw" style="background:#fe5501"></i>fire</span><span><i class="sw" style="background:#ababab"></i>smoke</span><span><i class="sw" style="background:#2b2b2b"></i>burnt (spent)</span><span><i class="sw" style="background:#895e00"></i>scorched (re-ignites)</span>'+BASESW+'<span><i class="sw" style="background:#FF00FF"></i>fire-tracker</span><span><i class="sw" style="background:#00FFFF"></i>victim-searcher</span><span><i class="sw" style="background:#FFFF00"></i>victim</span><span><i class="sw" style="background:#00FFCC"></i>firefighter</span><span><i class="sw" style="background:#ffd75a"></i>assigned-to</span>'+FOVSW;}
 
 function showEval(e){const box=document.getElementById('eval');box.style.display='block';
   const ok=e.all_terminal?'var(--green)':'var(--amber)';box.style.borderLeftColor=ok;
@@ -759,12 +771,18 @@ function drawMap(fr){
   // provably inert while the grid is square (50x50 everywhere in this campaign).
   // Not fixed here: it is a rendering-wide convention, not a depot issue, and
   // changing it would move every marker on the surface. Recorded so it is found.
+  //
+  // Base-mark round: the 'BASE' text label that used to be drawn HERE, at
+  // (dx+3, dy-3), is gone. It was broken, not merely weak: for any depot touching
+  // the top edge (NW - the primary depot - and NE) dy = 0 puts the baseline at
+  // y = -3, ABOVE THE CANVAS, and it painted 0 px on every rendered frame; for SE
+  // it painted 111 px at a measured 1.10:1, because #770099 has no luminance
+  // contrast with this map. The word now lives in the banner below, inside the
+  // block, with its own contrast. outputs/basemark_part1.txt sections 1.2, 1.3.
   const _dps=(fr.depots&&fr.depots.length)?fr.depots:(fr.depot?[fr.depot]:[]);
   for(const d of _dps){const dx=d.x*cs,dy=(H-d.y-d.size)*cs,dw=d.size*cs,dh=d.size*cs;
     ctx.fillStyle='rgba(119,0,153,0.22)';ctx.fillRect(dx,dy,dw,dh);
-    ctx.strokeStyle='#770099';ctx.lineWidth=2;ctx.strokeRect(dx+1,dy+1,dw-2,dh-2);
-    ctx.fillStyle='#770099';ctx.font='bold 9px ui-monospace,monospace';
-    ctx.fillText('BASE',dx+3,dy-3);}
+    ctx.strokeStyle='#770099';ctx.lineWidth=2;ctx.strokeRect(dx+1,dy+1,dw-2,dh-2);}
   // ---- sensing / rule overlays -------------------------------------------
   // Drawn HERE, after the ground, gridlines and depot, and BEFORE trails,
   // assignment lines and every unit marker. Immediate-mode canvas means this
@@ -851,6 +869,48 @@ function drawMap(fr){
     ctx.lineWidth=1.6;ctx.strokeStyle=t.kind==='ff'?'rgba(0,255,204,0.35)':'rgba(120,170,255,0.30)';
     ctx.beginPath();ctx.moveTo(px(pts[0][0]),py(pts[0][1]));
     for(let i=1;i<pts.length;i++)ctx.lineTo(px(pts[i][0]),py(pts[i][1]));ctx.stroke();}
+  // ---- base-station banner ---------------------------------------------------
+  // The mark that says WHAT the purple block is: a pole on the block's MAP-EDGE
+  // side with a cloth reading BASE, at the top of each depot block. The block
+  // itself stays - it is the real 5x5 docking footprint and says WHERE.
+  //
+  // FORM: chosen by a blind legibility test (39 fresh readers, one 1:1 render
+  // each, no hint of what was tested). A pennant - the intuitive answer - scored
+  // 68/58; this banner 85/77; the status quo 50/55. The literal WORD is what
+  // identifies a base. outputs/basemark_part1.txt section 2.1.
+  //
+  // TONES: #000000 casing, #FFFFFF keyline + text, #770099 field. The black/white
+  // pair carries visibility on any ground (36.90 dE2000 worst-case against all
+  // 126 effective colours; the field adds +0.0000 to that score). The field is
+  // the depot's own colour on purpose - it is identity, not contrast: #770099 has
+  // NO luminance contrast with this map (1.01-1.49:1 inside the block), which is
+  // exactly why the old purple text label failed. Section 3.3.
+  //
+  // Z-ORDER: this statement's position IS the z-order. AFTER the sensing overlays
+  // (a frame stroke would otherwise fuse with the keyline - it would cross on
+  // 12.3% of steps) and AFTER the trails (a translucent trail would tint it on
+  // 26.4% of steps; a landmark should not change tint with traffic). BEFORE
+  // assignment lines and every unit marker: whatever stands on these cells is
+  // drawn OVER the banner, so it can occlude no unit. Section 2.5.
+  //
+  // GEOMETRY: fillRect on integer pixels only, so every pixel is exactly one
+  // tone - except the glyphs, which are CLIPPED to the cloth, so the set of pixels
+  // that may change is exact and font-independent (the pixel audit depends on it).
+  // s = 1 at the shipped 56px block. The pole side is mirrored so it always
+  // stands on the map-edge column, which the berth ranking fills last.
+  for(const d of _dps){
+    const bw=d.size*cs, s=Math.min(1.5,Math.max(0.6,bw/56)), q=(v)=>Math.max(1,Math.round(v*s));
+    const bx=Math.round(d.x*cs), by=Math.round((H-d.y-d.size)*cs), bR=Math.round((d.x+d.size)*cs);
+    const east=(d.x>0)&&(d.x+d.size>=W);
+    const pw=q(3), poleL=east?(bR-q(4)-pw):(bx+q(4)), top=by+q(3), ph=q(30);
+    const cw=q(28), ch=q(15), cx=east?(poleL-cw+1):(poleL+pw-1);
+    ctx.fillStyle='#000000';ctx.fillRect(poleL,top,pw,ph);ctx.fillRect(cx,top,cw,ch);
+    ctx.fillStyle='#FFFFFF';ctx.fillRect(poleL+1,top+1,Math.max(1,pw-2),ph-2);ctx.fillRect(cx+1,top+1,cw-2,ch-2);
+    ctx.fillStyle='#770099';ctx.fillRect(cx+2,top+2,cw-4,ch-4);
+    ctx.save();ctx.beginPath();ctx.rect(cx+2,top+2,cw-4,ch-4);ctx.clip();
+    ctx.fillStyle='#FFFFFF';ctx.font='bold '+q(9)+'px ui-monospace,monospace';ctx.textAlign='center';ctx.textBaseline='middle';
+    ctx.fillText('BASE',cx+cw/2,top+ch/2+0.5,cw-6);ctx.restore();
+  }
   // assignment lines (A): firefighter -> its assigned victim's cell
   for(const a of (fr.assignments||[])){ctx.lineWidth=1.8;ctx.strokeStyle='rgba(255,215,90,0.8)';
     ctx.setLineDash([5,4]);ctx.beginPath();ctx.moveTo(px(a.fx),py(a.fy));ctx.lineTo(px(a.tx),py(a.ty));ctx.stroke();
@@ -887,12 +947,35 @@ function render(fr){
   h='<table><tr><th>victim</th><th>pos</th><th>status</th><th>det</th></tr>';
   for(const v of (p.victim_view||[]))h+=`<tr><td><b>${v.id}</b></td><td>${fmtpos(v.position)}</td><td>${sbadge(v.status)}</td><td>${bb(v.detected,'var(--accent)','var(--muted)')}</td></tr>`;
   document.getElementById('victims_v').innerHTML=h+'</table>';
-  h='<table><tr><th>unit</th><th>pos</th><th>alive</th><th>blocked</th><th>fire d</th></tr>';
+  h='<table><tr><th>unit</th><th>pos</th><th>alive</th><th>blocked</th><th style="white-space:nowrap" title="manhattan cells to the nearest burning cell / this unit\'s own retreat range right now: 3 idle, 1 with a target, none while carrying a victim out">fire d/r</th></tr>';
   // "fire d" is manhattan cells to the nearest ACTIVELY BURNING cell. It stands in
   // for a frame around the firefighter, which is not drawn: the unit senses
   // nothing and its rescue condition is same-cell, so a radius would imply a
   // capability the model lacks. null = off-grid, or nothing burning anywhere.
-  for(const f of (p.firefighter_view||[]))h+=`<tr><td><b>${f.id}</b></td><td>${fmtpos(f.position)}</td><td>${f.alive?badge('alive','var(--green)'):badge('dead','var(--red)')}</td><td>${bb(f.route_blocked,'var(--red)','var(--green)')}</td><td>${f.nearest_fire_dist==null?'<span class="k">&mdash;</span>':(f.nearest_fire_dist<=1?`<b style="color:var(--red)">${f.nearest_fire_dist}</b>`:(f.nearest_fire_dist<=3?`<b style="color:var(--amber)">${f.nearest_fire_dist}</b>`:`<span class="k">${f.nearest_fire_dist}</span>`))}</td></tr>`;
+  //
+  // "/ r" (base-mark round, option d+) is the retreat range the model applies to
+  // THIS unit on THIS step - the one real firefighter range, and it has THREE
+  // states, tested in the model's own order (agents.py
+  // _needs_immediate_survival_retreat): NONE while exiting, dead or off-grid;
+  // 1 with a target (the bare literal at agents.py:1879); else 3 idle
+  // (IDLE_RETREAT_SAFETY_BUFFER, agents.py:1461). `exiting` is tested FIRST
+  // because target_pos stays stale-but-truthy while a unit carries a victim out.
+  // `assigned` stands for "has a target": 0 disagreements with target_pos
+  // truthiness in 4,338 measured unit-steps.
+  //
+  // THE PROXIMITY COLOURS STAY IN EVERY STATE, deliberately. A unit with NO
+  // retreat range is the one whose distance matters most: in the run that
+  // decided this (south/202) an exiting unit had fire within 3 cells on 81 of 85
+  // steps and then died. Showing it uncoloured "because no range applies" would
+  // have hidden the cue for those 81 steps. outputs/basemark_part1.txt 5.4.
+  const ffRange=(f)=>(!f.alive||f.exiting||f.status==='off_grid')?null:(f.assigned?1:3);
+  const ffCell=(f)=>{const d=f.nearest_fire_dist, r=ffRange(f);
+    const dd=d==null?'<span class="k">&mdash;</span>':(d<=1?`<b style="color:var(--red)">${d}</b>`:(d<=3?`<b style="color:var(--amber)">${d}</b>`:`<span class="k">${d}</span>`));
+    const rr=r==null?`<span class="k" title="${f.exiting?'exiting: NO retreat range while carrying a victim out':'no retreat range'}">&ndash;</span>`:`<span class="k" title="retreats when fire is within ${r}">${r}</span>`;
+    // compact and unbreakable: a wider cell squeezes the `pos` column in this
+    // 300px card until "(44, 25)" wraps onto two lines (seen, and fixed, in Part 3).
+    return dd+'<span class="k">/</span>'+rr;};
+  for(const f of (p.firefighter_view||[]))h+=`<tr><td><b>${f.id}</b></td><td>${fmtpos(f.position)}</td><td>${f.alive?badge('alive','var(--green)'):badge('dead','var(--red)')}</td><td>${bb(f.route_blocked,'var(--red)','var(--green)')}</td><td style="white-space:nowrap">${ffCell(f)}</td></tr>`;
   document.getElementById('ff_v').innerHTML=h+'</table>';
   let al='';for(const a of (p.alert_list||[]).slice(-5).reverse()){const sev=(a.severity||'info').toLowerCase();al+=`<li>${badge(sev,SEV[sev]||'var(--accent)')}<span class="k">s${a.step}</span><span><b>${a.alert_type}</b> <span class="k">${a.message||''}</span></span></li>`;}
   document.getElementById('alerts').innerHTML=al||'<li class="k">none</li>';

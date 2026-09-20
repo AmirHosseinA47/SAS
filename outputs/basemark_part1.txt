@@ -1,0 +1,1496 @@
+================================================================================
+BASE MARKER + FIREFIGHTER FRAME (DISPLAY-ONLY) - PART 1: DESIGN
+Item A: a flag/sign marking the base station.  Item B: a frame around firefighters.
+================================================================================
+Repo      : E:\Projects\SAS
+Branch    : basemark, created from main for this round (the brief: "work on a
+            branch, not directly on main").
+HEAD      : d3640e3 "firemech round 2: the mission gate PASSES all six items ..."
+            - confirmed with `git log --oneline -1` before anything else.
+Tree      : clean. `git status --porcelain --untracked-files=no` is empty. The 35
+            untracked entries at the start were earlier rounds' run-state
+            leftovers.
+REWOUND DIR, DISCLOSED: outputs/_firemech_rewound_20260914/ was not read, listed,
+            moved, committed or referenced by me, and every agent prompt carried
+            that rule. ONE EXCEPTION, reported by the agent itself: a verifier's
+            recursive `grep -rn --include=*.py banner_pixels .` run from outputs/
+            scanned the *.py files under that directory. Its output was filtered;
+            nothing from there was displayed, read or used. No other contact.
+Runtime   : sys.version 3.10.11 (tags/v3.10.11:7d4cc5a, Apr  5 2023) [MSC v.1929
+            64 bit (AMD64)], mesa.__version__ 1.2.1, via E:\Projects\SAS\.venv.
+            Same interpreter as every Windows round; NOT the 3.11.15 container the
+            FOV round ran in. numpy 2.2.6, Pillow 12.3.0.
+Renderer  : Google Chrome 153.0.8010.50, --headless=new --dump-dom. playwright is
+            not installed in this venv and nothing was downloaded; the page
+            writes cv.toDataURL('image/png') into the DOM, so the 560x560 backing
+            store comes back losslessly. Deterministic: the same frame rendered
+            twice gives the same sha256.
+Runs      : six 240-step runs at the dashboard's default parameters (3 UAV = 2 FT
+            + 1 VS, 5 victims, 3 firefighters, batch 300, spread 0.75) and the
+            SHIPPED BASE_STATION_MODE = 3: east/101, east/202, south/101,
+            south/202, west/101, north/101. = 1,446 TRACED steps (each one a frame
+            the dashboard would paint) and 4,338 firefighter unit-steps. ELEVEN
+            frames were actually rendered by Chrome.
+            ONE LIMIT THAT TOUCHES SEVERAL NUMBERS: victims spawn on a fixed ring,
+            so all six runs share the SAME five victim cells - (7,12) (13,34)
+            (30,11) (32,46) (40,25) - for seed 101 and seed 202 alike. Anything
+            that depends on where victims are samples one layout, six fire
+            histories.
+Scope     : DESIGN ONLY. No tracked file modified. Every probe, trace, prototype
+            and instrument is an untracked file under outputs/ (Appendix A).
+
+All file:line references are to the checkout at d3640e3. Line numbers quoted in
+outputs/fovframe_part1.txt are STALE - agents.py moved under both fire-mechanic
+rounds. This draft was then put through a five-verifier adversarial pass that
+returned 64 findings, including one stale citation of my own; all are folded in
+(Appendix A).
+
+--------------------------------------------------------------------------------
+EXECUTIVE SUMMARY
+--------------------------------------------------------------------------------
+1. THE BASE ALREADY HAS A SIGN, AND IT DOES NOT WORK. drawMap writes the word
+   BASE in #770099 at (dx+3, dy-3). For the NW depot dy = 0, so the baseline is
+   y = -3: MEASURED 0 px of ink on all 11 rendered frames - the label of the
+   PRIMARY depot (where every tracker and every firefighter launches) has never
+   been on the canvas. For SE it paints 111 px, 2 of them fully inked, at a
+   MEASURED WCAG contrast of 1.10:1 against the vegetation it lands on. The cause
+   is general, not positional: #770099 has no luminance contrast with this map -
+   1.09-1.95:1 against the bare live greens the label is drawn over, and
+   1.01-1.49:1 against the tinted ground INSIDE the block, where a new mark must
+   sit. Section 1.
+
+2. THE FORM WAS CHOSEN BY A BLIND TEST, AND THE TEST OVERTURNED MY FIRST DESIGN.
+   Fresh readers each saw ONE 560x560 render at 100% zoom, with no hint of what
+   was being tested, neutral file names, and no zooming allowed (39 readers over
+   three rounds). Mean confidence that the corner regions are a base (top-left /
+   bottom-right):
+       status quo 50 / 55     pennant flag 68 / 58     pennant x1.4  72 / 60
+       sign "BASE" 84 / 78    BANNER       85 / 77
+   The pennant I designed first IS recognised as a flag by 12 of 12 readers at
+   1:1 - but 4 or 5 of the 12 hedge toward "goal / destination", and at the design
+   size 4 of 6 (5 counting one ambiguous description) see the pennant itself as
+   WHITE: its purple field does not register. The literal word decides it
+   ("Without the text I would not know"). RECOMMENDED: a banner - a pole on the
+   map-edge side with a cloth reading BASE. Stated plainly: the panel scores it
+   level with the sign and gives NO evidence it is perceived as a FLAG (2 of 6
+   mention a pole; the rest call it a label). "Flag in form" is my intent, not a
+   finding; it is chosen over the sign on engineering grounds. Section 2.
+
+3. ON TOP OF THE BLOCK, BOTH DEPOTS, POLE ON THE MAP-EDGE SIDE. The 5x5 block is
+   real model geometry (the cells units dock on), so it stays - the block says
+   WHERE, the banner says WHAT. 30x30 px, 495 px of ink, 15.8% of the block, at
+   the TOP of each block. No preset ASSIGNS a home berth under either shipped
+   banner (lowest berth index under the NW banner 12, under the SE banner 7), and
+   whatever does stand there is drawn OVER the banner. It REPLACES the dead text
+   label. Section 2.
+
+4. PALETTE: THREE TONES, MEASURED, AND THE FOV ROUND'S HEADLINE NUMBERS REPRODUCE.
+   Two independent instruments plus a third cross-check give a flat-colour ceiling
+   of 2.7575 dE2000 (FOV round: 2.73) and a two-tone score of 38.26 (FOV round:
+   38.37); both gaps are EXPLAINED - rounding the simulated grey to 8 bits
+   reproduces 2.7343 at #00004b and 38.37 exactly. The banner - #000000 casing,
+   #FFFFFF keyline and text, #770099 field - scores 38.26 against the 50 nominal
+   colours and 36.90 against all 126 effective colours including every
+   depot-tinted ground, worst of five vision conditions. The field is deliberately
+   the depot's own colour: the best alternative purple is worth +6.9 dE in normal
+   vision, under 0.5 in worst-case vision like every flat colour, and would cost
+   the entity its colour. Section 3.
+
+5. ITEM B: EVERY PILLAR OF THE FOV ROUND'S DECLINE STILL HOLDS AT HEAD - AND THE
+   BRIEF'S STATE TABLE IS INCOMPLETE. The pillars: rescue is SAME-CELL (4.1);
+   dispatch has NO distance limit (4.2; measured 21-72 cells over 25 dispatches,
+   FOV round 73); the only unit-centred range is the Manhattan survival-retreat
+   trigger, and it is state-dependent (4.3); it is neither scenario-overridable
+   nor a sensing range (4.5, 4.6). A NEW check the FOV round could not make: the
+   fire mechanic adds reaches of 2 and 1, all behind a guard that returns None at
+   the shipped switches (4.4). NEW FACTS: the range is THREE-state, not two - 3
+   idle, 1 with a target, and NONE AT ALL while exiting (carrying a victim) -
+   own-cell SMOKE also trips it, so a diamond is a sufficient-not-necessary
+   picture, and the "1" is an unnamed literal. Section 4.
+
+6. ITEM B: THE FLICKER WORRY IS UNFOUNDED; THE REAL COST IS WHERE IDLE UNITS LIVE.
+   A three-state frame would visibly change 70 times in 4,338 unit-steps: once
+   per 62 steps per unit, about 12 s at the default speed, every change a real
+   event. Not a flicker. But fire is inside the range on only 5.8% (idle) / 2.4%
+   (assigned) of unit-steps - on 88.0% of steps no frame would enclose any fire -
+   and idle units live at the map's EDGE: 88.2% of idle unit-steps are within two
+   cells of it (42.8% on a depot berth, the rest at boundary re-entry cells after
+   a hand-over). So the idle diamond would be edge-clipped on 88.2% of idle
+   unit-steps, its stroke would lie inside a depot block on 64.3% of all steps,
+   and the FIRST frame the dashboard paints would be three stacked diamonds over
+   the base. It cannot honestly be suppressed there: the rule runs on a berth.
+   MEASURED EFFECT ON ITEM A (blind round 3, 12 readers): BASE is still read at
+   both corners 6 of 6, top-left clutter rises 33 -> 45 (37.5 -> 58.5 at step 0)
+   and base confidence falls 4 points (9 at step 0). Section 5.
+
+7. RECOMMENDATION FOR ITEM B: (d+) - DRAW NOTHING ON THE MAP, AND PUT THE
+   STATE-DEPENDENT RANGE WHERE THE DASHBOARD ALREADY SHOWS FIRE DISTANCE. The
+   "fire d" table cell colours <= 1 red and <= 3 amber for every unit: state-blind
+   literals that happen to equal the two ranges. Show the unit's OWN current range
+   beside the distance ("2 / 1", "5 / 3", "2 / -" while exiting) and keep the
+   proximity colours in EVERY state. That carries the state-dependent range
+   exactly, with no geometry. Option (b) is the honest frame, is fully specified,
+   and is VIABLE at the measured cost above; (a) and (c) are rejected. Section 5.
+
+8. CLIPPING IS FAR WORSE THAN THE FOV ROUND MEASURED, because that round ran at
+   mode 0: at the shipped mode 3 at least one FOV block is edge-clipped on
+   74.7-100.0% of steps (FOV round: 31-40%). Pairwise overlap is similar
+   (71.0-98.3% vs 85-88%), but ALL THREE pairs overlap on 12.4-51.0% of steps
+   (FOV round: 4.2-6.2%). The banner is drawn ABOVE the sensing overlays and the
+   walked trails, and BELOW assignment lines and every unit: it hides some FOV
+   stroke on 12.3% of steps (at most 135 px) and some faint trail on 26.4%, no
+   assignment line on any of 1,446 steps, and a unit marker covers part of it on
+   7.3%. Section 6.
+
+9. THE POSITIVE CONTROL ALREADY FIRES, AT DESIGN TIME, WITH EXACT ACCOUNTING. The
+   banner's pixel set is predicted in Python, independently of the browser's
+   rasteriser, and that predictor is itself checked against the literal coordinate
+   table in 2.2 (identical pixel sets AND tones). Against the prototype rendered
+   by the real drawMap: 990 px changed = 990 predicted, 0 stray, 0 silent, 462
+   hard-tone px with 0 mismatches, all 528 cloth-interior px on the field-to-white
+   segment - on ten of the eleven rendered frames. On the eleventh a dead
+   firefighter lies ON the banner: 948 px change, and all 54 residual px fall
+   inside that unit's marker footprint computed from the payload - 0 outside it,
+   0 stray. An exact SET with exact TONES, tighter than the FOV round's +/- 2 px
+   band. Section 8.
+
+SEVEN DECISIONS FOR THE MAINTAINER are in Section 9. Item A can proceed on
+confirmation alone; Item B's decision (9.7) gates its own implementation.
+
+================================================================================
+1. ITEM A - THE EXISTING DEPOT RENDERING
+================================================================================
+
+1.1  QUOTED IN FULL
+--------------------------------------------------------------------------------
+serve_dashboard.py:762-767, verbatim - six source lines, the third of drawMap's
+ten layers (after ground and gridlines, before every overlay and every unit):
+
+   762  const _dps=(fr.depots&&fr.depots.length)?fr.depots:(fr.depot?[fr.depot]:[]);
+   763  for(const d of _dps){const dx=d.x*cs,dy=(H-d.y-d.size)*cs,dw=d.size*cs,dh=d.size*cs;
+   764    ctx.fillStyle='rgba(119,0,153,0.22)';ctx.fillRect(dx,dy,dw,dh);
+   765    ctx.strokeStyle='#770099';ctx.lineWidth=2;ctx.strokeRect(dx+1,dy+1,dw-2,dh-2);
+   766    ctx.fillStyle='#770099';ctx.font='bold 9px ui-monospace,monospace';
+   767    ctx.fillText('BASE',dx+3,dy-3);}
+
+NOTE the `}` that ends :767 - it closes the `for` opened at :763. It matters in
+2.6.
+
+Payload, serve_dashboard.py:235-255: fr.depots = [{x, y, size}, ...] and the
+legacy single object fr.depot = depots[0]. Nothing depot-related is published by
+/start. The block sits OUTSIDE the probMode if/else (:740-744), so it is drawn in
+probability mode too.
+
+Geometry at the shipped grid (W = H = 50, canvas 560x560, cs = 11.2, y flipped):
+   NW depot origin (0,45) size 5  ->  canvas rect (0, 0)     .. (56, 56)
+   SE depot origin (45,0) size 5  ->  canvas rect (504, 504) .. (560, 560)
+(_base_station_origins, wildfire_model.py:110-128; pinned by
+tests/test_base_station.py:492.)
+
+The canvas is displayed at exactly 1 canvas px = 1 CSS px: intrinsic 560x560 from
+the HTML attributes (:604), and no CSS rule sizes it (:545 sets only background,
+border, border-radius and shadow). So "the zoom the dashboard actually uses" is
+cs = 11.2 px per cell and a 56x56 px block, and that is the scale every
+measurement below is taken at. There is no devicePixelRatio handling, so on a
+scaled Windows display the browser RESAMPLES the same bitmap (2.1 LIMITS, 8.7).
+
+1.2  THE EXISTING "BASE" LABEL - MEASURED
+--------------------------------------------------------------------------------
+Method: render HEAD's drawMap twice on the same captured frame, once as shipped
+and once with the single statement `ctx.fillText('BASE',dx+3,dy-3);` deleted, and
+diff the pixels. The difference IS the label's ink. Identical on all 11 rendered
+frames (outputs/_bm/part1_checks.txt):
+
+                                   NW depot          SE depot
+   label ink (px changed)               0               111
+   bounding box                         -        x 507-526, y 495-500  (20 x 6 px)
+   fully inked #770099 px               -                 2   (the rest anti-aliased)
+   WCAG contrast vs the ground   (never drawn)     1.10:1 on VEG[10]/[11]  (7 frames)
+                                                   1.26:1 on VEG[9]        (2 frames)
+                                                   1.51:1 on burnt         (1 frame)
+                                                   4.07:1 on smoke (south/202 s99)
+
+The NW label is drawn at baseline y = dy - 3 = -3. A 9 px font's glyphs occupy
+y = -9 .. -3: entirely above the canvas, and there is no ctx.translate / scale /
+clip anywhere in the file, so nothing brings it back. The same is true of ANY
+depot touching the top edge (NW, NE); SW, SE and CENTRAL are visible. At the
+shipped configuration the depot with no label is depot 0 - the one every tracker
+and every firefighter homes at (wildfire_model.py:713-715).
+
+So the maintainer's complaint is exactly right and is measurable: one base has no
+sign, the other has a sign at 1.10:1.
+
+1.3  WHY IT FAILS: #770099 HAS NO LUMINANCE CONTRAST WITH THIS MAP
+--------------------------------------------------------------------------------
+WCAG luminance contrast of #770099, in the two places that matter.
+
+(a) WHERE TODAY'S LABEL IS: above the block (y 495-500; the block starts at 504),
+    on BARE, untinted ground.
+       VEG[10] #175808  1.09      VEG[9] #1c630b   1.26      burnt    #2b2b2b  1.51
+       VEG[11] #124b05  1.10      VEG[7] #2f831b   1.95      scorched #895e00  1.63
+                                                             smoke    #ababab  4.07
+    The measured 1.10:1 and 4.07:1 in 1.2 are exactly these.
+
+(b) WHERE A NEW MARK MUST SIT: inside the block, on ground seen through the 0.22
+    depot fill (composited source-over in sRGB byte space).
+       over VEG[9]  -> #304d2a  1.01      over burnt    -> #3c2243  1.49
+       over VEG[10] -> #2c4528  1.13      over scorched -> #854922  1.32
+       over VEG[11] -> #283b26  1.29      over smoke    -> #a085a7  2.86
+       over VEG[7]  -> #3f6637  1.41
+
+#770099 was chosen in the base-station round for HUE separation (28.76 dE, the
+only unclaimed hue band - common_fixed_variables.py:507-516), and as a filled
+56 px block that works. As 9 px text it cannot: fine detail is carried by the
+luminance channel, and on luminance this colour and this ground are the same
+value. That is the FOV round's finding about thin lines (fovframe_part1.txt 4.3)
+showing up in a second place. A new mark must carry its OWN luminance contrast.
+
+1.4  THE REAL BACKGROUND, MEASURED OVER THE RUNS (cell-steps under each block)
+--------------------------------------------------------------------------------
+                 dark greens   burnt    scorched   smoke    fire ramp
+   NW block        80.75%      10.70%    3.17%     3.99%     1.39%
+   SE block        65.20%      18.27%    7.31%     7.16%     2.05%
+
+Per run it swings far more: the NW block is 49.2% burnt in west/101 and 100%
+vegetation in east/202. The depot has no fire exemption (Fire.step / advance
+never read the station), so the mark must read on tinted green, tinted burnt,
+tinted smoke, tinted scorched and tinted fire - and on the white and grey of
+probability mode.
+
+1.5  THE MESA SURFACE
+--------------------------------------------------------------------------------
+Canvas_Grid_Visualization.py:142-181 draws the depot as a ring of 20 '#770099'
+bars per depot on Layer 2, with no fill and no label. `git blame` shows that
+block (:129-182) is this project's purely additive change (f4e79d5, 0e21f40;
++54/-0); lines 1-128 are the bulk import. mesa text portrayals are drawn at the
+cell centre in the never-set default font inside a 10 px cell (GridDraw.js), so
+about one glyph fits - the word BASE cannot be drawn there. See decision 9.5.
+
+================================================================================
+2. ITEM A - THE DESIGN
+================================================================================
+
+2.1  THE FORM, CHOSEN BY MEASUREMENT: A BLIND LEGIBILITY PANEL
+--------------------------------------------------------------------------------
+"Reads as a marker at the zoom the dashboard actually uses" is a gate item, so it
+was measured rather than judged from a zoomed crop.
+
+PROTOCOL. Each reader is a fresh agent that opens exactly ONE 560x560 PNG - the
+full map as a user sees it at 100% zoom - rendered by the REAL drawMap on a REAL
+captured frame with the candidate injected into it as text. File names are
+neutral (m01..m12, n01..n06, k01..k06). Readers are told nothing about bases,
+flags or what is being tested; they may not run code, zoom, crop, enhance or open
+any other file. They describe both map corners, say what each REPRESENTS with a
+0-100 confidence, and answer "where do the vehicles return to?". Rounds 1-2 use
+three frames: quiet (east/101 step 0), NW depot burnt (west/101 step 105), SE
+depot in smoke and fire (south/202 step 99). In every candidate variant the old
+text label is removed, so the candidate is tested alone. All 24 images regenerate
+bit-for-bit from committed code (outputs/_bm_blind_prep.py).
+
+                       n   TL conf  BR conf  mentions a   reads BASE   hedges toward
+                           (mean)   (mean)   flag / pole  both ends    goal/destination
+   status quo          3    50.0     55.0       0/3          0/3          1/3
+   pennant 22x30 px    6    68.2     58.3       6/6          0/6          2/6
+   pennant x1.4        6    71.5     60.0       6/6          0/6        2-3/6
+   sign "BASE" plate   6    84.2     77.8       3/6          6/6          0/6
+   BANNER              6    84.7     76.7       2/6          6/6          1/6
+
+(TL = top-left = NW depot; BR = bottom-right = SE depot, empty of units in all
+three frames and so the harder, cleaner test. Units are parked in the NW block
+only in the step-0 frame; in the other two, readers lean on the trails converging
+there. The hedge column is a reading of each response; a bare keyword count gives
+1/3, 2/6, 3/6, 1/6, 1/6.)
+
+A third round (5.4) showed the banner alone on three OTHER frames to six more
+readers: 84.7 / 78.3. It replicates.
+
+WHAT THE PANEL SAYS.
+  - The status quo is a guess: 40-45 on the empty SE corner when its label sits on
+    vegetation. It reads 80 on the one frame where the old label happens to sit on
+    smoke and becomes legible - the word, not the block, is what identifies it.
+  - A pennant IS a flag at 1:1 - 12 of 12 name one - and lifts the corners to
+    58-72. But 4 or 5 of the 12 hedge (one wrote "probably another base/home or a
+    destination/safe zone"), and at 22x30 px 4 of 6 readers describe the pennant
+    itself as WHITE, 5 if one ambiguous "white outlined" is counted (2 of 6 at
+    x1.4). Its #770099 field, 97 px and without luminance contrast (1.3), barely
+    registers; the white keyline does.
+  - Scaling the pennant x1.4 makes the field register and buys +3 / +2. Size is
+    not the lever.
+  - The word is the lever. Both text variants read BASE at both corners 12 of 12.
+    Against the status quo the gap is 22-35 points; against the pennants, 13-19.
+    One reader: "The word BASE on the purple tags is the only explicit cue ...
+    Without the text I would not know."
+  - Sign and banner are indistinguishable (84.2/77.8 vs 84.7/76.7) - AND THE PANEL
+    GIVES NO EVIDENCE THE BANNER IS SEEN AS A FLAG. Two of six banner readers
+    mention a pole "like a flag"; four call it a "label box". The sign does no
+    worse (3 of 6). Both are read as a labelled tag.
+
+LIMITS, stated plainly. The readers are vision-language models, not people; they
+read small text well, and a person at arm's length may find 9 px bold harder.
+n = 3 to 6 per variant, so differences of a few points mean nothing; the finding
+is the 13-35 point step between "no legible word" and "legible word". The images
+are the 560x560 backing store at device scale 1: at Windows 125% / 150% display
+scaling the browser resamples the bitmap and a 1 px keyline or 9 px glyph is
+softened (as the FOV frames' 1 px core already is). That is measured in Part 3
+(8.7), not here.
+
+DECISION. The banner. The panel cannot separate it from the sign, so the choice
+is an engineering one: its geometry is FIXED (the sign prototype sized its plate
+with measureText, which depends on the platform's font), its pole stands on the
+block's map-edge column, clear of every preset's berths (2.3), and its glyphs are
+CLIPPED to the cloth, so the set of pixels that may change is exact and
+font-independent (8.3). If the maintainer specifically wants a mark that reads as
+a FLAG, the panel says only a pennant does that - and a pennant without the word
+loses 13-19 points. A pennant WITH the word beside it was not tested.
+
+2.2  SHAPE AND SIZE AT CELL SCALE
+--------------------------------------------------------------------------------
+At the shipped grid (cs = 11.2, 56 px block, scale s = 1), all integer pixels,
+inclusive ranges:
+
+   pole    3 x 30 px : 1 px #FFFFFF core inside a #000000 casing (the same
+                       two-tone idiom as the FOV frames), left edge 4 px in from
+                       the block's MAP-EDGE side, top 3 px below the block top
+   cloth  28 x 15 px : attached at the pole top, flying toward the block interior,
+                       sharing the pole's inner casing column; 1 px #000000
+                       casing, 1 px #FFFFFF keyline, 24 x 11 px #770099 field
+   text              : 'BASE', bold 9 px monospace, #FFFFFF, centred, maxWidth
+                       22 px, CLIPPED to the 24 x 11 field
+
+   NW banner   pole x 4-6,     y 3-32        cloth x 6-33,    y 3-17
+   SE banner   pole x 553-555, y 507-536     cloth x 526-553, y 507-521
+
+   bounding box 30 x 30 px = 2.7 x 2.7 cells
+   ink 495 px per banner (pole 90 + cloth 420 - 15 shared) = 15.8% of the block:
+   129 black + 102 white hard-tone px, and 264 px of cloth interior
+   (measured: 112 of those 264 carry glyph ink in this Chrome / font)
+
+For scale: a UAV marker is 9 x 9 px, a firefighter 8 x 8, a victim an 11 px disc.
+The banner is the largest glyph on the map and the only one carrying text, which
+is the point - and at 0.16% of the canvas it costs nothing the FOV round's "never
+fill" rule was protecting (that rule was about 11.6% per UAV).
+
+Everything is fillRect on integer pixels EXCEPT the glyphs, so nothing but the
+text is anti-aliased. Dimensions scale with the block (s = clamp(size*cs/56, 0.6,
+1.5), each rounded to whole pixels), so the mark is pixel-exact at the shipped
+grid and stays proportionate if the grid or BASE_STATION_SIZE changes. Only
+s = 1 has been rendered and measured; other scales are arithmetic, not evidence.
+
+2.3  REPLACE THE BLOCK, OR SIT ON TOP OF IT?  ON TOP - ARGUED
+--------------------------------------------------------------------------------
+The brief says a flag plus the block is "probably clearer" and asks for the
+argument rather than the assumption. Three arguments, two of them measured.
+
+  (i)  THE BLOCK IS REAL GEOMETRY, NOT DECORATION. _build_base_station
+       (wildfire_model.py:601-699) defines each depot as "a 5x5 model-level
+       region": the frozenset of cells units berth on, recharge on, and return to.
+       It is the base-station analogue of the FOV square - the exact footprint of
+       a rule. Removing it to make room for a label would delete true information
+       to add a caption.
+  (ii) THEY ANSWER DIFFERENT QUESTIONS. The block says WHERE and HOW BIG; the
+       banner says WHAT. The panel shows the block alone cannot say what (50/55),
+       and no reader of a text variant lost the footprint: all 12 (6 sign, 6
+       banner) still describe a purple-outlined square, 9 sizing it at about
+       55 px and 3 at about 50.
+  (iii) THE BLOCK GIVES THE BANNER SOMEWHERE SAFE TO STAND. Berths are ranked by
+       DESCENDING distance from the nearest grid edge (wildfire_model.py:647-651):
+       units fill each block from its INNER corner outward, so the two map-edge
+       lines of cells fill last. The pole stands in the map-edge column. The cloth
+       is at the pole's TOP, because a flag is upright - and that is where the two
+       shipped depots differ:
+
+          NW banner  covers cells (0..2,49) (0..2,48) (0,47)
+                     berth indices    20,21,22 / 19,12,13 / 18      -> lowest 12
+                     This IS the block's outer (map) corner.
+          SE banner  covers cells (47..49,4) (47..49,3) (49,2)
+                     berth indices    8,15,24 / 7,14,23 / 22        -> lowest 7
+                     plus a 1 px casing column in (46,3) / (46,4), 6 and 9 px.
+                     Map-edge side horizontally, but the block's TOP is its INNER
+                     edge vertically - the SE block's map corner is bottom-right.
+
+       The 12-vs-7 difference is that inner-edge row (it reaches ring-2 cells),
+       not the ranking's tie-break. A point-mirrored SE banner in the true outer
+       corner would have a lowest index of 11 - but it would hang its cloth BELOW
+       the pole, or need a stub pole, and would sit on the canvas's clipped corner
+       (6.2). Kept upright, deliberately.
+
+       WHAT THIS BUYS. The four presets use 6 / 5 / 8 / 6 units, i.e. berth
+       indices 0..7. NW: nothing below 12. SE: index 7 exists only in preset C
+       (5 UAV + 3 FF), where index 7 is a FIREFIGHTER berth, and firefighters home
+       at depot 0 = NW. So no preset ASSIGNS a home berth under either shipped
+       banner. Two honest limits: (1) all 25 cells are berths in principle, and
+       the form can reach 24 units; (2) the dock fallback (agents.py:736-776,
+       shipped at DOCK_FIX 2) docks a stalled UAV on whatever depot cell it is
+       standing on. Neither was observed over a banner in the six runs (UAVs only
+       TRANSIT (47,4) and (47,3), one step each), and neither matters, because of
+       2.5: whatever stands there is drawn over the banner.
+
+2.4  BOTH DEPOTS, SAME MARK, POLE ON THE MAP-EDGE SIDE
+--------------------------------------------------------------------------------
+Both. As docks the two are identical by construction: every unit has a berth in
+EVERY depot (uav_berths_by_depot / firefighter_berths_by_depot,
+wildfire_model.py:675-680), and an operator watching a UAV head for the SE corner
+needs to know that corner is a base.
+
+They are NOT identical in use, and the design deliberately does not encode that.
+At default roles every unit launches from NW - trackers and firefighters always
+home at depot 0, and a lone searcher falls back to it (wildfire_model.py:709-715;
+common_fixed_variables.py:425-441). Measured: a unit is inside the NW block on
+24.9-100.0% of steps, inside the SE block on 0.0-10.8%. But "home" is a per-UNIT
+property once there are two searchers (each lane-matched to its own depot), so a
+"primary" flag would be wrong for some unit in some configuration. One mark, the
+same on both.
+
+THE POLE SIDE IS MIRRORED: east edge if the block touches it, else west; the cloth
+flies inward. Measured benefit: with an un-mirrored (always top-right) banner the
+NW banner's lowest berth index would be 8; mirrored it is 12. Mirroring is an
+improvement in margin, not the only way to keep presets clear.
+
+OTHER ANCHORS. The pole-side rule generalises; the berth clearance does NOT, and
+that should be known. Lowest berth index under the banner: NW 12, NE 11, SE 7,
+CENTRAL 6, SW 5. A configuration with only a SW or CENTRAL depot would park a
+preset unit under the cloth - harmless by 2.5 (the unit is drawn over it), but not
+the clean separation NW enjoys. All five are fully on-canvas: the banner is INSIDE
+the block and the block is on-grid by construction (0 cells of ink outside it).
+
+2.5  Z-ORDER
+--------------------------------------------------------------------------------
+Drawn AFTER the sensing overlays (UAV frames :806-812, victim diamonds :828-847)
+and AFTER the walked trails (:849-853), and BEFORE assignment lines (:854-858) and
+every unit marker (:859-862) - i.e. immediately before the `// assignment lines
+(A)` comment at :854. Immediate-mode canvas: the statement's position IS the
+z-order.
+
+  - ABOVE THE TRAILS - a refinement made on measurement. My first slot was just
+    before the trails. Then I measured: a translucent trail (alpha 0.30 / 0.35,
+    60-point history, and it PERSISTS while a unit stands still) would cross
+    banner ink on 26.4% of steps (0.0-78.8% per run), tinting up to 167 of its
+    990 px. A landmark should not change tint with traffic, and an untinted
+    banner keeps the pixel audit's tones exact. The cost is that same ink hidden
+    instead: up to ~167 px of a faint history line, about 30 px of length per
+    crossing trail. Trails are neither units nor assignment relationships, so the
+    FOV round's rule (below) is untouched. The banner images the panel saw are
+    PIXEL-IDENTICAL under the two slots (sha256; no trail touches banner ink in
+    those frames), so 2.1 carries over exactly.
+  - NOT in the depot slot (:762-767), under the overlays. The banner shares two of
+    its three tones with the frames, so a frame stroke crossing the cloth would
+    fuse with its keyline - and it would cross on 12.3% of steps (6.2).
+  - NOT on top of the units. The FOV round's rule - an overlay may occlude no unit
+    and no assignment relationship - is kept. Whatever stands on the banner's
+    cells is drawn over it.
+  - A technical trap the depot slot hides: twoTone and snap are `const`s declared
+    at :790-795, BELOW the depot block. Calling them from the depot slot is a
+    temporal-dead-zone ReferenceError. The banner uses only fillRect and sits
+    after :795 anyway.
+
+2.6  WHAT IS REMOVED: THE OLD TEXT LABEL
+--------------------------------------------------------------------------------
+THREE STATEMENTS go, and ONE CHARACTER must stay. On :766-767 delete
+`ctx.fillStyle='#770099';`, `ctx.font='bold 9px ui-monospace,monospace';` and
+`ctx.fillText('BASE',dx+3,dy-3);`. KEEP the `}` that ends :767 - it closes the
+depot `for` loop, and deleting "lines 766-767" literally would break the whole
+page script (a static source-text test would not catch it). No later layer
+depends on that fillStyle or font. Design-time measurement: with only the
+fillText removed, 0 stray px.
+
+The word moves INTO the banner, where it is on-canvas for every anchor and carries
+its own contrast (white on #770099: 9.36:1). Keeping the old label too would leave
+one base with two signs and the other with one, and 111 px of 1.10:1 text on the
+terrain above the SE block. Decision 9.2.
+
+2.7  LEGEND
+--------------------------------------------------------------------------------
+Today: `<i class="sw" style="background:#770099"></i>base station`, in the normal
+branch ONLY (:723). The probability-mode branch (:722) has no base chip although
+the depot IS drawn in that mode. By the FOV round's own rule ("a flat swatch
+cannot describe a two-tone mark", :710-714) the chip becomes three-tone - #770099
+field, 1 px #FFFFFF keyline, 1 px #000000 casing, the banner's tones in the
+banner's order - built by a baseSwatch() helper beside fovSwatch(), and appears in
+BOTH branches.
+
+Pre-existing and adjacent: setLegend() is called once per run (:684) and never
+from the probability toggle (:650-651), so toggling mid-run leaves the legend on
+the wrong branch. One added call fixes it. Decision 9.4.
+
+2.8  PAYLOAD AND PYTHON: NOTHING CHANGES
+--------------------------------------------------------------------------------
+The banner needs only fr.depots, which is already published. NO payload change
+and NO change to any Python statement in serve_dashboard.py: the whole of Item A
+is an edit inside the HTML constant (:507-904, a single raw string).
+_capture_frame, _slim_panel and _build_evaluation are untouched, which makes the
+"simulation provably unchanged" claim in Part 3 structural rather than empirical.
+
+================================================================================
+3. ITEM A - PALETTE
+================================================================================
+
+3.1  METHOD, AND REPRODUCING THE FOV ROUND FIRST
+--------------------------------------------------------------------------------
+Same method as the FOV round (fovframe_part1.txt section 4): CIEDE2000 from sRGB
+(D65), five vision conditions - normal, protanopia, deuteranopia, tritanopia,
+achromatic - and for a multi-tone mark the figure of merit
+     score(b) = max over the mark's tones of dE2000(tone, b)
+     result   = min over every background b, at the WORST vision condition.
+No colour library is installed, so the maths was written from scratch, TWICE, by
+two agents who did not see each other's work and were told to use different CVD
+models: instrument A (outputs/_bm_colour_a.py) Machado et al. 2009; instrument B
+(outputs/_bm_colour_b.py) Vienot 1999 + Brettel 1997. A cross-checker then
+reviewed both CIEDE2000 implementations and both sRGB->Lab paths line by line
+(no bug in either), compared 245 normal / achromatic cells (maximum |A - B| 0.01,
+none over 0.05 - B does not force white exactly neutral), and wrote a THIRD
+instrument with no dichromat model at all (outputs/_bm_colour_x_check.py), which
+agrees with both to 4 dp on all six headline numbers.
+
+Each instrument reproduces all 34 Sharma, Wu & Dalal pairs to 1e-4 (worst error
+4.95e-05). Provenance limit: only 9 of the 34 exist as a file in this repo
+(outputs/_sc_deltae.py:52-60); the other 25 were typed from recall by both agents
+- the two tables are identical and all three implementations hit them, which a
+mis-typed row could not do.
+
+The FOV round's probe lived in that session's scratchpad and was never committed,
+so comparability is established by REPRODUCTION:
+
+                                              FOV round     A          B
+   distinct nominal colours (N50)                50         50         50
+   flat-colour ceiling, 140,608-value sweep     2.73      2.7575     2.7575
+      at colour                              near #00004b  #050541    #050541
+   two-tone {#ffffff,#000000} vs N50           38.37      38.2603    38.2603
+      binding entry / condition                  -      #2f831b / achromatic
+   two-tone vs the BW ramp alone               40.32      40.32     (not run)
+   #990033  normal / achromatic             25.97 / 0.34  25.97 / 0.30   same
+   #ff1493  normal                             16.59      16.59      16.59
+   #000000, identities excluded                 5.52       5.52       5.52
+
+THE GAPS ARE EXPLAINED, NOT JUST SMALL. Rounding the simulated achromatic grey to
+8 bits reproduces the FOV round's numbers EXACTLY: the flat ceiling becomes 2.7343
+at #00004b (a 34-way tie) - its "2.73 near #00004b" - and the two-tone score
+becomes its 38.37. 2.7575 and 38.26 are the same quantities with an unquantised
+grey. (That is an inference from the numbers matching; the probe was never
+committed.) 2.7575 is a maximum over the 5-step grid; the supremum over all
+colours is 2.7627, so the safe absolute statement is "no flat colour can exceed
+2.77".
+
+WHAT DID NOT REPRODUCE, OR WAS NOT TRIED. #ff1493's worst case (FOV 0.63; A 0.60,
+B 0.52). #c0c0c0 (FOV 1.74 on a different 14-candidate probe; A 1.25). The FOV
+round's 239-effective-colour figures (flat 1.03, two-tone 36.55) were not
+re-measured: this round's effective set is a different one (3.2). Separately,
+instrument A reproduces the base-station round's 28.76 for #770099
+(common_fixed_variables.py:514-516; that comment says 39 colours, A used the 38
+it could reconstruct).
+
+DICHROMAT COLUMNS ARE NOT QUOTED AS VALUES ANYWHERE BELOW. The two CVD models
+differ, as they should (#770099's tritan minimum is 12.38 in A and 2.51 in B;
+median spread 1.1 / 0.3 / 3.6 dE for protan / deutan / tritan), and the Machado
+and Vienot/Brettel constants were checked only by each author's own self-tests.
+Nothing here rests on them: the BINDING condition for every headline number is
+achromatic in both models.
+
+Both instruments re-derive the palette from the source at HEAD, and a refuter
+recounted it independently: 50 distinct nominal colours, no additions since
+7f951cb - the fire-mechanic commits touched no renderer.
+
+3.2  THE PALETTE MEASURED AGAINST: N+ = 126 EFFECTIVE COLOURS
+--------------------------------------------------------------------------------
+N50, plus what a mark INSIDE a depot block sits on: the 0.22 depot fill composited
+(source-over, sRGB byte space, round-half-up) over each of the 12 VEG, 11 FIRE,
+smoke, burnt, scorched, spared and 11 BW-ramp values (38 new), plus the 0.18
+gridline over those (38 new) = 126. N+ therefore contains the vegetation ramp, the
+fire ramp, burnt #2b2b2b, scorched #895e00, the depot colour and every depot-tinted
+ground, all agent markers, both trails, the assignment colour, and the FOV frames'
+own #FFFFFF / #000000.
+
+Two caveats. The canvas actually strokes the gridline BEFORE the depot fill
+(:746-749 then :764), the opposite order, and the gridline is lineWidth 0.5, so
+0.18 is an upper bound on its darkening. Instrument A ran the canvas-order variant
+too: 125 entries, every headline below unchanged (secondary numbers move in the
+second decimal). And N+ holds the STATIC grounds; the translucent trail and
+assignment-line composites a refuter listed are not in it - the banner is drawn
+above the trails (2.5), and no assignment line reaches it in 1,446 steps (6.2).
+
+3.3  THE RESULT
+--------------------------------------------------------------------------------
+THE MARK. {#000000 casing, #FFFFFF keyline + text, #770099 field}:
+
+     worst-case vs N50 (50 nominal)             38.26 dE2000
+     worst-case vs N+  (126 effective)          36.90 dE2000
+        binding: achromatic, at #e03022 (depot tint over FIRE[8]), tone white
+     normal vision 40.04, achromatic 36.90; the three dichromat conditions lie
+     between 37.5 and 38.9 in both CVD models and never bind
+     vs the flat-colour ceiling                 13.4x  (36.90 / 2.7575)
+     This is IDENTICAL to the plain two-tone score against N+: the field adds
+     +0.0000 to it, for #770099 and for every alternative tried.
+
+   against the entries the brief names - NORMAL vision, and worst-of-five where
+   that worst case is achromatic-bound (so model-free):
+     depot #770099      64.38 / 57.62      scorched #895e00  58.10 / 43.07
+     VEG[9]  #1c630b    79.61 / 50.32      VEG[11] #124b05   74.97 / 60.96
+     FIRE[11] #fe0101   50.25 / 39.42      UAV #ff00ff       56.71 / 46.75
+     smoke #ababab      57.56 / 57.56
+   and where the worst case is dichromat-bound, normal vision only, with the
+   worst-of-five above 73 in BOTH models:
+     burnt #2b2b2b 73.82    FIRE[3] #fefa01 99.23    UAV #00ffff 90.53
+     firefighter #00ffcc 88.94    victim #ffff00 101.20
+     FOV frame tones #ffffff and #000000: 100.00 each (the other tone separates)
+
+   luminance (WCAG), better of white / black against the tinted ground:
+     >= 4.87:1 on the 15 vegetation / burnt / scorched / smoke depot grounds,
+     4.65:1 with a gridline over them, 4.62:1 once the depot-over-FIRE grounds
+     are included (4.61 in true canvas draw order). The floor for ANY colour
+     whatsoever is sqrt(21) = 4.58:1, so the casing / keyline pair always clears
+     AA 4.5:1 - against 1.01:1 for #770099 alone, which is the defect in 1.3.
+
+The field never binds the minimum: the black / white pair guarantees visibility,
+and the guarantee is palette-independent (for any background lightness one of the
+two is at least 50 L* away) - the same property the FOV frames shipped on.
+
+WHAT THE FIELD IS FOR: IDENTITY. It is the tone the banner has that the FOV
+frames and victim diamonds - exactly {#FFFFFF, #000000} - do not.
+
+     identity(X) = min(dE(X, #ffffff), dE(X, #000000))
+     #770099      34.82 normal / 19.70 worst (achromatic)   [all three instruments]
+
+   the field alone, NORMAL vision, against the tinted ground it really sits on:
+     tinted live greens 53.77-67.66     tinted scorched 43.08
+     tinted live fire   39.74-85.74     tinted smoke    32.59
+     TINTED BURNT       18.68   <- its weakest COMMON background (10.7% / 18.3%
+                                   of cell-steps under the NW / SE block)
+     absolute floors: 17.22 on tinted #414141 (0.13% of cell-steps); 16.80 in
+     probability mode (tint over BW[7])
+     (white keyline on tinted burnt: 75.54 - which is why the keyline is there)
+   white text on the field: 64.38 dE, 9.36:1.
+   field vs the units parked beside it: magenta UAV 29.96, cyan UAV 72.49, teal
+   firefighter 74.20, yellow victim 99.22, dead black 34.82.
+
+WHY #770099 AND NOT A "BETTER" PURPLE. The exhaustive sweep for the best FIELD
+under normal vision against N+:
+
+     #770099 itself (its own outline entry excluded)   16.80
+        nearest: #523759 = tint over BW[7], a probability-mode-only grey;
+        17.22 against the 104 map-mode entries
+     best colour overall     #ff00ff        23.14  - but it IS the fire-tracker UAV
+                                                    marker: 0.00 against it. Rejected.
+     best in the depot's hue family         19.10  at #824bff - bound BY the depot
+                                                    outline itself
+     like-for-like (outline excluded too)   23.67  at #7d00fa; #824bff 19.24
+
+LIKE FOR LIKE, the best alternative purple is worth +6.9 dE in normal vision
+(23.67 vs 16.80). It is 13.11 dE from #770099 - a visibly different purple - so it
+would cost the one thing the field exists for: being the same colour as the
+block's outline, the legend chip and the UAV table's base_state badge. And under
+worst-case vision EVERY candidate, this one included, scores under 0.5 alone -
+the flat ceiling again - so no field colour can ever be the guarantee. The panel
+agrees from the other side: at 1:1 most readers did not register the field's
+colour at all. Identity says keep the entity's colour.
+
+ON "DISTINGUISHABLE FROM THE DEPOT COLOUR". The brief lists the depot colour
+among the entries to measure against. The MARK separates from #770099 by 64.38
+normal / 57.62 worst, through its white tone. The FIELD is 0.00 against it by
+design: it is the same entity. What the field must NOT merge with is the tinted
+block around it, and it does not - the white keyline and black casing sit between
+them on every side.
+
+3.4  REJECTED, WITH NUMBERS
+--------------------------------------------------------------------------------
+  1. PURPLE ALONE (today's label)  - 1.09-1.95:1 on the bare greens it is drawn
+                                     over, 1.01-1.49:1 inside the block; measured
+                                     1.10:1; 55 on the blind panel.
+  2. WHITE FIELD (two-tone banner) - identity 0.00 against the FOV frames and
+                                     victim diamonds; white text impossible on it.
+  3. #ff00ff                       - 0.00 against the fire-tracker marker.
+  4. #824bff / #7d00fa             - +2.4 / +6.9 dE like-for-like in normal
+                                     vision, for losing the entity colour; both
+                                     under 0.5 worst-case.
+  5. A RED / ORANGE / YELLOW FLAG  - the fire ramp owns that whole arc; #990033
+                                     drops to 11.78 against tinted fire and 0.30
+                                     achromatic.
+  6. THE PENNANT                   - not a colour failure, a content failure (2.1).
+
+================================================================================
+4. ITEM B - THE EVIDENCE, RE-VERIFIED AT HEAD
+================================================================================
+The FOV round declined a firefighter frame against 7f951cb. Two fire-mechanic
+rounds have since rewritten parts of class Firefighter (agents.py:1489-2834), so
+nothing was assumed. An auditor re-derived each claim from the code at HEAD; a
+refuter then tried to break each one (9 claims: 1 refuted - the payload claim in
+5.5 - and 8 not refuted, 4 of those returned with sharper wording, folded in
+below); a verifier then re-opened every citation in this section at HEAD; and the
+claims a run can test were measured.
+
+4.1  RESCUE IS SAME-CELL - RADIUS 0.                                    CONFIRMED
+   agents.py:1673-1675
+        if self.target_pos and not self.exiting:
+            if self.pos == self.target_pos:
+                self.exiting = True
+   the sole writer of exiting = True. target_pos is refreshed to the bound
+   victim's LIVE cell at the top of every advance (:1618, body :1593-1611).
+   REFINEMENT (refuter): pickup is PRE-EMPTED by the retreat trigger - advance()
+   returns at :1667 before the arrival test, so a unit standing on its victim
+   cannot pick up while fire is inside its radius-1 diamond or its own cell is
+   smoky. That is the one operational meaning radius 1 has beyond "retreats".
+
+4.2  DISPATCH HAS NO DISTANCE LIMIT.                         CONFIRMED + MEASURED
+   src_extension/planning/rescue_planner.py:646-652 is an argmin over Manhattan
+   distance with no cutoff; the pool filter (:587-598) has no distance term. No
+   radius, sector cap or DISTANCE limit exists anywhere on the path. Reachability
+   IS gated - unreachable victims and route_blocked units are skipped, and the
+   route BFS (agents.py:2229-2245) treats burning cells as impassable - but only
+   by fire, never by range.
+   MEASURED over the six runs, 25 dispatches:
+        21 21 21 21 21 23 28 29 29 30 30 30 30 30 38 39 40 52 53 56 57 58 58 64 72
+   minimum 21, maximum 72 (FOV round: "up to 73"). Read with its limits: 15 of the
+   25 start from a depot berth (each unit's first dispatch); the other 10 start
+   from boundary RE-ENTRY cells, because a unit that hands over a victim re-enters
+   at its exit cell, not at the depot. And with one victim layout shared by all
+   six runs there are only 17 distinct geometries - all five 21s are berth (4,46)
+   to victim (13,34). So 21 is "this layout's nearest victim", not a property of
+   mode 3. What stands regardless: a frame of radius 1 or 3 says nothing about a
+   reach of 21-72 cells.
+
+4.3  THE ONLY UNIT-CENTRED RANGE IS THE SURVIVAL-RETREAT TRIGGER - AND IT HAS
+     THREE STATES, NOT TWO.                                  CONFIRMED, EXTENDED
+   agents.py:1859-1881, _needs_immediate_survival_retreat, in the model's order:
+
+        pos is None, dead, or EXITING      -> return False        NO RANGE AT ALL
+        own cell burning OR own cell SMOKY -> True                (not a distance)
+        no target_pos (idle)               -> fire within Manhattan <= idle_buffer
+        target_pos set                     -> fire within Manhattan <= 1
+
+   idle_buffer = IDLE_RETREAT_SAFETY_BUFFER = 3 (agents.py:1461) unless the fire
+   mechanic has a plan (4.4). _cell_adjacent_to_fire is von Neumann (:1835), so
+   "adjacent OR Manhattan <= r" is exactly the Manhattan diamond (checked: 0
+   mismatches over 169 offsets and 20,000 random fire sets). Metric is Manhattan
+   to BURNING cells (:1899-1905).
+
+   WHAT THE BRIEF'S "3 idle, 1 assigned" LEAVES OUT:
+     - EXITING HAS NO RANGE. A unit carrying a victim to the boundary never
+       retreats. Measured 5.6% of unit-steps (14.4% in south/202).
+     - THE SELECTOR IS target_pos TRUTHINESS, not `assigned` (measured: 0
+       disagreements in 4,338 unit-steps) - and target_pos stays STALE BUT TRUTHY
+       while exiting (south/202 step 160: unit 2509 exiting at (6,7) with target
+       (18,13)). A frame keyed on target_pos alone would draw radius 1 around
+       exiting units. `exiting` must be tested FIRST, as the model does.
+     - OWN-CELL SMOKE TRIPS IT before any distance test, and smoke outlives
+       burning. A diamond is a SUFFICIENT-NOT-NECESSARY picture of the rule.
+     - THE "1" HAS NO NAME. It is the bare literal at agents.py:1879; only the 3 is
+       a constant. Any display of it hard-codes it.
+     - DEATH IS RADIUS 0: a firefighter dies only when its OWN cell is burning at
+       the casualty sweep (wildfire_model.py:5244-5249). 3 and 1 are retreat
+       triggers, not a lethal zone.
+     - AN EXITING UNIT IS INVISIBLE ON THE MAP: the carried victim is moved onto
+       its cell each step and victims are drawn after firefighters, so the 11 px
+       disc fully covers the 8 px square.
+     - TIMING: Fire agents advance before firefighters, so a frame shows unit
+       position t against fire t while the unit's next test reads fire t+1. The
+       burning set changes only every third step (FIRE_SPREAD_SPEED = 3; checked
+       in all six traces), so the drawn relation is exact on 2 steps in 3.
+
+4.4  A NEW CHECK: THE FIRE MECHANIC ADDS REACHES - ALL OF THEM DARK.    CONFIRMED
+   New since the FOV round: FIREFIGHT_EXTINGUISH_REACH = 2 and
+   FIREFIGHT_FIREBREAK_REACH = 1 (agents.py:1476-1486, Manhattan, unit-centred), a
+   firebreak BAND that is FIRE-centred and Euclidean (squared distance in (4,25]),
+   and a suppressible idle retreat distance T in {1,2} while engaged. None is live:
+        agents.py:2376-2379    if not (extinguish or firebreak): return None
+   With FF_FIREFIGHT_EXTINGUISH = 0 and FF_FIREFIGHT_FIREBREAK = 0
+   (common_fixed_variables.py:203-204) _firefight_prepare returns None before it
+   reads anything else, so idle_buffer == 3 on every step. That rests on the code
+   reading: each trace header records the CONFIGURATION once (engaged retreat
+   range 3, extinguish False, firebreak False, idle buffer 3); no per-step T is
+   logged. FF_FIREFIGHT_MISSION_GATE = 1 is purely TEMPORAL and adds no range. If
+   the feature is ever armed the state table grows to five (idle-engaged at T = 1
+   or 2, idle-suspended back at 3), and neither T nor _firefight_suspended is
+   published anywhere.
+
+4.5  NOT SCENARIO-OVERRIDABLE.                                          CONFIRMED
+   IDLE_RETREAT_SAFETY_BUFFER is a module global in agents.py; every production
+   read is the bare name; apply_scenario_config setattrs only cfv and wf
+   (local_adaptation_generator.py:270-273).
+
+4.6  IT IS NOT A SENSING RANGE.                                         CONFIRMED
+   _fire_cells() (agents.py:1792-1802) iterates EVERY Fire agent on the grid. No
+   neighbourhood or radius call exists anywhere in the class. The 3 and the 1
+   describe where fire is relative to the unit, not what the unit perceives.
+
+4.7  NOT RADII, FOR THE RECORD.  IDLE_RETREAT_MAX_CELLS = 6 is a leash on a
+   remembered ORIGIN cell plus a step cap; _cell_is_ideal_idle_standoff (>= 4) is
+   the retreat's stopping condition - the same 3|4 boundary, not a second radius;
+   SECURITY_DISTANCE = 10 and STANDOFF_* are UAV-side; FF_RESCUE_ABSENCE_MIN/MAX
+   are step counts; `self.radius = 3` at agents.py:29 belongs to the FIRE agent.
+
+4.8  WHAT THE DASHBOARD ALREADY SHOWS FOR A FIREFIGHTER. A 0.7-cell marker (:859),
+   a dashed assignment line while assigned and not exiting (:203-205, :855-858), a
+   walked trail (:850-853) and the "fire d" table column (:890-895), whose own
+   comment says it "stands in for a frame around the firefighter, which is not
+   drawn". Its colour thresholds are <= 1 red and <= 3 amber - hard-coded
+   literals, applied to every unit regardless of state. See 5.4.
+
+VERDICT ON THE FOV ROUND'S DECLINE: every pillar stands at d3640e3. Its statement
+of the range was incomplete (two states where there are three), and it could not
+have known what 5.2 adds, because it ran at mode 0.
+
+================================================================================
+5. ITEM B - WHAT A FRAME COULD MEAN, AND THE RECOMMENDATION
+================================================================================
+
+5.1  THE ONLY HONEST MEANING
+--------------------------------------------------------------------------------
+    "The Manhattan distance at which a burning cell makes THIS unit drop what it
+     is doing and retreat, as the model applies it on this step."
+Real, live, evaluated on every advance. It is the SAME KIND of thing as the victim
+flee diamond that shipped - a fire tripwire, not a sensor - which is the honest
+argument FOR drawing it, and 5.3 (b) takes that argument seriously. No radius is
+invented anywhere below.
+
+5.2  WHAT THE SIX RUNS SAY  (4,338 unit-steps, shipped mode 3)
+--------------------------------------------------------------------------------
+STATE OCCUPANCY (the state that selects the range):
+        idle 62.9%   assigned 26.5%   exiting 5.6%   dead 3.1%   off-grid 1.8%
+        per run: idle 38.9-81.9%, assigned 12.7-48.3%, exiting 1.1-14.4%
+
+IS IT A FLICKER?  NO.
+   90 state transitions in all (2.07 per unit per 100 steps): idle->assigned
+   (dispatch) 25, assigned->exiting (pickup) 20, exiting->off-grid (hand-over) 19,
+   off-grid->idle (respawn) 19, assigned->idle (recall) 5, deaths 2. Under a
+   three-state frame 20 of those change nothing visible (exiting -> off-grid or
+   dead is "no frame" to "no frame"), so
+        VISIBLE shape changes      70 = 1.61 per unit per 100 steps
+                                   = one per 62 steps = 12.4 s at 200 ms/step
+        mean dwell before a change idle 16.8-105.0 steps, assigned 30.7-58.2,
+                                   exiting 4.0-26.0
+   and every one is a real event. The brief asks whether the flicker is
+   informative or distracting: it is not a flicker, and in principle it IS
+   informative. The objection to (a) and (b) is NOT this.
+
+DOES THE RANGE EVER BIND?  RARELY.
+        fire inside the range: idle 5.8% of idle unit-steps (159 / 2,730; up to
+                               14.6% in one run)
+                               assigned 2.4% of assigned unit-steps (28 / 1,149)
+        per STEP: at least one of the three frames encloses a burning cell on
+                  12.0% of steps (0.0-25.7% per run); on 88.0% none does
+   For comparison the victim diamond that shipped fires on 16.1% of victim steps
+   (FOV round).
+
+WHERE WOULD IT BE DRAWN?  AT THE MAP'S EDGE, AND OFTEN ON THE BASE.  This is what
+the FOV round could not see. At mode 3 an idle firefighter is either on its berth
+- (4,46), (2,45), (2,46) in the NW block at the defaults - or, after a hand-over,
+idling at the boundary cell where it re-entered:
+        idle unit-steps within 2 cells of a grid edge        88.2%
+           on a depot berth 42.8%; outside both depots 57.2%
+        so the idle diamond is clipped by the grid edge on   88.2% of idle
+           unit-steps (assigned: 7.7%); 56.9% of those clipped unit-steps are
+           boundary-idlers, not berths
+        an idle-diamond stroke inside a depot block          64.3% of ALL steps
+                                                             (17.8-100.0% per run)
+        an idle-diamond stroke passing UNDER the banner      51.9% of all steps
+        >= 2 idle diamonds stacked in one block              19.9%  (9.5-56.4%)
+        median stroke ink inside the two 3,136 px blocks     358 px
+   A radius-3 diamond is 7 cells = 78.4 px across, against a 56 px block: on the
+   three default berths they blanket 21 of the block's 25 cells. Step 0 - the
+   first frame the dashboard paints on Run - is exactly that case; the right-hand
+   column of outputs/_bm/proto/basemark_design_sheet.png shows it rendered by the
+   real drawMap with the banner (final_itemB_b.png; sheet_flag_plus_b.png is the
+   same with the earlier pennant).
+
+   IT CANNOT HONESTLY BE SUPPRESSED THERE. Class Firefighter contains no reference
+   to base_station, depot or berth (checked, agents.py:1489-2834, 0 hits): the
+   retreat rule runs on a berth exactly as anywhere else. The FOV round refused to
+   suppress a docked UAV's frame because a docked UAV still detects; the same
+   principle forbids hiding a parked firefighter's tripwire. The dashboard's own
+   precedent cuts the same way: the victim diamond is drawn only where the rule
+   RUNS (serve_dashboard.py:168-175).
+
+IT WOULD BE THE VICTIM DIAMOND, UNLESS RE-STYLED. VICTIM_FLEE_TRIGGER_DISTANCE = 3
+   deliberately borrows IDLE_RETREAT_SAFETY_BUFFER's numeral
+   (common_fixed_variables.py:130-134), both are Manhattan, and the victim diamond
+   is already an exact staircase in the black / white two-tone. From the same
+   emitter an idle firefighter frame is the same shape, the same 78.4 px and the
+   same stroke. The dash signature is owned by assignment lines (:856); a teal
+   #00FFCC core in place of white separates from it by 27.13 dE in normal vision
+   and 6.1 achromatic - and in blind round 3 (below) all 6 readers DID tell the
+   teal frames from the victim diamonds.
+
+5.3  THE OPTIONS
+--------------------------------------------------------------------------------
+(a) THE 3-CELL IDLE DIAMOND ONLY.                                        REJECT
+    Correct on 62.9% of unit-steps and then vanishes - so it misstates the model on
+    dispatch, exactly when the operator is watching that unit. All of the base
+    cost in 5.2 with none of the assigned-state information.
+
+(b) BOTH STATES, DRAWN DIFFERENTLY BY DESIGN.            HONEST, VIABLE, COSTLY
+    The only frame that does not misrepresent. It must be THREE states: a radius-3
+    diamond idle, a radius-1 plus-shape (5 cells, 33.6 px across) with a target,
+    and NOTHING while exiting, dead or off-grid. "Nothing" then silently means "no
+    protection on the most dangerous leg" - readable only with a legend essay. Its
+    merit is consistency: "every staircase diamond on this map is a fire
+    tripwire". Its cost is measured in 5.4. Specified in 5.5 so it can be built on
+    one word.
+
+(c) A MARKER WITH NO RANGE IMPLIED, ON THE MAP.                          REJECT
+    The firefighter already carries three map marks. A fourth that states nothing
+    adds ink and no information.
+
+(d) NOTHING ON THE MAP.                                     ACCEPTABLE MINIMUM
+
+(d+) NOTHING ON THE MAP, AND THE RANGE STATED IN THE "fire d" CELL. RECOMMENDED
+    Defined in 5.4. It is (c)'s idea moved to where it costs nothing: a statement
+    of the range with no geometry.
+
+5.4  RECOMMENDATION: (d+)
+--------------------------------------------------------------------------------
+WHY THE DECLINE STILL HOLDS. Every pillar stands (section 4). The state
+dependence that was the FOV round's objection is sharper, not softer: three
+states, one of them "none". And two facts that round could not see point the same
+way: no frame would enclose any fire on 88.0% of steps, and at the shipped mode
+the idle diamond's habitat is the map edge and, 64.3% of the time, the base this
+round is trying to make legible.
+
+HOW MUCH DOES (b) COST ITEM A?  MEASURED, NOT PREDICTED. Blind round 3: the same
+three frames with the banner alone and with the banner plus option (b) as
+specified in 5.5, two fresh readers each (n = 12):
+
+                          n   TL conf   BR conf   top-left clutter   BASE read
+      banner alone        6    84.7      78.3          33.3            6/6
+      banner + (b)        6    80.8      75.8          44.5            6/6
+      by frame, banner -> banner + (b):   clutter            TL confidence
+        west/101 s0   three idle on berths   37.5 -> 58.5     82.5 -> 73.5
+        west/101 s30  one idle on a berth    32.5 -> 50.0     85.0 -> 82.5
+        south/202 s72 no idle unit in a depot 30.0 -> 25.0    86.5 -> 86.5
+
+   So (b) does NOT break Item A's gate item - the word is read 6 of 6 - and I
+   withdraw my draft's claim that it would. It costs clutter exactly where and
+   when idle units sit on berths, most at step 0. With n = 2 per cell these are
+   directions, not magnitudes. All 6 readers of the (b) frames identified two
+   kinds of staircase outline, so the teal core works as an identity cue in normal
+   vision; none of them inferred what the firefighter frames MEAN.
+
+WHAT (d+) IS. The dashboard already shows fire distance per firefighter, and
+colours it <= 1 red and <= 3 amber for every unit (serve_dashboard.py:895). Those
+are state-blind literals that coincide with the two ranges; nothing in the UI says
+they ARE the ranges, so this is not a bug - but it means the one place the 1 and
+the 3 appear cannot tell the operator which applies:
+
+     assigned unit-steps shown AMBER at d = 2-3 although that unit's own trigger
+     is <= 1                                            448 / 1,149 = 39.0%
+          per run 0.0 / 8.9 / 17.0 / 39.8 / 30.2 / 75.1% - 58% of them from
+          west/101 alone
+     exiting unit-steps coloured at d <= 3 although NO retreat range applies
+                                                         92 / 245  = 37.6%
+          per run 11.5 / 0.0 / 0.0 / 21.2 / 77.9 / 12.5% - 81 of the 92 are ONE
+          unit's single episode
+     idle unit-steps amber / red                        159 / 2,730 = 5.8%
+
+   THAT ONE EPISODE DECIDES THE DESIGN. South/202, firefighter 2509: exiting for
+   85 steps (92-176) with fire at d <= 3 on 81 of them - and at step 177 it DIES
+   at (6,7). My draft proposed to show exiting units UNCOLOURED, because no retreat
+   range applies to them. That is exactly wrong: a unit that will not retreat is
+   the one whose proximity colour matters most, and under my draft rule the table
+   would have gone quiet for the 81 steps before that death. Withdrawn.
+
+   SO: keep the proximity colours in EVERY state, unchanged, and ADD the unit's
+   own current retreat range beside the distance:
+        idle        "5 / 3"        with a target   "2 / 1"        exiting   "2 / -"
+   One glance then gives both the distance and the range the model is applying,
+   the "-" says plainly that this unit will not move away, and nothing that is
+   shown today is taken away. It needs ONE new whitelisted panel key: the builder
+   already computes `exiting` (dashboard_state_builder.py:341) and _slim_panel
+   drops it (serve_dashboard.py:103-104); `assigned` is already whitelisted and is
+   a safe proxy for the selector in production (0 disagreements in 4,338
+   unit-steps). `exiting` is tested FIRST (4.3). Display-only; decision 9.7.
+
+(d+) AND (b) ARE NOT EXCLUSIVE. If the maintainer wants geometry on the map, (b)
+is the frame to build and never (a) - and the cell is worth having either way.
+
+5.5  IF THE MAINTAINER CHOOSES (b) - THE SPECIFICATION
+--------------------------------------------------------------------------------
+PAYLOAD   one integer per firefighter in _capture_frame, rr = the range the model
+          applies THIS step, mirroring the selector's ORDER: 0 if dead or exiting
+          (tested FIRST - target_pos is stale while exiting); 1 if target_pos;
+          else int(am.IDLE_RETREAT_SAFETY_BUFFER) read through the module handle at
+          call time. The 1 is a literal in the model and must be a documented
+          literal here. (A refuter showed the three states CAN be derived from
+          today's frame - panel.assigned joined to the assignment lines by
+          position - but the ids do not join and the position join has stale-
+          position failure modes. An explicit field is the robust option.)
+          Harness-inert: _capture_frame is not on the evaluation path
+          (get_dashboard_state is; _capture_frame is not).
+GEOMETRY  the victim diamond's staircase emitter with r = rr; rr = 0 draws nothing.
+STYLE     3 px #000000 casing with a 1 px #00FFCC core - the unit's own colour.
+          27.13 dE from the victim diamond's white in normal vision, 6.1
+          achromatic, 88.94 from its own casing; told apart by 6 of 6 blind
+          readers. The centre marker remains the reliable cue.
+Z-ORDER   with the other sensing overlays (:806-847), therefore UNDER the banner.
+LEGEND    a third chip in fovSwatch().
+COST      5.2 and 5.4, accepted knowingly.
+PART 3    the whole-frame digest (8.2) becomes positive for exactly the rr key; the
+          pixel audit gains a third predicted set.
+
+================================================================================
+6. OVERLAP AND CLIPPING
+================================================================================
+
+6.1  THE EXISTING MARKS, RE-MEASURED AT THE SHIPPED MODE
+--------------------------------------------------------------------------------
+The FOV round measured at mode 0, with UAVs spawning in the centre. At mode 3
+they launch from and return to a corner:
+
+              >= 1 FOV pair    all three pairs    >= 1 FOV block
+              overlapping       overlapping        edge-clipped
+   east/101      98.3%            51.0%              74.7%
+   east/202      79.7%            26.6%              96.3%
+   north/101     75.5%            46.5%              91.7%
+   south/101     71.0%            13.7%              94.2%
+   south/202     94.6%            12.9%              81.7%
+   west/101      80.9%            12.4%             100.0%
+   FOV round     85.0-88.3%       4.2-6.2%           31.2-39.6%      (mode 0)
+
+Pairwise overlap is about what it was (lower in four runs, higher in two). What
+changed: ALL THREE frames now overlap two to eight times as often, and CLIPPING
+HAS MORE THAN DOUBLED - a clipped frame is the near-universal case, from step 0.
+The shipped clamp handles it; the new mark must live with its consequence - a
+clamped frame runs ALONG the map border, through the depot's outer cells.
+
+6.2  THE BANNER AGAINST EVERYTHING ELSE - PIXEL LEVEL, 1,446 TRACED STEPS
+--------------------------------------------------------------------------------
+Cell-level counting overstates this (a FOV stroke "touches" the five outer-corner
+cells of the NW block on 17.0-49.0% of steps), because a border-clamped stroke
+occupies only canvas pixels 0-1 (a 3 px casing centred on 0.5) and the banner
+begins at pixel 4 (x) / 3 (y). So this is measured on pixel sets, with the true
+marker shapes (squares for UAVs and firefighters, a DISC for victims).
+
+   the banner hides some FOV-frame stroke         12.3% of steps; at most 135 px on a
+                                                  step, against ~2,284 px of casing
+                                                  in one full frame
+   the banner hides some victim-diamond stroke     3.0% of steps
+   the banner hides some walked-trail ink         26.4% of steps (0.0-78.8% per run);
+                                                  up to 167 px
+   an assignment line crosses the banner           0 of 1,446 steps
+   a unit marker covers some banner ink            7.3% of steps; at most 80 of 990 px
+
+What the unit cases are:
+  - north/101, 35.3% of that run: firefighter 2510 DIES at (1,49) - inside the
+    burning NW depot's outer ring - at step 171, and its black marker lies there
+    for the remaining 70 steps (plus 15 earlier passes by the same unit). A dead
+    unit in the base is drawn over the banner. Correct priority.
+  - south/101 5.8%, west/101 1.7%, south/202 0.8%: units crossing the outer ring.
+  - east/101: 0.0%. Victim 2503 DOES shelter inside the SE block - 45 steps,
+    ending at (46,3) from step 210 - but its 5.6 px disc only grazes the banner's
+    1 px casing column by an anti-aliased 0.4 px. (A pure-geometry argument
+    offered during verification said no victim can get near a depot; the trace
+    says one walks into it. No occlusion resulted, this time.)
+
+BANNER vs FOV FRAMES. Above them, so a stroke passes behind the cloth and
+continues on both sides. At a docked UAV's clamped edges there is no contact:
+frame pixels 0-1, banner from pixel 4 (x) / 3 (y); on the east side the frame's
+only visible casing pixel is 559, and the pole ends at pixel 555. FOV lines also
+cross the depot INTERIOR - a frame side lies strictly inside a block on 212 (NW)
+and 91 (SE) of the 1,446 steps - which is the case the 12.3% measures.
+
+BANNER vs VICTIM DIAMONDS. Same rule; 3.0% of steps, one victim layout.
+
+BANNER vs THE BLOCK'S OWN STROKE. The block's #770099 band is its outermost 2 px
+on each side (pixels 0-1 and 54-55); the banner spans pixels 3-33. At least 1 px
+of tinted ground separates them.
+
+BANNER vs THE CANVAS'S ROUNDED CORNER. The canvas has border-radius 10 px -> a
+9 px content-edge curve that trims the NW and SE map corners (17.4 px^2 each), so
+a depot's outer corner is already clipped. The NW banner's nearest pixel to that
+corner is (4,3): (9-4.5)^2 + (9-3.5)^2 = 50.5 < 81, inside the curve. The SE
+banner's nearest pixel is the pole's foot at (555,536): about 23 px from the
+corner point and 15 px clear of where the curve begins. The headless instrument
+renders a bare canvas and cannot see this clip; it is handled analytically.
+
+BANNER vs BANNER. Depot regions are disjoint by construction (ValueError at
+wildfire_model.py:640-645), and each banner is inside its block.
+
+EDGE CLIPPING OF THE BANNER ITSELF. None, for any anchor - which is the specific
+defect of the label it replaces.
+
+BANNER vs ITEM B. Under (d+): none. Under (b): firefighter diamonds are sensing
+overlays and pass UNDER the banner, on 51.9% of steps; measured effect in 5.4.
+
+================================================================================
+7. THE PROPOSED IMPLEMENTATION
+================================================================================
+ONE EXISTING FILE is edited, serve_dashboard.py, and within it only the HTML
+constant (:507-904, a single raw string); plus ONE NEW test file if 9.6 is
+accepted.
+
+  (1) drawMap :766-767 - delete the three text statements (fillStyle, font,
+      fillText) and KEEP the loop's closing brace (2.6). Update the comment at
+      :750-761.
+  (2) drawMap, between :853 and :854 (after the trails loop, before the
+      assignment-lines comment) - the banner block: about 14 lines of fillRect
+      plus one clipped fillText, and a comment carrying 2.2 / 2.5. It reads only
+      W, H, cs, ctx and _dps, so it stays inside the span outputs/_fov_render.py
+      slices ("function drawMap(fr){" .. "function render(fr){") and needs none
+      of that tool's other globals.
+  (3) setLegend :715-723 - baseSwatch() beside fovSwatch(); the chip in BOTH
+      branches.
+  (4) the probability toggle :650-651 - call setLegend()  [decision 9.4].
+  (5) NEW tests/test_dashboard_base_marker.py - three static source-text tests
+      [decision 9.6]: the old fillText is gone; the banner block lies inside the
+      drawMap..render span; the legend chip is in both branches. (They cannot
+      catch a JS syntax error - 8.3's render does.)
+
+NOT TOUCHED: every Python statement of serve_dashboard.py (_capture_frame,
+_slim_panel, _build_evaluation, the /start payload), agents.py, wildfire_model.py,
+common_fixed_variables.py, src_extension/**, Canvas_Grid_Visualization.py, main.py.
+
+IF 9.7 SELECTS (d+): one key added to the _slim_panel whitelist (:103-104) and the
+cell expression at :895. Still display-only, but it IS a Python edit, so 8.2 and
+8.5 are restated around exactly that key.
+
+WHAT IS NOT BUILT: no pennant (2.1); no second text label; no "primary depot"
+distinction (2.4); no mesa change (9.5); no firefighter frame unless 9.7 says so;
+none of the items in Appendix B.
+
+================================================================================
+8. PART 3 VALIDATION PLAN (stated now, so Part 2 cannot drift from it)
+================================================================================
+
+8.1  SIMULATION PROVABLY UNCHANGED - THE CONTROL RUN
+--------------------------------------------------------------------------------
+outputs/_sc_control.py, unmodified: three combos at seed 101 (D/east/half,
+D/south/half, D/east/default), 240 steps, both arms on THIS interpreter - the
+pre arm before the patch is applied (tracked tree == d3640e3), the post arm after.
+Tags bmpre / bmpost. The FOV round's gate first read FAIL because it compared
+another round's committed artifacts, so a comparator for THESE tags must be
+written (outputs/_bm_compare.py); _fov_compare.py cannot be reused - it is
+hard-wired to the fov tags and REQUIRES a payload digest to differ. It will refuse
+inputs older than the patch.
+
+STANDARD: VALUE-identical, as the brief requires, on stdout (sha + raw diff), the
+full agent_positions list, firemap and scorchmap digests, ground_counts, the whole
+_build_evaluation dict and leftover_pending. One correction to the brief's
+history, so the standard is not mis-cited later: the dict whose key order is
+hash-randomised per process is burn_intervals in the fire-mechanic A/B harness
+(outputs/_ffr_harness.py; firemech_report.txt), not anything _sc_control.py
+emits - the FOV round reported BYTE identity with this same tool. So Part 3 will
+report byte identity of stdout and sorted-key JSON equality as well, which is the
+stronger claim and is achievable here.
+
+Because Item A edits no Python statement this is nearly structural - and that is
+to be said in the report rather than dressed up as a discovery.
+
+8.2  NEGATIVE CONTROLS - MUST BE IDENTICAL
+--------------------------------------------------------------------------------
+  - cellcolor_sha256. `cells` is built inside a Fire-only loop; an overlay moves
+    zero bytes of it. The FOV round's lesson, inherited.
+  - THE WHOLE FRAME PAYLOAD. New this round, and NOT the FOV round's payload
+    digest: that one (outputs/_fov_payload.py) hashes only victims[].flee,
+    nearest_fire_dist and three booleans - it does not even cover fr.depots, the
+    only key Item A reads, so as a negative control it would be close to vacuous.
+    Part 3 hashes json.dumps(_capture_frame(model, s), sort_keys=True) at every
+    step. Item A must leave it IDENTICAL. Under (d+) or (b) it must differ in
+    exactly the added key (exiting, or rr) and in nothing else - checked by
+    hashing again with that key removed.
+
+8.3  THE POSITIVE CONTROL - RENDERED PIXELS, EXACT ACCOUNTING
+--------------------------------------------------------------------------------
+The SHIPPED drawMap, sliced from source as text - pre from `git show
+d3640e3:serve_dashboard.py`, post from the working tree - rendered by headless
+Chrome on the same captured frame; sha256 of the 560x560 RGBA store; the digest
+must MOVE. Then account for every pixel that moved, against geometry predicted
+INDEPENDENTLY OF THE BROWSER'S RASTERISER:
+
+   P = banner_pixels() in outputs/_bm_flag_geom.py. Be exact about its
+       independence: it mirrors the design's arithmetic, so on its own it could
+       share a design error with the JS. It is therefore ALSO checked against the
+       literal coordinate table of 2.2 typed in as numbers
+       (_bm_part1_checks.py [0]): identical pixel sets and tones for NW and SE.
+       Exact tone for the 231 casing / keyline / pole px per banner; for the 264
+       cloth-interior px it predicts CONTAINMENT and that the colour lies on the
+       #770099 -> #FFFFFF segment (one t for all three channels, within 2 levels).
+       Glyph SHAPES are font-dependent; glyph LOCATION is not - the text is
+       clipped to the cloth.
+   L = the old label's ink, measured from the PRE arm alone by rendering it with
+       and without its fillText statement (111 px for SE, 0 for NW).
+   M = the footprint of every unit marker in the frame, from the payload.
+
+   A  no stray    : changed is a subset of (P union L)                 -> 0 stray
+   B  no silent   : every pixel of P and of L changed, EXCEPT where (i) the PRE
+                    pixel already equalled the target, (ii) it lies in M, or
+                    (iii) it is a cloth-interior pixel whose PRE colour already
+                    lay on the field-to-white segment. (iii) is real: in
+                    probability mode the 0.22 tint over white IS on that segment,
+                    and the design-time probability render has exactly 1 such
+                    pixel. The interior is additionally audited against a no-text
+                    re-render, where every interior pixel must equal the field.
+   C  tones       : every hard-tone pixel of P outside M is exactly its tone.
+
+ALREADY DEMONSTRATED on the prototype, which injects the same code at the same
+slot into HEAD's drawMap (the label removed in both arms, so L is empty), on ALL
+ELEVEN rendered frames (outputs/_bm/part1_checks.txt [6]):
+
+   frame                        changed  predicted  stray  residual
+   east/101  s0                   990       990       0       0
+   south/202 s0, s72, s99, s160   990       990       0       0    (each)
+   west/101  s0, s30, s60,
+             s105, s150           990       990       0       0    (each)
+   north/101 s192  OCCLUDED       948       990       0      54 - all 54 inside M
+   cloth interior: 528 px, 224 glyph-inked, 0 off the field-to-white segment
+   hard tones: 462 px, 0 mismatches outside M
+
+   north/101 s192 is the hard case: the dead firefighter at (1,49) is drawn OVER
+   the NW banner. 42 predicted px do not change (the opaque marker covers them in
+   both arms), and its anti-aliased fringe blends a few more: 54 banner px are
+   either unchanged or not their predicted colour. The unit's marker footprint,
+   computed independently from the frame payload, contains ALL 54; 0 lie outside
+   it; 0 stray. So "covered by a later layer" is a checkable set, not an excuse.
+
+ARMS FOR PART 3, each with zero stray and zero unexplained residual: (1) quiet,
+east/101 s0; (2) NW depot burnt, west/101 s105; (3) SE depot in smoke and fire,
+south/202 s99; (4) OCCLUDED, north/101 s192 - it exists and is demonstrated above;
+(5) PROBABILITY MODE on (2) - the FOV round made one probability-mode render as a
+visual check but its pixel AUDIT arms were all probMode = false; (6) a TRAIL arm,
+a frame where a real trail passes UNDER the banner, proving it is untinted. (6)
+needs a new capture: _bm_capture.py calls _capture_frame only at the captured
+steps, so its fr.trails are sparse chords, not the dashboard's 60-point history -
+the Part 3 capture must call _capture_frame on EVERY step.
+
+8.4  TESTS - BY NAME SET
+--------------------------------------------------------------------------------
+Baseline at d3640e3, outputs/_fm3_merge_pytest.log: 8 failed, 623 passed,
+5 warnings in 2189.79 s (36:29). THE FAILING NAME SET:
+
+   tests/test_behavior_regression.py::test_descriptive_next_action_uses_target_position
+   tests/test_dashboard_panel.py::test_dashboard_panel_render_returns_string
+   tests/test_firefighter_dispatch_replacement.py::test_no_replacement_available_marks_victim_unreachable_once
+   tests/test_rescue_planner_authority.py::test_no_firefighter_planner_delay_or_unreachable
+   tests/test_uav_sector_assignment.py::test_fire_tracker_uavs_receive_different_target_sets
+   tests/test_uav_sector_assignment.py::test_fire_tracker_still_overridden_by_search_mode_fail_safe
+   tests/test_wind_aware_trajectory_regression.py::test_north_vs_south_trajectories_diverge_over_40_steps
+   tests/test_wind_aware_trajectory_regression.py::test_east_vs_west_trajectories_diverge_over_40_steps
+
+Part 3 runs the FULL suite in default order, pre and post, and compares the SETS
+(this project has two recorded cases of equal counts with different sets).
+Expected: the same 8; 623 passed, or 626 if decision 9.6 adds three tests.
+Audited: NO existing test reads the dashboard HTML, drawMap, setLegend or
+_capture_frame, and none imports Canvas_Grid_Visualization - so nothing existing
+can catch a rendering regression, which is the case for 9.6.
+
+8.5  ROUTE_BLOCKED GATE - EXPLICITLY NOT REQUIRED
+--------------------------------------------------------------------------------
+NOT REQUIRED, stated rather than left to inference: no simulation source changes.
+Scoped precisely, as the scorched and FOV rounds required - NOT "serve_dashboard
+is off the harness path" (it is not: evaluate_scenarios.py:31-36 imports it) but
+ZERO DIFF LINES IN ANY EXISTING TRACKED FILE OUTSIDE THE HTML CONSTANT (the new
+test file is off the harness path). Proved mechanically by an AST diff of
+serve_dashboard.py with that one string constant blanked (the method of
+outputs/_flip_behaviour_diff.py; feasible because the HTML is a single raw
+string), and empirically by 8.1, since _sc_control.py imports _build_evaluation
+from the patched file. The gate was last run and left in its recorded state by
+d3640e3 (item G5), so this round inherits it rather than owing it. Under (d+) the
+claim becomes "plus one whitelist key", and 8.2 shows that key is the whole of the
+payload change.
+
+8.6  BEFORE / AFTER
+--------------------------------------------------------------------------------
+Side by side from the same headless renders as 8.3 - full canvas at 1:1 plus 4x
+nearest-neighbour crops of both depots, on the quiet and the burning-depot
+frames. One mechanism serves the positive control and the image. Design-time
+versions exist: outputs/_bm/proto/basemark_before_after_1to1.png and
+basemark_design_sheet.png.
+
+8.7  THE LEGIBILITY GATE, ON THE SHIPPED RENDERER
+--------------------------------------------------------------------------------
+The 2.1 protocol again, fresh readers, on the PATCHED drawMap's output rather
+than the prototype's, against the status quo - at device scale 1 (the backing
+store) AND as page screenshots at --force-device-scale-factor 1.25 and 1.5, which
+is what a scaled Windows display actually shows.
+
+PRE-REGISTERED PASS, written so that the design-time data does not already fail
+it: (i) BASE is read at both corners by every reader, at every scale; (ii) the
+POOLED mean confidence at each corner exceeds the status quo's pooled mean by at
+least 15 points at scale 1. Not a per-frame inequality: on the smoke frame the old
+label happens to be legible and one status-quo reader scored the SE corner 80
+against the banner's 75 - a single reader, on the one frame where the old sign
+works, and the panel's own noise is a few points.
+
+8.8  THE COLOUR GATE, AGAINST THE SHIPPED LITERALS
+--------------------------------------------------------------------------------
+The three hex literals are extracted from the PATCHED source by text and fed to
+the instruments, so what is certified is what shipped, not what was proposed.
+
+================================================================================
+9. DECISIONS FOR THE MAINTAINER
+================================================================================
+9.1  THE FORM. RECOMMEND the banner (pole on the map-edge side + cloth reading
+     BASE), 30x30 px, black casing / white keyline and text / #770099 field, at
+     the top of each block. Blind panel 85/77 against 50/55 today. Alternatives
+     measured: sign plate 84/78 - perceptually EQUIVALENT, and the panel does not
+     see either as a flag; say so if you prefer it. Pennant 68/58, pennant x1.4
+     72/60 - the only form read as a flag, 13-19 points weaker without the word.
+     Confirm.
+
+9.2  THE OLD TEXT LABEL. RECOMMEND removing its three statements on
+     serve_dashboard.py:766-767 (KEEPING the closing brace): 0 px of ink at NW,
+     1.10:1 at SE, superseded by the banner. Confirm.
+
+9.3  BOTH DEPOTS, the same mark, pole on the map-edge side. RECOMMEND yes; no
+     "primary" flag. Confirm.
+
+9.4  THE LEGEND. RECOMMEND the three-tone chip in BOTH legend branches, plus one
+     setLegend() call from the probability toggle so the legend is not stale after
+     a toggle (pre-existing, adjacent, one line). Confirm, or chip only.
+
+9.5  THE MESA SURFACE. RECOMMEND leaving Canvas_Grid_Visualization.py alone: mesa
+     draws text in the default font at the centre of a 10 px cell, so the word
+     that carries the identification cannot be drawn there, and a custom-image
+     shape ignores layer order. The two surfaces would then differ - as they
+     already do for the victim diamond, the fire-distance column and the 17-vs-19
+     FOV frame (FOV decision 8.1). Confirm, or ask for a bar-built pole as a
+     separate round.
+
+9.6  THREE STATIC TESTS pinning the banner into the source. RECOMMEND yes: today
+     nothing at all protects the renderer. It moves the pass count 623 -> 626; the
+     failing set must not move. Confirm, or decline.
+
+9.7  ITEM B - THIS ONE GATES ITS OWN IMPLEMENTATION. Choose one; (d+) may be
+     combined with (b).
+       (d+) nothing on the map; the "fire d" cell shows distance AND the unit's
+            own current retreat range ("2 / 1", "5 / 3", "2 / -"), proximity
+            colours kept in every state.                            RECOMMENDED
+       (d)  nothing at all.                                 ACCEPTABLE MINIMUM
+       (b)  the three-state frame of 5.5 - honest, told apart from victim diamonds
+            by 6 of 6 blind readers, and VIABLE. Measured cost to Item A: BASE
+            still read 6 of 6; top-left clutter 33 -> 45 (37.5 -> 58.5 at step 0);
+            an idle-diamond stroke inside a depot block on 64.3% of steps.
+       (a), (c)  rejected with reasons in 5.3.
+     If (b): confirm the teal core, and that the base clutter is accepted.
+
+--------------------------------------------------------------------------------
+APPENDIX A - WHAT WAS MEASURED, AND HOW
+--------------------------------------------------------------------------------
+Every number above is a file:line quotation at d3640e3 or a measurement taken in
+this session on 3.10.11 / mesa 1.2.1. No tracked file was modified. All untracked,
+under outputs/:
+
+  _bm_trace.py            per-step geometry trace at the shipped default: every
+                          unit position, each firefighter's range-selecting state
+                          in the model's own order, nearest-fire distance, every
+                          dispatch, ground colours under each depot
+  _bm_trace_analyze.py    offline analysis -> _bm/trace_analysis.txt
+  _bm_capture.py          real frames from one run at several steps, any wind
+  _bm_proto.py            prototype harness: HEAD's drawMap sliced as text, a
+                          candidate injected as text, rendered by headless Chrome.
+                          No source file touched.
+  _bm_blind_prep.py       regenerates every blind-panel image and checks each
+                          against the PNG the readers saw: ALL 24 REPRODUCE
+  _bm_flag_geom.py        the mark's geometry in Python; consumed by the
+                          interaction analysis and by Part 3's pixel audit
+  _bm_flag_interact.py    pixel-level interaction rates -> _bm/banner_interact.txt
+  _bm_part1_checks.py     every other measurement quoted here, in one re-runnable
+                          place -> _bm/part1_checks.txt: the predictor against
+                          the literal table of 2.2, berth indices under each
+                          banner, state occupancy and the 90 transitions, the
+                          dispatch list, idle diamonds against the depot blocks,
+                          the "fire d" counts, trail and assignment-line
+                          crossings, and the two render checks (old-label ink,
+                          bbox and contrast; exact banner accounting with a true
+                          segment test) on all 11 frames
+  _bm_colour_a.py / .txt  colour instrument A (Machado 2009)
+  _bm_colour_b.py / .txt  colour instrument B (Vienot 1999 / Brettel 1997)
+  _bm_colour_x_check.py / .txt   the cross-checker's third, dichromat-free
+                          instrument
+  _bm/trace_*.json        the six runs          _bm/frame_*.json   11 captured frames
+  _bm/proto/*.png         prototypes and contact sheets: basemark_design_sheet.png
+                          (now vs banner on five backgrounds; option (d) vs (b)
+                          at step 0), basemark_before_after_1to1.png,
+                          sheet_flag_plus_b.png (the earlier PENNANT under (b))
+  _bm/blind/*             the 24 blind-panel images, the three neutral-name
+                          mappings, and all 39 readers' full responses
+                          (_results.json, _results2.json, _results3.json)
+  _bm/audit_*.json, _bm/verify_*.json   audits, refutations, and the draft
+                          verification
+
+VERIFICATION, IN THREE LAYERS.
+ 1. Three code audits (firefighter ranges, depot rendering, palette), each
+    followed by an adversarial refuter: 4 audit claims refuted and corrected - the
+    count of documents stating the "original simulator unchanged" rule is three,
+    not four; the frame payload CAN already distinguish the firefighter states;
+    drawMap's alpha overlays have five distinct RGB bases, not four; and
+    base_station_contains DOES have a caller (the UAV dock test), though Fire code
+    never reads the station. Two independent colour instruments and a cross-check
+    with a third: 41 quantities, 1 refuted - the WCAG "4.87" had been generalised
+    beyond the 15 grounds it covers.
+ 2. This document's first draft, against five verifiers re-deriving every number
+    and citation from raw files: 64 findings, all folded in. The ones that
+    changed CONTENT rather than digits: deleting "lines 766-767" would have
+    deleted the loop's closing brace; the SE banner is not in its block's outer
+    corner; the panel gives no evidence the banner is seen as a flag; the 88.2%
+    clipping is mostly boundary re-entry, not berths; dispatches do not all start
+    at the depot, and all six runs share one victim layout; "uncoloured while
+    exiting" would have hidden the cue before a death; "would damage Item A's
+    gate" was a prediction - so it was measured (blind round 3) and withdrawn; my
+    own pre-registered legibility gate was already failed by design-time data;
+    the FOV payload digest does not cover fr.depots; and "independent of the JS"
+    overstated a predictor that is independent of the browser.
+ 3. Where my own first design was wrong - the pennant - the correction is the
+    subject of 2.1.
+One slip of mine with no effect on any file: `chrome.exe --version` does not print
+on Windows; it opened a window in the maintainer's existing Chrome session. The
+version was then read from file metadata.
+
+--------------------------------------------------------------------------------
+APPENDIX B - FOUND IN PASSING, NOT FIXED
+--------------------------------------------------------------------------------
+Out of scope, recorded so they are found. B.1-B.4 and B.6 come from reading the
+code and were not run.
+  B.1  The dashboard's "Fire spread" input looks like a DEAD INPUT: /start passes
+       FIRE_SPREAD_MULTIPLIER through apply_scenario_config, which writes cfv and
+       wf, while the sole consumer (agents.py:101) reads a name star-imported into
+       `agents`. The repo's documented dead-input class
+       (common_fixed_variables.py:348-352, :386-390, :582-586). Simulation
+       source - not touched.
+  B.2  An off-grid firefighter's table row shows a STALE last position and a
+       NUMERIC "fire d" computed from it (dashboard_state_builder.py:323-325 falls
+       back to managed_state.position). Dead units are coloured too: 90 of 134
+       dead unit-steps at d <= 3.
+  B.3  advance()'s `elif self._idle_needs_survival_move():` branch (agents.py:
+       1747-1763, category 'idle_retreat') appears unreachable: every idle retreat
+       is recorded as 'survival_retreat'.
+  B.4  Stale agents.py line citations in shipped comments: serve_dashboard.py:170,
+       :429, :432; dashboard_state_builder.py:50, :300-302.
+  B.5  The FOV frame's white core is off-canvas at the EAST and SOUTH map edges:
+       its centreline snaps to 560.5, so only 1 px of black casing shows there,
+       against a full two-tone line on the west and north edges.
+  B.6  With FF_FIREFIGHT_FIREBREAK armed, a cleared never-burned cell renders
+       VEGETATION_COLORS[0] = #414141, the same hex as FIRE_COLORS[0], with no
+       legend entry. Dark at the shipped switches.
+  B.7  The canvas ignores devicePixelRatio, so every 1 px mark on it - the FOV
+       frames' core included - is resampled on a scaled display.
+
+================================================================================
+PART 2 ADDENDUM - what was confirmed, and what changed on the way to shipping
+================================================================================
+C1  ALL SEVEN DECISIONS CONFIRMED AS RECOMMENDED (9.1 banner; 9.2 remove the old
+    label; 9.3 same mark on both depots; 9.4 chip in both legend branches plus
+    refresh on the probability toggle; 9.5 mesa left alone; 9.6 three static
+    tests, 623 -> 626; 9.7 option (d+)). Section 5.5 - option (b) - is KEPT here
+    as a recorded alternative at the maintainer's request. It is not built.
+C2  ONE DEPARTURE: the table cell ships as 3/1, not "3 / 1" as written in 5.4 and
+    9.7. With spaces the cell widened its column enough to squeeze the `pos`
+    column until "(44, 25)" wrapped onto two lines. Seen in a full-page screenshot
+    in Part 3, fixed (compact, no-wrap), and the whole post arm was re-run on the
+    final source. Content and colours are as designed.
+C3  8.3's tooling note was acted on: outputs/_bm_capture2.py calls _capture_frame
+    on EVERY step, so the Part 3 frames carry the dashboard's real 60-point trails,
+    and each carries `ff_truth` - the firefighter states read off the MODEL - which
+    is what the shipped cell was checked against (30 of 30).
+C4  MID-ROUND ADDITION, NOT PART OF THIS DESIGN: non-burnable depot cells. Measured
+    on the existing corpus, fire reaches a depot in 25 of 27 runs, so by the
+    maintainer's own rule it is a fire-spread change needing its own gated round.
+    Its Part 1 is outputs/depotfireproof_part1.txt. Note 3.4 there: a fuel-less
+    depot floor renders #414141, which is this banner's weakest measured ground
+    for the FIELD (17.22 dE; section 3.3 above) - the black/white pair is
+    unaffected.
+Results: outputs/basemark_report.txt.
+C5  TWO CORRECTIONS TO THIS DOCUMENT, found while verifying the report:
+    - 2.1 and the summary say the panel gives NO evidence the banner is seen as a
+      flag (2 of 6). That counted round 2 only. Round 3's six banner-alone readers
+      volunteer flag or pole language 5 of 6, so it is 7 of 12 - MIXED, not none.
+      The decision (banner over sign, on engineering grounds) is unaffected.
+    - 5.4 says none of the six option-(b) readers inferred what the firefighter
+      frames MEAN. More exactly: all six read them as a vehicle's SENSING or
+      COVERAGE range - the capability the model does not have. That belongs beside
+      5.5 for whoever builds option (b).
