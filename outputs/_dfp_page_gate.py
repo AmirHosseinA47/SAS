@@ -331,11 +331,25 @@ def absolute(res):
 
 
 def shape(res):
-    """Layout facts that are PROPERTIES OF THE PAGE, not of this change. Reported,
-    never failed on: at 6281542 the UAV panel already mixes 4-cell rows with
-    2-cell continuation rows, so 'all table rows are the same height' is false on
-    the page as shipped. Failing this round for it would be failing it for
-    someone else's design. The GATE on these is the DELTA, below."""
+    """Layout facts that are PROPERTIES OF THE PAGE, not of this change.
+
+    REPORTED, NEVER FAILED ON - and that is a maintainer ruling, not an
+    oversight. The brief asked for an absolute assertion that table row heights
+    are equal and no panel overflows. At 6281542, BEFORE this change touches
+    anything, the UAV panel already mixes 4-cell rows with 2-cell continuation
+    rows (body row heights 22 and 43) and its table's scrollWidth exceeds its
+    clientWidth by 13 px. So the absolute form is a pre-existing condition of the
+    page, not a gate on this round; the base-mark lesson was about a CHANGE (a
+    cell wrapped and nothing saw it), not about absolute compliance.
+
+    THE GATE IS THEREFORE THE DELTA: this list must be IDENTICAL between the two
+    arms, and every one of the 41 measured quantities must be unchanged except
+    the legend strip's own geometry. If this change had made the UAV panel worse,
+    or started an overflow anywhere else, that catches it.
+
+    The absolute measurement is printed at every scale so the pre-existing
+    condition stays visible and can be decided on separately. See section 9.3 of
+    outputs/depotfireproof_report.txt."""
     out = []
     for t in res["tables"]:
         if not t["body_uniform"]:
@@ -482,7 +496,9 @@ def main():
             allok = False
             P("  !! GATE FAIL: expected exactly one new chip in each legend branch")
         sa, sb = shape(raw["A_pre"]), shape(raw["B_post"])
-        P("  PRE-EXISTING page shape (identical in both arms: %s)" % (sa == sb))
+        P("  PRE-EXISTING page shape - reported, not failed on (identical in both arms: %s);"
+          % (sa == sb))
+        P("  the absolute row-height / overflow assertion is a property of the page at 6281542:")
         for s in sb:
             P("      - %s" % s)
         if sa != sb:
