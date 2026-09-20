@@ -64,6 +64,28 @@ def _cell_color(c):
         return "#2b2b2b"  # burnt: fuel spent, absorbing, cannot re-ignite
     if getattr(c, "has_burned", False):
         return "#895e00"  # scorched: burned but still fuelled, re-ignites
+    if c.get_fuel() <= 0:
+        # CLEARED: no fuel and it has never burned, so it can never ignite. Two
+        # things produce it - the depot ground at BASE_STATION_FIREPROOF 1, and a
+        # firefighter firebreak - and they are the same physical state, so they
+        # get the same colour. The branch sits AFTER burnt and scorched because
+        # both of those also end at fuel 0 and must keep their own colours.
+        #
+        # It is reachable only through a fuel clear: FUEL_BOTTOM_LIMIT is 7, and
+        # fuel falls only inside Fire.step's `if self.burning` branch, which sets
+        # has_burned first (agents.py:105-108). So with both features off this
+        # branch is dead and the surface is unchanged.
+        #
+        # Until now such a cell rendered VEGETATION_COLORS[0] = #414141 - which is
+        # FIRE_COLORS[0] as well, sits 2.00 dE from BW[7] in the burnt/smoke grey
+        # band, and says "spent" about ground that has never burned. #193cff was
+        # chosen by an exhaustive CIEDE2000 sweep over the 162-entry effective
+        # palette (every ramp entry plus every depot-fill and gridline composite),
+        # scored across all four of its own rendered forms and four vision
+        # conditions: 12.85 dE normal, 6.69 dE worst chromatic - better than every
+        # colour this repo already ships except the depot violet itself.
+        # outputs/_dfp_colour.py -> outputs/_dfp_colour.txt.
+        return "#193cff"  # cleared: no fuel, never burned, cannot ignite
     return _veg_color(c.get_fuel())
 
 
@@ -252,10 +274,29 @@ def _capture_frame(model, step):
         # fails silently.
         depot = depots[0]
 
+    # Cleared ground, as its own key. In MAP mode `cells` already carries the
+    # colour, but PROBABILITY mode paints the ground from `prob` alone and a
+    # cleared cell has probability 0 forever, so it would render as the white
+    # "low prob" background and be indistinguishable from ordinary low-risk
+    # ground. Publishing the cell set separately is what lets the probability
+    # surface draw it - and that is what makes the legend chip TRUE in the
+    # probability branch rather than describing a colour that is not on screen.
+    # EXACTLY the state _cell_color returns the cleared colour for, smoke test
+    # included and in the same order - otherwise map mode and probability mode
+    # could disagree about one cell. (The smoke term is unreachable today: a cell
+    # that never burns never activates smoke, because Smoke.smoke_step only starts
+    # the pre-dispelling countdown on a burning call and SMOKE_PRE_DISPELLING_-
+    # COUNTER is 2. It is written anyway, so the two surfaces cannot drift if that
+    # constant ever changes.)
+    nofuel = sorted("%d,%d" % k for k, c in fire_cells.items()
+                    if not c.smoke.is_smoke_active() and not c.is_burning()
+                    and not c.is_burnt() and not getattr(c, "has_burned", False)
+                    and c.get_fuel() <= 0)
+
     return {"step": step, "cells": cells, "prob": prob,
             "uavs": uavs, "victims": vics, "firefighters": ffs,
             "assignments": assignments, "trails": ff_trails + uav_trails,
-            "depot": depot, "depots": depots,
+            "depot": depot, "depots": depots, "nofuel": nofuel,
             "panel": _slim_panel(st)}
 
 
@@ -627,6 +668,10 @@ function bb(v,tc,fc){return badge(v?'yes':'no',v?(tc||'var(--green)'):(fc||'var(
 function kv(k,v){return `<div class="kv"><span class="k">${k}</span><span>${v}</span></div>`;}
 function fmtpos(p){return p&&p.length>=2?`(${Math.round(p[0])}, ${Math.round(p[1])})`:'&mdash;';}
 const BW=["#ffffff","#e6e6e6","#c9c9c9","#b1b1b1","#a1a1a1","#818181","#636363","#474747","#303030","#1a1a1a","#000000"];
+// Cleared ground: no fuel, never burned, cannot ignite. Must equal the literal
+// serve_dashboard._cell_color returns, and main.agent_portrayal's - the same
+// state on all three surfaces. Chosen by measurement, outputs/_dfp_colour.txt.
+const NOFUEL="#193cff";
 
 let W=50,H=50,cs=11.2,probMode=false,playing=false,timer=null,totalSteps=80,curFrame=null,finished=false;
 // Overlay radii, filled from /start. FOVR is Chebyshev (the UAV's Moore
@@ -731,8 +776,8 @@ function baseSwatch(){
   return '<span><i class="sw" style="background:#770099;border:1px solid #FFFFFF;outline:1px solid #000000;border-radius:0"></i>base station</span>';
 }
 function setLegend(){const FOVSW=fovSwatch(),BASESW=baseSwatch();document.getElementById('maplegend').innerHTML=probMode
-  ?'<span><i class="sw" style="background:#ffffff"></i>low prob</span><span><i class="sw" style="background:#636363"></i>med</span><span><i class="sw" style="background:#000000;border:1px solid #444"></i>high</span><span><i class="sw" style="background:#00FFFF"></i>victim-searcher</span><span><i class="sw" style="background:#FF00FF"></i>fire-tracker</span>'+BASESW+FOVSW
-  :'<span><i class="sw" style="background:#fe5501"></i>fire</span><span><i class="sw" style="background:#ababab"></i>smoke</span><span><i class="sw" style="background:#2b2b2b"></i>burnt (spent)</span><span><i class="sw" style="background:#895e00"></i>scorched (re-ignites)</span>'+BASESW+'<span><i class="sw" style="background:#FF00FF"></i>fire-tracker</span><span><i class="sw" style="background:#00FFFF"></i>victim-searcher</span><span><i class="sw" style="background:#FFFF00"></i>victim</span><span><i class="sw" style="background:#00FFCC"></i>firefighter</span><span><i class="sw" style="background:#ffd75a"></i>assigned-to</span>'+FOVSW;}
+  ?'<span><i class="sw" style="background:#ffffff"></i>low prob</span><span><i class="sw" style="background:#636363"></i>med</span><span><i class="sw" style="background:#000000;border:1px solid #444"></i>high</span><span><i class="sw" style="background:#00FFFF"></i>victim-searcher</span><span><i class="sw" style="background:#FF00FF"></i>fire-tracker</span><span><i class="sw" style="background:#193cff"></i>cleared (no fuel)</span>'+BASESW+FOVSW
+  :'<span><i class="sw" style="background:#fe5501"></i>fire</span><span><i class="sw" style="background:#ababab"></i>smoke</span><span><i class="sw" style="background:#2b2b2b"></i>burnt (spent)</span><span><i class="sw" style="background:#895e00"></i>scorched (re-ignites)</span><span><i class="sw" style="background:#193cff"></i>cleared (no fuel)</span>'+BASESW+'<span><i class="sw" style="background:#FF00FF"></i>fire-tracker</span><span><i class="sw" style="background:#00FFFF"></i>victim-searcher</span><span><i class="sw" style="background:#FFFF00"></i>victim</span><span><i class="sw" style="background:#00FFCC"></i>firefighter</span><span><i class="sw" style="background:#ffd75a"></i>assigned-to</span>'+FOVSW;}
 
 function showEval(e){const box=document.getElementById('eval');box.style.display='block';
   const ok=e.all_terminal?'var(--green)':'var(--amber)';box.style.borderLeftColor=ok;
@@ -751,7 +796,16 @@ function showEval(e){const box=document.getElementById('eval');box.style.display
 function drawMap(fr){
   if(probMode){ctx.fillStyle='#ffffff';ctx.fillRect(0,0,cv.width,cv.height);
     for(const k in fr.prob){const [x,y]=k.split(',').map(Number);const idx=Math.min(10,Math.max(0,Math.round(fr.prob[k]*10)));
-      ctx.fillStyle=BW[idx];ctx.fillRect(x*cs,(H-1-y)*cs,Math.ceil(cs),Math.ceil(cs));}}
+      ctx.fillStyle=BW[idx];ctx.fillRect(x*cs,(H-1-y)*cs,Math.ceil(cs),Math.ceil(cs));}
+    // Cleared ground in PROBABILITY mode. Its probability is 0 and always will
+    // be, so the ramp paints it #ffffff - the same white as "low prob" - and the
+    // one cell on the map that can NEVER ignite looks exactly like a cell that
+    // merely happens not to be at risk this step. Drawn here, after the ramp and
+    // before the gridlines, so the legend chip in the probability branch names a
+    // colour that is actually on screen. An older server sends no fr.nofuel and
+    // this draws nothing.
+    if(fr.nofuel)for(const k of fr.nofuel){const [x,y]=k.split(',').map(Number);
+      ctx.fillStyle=NOFUEL;ctx.fillRect(x*cs,(H-1-y)*cs,Math.ceil(cs),Math.ceil(cs));}}
   else{ctx.fillStyle='#1c630b';ctx.fillRect(0,0,cv.width,cv.height);
     for(const k in fr.cells){const [x,y]=k.split(',').map(Number);ctx.fillStyle=fr.cells[k];ctx.fillRect(x*cs,(H-1-y)*cs,Math.ceil(cs),Math.ceil(cs));}}
   // cell gridlines: thin lines between every cell so the 50x50 grid is visible

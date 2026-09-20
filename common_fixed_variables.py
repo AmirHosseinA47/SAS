@@ -504,6 +504,45 @@ BASE_STATION_WAYPOINT_FIX = 1
 # READ ONLY WHEN BASE_STATION_DEPOTS IS 0 (wildfire_model._base_station_origins):
 # at the shipped 9 the depots are the fixed NW and SE anchors and this is inert.
 BASE_STATION_CORNER = 0
+
+# BASE_STATION_FIREPROOF - the depot ground is created WITHOUT FUEL, so the base
+# station cannot burn. This is a FIRE-SPREAD change, not a display one: 50 of the
+# 2,500 cells (2.0%) stop being ignitable, and the existing corpus says fire
+# reaches a depot in 25 of 27 runs, before outcomes settle in 19 of them
+# (outputs/depotfireproof_part1.txt section 1). It has its own gated round.
+#
+# WHY. UAVs are fire-immune, so a burning depot costs nothing in rescue outcomes -
+# but the dcd4 round measured 14 of 23 same-cell burning-step stays as UAVs
+# CHARGING IN A BURNING DEPOT, and that is the main driver of the drone-steps-in-
+# fire metric. A base station that burns while drones keep charging in it is not
+# defensible as a model.
+#
+# HOW. wildfire_model._fireproof_base_station() calls the EXISTING
+# agents.Fire.firefighter_remove_fuel() on every depot cell's Fire agent, once, in
+# reset(), immediately after the station is built. No new write path. That method
+# draws no random number and Fire.__init__ has already drawn the cell's fuel, so
+# the clear itself shifts nothing in the shared RNG stream; a fuel-less cell keeps
+# drawing its own number on every fire tick (agents.py:103, probability_of_fire
+# returns 0 at :84-85), so the two arms stay draw-for-draw aligned until the first
+# tick on which a depot cell WOULD have ignited. See depotfireproof_part1.txt 2.2.
+#
+#   0  OFF - the kill switch. The loop is not entered and nothing is written; the
+#      run must be VALUE-IDENTICAL to 6281542 on every recorded value except tag /
+#      repo / wall_s and the arm's own params.
+#   1  ON - every depot cell's fuel is cleared at init.
+#
+# BASE_STATION_FIREPROOF_DRY_RUN = 1 identifies and records the depot cells and
+# does NOT clear them: every recorded fire value, digests included, must equal the
+# switch-0 arm's. A diagnostic arm, never shipped. Its fallback is the NOT-DRY
+# value, exactly as FF_FIREFIGHT_DRY_RUN's is.
+#
+# THE RECORDED HAZARD APPLIES. Like every other base-station accessor,
+# agents.base_station_fireproof() falls back to the SHIPPED value, so a junk
+# override (--set BASE_STATION_FIREPROOF=off) ARMS the feature rather than
+# disarming it. Read at call time through the cfv module, never star-imported, or
+# apply_scenario_config's override would be invisible and the switch decorative.
+BASE_STATION_FIREPROOF = 1
+BASE_STATION_FIREPROOF_DRY_RUN = 0
 # The depot outline colour is #770099, and it lives as an inline literal in both
 # renderers rather than here, exactly like #2b2b2b (burnt), #895e00 (scorched) and
 # #2f4a1a (spared veg): this module holds colour RAMPS and simulation parameters,

@@ -13,6 +13,31 @@ import agents
 from common_fixed_variables import *
 
 
+# Cleared ground: no fuel and it has never burned, so it can never ignite. The
+# depot ground at BASE_STATION_FIREPROOF 1 and a firefighter firebreak both
+# produce exactly this state and both get this colour. Kept as an inline literal
+# in the renderers, like #2b2b2b and #895e00, because common_fixed_variables
+# holds colour RAMPS and simulation parameters, not single-state display colours.
+# MUST equal serve_dashboard._cell_color's literal and the dashboard's NOFUEL.
+# Chosen by measurement: outputs/_dfp_colour.py -> outputs/_dfp_colour.txt.
+CLEARED_COLOR = "#193cff"
+
+
+def _is_cleared(agent) -> bool:
+    """The fuel/burn state of a cleared cell: no fuel and it never burned.
+
+    NOT the whole rule. On the map branch below it is reached only AFTER the smoke
+    test, exactly as serve_dashboard._cell_color tests smoke first; on the
+    probability branch there is no smoke test on either surface, because
+    probability mode draws no smoke. So "does this cell render CLEARED_COLOR" is
+    this predicate AND, in map mode, no active smoke - which is what
+    tests/test_depot_fireproof.py asserts by comparing the two surfaces' actual
+    output rather than this helper against a colour.
+    """
+    return (agent.get_fuel() <= 0 and not agent.is_burnt()
+            and not getattr(agent, "has_burned", False) and not agent.is_burning())
+
+
 # creates agent dictionary for rendering it on Canvas Gird from Mesa framework
 def agent_portrayal(agent):
     if type(agent) is agents.Victim:
@@ -60,8 +85,15 @@ def agent_portrayal(agent):
     # showing the probability map
     if PROBABILITY_MAP:
         if type(agent) is agents.Fire:
-            idx = int(round(agent.get_prob(), 1) * 10)
-            portrayal.update({"Color": BLACK_AND_WHITE_COLORS[idx], "Layer": 0})
+            if _is_cleared(agent):
+                # Probability 0 for good. The BW ramp would paint it #ffffff, the
+                # same as any low-risk cell; the one cell that can never ignite
+                # must not look like that. Same literal as the map-mode branch
+                # below and as serve_dashboard._cell_color.
+                portrayal.update({"Color": CLEARED_COLOR, "Layer": 0})
+            else:
+                idx = int(round(agent.get_prob(), 1) * 10)
+                portrayal.update({"Color": BLACK_AND_WHITE_COLORS[idx], "Layer": 0})
     else:
         if type(agent) is agents.Fire:  # showing smoke
             if agent.smoke.is_smoke_active():
@@ -78,6 +110,8 @@ def agent_portrayal(agent):
                     portrayal.update({"Color": "#2b2b2b", "Layer": 0})
                 elif getattr(agent, "has_burned", False):  # scorched: fuel left, re-ignites
                     portrayal.update({"Color": "#895e00", "Layer": 0})
+                elif _is_cleared(agent):  # cleared: no fuel, never burned, cannot ignite
+                    portrayal.update({"Color": CLEARED_COLOR, "Layer": 0})
                 else:  # showing vegetation
                     idx = normalize_fuel_values(agent.get_fuel(), FUEL_UPPER_LIMIT)
                     portrayal.update({"Color": VEGETATION_COLORS[idx], "Layer": 0})

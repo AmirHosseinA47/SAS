@@ -189,6 +189,13 @@ class WildFireModel(mesa.Model):
         # spawn loop below can read its berths. Returns None when the kill switch
         # is off, and then every branch that reads it is skipped.
         self.base_station = self._build_base_station()
+        # Non-burnable depots: clear the fuel of every depot cell, HERE. The
+        # station has just been built (so the cell set exists) and set_fire_agents
+        # ran at :182 (so every Fire agent exists and has already DRAWN its fuel),
+        # while no UAV has been placed yet - so the only agents this can touch are
+        # Fire agents. A no-op at BASE_STATION_FIREPROOF 0 and whenever the station
+        # is None. Draws from no RNG. See common_fixed_variables BASE_STATION_FIREPROOF.
+        self._fireproof_base_station()
 
         # create and configure UAV agents in the grid
         warmup_dirs = (0, 1, 3)
@@ -771,6 +778,62 @@ class WildFireModel(mesa.Model):
         station["firefighter_berths"] = tuple(
             station["firefighter_berths_by_depot"][i][0] for i in range(n_ff)
         )
+
+    def _fireproof_base_station(self) -> int:
+        """Remove the fuel of every depot cell, through the EXISTING mechanic.
+
+        Returns the number of cells actually cleared. Sets two read-only
+        attributes nothing in the simulation consults:
+        base_station_fireproof_cells (the cell set, sorted, always populated when
+        the switch is on) and base_station_fireproof_cleared (how many Fire agents
+        the write landed on).
+
+        NO NEW WRITE PATH. agents.Fire.firefighter_remove_fuel() is the fire
+        mechanic's own ignitable-cell clear: it re-checks its precondition (not
+        burning, not burnt, fuel > 0), writes `fuel = 0` and nothing else, and
+        draws from no RNG. At init that precondition holds for every depot cell -
+        set_fire_agents draws the single ignition cell with margin 10 from every
+        edge (see set_fire_agents below, `margin = 10`) and at the SHIPPED mask the
+        depots are corner blocks within 5 cells of a corner, so no depot cell can
+        be the ignition cell.
+
+        THAT ARGUMENT IS NOT GENERAL, and the code does not rely on it. It holds
+        for BASE_STATION_DEPOTS in {1, 2, 4, 8} at BASE_STATION_SIZE <= 10. It is
+        FALSE for the CENTRAL anchor (bit 16), whose block is x,y in 23..27 on a
+        50x50 grid - entirely inside the [10, 39] ignition band, so about 2.8% of
+        seeds would put the seed fire inside a "fireproof" depot - and false for a
+        size large enough to reach the band. In those configurations
+        firefighter_remove_fuel re-checks its own precondition and returns False,
+        the cell is skipped, and base_station_fireproof_cleared comes out BELOW
+        len(base_station_fireproof_cells). The round's analyzer reads that back
+        from the run: outputs/_dfp_analyze.py flags any depot cell that burns in
+        the armed arm. A cell with no Fire agent (DENSITY_PROB < 1) is skipped the
+        same way, not an error.
+
+        The cell set is `station["cells"]`, the UNION over depots, so this covers
+        every depot the mask asks for rather than depot 0. Sorted, because
+        frozenset iteration order is not a contract and the log must be stable.
+
+        DRY RUN records the cells and writes nothing, which is what makes "the
+        fire did not change" falsifiable: the arm must reproduce the switch-0
+        arm's fire digests exactly.
+        """
+        self.base_station_fireproof_cells = ()
+        self.base_station_fireproof_cleared = 0
+        station = getattr(self, "base_station", None)
+        if station is None or not agents.base_station_fireproof():
+            return 0
+        cells = tuple(sorted(station.get("cells") or ()))
+        self.base_station_fireproof_cells = cells
+        if agents.base_station_fireproof_dry_run():
+            return 0
+        cleared = 0
+        for cell in cells:
+            for agent in self.grid.get_cell_list_contents([cell]):
+                if type(agent) is agents.Fire and agent.firefighter_remove_fuel():
+                    cleared += 1
+        self.base_station_fireproof_cleared = cleared
+        return cleared
 
     def base_station_contains(self, pos, depot_index=None) -> bool:
         """True when pos is inside the depot footprint.

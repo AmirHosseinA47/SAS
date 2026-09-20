@@ -125,7 +125,11 @@ class Fire(mesa.Agent):
             self.burning = self.next_burning_state
 
     # Fire mechanic (round 1): the ONLY writers of Fire state outside step() and
-    # advance(), and their only caller is Firefighter.advance(). That call site
+    # advance(). Callers, both audited: Firefighter.advance() (round 1) and, since
+    # the non-burnable-depot round, WildFireModel._fireproof_base_station(), which
+    # calls firefighter_remove_fuel once per depot cell inside reset() - before the
+    # schedule has ever stepped, so no staged next_burning_state can exist to race
+    # with and the ordering argument below does not apply to it. That call site
     # is safe because the schedule advances every Fire agent (unique ids 0..N-1,
     # added first in reset()) before any firefighter, so a write lands after this
     # step's Fire.advance and is read by the next Fire.step as committed state -
@@ -1055,6 +1059,51 @@ def base_station_waypoint_fix() -> bool:
         return int(getattr(cfv, "BASE_STATION_WAYPOINT_FIX", 1)) != 0
     except (TypeError, ValueError):
         return True
+
+
+def base_station_fireproof() -> bool:
+    """True when the depot ground is created without fuel and can never burn.
+
+    Non-burnable-depot round. The fallback is the SHIPPED value, like every other
+    base-station accessor above and for the same stated reason - which carries the
+    same recorded hazard: a junk override ARMS this rather than disarming it.
+
+    THE KILL SWITCH IS AN EXACT INTEGRAL ZERO, and the float test is why. A bare
+    `int(x) != 0` truncates: `--set BASE_STATION_FIREPROOF=0.5` reaches this
+    through _ffr_harness._parse_value as the FLOAT 0.5, `int(0.5)` is 0, and the
+    run would silently take the OFF path while params recorded 0.5 - a non-zero
+    value disarming the feature with nothing anywhere saying so. That is the
+    dead-input defect class this repo has hit nine times, and
+    ff_firefight_mission_gate guards against exactly it below.
+    """
+    raw = getattr(cfv, "BASE_STATION_FIREPROOF", 1)
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return True
+    if isinstance(raw, float) and raw != value:
+        return True
+    return value != 0
+
+
+def base_station_fireproof_dry_run() -> bool:
+    """True when the depot cells are identified and logged but NOT cleared.
+
+    A diagnostic arm, never shipped: it must reproduce the switch-0 arm's fire
+    exactly, digests included. Its fallback is the NOT-DRY value, exactly as
+    ff_firefight_dry_run's is, so a junk value here can only ever leave the
+    feature doing what its own switch already said. Non-integral floats fall back
+    for the same reason as in base_station_fireproof above - here that means a
+    `=0.5` cannot silently turn a DRY arm into a writing one.
+    """
+    raw = getattr(cfv, "BASE_STATION_FIREPROOF_DRY_RUN", 0)
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return False
+    if isinstance(raw, float) and raw != value:
+        return False
+    return value != 0
 
 
 # --- Fire mechanic (round 1) configuration ------------------------------------

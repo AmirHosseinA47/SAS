@@ -1,0 +1,685 @@
+================================================================================
+NON-BURNABLE DEPOT CELLS - PART 2 (IMPLEMENT) AND PART 3 (VALIDATE)
+================================================================================
+Branch      : depotfireproof, off main at 6281542.
+Worktrees   : the shared checkout E:\Projects\SAS was NEVER touched. Another
+              session holds it (branch searcherfire, at the same commit) and is
+              running a read-only searcher-exposure diagnosis there. This round
+              ran entirely out of two git worktrees created for it:
+                E:/Projects/SAS_wt/dfp            branch depotfireproof, the feature
+                E:/Projects/SAS_wt/base6281542    detached 6281542, the control
+              CONTACT WITH outputs/_firemech_rewound_20260914/, reported as asked:
+              the directory is UNTRACKED, so it does not exist in either worktree,
+              and every script, analyzer and subagent of this round ran against a
+              worktree and was structurally unable to reach it. One incidental
+              METADATA touch in the shared checkout: a `du -sh .git outputs` while
+              sizing the repo before creating the worktrees traversed outputs/
+              recursively and therefore stat()ed files inside it. No file under it
+              was opened, read, listed by name, moved or used, and no number in
+              this report derives from it.
+Environment : sys.version 3.10.11 (tags/v3.10.11:7d4cc5a, Apr  5 2023, 00:38:17)
+                          [MSC v.1929 64 bit (AMD64)]
+              mesa.__version__ 1.2.1
+              Both read from E:/Projects/SAS/.venv (the parent checkout's), which
+              is the interpreter every pool line used; the worktree carries a
+              junction to it so the tracked tools that hardcode ./.venv work.
+Prereg      : outputs/dfp_prereg.txt, written 13:32:25, sha256[:16]
+              811159b44341abdc - the value all three wave logs pinned at 13:32:38,
+              13:49:43 and 18:04:32. Written before any run of this round existed.
+
+--------------------------------------------------------------------------------
+0. VERDICT
+--------------------------------------------------------------------------------
+THE GATE PASSES ON EVERY ITEM. BASE_STATION_FIREPROOF SHIPS AT 1 (decision 6.2).
+
+  kill switch proves value-identity                  PASS  13/13, section 2
+  drone steps in fire FALLS, depot component named   PASS  every sample, section 6
+  rescued does not decrease (6.5 rule)               PASS  canonical +1, fresh +4
+  bookkeeping accounted, remainder named + backed    PASS  section 5
+  new colour distinguishable by measurement          PASS  section 8
+  full-page layout at scales 1, 1.25, 1.5            PASS  section 9
+  no NEW route_blocked failures beyond the four      PASS  section 7 - and stronger:
+                                                           ZERO per-seed regressions
+                                                           against a same-commit control
+  no NEW test failures                               PASS  section 10, by NAME SET
+
+ONE RESULT THAT DOES NOT FIT THE HEADLINE, STATED UP FRONT. On the west/north
+sample - the 10 runs decision 6.4 added, which are NOT one of the two registered
+gate samples - pooled rescued goes 29 -> 27. Section 7.3 gives it in full and
+section 11 adjudicates it with common random numbers: with the fire's draws
+pinned cell by cell, so that the change cannot re-roll anything, rescued is
+IDENTICAL on every one of those seeds. The -2 is re-roll, not a physical loss.
+
+--------------------------------------------------------------------------------
+1. WHAT WAS BUILT
+--------------------------------------------------------------------------------
+Five source files: 246 insertions, 7 deletions (the 7 are lines replaced in place -
+   the two accessors rewritten for the float guard, the nofuel comprehension, and
+   two renderer branches). Plus one new test file, tests/test_depot_fireproof.py.
+
+1.1 THE CLEAR. wildfire_model.reset() calls a new _fireproof_base_station()
+    immediately after the station is built. It iterates the depot cell set -
+    station["cells"], the UNION over depots, sorted - and calls the EXISTING
+    agents.Fire.firefighter_remove_fuel() on each cell's Fire agent. No new write
+    path, exactly as the design asked.
+
+    THE PLACEMENT IS LOAD-BEARING AND WAS CHECKED, NOT ASSUMED. At that line
+    set_fire_agents() has run, so every Fire agent exists and has ALREADY DRAWN
+    its fuel; _build_base_station() has run, so the cell set exists; and no UAV
+    has been placed yet, so the only grid occupants are Fire agents. reset() has
+    exactly one caller (__init__) and both new attributes are re-initialised at
+    the top of the method, so a second call is idempotent.
+
+1.2 THE SWITCHES, in common_fixed_variables.py:
+      BASE_STATION_FIREPROOF          shipped 1
+      BASE_STATION_FIREPROOF_DRY_RUN  shipped 0
+    read through accessors in agents.py at call time via the cfv module - never
+    star-imported - so an apply_scenario_config override is visible. The
+    fireproof accessor falls back to the SHIPPED value like every other
+    base-station accessor, which carries that family's recorded hazard: a junk
+    override ARMS it. The comment says so.
+
+    A FLOAT HOLE THAT AN ADVERSARIAL PASS FOUND AND THAT IS NOW CLOSED. The first
+    version used a bare `int(x) != 0`. int(0.5) is 0, and the harness's own
+    --set parser produces a float for "0.5", so `--set BASE_STATION_FIREPROOF=0.5`
+    would have run the OFF path while params recorded 0.5 - a non-zero value
+    disarming the feature with nothing anywhere saying so. Both accessors now do
+    what ff_firefight_mission_gate does: a non-integral float falls back.
+    tests/test_depot_fireproof.py::test_a_fractional_override_cannot_silently_-
+    flip_either_switch pins it.
+
+1.3 THE DISPLAY. A cell with no fuel that has never burned rendered
+    VEGETATION_COLORS[0] = #414141 - which is also FIRE_COLORS[0], sits in the
+    burnt/smoke grey band, and says "spent" about ground that never burned. It
+    now renders a measured #193cff on BOTH surfaces (serve_dashboard._cell_color
+    and main.agent_portrayal), with a "cleared (no fuel)" legend chip in BOTH
+    legend branches, refreshed on the probability toggle. Because probability
+    mode paints the ground from the probability ramp alone and a cleared cell's
+    probability is 0 forever, the frame payload gained one key, `nofuel`, and
+    drawMap paints those cells in probability mode too - otherwise the chip in
+    the probability branch would name a colour that is not on screen.
+
+1.4 WHAT THE PREDICATE COVERS, SAID PLAINLY. The branch is keyed on the CELL's
+    physics - fuel 0, never burned, not burning, not burnt - not on depot
+    membership. Two things produce that state: this round's depot clear, and a
+    firefighter FIREBREAK from the fire-mechanic round. They are the same
+    physical state and get the same colour. Keying on depot membership instead
+    would have made the two surfaces disagree, because the mesa canvas has no
+    depot knowledge at all.
+
+--------------------------------------------------------------------------------
+2. THE KILL SWITCH  (Part 3 item 1)
+--------------------------------------------------------------------------------
+  dfpOFF (feature checkout, BASE_STATION_FIREPROOF=0) vs
+  dfpB   (the 6281542 checkout, no fireproof key at all - it does not exist there)
+
+  PASS 13 / 13 VALUE-IDENTICAL on the canonical 13.
+
+Identity is over every recorded key except tag, repo, wall_s, params and
+extra_params - i.e. eval, fire_digests, fire_final_digest, burn_intervals,
+first_burn_step, fire_ground_final, ff_steps, ff_bind_steps, victim_steps,
+uav_steps, uav_actions, rtb_log, rtb_counters, partition_steps, base_station,
+stdout_sha256 and stdout_lines, all equal. Value-identity rather than byte
+because one dict's key order varies between processes, as this project recorded.
+
+TWO THINGS THAT MAKE THIS STRONGER THAN THE USUAL FORM:
+
+ (a) THE CONTROL IS A DIFFERENT CHECKOUT, not the same tree with a flag off. That
+     is the first time this project has run an arm that way, and it exposes a
+     hazard the shipped validator does not cover: outputs/_dcd4_validate.py never
+     compares the JSON's `repo` against the queue line's, and the dfp worktree
+     ships the feature ON - so a dfpB line aimed at the wrong checkout would have
+     produced a "control" that was the feature, and the pool would have called it
+     VALID. outputs/_dfp_analyze.py therefore REFUSES to read any run whose
+     recorded repo or extra_params are not exactly its arm's. Nothing was refused.
+
+ (b) THE CONTROL CONNECTS TO THE EXISTING CORPUS. dfpB reproduces the recorded
+     f3OFF runs (27 runs at d3640e3) on all 13 canonical tuples - the same
+     rescued / dead / ff_deaths / never_detected / terminal_step / burnt_cells,
+     the same fire_final_digest (which hashes FUEL), and byte-equal
+     burn_intervals. So the base-mark round's display commits really are
+     value-identical to d3640e3, independently confirmed here, and every number
+     the Part 1 corpus contributed transfers.
+
+AND THE SOURCE MOVED AFTER THE WAVE, SO THAT WAS MEASURED TOO. The adversarial
+pass produced fixes (1.2, and the nofuel predicate) after the 100-run wave had
+finished. Re-running one tuple per arm on the FIXED source gives 4/4
+value-identity against the runs the wave produced before it - so every number in
+this report stands under the source that is being committed.
+
+--------------------------------------------------------------------------------
+3. THE DRY ARM  (design 3.3)
+--------------------------------------------------------------------------------
+  dfpDRY (cells identified and recorded, nothing written) vs dfpOFF
+  PASS 13 / 13 on fire_digests, fire_final_digest, burn_intervals,
+  first_burn_step, fire_ground_final and eval.burnt_cells.
+
+AND IT IS WORTH LESS THAN IT LOOKS, WHICH SHOULD BE SAID. With DRY on, the only
+difference from the switch-0 path is one tuple assignment to an attribute the
+simulation never reads. There is no decision to run and no fire to read, so this
+arm is identical BY CONTROL FLOW and can only fail if the harness or the analyzer
+is broken. It is a positive control on the measurement chain, not a measurement
+of the feature - unlike the fire-mechanic round's DRY arm, which kept every
+decision live and suppressed only the write. It cost 13 of the wave's 100 runs
+and it is reported at that value.
+
+--------------------------------------------------------------------------------
+4. ATTRIBUTION: THE BURNING-SET INSTRUMENT  (decision 6.5)
+--------------------------------------------------------------------------------
+THE HARNESS DIGEST CANNOT TEST THIS, which Part 1 caught: outputs/_ffr_harness.py
+hashes (burning, burnt, FUEL) per cell per step. The armed arm changes the fuel
+of 50 cells at init, so its digest differs at step 1 of every run BY
+CONSTRUCTION. A prediction registered on it fails 23 of 23 and proves nothing.
+
+So the instrument is the per-step BURNING SET, rebuilt offline from
+burn_intervals, which is fuel-blind. It did not exist - the only code in outputs/
+that builds a burning set is hardcoded to one round's tags and one seed - so it
+was written for this round and cross-checked (section 6.1).
+
+  PRE-REGISTERED: in every run whose control has a depot ignition, the two arms'
+  burning sets are identical on every step before that run's first depot ignition
+  and first differ AT it.
+
+  RESULT: PASS 34 / 34.  3 vacuous nulls (east/707, east/444, west/303 - no depot
+  cell ever burns in the control, so there is nothing for the change to do; these
+  are recorded as vacuous, not as evidence).
+
+Every one of the 34 first differences is CONTROL-ONLY and consists of depot
+cells: the control ignites a depot cell, the armed arm does not, and nothing else
+differs at that step. Coverage is the whole wave - canonical 13, fresh 10, the
+four rb18 extras and all 10 west/north runs. The earliest is step 24
+(west/half/404); the prereg's named earliest on the 23, south/half/1010 at step
+54, lands exactly as predicted.
+
+A NOTE ON COVERAGE, because the first version of the analyzer would have measured
+this on 13 of 34. dfpOFF was queued on the canonical sample only. The control for
+the other 21 is dfpB, which section 2 proves value-identical to dfpOFF on all 13
+tuples where both exist - so the analyzer falls back to it and every section
+prints which control arm it used.
+
+--------------------------------------------------------------------------------
+5. BOOKKEEPING vs BEHAVIOUR  (Part 3 item 2)
+--------------------------------------------------------------------------------
+THE DEPOT-CELL COMPONENT IS EXACT ARITHMETIC. In the armed arm ZERO depot cells
+ever burn, in all 37 paired runs. So the control's own per-run counts ARE the
+predicted shift, and they are two different numbers, not one:
+
+  over 37 paired runs        untouched vegetation      burnt_cells
+  predicted by the depot          +907                    -610
+  observed                       +3029                   -2002
+  BEHAVIOURAL REMAINDER          +2122                   -1392
+
+A fuel-less never-burned cell is counted as UNTOUCHED VEGETATION by the ground
+counts (has_burned 0, burnt 0, burning 0) although it has no fuel. "Intact" rises
+without a single tree being saved; that is the whole of the predicted term, and
+it is the reason the two numbers differ.
+
+IS THE REMAINDER SIGNAL OR NOISE? The per-run distribution:
+
+  untouched     mean  +57.4   sd 124.3   se 20.4   mean/se +2.81   signs +24 /-10 / 0 3
+  burnt_cells   mean  -37.6   sd  96.7   se 15.9   mean/se -2.37   signs +11 /-23 / 0 3
+
+The null it is against is the fire-mechanic round's measurement of a WRITE-FREE
+draw-stream offset, which moved final intact by a median of 155 cells with NO
+systematic sign. This remainder is about 2.8 standard errors from zero and its
+signs are lopsided 24 to 10, which is a real effect and not a large one: 50 cells
+stop being IGNITING NEIGHBOURS, and the 34 cells within Euclidean 3 of each
+corner block see a lower ignition probability during the window when the depot
+would have been burning. That is the "local dent" Part 1 predicted, now measured.
+
+Two caveats on that inference, both of which cut against it:
+  - the 37 runs are not 37 independent fires. east/default/{101,202,303} share
+    their fire with east/half/{101,202,303}, so the effective n is about 34.
+  - 2.8 se on one sample is suggestive, not settled. This project has three
+    recorded cases of a gain evaporating on a wider seed set. It is reported as a
+    measured tendency, and NOTHING in the gate rests on it.
+
+--------------------------------------------------------------------------------
+6. DRONE STEPS IN FIRE  (Part 3 item 4 - the metric the change exists to move)
+--------------------------------------------------------------------------------
+6.1 THE INSTRUMENT IS THE ESTABLISHED ONE, PROVEN SO.
+    E1 (searcher-only, interior-hazard) and E2 (all-UAV) are computed exactly as
+    outputs/_dcd4_analyze.py computes them. Run against the recorded f3OFF corpus
+    on the 18 route_blocked seeds, this round's implementation reproduces that
+    one run for run, 18 of 18, with zero disagreements - and lands on 3.55% /
+    2.42%, which are the control values the brief quotes. The uav_actions burning
+    flag and the burn_intervals reconstruction agree on every frame of every run
+    in the whole round: 0 mismatches, 0 row-order misalignments.
+
+    WHAT IS NEW IS THE SPLIT. _dcd4_analyze splits its same-cell STAY LIST by
+    base_state and depot membership - that is where this round's premise comes
+    from - but it does not split the E1/E2 RATE, and the rate is what the brief
+    asks to move. uav_steps carries base_state per UAV per step and the run
+    carries its own depot geometry, so the split is: was the UAV standing INSIDE
+    a depot block (this round's problem) or outside it (the search-exposure
+    problem the other session is measuring)?
+
+6.2 THE RESULT, on the 18 route_blocked seeds - the sample the control is quoted on:
+
+                    E1 searcher-only                 E2 all-UAV
+               total    depot   charging   search     total    depot  charging   search
+  dfpB (ctl)   3.55%    0.54%     0.38%    3.01%      2.42%    0.50%    0.37%    1.92%
+  dfpON        2.50%    0.00%     0.00%    2.50%      1.61%    0.00%    0.00%    1.61%
+               -1.05pp  -0.54pp            -0.51pp    -0.81pp  -0.50pp           -0.31pp
+
+  THE DEPOT COMPONENT FALLS TO EXACTLY ZERO, on every sample, by construction: no
+  UAV can stand on a burning depot cell if no depot cell burns. That is the part
+  this round owns and it is complete.
+
+  The search component also falls here, and that part is NOT attributable - it is
+  the re-roll. Section 11 measures it with the draws pinned.
+
+6.3 EVERY SAMPLE:
+
+    sample        arm      runs      E1  E1 depot  E1 search       E2  E2 depot  E2 search
+    canonical13   dfpB       13   5.04%     0.53%      4.51%    3.52%     0.60%      2.92%
+    canonical13   dfpON      13   3.55%     0.00%      3.55%    2.42%     0.00%      2.42%
+    fresh10       dfpB       10   3.25%     0.38%      2.88%    1.94%     0.19%      1.75%
+    fresh10       dfpON      10   3.25%     0.00%      3.25%    1.85%     0.00%      1.85%
+    rb18extras    dfpB        4   0.21%     0.00%      0.21%    0.13%     0.00%      0.13%
+    rb18extras    dfpON       4   0.10%     0.00%      0.10%    0.05%     0.00%      0.05%
+    westnorth     dfpB       10   1.65%     0.06%      1.58%    1.68%     0.08%      1.59%
+    westnorth     dfpON      10   0.98%     0.00%      0.98%    1.14%     0.00%      1.14%
+
+    E1 on fresh10 is FLAT at 3.25%: the depot component (0.38pp) went to zero and
+    the search component rose by exactly as much. That is the re-roll, and it is
+    the clearest single illustration of why decision 6.5 exists.
+
+6.4 AND THE PREMISE ITSELF - "the main driver" - IS ABOUT A DIFFERENT STATISTIC,
+    which matters for reading the numbers above. The dcd4 round's claim was about
+    SAME-CELL BURNING-STEP STAYS (a UAV sitting on one burning cell for >= 2
+    consecutive frames), not about per-frame rates. Using _dcd4_analyze's own
+    function, on the same 18 seeds:
+
+      dfpB   23 stays, 15 inside a depot, 14 of those with majority base_state
+             charging/docked, longest 15 steps
+      dfpON   4 stays,  0 inside a depot,  0 charging
+
+    "14 of 23 same-cell burning-step stays as UAVs charging in a burning depot"
+    reproduces EXACTLY, and the change removes all of them. All 15 in-depot stays
+    in the control run between steps 204 and 234 - after the rescue mission is
+    over - which is why they cost nothing in outcomes and why they were never
+    going to show up as a large share of the per-frame rate. On E1/E2 frames the
+    depot share of the control is 15.3% and 20.8%; on stays it is 65%. Both are
+    reported because the brief's wording points at the second and its gate item
+    points at the first.
+
+--------------------------------------------------------------------------------
+7. OUTCOMES, AND THE ROUTE_BLOCKED GATE  (Part 3 items 3, 5, 6)
+--------------------------------------------------------------------------------
+7.1 THE 6.5 PARTITION, computed from the corpus BEFORE the wave and confirmed by
+    the wave's own control:
+
+      canonical 13    re-rolled  9 / pinned 4  (east/101, east/202, south/303, south/505)
+      fresh 10        re-rolled  7 / pinned 3  (east/707, east/909, east/1010)
+      the 23          re-rolled 16 / pinned 7
+      rb18 gate       re-rolled 11 / pinned 7
+      west/north 10   re-rolled  8 / pinned 2
+
+    "11 of the 18 gate seeds" is exactly the number the brief states, derived
+    independently here.
+
+    THE FOUR KNOWN G1 REGRESSIONS, classified as the brief asked:
+      east/707    first depot ignition NONE, terminal 210  -> PINNED. Attributable.
+      south/101   75 before terminal 159                   -> RE-ROLLED. Not attributable.
+      south/202   63, no terminal step at all              -> RE-ROLLED. Not attributable.
+      south/404   129 before terminal 189                  -> RE-ROLLED. Not attributable.
+    So exactly ONE of the four is pinned-comparable, and it is east/707.
+
+    WHAT "PINNED" DOES NOT COVER, because the layout invites the wrong reading:
+    terminal_step is all_victims_terminal, so a pinned run is pinned for RESCUED,
+    DEAD and NEVER_DETECTED and for nothing else. Firefighters keep dying after
+    the last victim resolves, and the arms' fires have diverged by then. Three
+    rows in the per-seed table sit in the pinned block with an ff_deaths move
+    (east/909 1->0, south/303 1->0, east/1010 0->1) and NONE of those three is
+    attributable. burnt_cells and vegetation are not pinned either.
+
+7.2 POOLED RESCUED, which is what decision 6.5 says to read:
+
+      canonical 13   39 -> 40   (+1)
+      fresh 10       29 -> 33   (+4)
+      rb18 extras    15 -> 15   ( 0)
+      west/north     29 -> 27   (-2)   <-- see 7.3
+
+    The two REGISTERED gate samples are the canonical 13 and the fresh 10. Both
+    rise. Dead: 10 -> 11 and 6 -> 4. ff_deaths: 6 -> 4 and 4 -> 2.
+
+7.3 THE WEST/NORTH DROP, in full and not buried. 29 -> 27 over 10 runs, driven by
+    two seeds: west/404 (4 -> 2, terminal 219 -> none, with dead unchanged at 0 -
+    so two victims went unresolved at the 240-step horizon, not dead) and
+    west/101 (3 -> 2, with ff_deaths 1 -> 2). Both are RE-ROLLED seeds, 8 of the
+    10 in that sample are, and the sample is the one decision 6.4 added rather
+    than one of the two the gate names. Section 11 settles it: under common
+    random numbers, where the change cannot re-roll anything, rescued on those
+    same seeds is IDENTICAL.
+
+7.4 THE ROUTE_BLOCKED GATE, both readings.
+
+    (a) THE BRIEF'S READING, _ffr_rbcompare.py --new dfpRBG --old ihrest:
+        G1 regressions = east/707, south/101, south/202, south/404.
+        EXACTLY THE FOUR KNOWN. No fifth.
+        Pooled rescued 53 -> 59 (+6), dead 11 -> 11, ff_deaths 9 -> 4.
+        The same comparison run on the CONTROL arm (dfpRBC, the kill switch at
+        the same commit) returns the SAME four, which is what makes "no NEW"
+        meaningful: the four are carried, not caused.
+
+    (b) THE STRONGER READING, --new dfpRBG --old dfpRBC (ON vs OFF, same commit,
+        same 18 seeds):
+        [PASS] rescued does not decrease on ANY seed.
+        Not "no new failures" - zero per-seed regressions at all. east/707, the
+        one pinned-comparable seed of the four, is 2 -> 2, unchanged.
+        Pooled rescued 57 -> 59 (+2), dead 11 -> 11, ff_deaths 9 -> 4 (-5).
+        [PASS] the recovery pass still recovers units (15 -> 19 recoveries).
+        [PASS] no unit left latched as route_blocked at end of run.
+
+--------------------------------------------------------------------------------
+8. THE COLOUR  (decision 6.3)
+--------------------------------------------------------------------------------
+#193cff, chosen by an exhaustive CIEDE2000 sweep over 140,608 colours, not by eye.
+outputs/_dfp_colour.py -> outputs/_dfp_colour.txt.
+
+THE INSTRUMENT is the base-mark round's, not a re-transcription: the script reads
+outputs/_bm_colour_a.py as text and runs its library block verbatim (sRGB ->
+linear -> XYZ D65 -> CIELAB -> CIEDE2000, Machado 2009 CVD matrices at severity
+1.0). It is re-validated on the 9 Sharma et al. pairs lifted from
+outputs/_sc_deltae.py and cross-checked against that file's INDEPENDENT scalar
+implementation on real palette pairs (worst disagreement 3.2e-3, entirely the two
+white-point conventions).
+
+THE PALETTE is N+ = 164 entries: the four ramps parsed from source, every
+single-state map literal, every unit marker, and every one of those composited
+under the depot fill, under the gridline, and under both. The candidate is scored
+across ALL FOUR of its own rendered forms (plain, gridlined, depot-tinted, both)
+and four vision conditions; the worst is kept.
+
+  #193cff   normal 12.85 | protanopia 6.69 | deuteranopia 8.51 | tritanopia 8.20
+  worst chromatic condition 6.69 dE. No exact-hex collision. L* 39.0.
+  Its four forms: #193cff / #1531d1 / #2e2fe9 / #2b26c5.
+
+THE BAR, and it had to be corrected twice in this round's favour's disfavour. The
+first version of the reference table scored the shipped colours against their OWN
+gridline composites and against probability-mode entries that can never be on
+screen in the same frame as a map-mode ground colour. Both errors FLATTERED the
+new colour. Corrected - self-composites removed, each reference scored only
+against entries that can co-occur with it:
+
+  shipped colour        normal   worst chromatic
+  scorched #895e00      14.29        0.46
+  burnt    #2b2b2b       3.20        2.08
+  spared   #2f4a1a       4.00        1.52
+  depot    #770099      17.22        9.44
+  VEG[0]   #414141       4.07        3.61
+  smoke    #ababab      11.16        9.45
+  firefighter #00ffcc   14.37        4.32
+
+  The weakest shipped map colour is 3.20 normal / 0.46 worst-chromatic. #193cff's
+  12.85 / 6.69 clears it, and is second only to the depot violet on the chromatic
+  axis - while being scored over four forms where every reference is scored over
+  one. The original claim survived the correction.
+
+WHY NOT THE WORST-OF-FIVE OBJECTIVE. Scored worst-of-five, the ACHROMATIC
+condition caps ANY colour in this palette at 0.76 dE - 164 entries tile the
+greyscale range. Every colour this repo ships fails it (0.13 to 0.74). Making it
+a veto would set a standard nothing meets and would drive the choice to
+near-black, the burnt band this colour must not read as. The objective is the
+worst of the four CHROMATIC conditions; all five are reported.
+
+THREE THINGS AN ADVERSARIAL PASS CHANGED, all recorded in the artifact:
+  - #00BFFF (the mesa PathMarker) was missing from the palette. A REVERSE CHECK
+    now scans both renderers for every #rrggbb literal and requires each to be in
+    the palette or in a NAMED page-chrome list; 31 in palette, 16 chrome, 0
+    unaccounted. A presence assertion, which is all the base-mark instrument had,
+    catches a literal that vanishes but not one that is added.
+  - The L* 22..82 floor is relabelled as what it is: not a confusion the sweep
+    missed (#00006e is 27.98 dE from burnt) but a proxy for the achromatic
+    condition that is deliberately not vetoed on. It costs 21% of the objective
+    (ceiling 8.65 -> 6.82) and that price is stated.
+  - The tie-break's band width is a free parameter and is reported as one: 0.05
+    elects #4137ff (2.30 dE away), 0.25 elects #053cff (1.9 dE away). Every band
+    member is the same deep blue, clears the bar and binds against #770099. The
+    band width moves the shade, not the decision.
+
+THE ONE REAL COST, MEASURED AND NOT TRADED AWAY SILENTLY. A palette sweep cannot
+see a SEMI-TRANSPARENT MARK COMPOSITED OVER the new ground, and the dashboard
+draws four. Two are blue-family, and the depot is exactly where UAV trails
+concentrate:
+
+  overlay over the depot floor      today (#4d3354)   with #193cff (#2e2fe9)
+  UAV trail rgba(120,170,255,.30)       14.27 dE            9.18 dE
+  ff trail  rgba(0,255,204,.35)         38.37 dE           22.50 dE
+  assignment rgba(255,215,90,.8)        65.98 dE           68.94 dE
+  gridline  rgba(0,0,0,.18)              4.05 dE            5.93 dE
+
+The UAV trail loses about a third of its contrast over the depot floor. 9.18 dE
+is still about four times the ~2.3 dE just-noticeable difference, so the trail
+remains visible. Buying it back costs the criterion decision 6.3 actually named:
+the best colour meeting "no worse than ordinary vegetation" is #736455, a khaki
+in the scorched-and-dirt band scoring 4.25 chromatic / 5.31 normal - i.e. -2.44
+dE of palette separation for +5.45 dE of overlay legibility. The frontier is
+tabulated in the artifact at five overlay floors. The trade is one literal in
+three files and tests/test_depot_fireproof.py pins all three to one value, so it
+fails loudly if only some are changed.
+
+--------------------------------------------------------------------------------
+9. THE DISPLAY CHANGE, PROVEN  (decision 6.3's full-page requirement)
+--------------------------------------------------------------------------------
+9.1 THE PAYLOAD PROOF, exact, with a negative control.
+    outputs/_dfp_payload.py builds ONE model state and computes the frame twice:
+    once with the current _capture_frame, once with _cell_color monkey-patched
+    back to the 6281542 body - COMPILED FROM git show, not retyped.
+
+      ARM ON   2500 cells; 50 cleared; exactly 50 colours changed; the changed
+               set IS the cleared set; every one inside a depot; before #414141,
+               after #193cff; fr.nofuel == the cleared set; every other payload
+               key equal.                                           PASS
+      CONTROL  BASE_STATION_FIREPROOF=0: 0 cleared, 0 changed, nofuel empty,
+               every key equal.                                     PASS
+
+    The negative control is the point: without it, "every changed cell is a depot
+    cell" would also be satisfied by a renderer that painted the block
+    unconditionally.
+
+    WHY THIS AND NOT THE BASE-MARK PIXEL AUDIT: that instrument varies drawMap
+    (JavaScript) with the payload held FIXED. This colour is produced in PYTHON
+    and arrives IN the payload, so replaying the frozen base-mark payloads would
+    have shown 12 identical gate images and proved nothing.
+
+9.2 THE FULL-PAGE LAYOUT GATE - the gap the base-mark round recorded.
+    That round's captures took a full-viewport screenshot and then CROPPED it to
+    the canvas before saving, and the only DOM measurement anywhere in outputs/
+    is the canvas bounding box. A table cell wrapped and nothing saw it.
+
+    outputs/_dfp_page_gate.py loads the WHOLE shipped HTML constant in headless
+    Chrome at display scales 1, 1.25 and 1.5, three arms each:
+      A_pre     6281542 page + 6281542 payload
+      B_post    the change
+      C_layout  new page + OLD payload - isolates the layout delta from the colour
+
+    ABSOLUTE checks, all three arms, all three scales: no horizontal document or
+    body scroll, no JavaScript errors, legend restored after toggling probability
+    mode twice.                                                     PASS
+
+    THE DELTA GATE - 41 measured layout quantities per arm (every table's per-row
+    heights and cell counts, every table's and every panel's scrollWidth vs
+    clientWidth, every card's bounding box, the document's scroll extents, the
+    canvas rect, both legend strips):
+
+      quantities that moved OUTSIDE the legend strip: NONE, at all three scales.
+      legend chips: +1 in the normal branch and +1 in the probability branch.
+      the legend strip itself: the normal strip's rect is UNCHANGED (it did not
+        wrap); the probability strip grows in width 779.7 -> 887.3 at scale 1 and
+        keeps its height (14.4-15.0 px) at every scale, so it did not wrap either.
+
+    PIXEL DIFF OF THE WHOLE PAGE, exact equality, no tolerance:
+      A_pre vs B_post   scale 1: 8192 px changed of 2,560,000 - 4472 in the map
+                        canvas region, 3720 in the legend strip, and ZERO outside
+                        those two regions. Same at 1.25 and 1.5.
+      C_layout vs B_post: 4472 px, ALL inside the map, ZERO in the legend - which
+                        is the colour change with the layout held fixed.
+
+    PROBABILITY MODE, which nothing else in this round renders: the driver toggles
+    probability mode and the gate samples the centre pixel of every cleared cell
+    in the canvas backing store, requiring the depot-tinted cleared colour.
+
+    PRE-EXISTING PAGE SHAPE, reported and NOT failed on: the UAV panel mixes
+    4-cell rows with 2-cell continuation rows (body row heights 22 and 43) and its
+    table's scrollWidth exceeds its clientWidth by 13 px. That is true at 6281542,
+    identical in all three arms, and is not this round's to fix. The brief asked
+    for "table row heights are equal"; taken absolutely the shipped page fails it,
+    so the GATE is the delta and the absolute measurement is reported beside it.
+
+    Full-page PNGs for all nine captures: outputs/_dfp_page/.
+
+--------------------------------------------------------------------------------
+10. TESTS  (Part 3 item 7)
+--------------------------------------------------------------------------------
+Full suite, SERIAL, the campaign's standard command
+(python -m pytest tests -p no:cacheprovider -q --junitxml=...). Serial is not
+optional: tests/test_wind_aware_trajectory_regression.py records order-dependent
+siblings, so a sharded run can move the failing set by itself.
+
+  baseline  6281542, clean tree     8 failed, 626 passed  (634 collected)
+  final     this branch, ON         8 failed, 650 passed  (658 collected)
+
+  THE FAILING NAME SET IS IDENTICAL, which is what this project asks for after
+  three recorded cases of counts agreeing while sets differed. Both runs' log
+  summary and junit XML agree with each other, and both name exactly:
+
+    tests/test_behavior_regression.py::test_descriptive_next_action_uses_target_position
+    tests/test_dashboard_panel.py::test_dashboard_panel_render_returns_string
+    tests/test_firefighter_dispatch_replacement.py::test_no_replacement_available_marks_victim_unreachable_once
+    tests/test_rescue_planner_authority.py::test_no_firefighter_planner_delay_or_unreachable
+    tests/test_uav_sector_assignment.py::test_fire_tracker_still_overridden_by_search_mode_fail_safe
+    tests/test_uav_sector_assignment.py::test_fire_tracker_uavs_receive_different_target_sets
+    tests/test_wind_aware_trajectory_regression.py::test_east_vs_west_trajectories_diverge_over_40_steps
+    tests/test_wind_aware_trajectory_regression.py::test_north_vs_south_trajectories_diverge_over_40_steps
+
+  The 24 extra COLLECTED tests are this round's new file and nothing else; no
+  test was removed or renamed. The final run is at the SHIPPED default, i.e. with
+  BASE_STATION_FIREPROOF = 1 armed, so the suite passes against the configuration
+  being committed, not against the switch turned off.
+
+tests/test_depot_fireproof.py, 24 tests, all passing. It exists because
+serve_dashboard._cell_color had NO test coverage at all before this round - a
+grep for _cell_color / _veg_color / _capture_frame over tests/ returned nothing,
+and every existing colour assertion goes through main.agent_portrayal or compares
+bare literals. It asserts:
+  - the cleared colour is distinct from every ramp entry, every single-state map
+    colour and every marker (the mirror of the shipped depot-colour test);
+  - all THREE surfaces carry the same literal (main.CLEARED_COLOR,
+    _cell_color's return, the JS NOFUEL const) - so changing one and not the
+    others fails loudly, which is what makes the colour reversible in one place;
+  - branch ORDER on seven cell states, on BOTH surfaces, comparing what each one
+    actually paints rather than a helper against a colour;
+  - the branch is unreachable without a fuel clear, for every legal fuel value;
+  - the chip is in both legend branches and the toggle refreshes it;
+  - switch ON clears exactly the 50 depot cells and nothing else; OFF writes
+    nothing; DRY identifies 50 and clears 0;
+  - a cleared cell's probability_of_fire is 0 and it is still neither burning nor
+    burnt after 12 steps;
+  - both accessors on junk values AND on fractional ones (the float hole).
+
+--------------------------------------------------------------------------------
+11. COMMON RANDOM NUMBERS: REMOVING THE 6.5 PROBLEM RATHER THAN WORKING AROUND IT
+--------------------------------------------------------------------------------
+Decision 6.5 is right and it is also a ceiling: with 16 of the 23 gate seeds
+re-rolled, the round can report pooled numbers and nothing per seed. So a third
+wave, 66 runs, removed the reason for the rule instead of working around it.
+
+THE INSTRUMENT. outputs/_fm2_probe_harness.py wraps the frozen harness and, with
+--set FM2P_CRN=1, replaces Fire.step's single draw with
+crn_uniform(seed, the cell's unique_id, that cell's steps_counter) - a pure
+function. Clearing 50 cells' fuel then CANNOT shift the draw of any other cell.
+Nothing is re-rolled, every seed is pinned, and a difference is PHYSICAL.
+Two arms, dfpCB (6281542 checkout) and dfpCON (feature), on the canonical 13,
+the fresh 10 and the west/north 10. THEY COMPARE ONLY WITH EACH OTHER: a CRN
+fire is a different, equally distributed realisation, so these are not a second
+measurement of dfpB / dfpON and are labelled as a different instrument. (The
+fire-mechanic round left pinned-replay vs CRN unresolved on a firebreak's
+physical size; this round does not resolve it either.)
+
+  sample         runs   rescued        dead         ff_deaths
+  canonical13     13    40 ->  40      9 ->  9       7 ->  7      identical on all 13
+  fresh10         10    32 ->  35      5 ->  3       5 ->  6
+  west/north      10    28 ->  28      7 ->  7       3 ->  3      IDENTICAL ON ALL 10
+  ALL            33    100 -> 103     21 -> 19      15 -> 16
+
+  [PASS] rescued does not decrease on ANY of the 33 pinned seeds. Not "pooled" -
+         per seed, with nothing re-rolled.
+
+THAT SETTLES SECTION 7.3. The west/north pooled drop of 29 -> 27 in the stock
+arms was the only result in this round that did not fit. Under CRN the same ten
+seeds are IDENTICAL, run for run, on rescued, dead, ff_deaths, never_detected
+and terminal_step. The -2 is the draw-stream re-roll, exactly as decision 6.5
+predicted it would be, and not a physical cost of the change.
+
+  Attribution holds under CRN too: 33 / 33 runs' burning sets first differ
+  exactly at the control's first depot ignition, 0 vacuous. (Under CRN every one
+  of the 33 fires reaches a depot, including the two that died on tick 1 in the
+  stock corpus - a different realisation of the same distribution.)
+
+  Drone steps in fire, all 33 CRN tuples pooled:
+                 E1 total   E1 depot        E2 total   E2 depot
+    dfpCB          2.70%      0.27%           2.14%      0.20%
+    dfpCON         2.29%      0.00%           1.79%      0.00%
+
+  THE DEPOT COMPONENT GOES TO ZERO, as in the stock arms. What CRN adds is that
+  the REST of the fall is now attributable too: E1 falls 0.41pp of which 0.27pp
+  is the depot and 0.14pp is the search component genuinely improving, because
+  the fire near the two corners is physically smaller once 50 cells stop being
+  igniting neighbours. In the stock arms that 0.14pp could not be distinguished
+  from the re-roll. It is the same "local dent" section 5 measures in the
+  bookkeeping remainder, seen from the other side.
+
+--------------------------------------------------------------------------------
+12. WHAT THIS ROUND DID NOT DO, AND WHAT IT LEAVES BEHIND
+--------------------------------------------------------------------------------
+12.1 THE HARNESS WAS NOT TOUCHED, deliberately. outputs/_ffr_harness.py:810
+     computes fire_cleared_unburned_final as "fuel <= 0 and not has_burned" and
+     its comment asserts "only a firebreak produces it". With this feature ON
+     that is false by up to 50 cells. The block is emitted ONLY when the fire
+     mechanic actually ran (the whole section is gated on the firefight log being
+     present), and the fire mechanic ships OFF, so no run in this round or in the
+     existing corpus is affected. Changing the harness mid-round would have made
+     every arm incomparable with the recorded corpus, which is what let section 2
+     connect dfpB to f3OFF. Recorded here for whoever arms both features at once.
+
+12.2 THE FIRE-MECHANIC INTERACTION IS UNMEASURED. With FF_FIREFIGHT_FIREBREAK
+     armed, agents.py reads fuel to build its plan, so depot cells drop out of
+     firefighter planning from step 0. No arm here runs both features.
+
+12.3 THE MESA CANVAS IS UNRENDERED. main.agent_portrayal carries the same colour
+     on both its branches and is covered by tests, but no image of that surface
+     was captured - the dashboard is the surface this campaign validates.
+
+12.4 PINNED-REPLAY vs CRN IS STILL UNRESOLVED on a firebreak's physical size, as
+     the brief instructed. This round used CRN (section 11) and says so; it did
+     not use outputs/_fm2_fire_replay.py, which is fire-only and therefore cannot
+     answer a question about rescued at all.
+
+12.5 outputs/_bm/p3/_verify_ast.py, a base-mark artifact pinned to d3640e3, now
+     reports False for _capture_frame and _cell_color because this round changed
+     both. It is not a gate and is hardcoded to a path outside this worktree.
+
+--------------------------------------------------------------------------------
+13. ARTIFACTS
+--------------------------------------------------------------------------------
+  dfp_prereg.txt          the pre-registration, pinned by all three wave logs
+  _dfp_prereg.py          its generator
+  _dfp_queue.py/.txt      the arms; _dfp_rb_queue.txt, _dfp_crn_queue.txt
+  _dfp_pool.sh            the wave pool (_dcd4rb_pool.sh + 2 changed lines)
+  _dfp_analyze.py/.txt    sections 2-7 and 11
+  _dfp_rbgate.py/.txt     the route_blocked gate, both readings
+  _dfp_colour.py/.txt     the colour sweep, the corrected bar, the overlay frontier
+  _dfp_payload.py/.txt    the exact payload proof + its negative control
+  _dfp_frames.py          the before/after frame pair, one model state
+  _dfp_page_gate.py/.txt  the full-page layout gate; _dfp_page/*.png, 9 captures
+  _dfp_pytest_base.log    6281542 baseline (+ .xml)
+  _dfp_pytest_final.log   this branch at the shipped default (+ .xml)
+  _ffr_dfp*.json          170 harness runs: 100 wave + 66 CRN + 4 post-fix identity
+  _rblatch_camp2_dfpRB*   8 gate shards
+  _dfp_pilot_superseded/  the 4 pilot runs, retired before the wave (they predate
+                          the display commit and carry no dcD pins)
+
+  WAVES:  100 ff runs (4 arms) + 8 rb shards + 66 CRN runs + 4 post-fix reruns
+          = 178 simulations, 0 failed, 0 gave up, 0 fork failures.
