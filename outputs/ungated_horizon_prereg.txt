@@ -1,0 +1,102 @@
+================================================================================
+UNGATED FIREFIGHTING - HORIZON MEASUREMENT: PRE-REGISTRATION (written before any run)
+Option (c), narrowly scoped, per the maintainer (2026-09-21). MEASUREMENT ONLY - no
+source file changes, nothing merged.
+================================================================================
+
+THE QUESTION (maintainer)
+  7 of the 11 victims the shipped ungated arm lost on the fresh 30 (U30) were still
+  being rescued at step 240, and victim deaths FELL 13 -> 12. Is the -8/101 DELAY
+  rather than loss?
+
+THE HORIZON: 360 STEPS, with --set BATCH_SIZE=360. Why:
+  1. A HARD CAP AT 301 STEPS.
+     - WildFireModel.step() calls sys.exit(0) once
+       evaluation_timesteps_counter - 1 == BATCH_SIZE (wildfire_model.py:5808).
+     - Every harness run passes BATCH_SIZE=300, so a run cannot pass 301 steps. The
+       process exits without writing its JSON.
+     - BATCH_SIZE is read nowhere else in the simulation. A whole-tree grep finds only
+       that exit check, plus an informational "batch_size" field in the dashboard state
+       builder.
+     - So raising it cannot change steps 1-240. That is CHECKED on every run (prefix
+       identity, below), not assumed.
+  2. THE WORK LEFT AT STEP 240.
+     - For every victim still ASSIGNED at step 240 in the three arms, the remaining
+       movement is the assigned unit's manhattan distance to the victim plus the
+       victim's distance to the nearest grid edge, where a rescue completes (or, for a
+       unit already carrying the victim out, its distance to the edge).
+     - The largest remaining work: 45 cells (control, south/half/1048395951 victim_0).
+       In the shipped arm the largest is 31; in the positioning-only arm, 33.
+     - Units move at most 1 cell per step, and slower when they retreat from fire.
+  3. 360 gives 120 extra steps:
+       2.7x the largest remaining work anywhere
+       3.9x the largest in the shipped arm
+     That leaves room for retreats and detours. 300, the longest the default cap allows,
+     would leave 60 steps: barely the worst case with no detour.
+
+ARMS (the fresh 30 only, U30 of outputs/_ug_seeds.txt; stock realisation; --steps 360
+--uav-actions)
+  uhC  control           E:/Projects/SAS_wt/base11c3661 (11c3661)  --set BATCH_SIZE=360
+  uhD  shipped ungated   E:/Projects/SAS (the ungated-firefighting branch)
+                                                                    --set BATCH_SIZE=360
+  uhY  positioning only  E:/Projects/SAS  --set BATCH_SIZE=360 --set FF_FIREFIGHT_DRY_RUN=1
+  - 90 runs. uhC and uhD are queued first; the decision rests on them.
+  - uhY is included because 9 of the 11 losses appear there. It adds 30 runs, about
+    an hour of wall clock at the box's memory-bound concurrency (~9 runs), on a wave
+    of about 3 hours.
+  - Tags uh*: 0 files carry them today. The pool runs with its own TAGPFX (uh) and
+    STEM (the Part 3 lesson: shared TAGPFX makes concurrent pools report false
+    INCOMPLETE).
+
+CHECKS, before any number is read
+  P1 PROVENANCE: every run's repo, extra_params, seed, wind, roles and steps == its
+     arm's. A mismatch refuses the run.
+  P2 PREFIX IDENTITY: each uh run's first 240 steps must equal the recorded 240-step
+     ug run of the same arm and tuple (uhC~ugC, uhD~ugD, uhY~ugY), on:
+       every per-step series: fire_digests, victim_steps, ff_steps, uav_steps,
+         uav_actions, partition_steps
+       every event list restricted to step <= 240: assigns, unassigns, completions,
+         recycles, firefight_log
+     ANY difference means the longer horizon changed something before step 240. That
+     is a STOP: report, no reading of outcomes.
+
+WHAT IS REPORTED
+  - rescued and dead AT STEP 240 (from each uh run's step-240 victim statuses, which
+    P2 makes equal to the ug runs') AND AT STEP 360, all three arms
+  - FOR EACH OF THE 11 VICTIMS lost at 240 (ugC rescued, ugD not): rescued, dead or
+    still unresolved at 360, and the step it resolved (rescue = its completion step;
+    death = the first step its status is dead)
+      east/half/1433805104 victim_0     east/half/1252362635 victim_0
+      east/half/1252362635 victim_2     east/half/1532569567 victim_0
+      east/half/498896028 victim_0      east/half/1401495347 victim_0
+      east/half/133894353 victim_0      south/half/706299103 victim_3
+      south/half/903347495 victim_3     east/def/2038269169 victim_0
+      east/def/1420331661 victim_0
+    (the 2 unreachable and 2 dead at 240 are included; they are not expected to change)
+  - THE COST AT 360
+      loss  = rescued(uhC) - rescued(uhD)
+      limit = (2/68) x rescued(uhC) + 3
+    This is the pre-registered G2 formula, applied at the longer horizon. The accepted
+    -2/68 was itself measured at 240 steps; applying its RATE at 360 is the maintainer's
+    requested test ("whether the cost at the longer horizon is within the accepted
+    limit"), and is said so in the report.
+  - Everything that changes between 240 and 360 in either arm: rescues completed after
+    240, victims newly dead after 240, firefighter deaths after 240. A longer horizon
+    can also add losses, and those are counted.
+  - The same for uhY (positioning only), reported beside the decision, not in it.
+
+THE DECISION RULE (maintainer's, verbatim)
+  "if most of the 11 resolve as rescues and the cost falls inside the limit, the -8
+   was a horizon artifact -> I will choose (a) and merge; if they do not, the cost is
+   genuine -> (b), a round on where idle units work relative to late-found victims"
+  READ AS: "most of the 11" = AT LEAST 6 OF THE 11 are rescued by step 360, AND
+  loss <= limit at 360. Both are required for (a). Otherwise (b).
+
+SEPARATE, NOT PART OF THIS MEASUREMENT
+  - The round-2 reproduction generator (outputs/_fm3_repro_queue.py): new tags r3*;
+    every FF switch explicit, plus BASE_STATION_FIREPROOF=0 and
+    VICTIM_SEARCHER_HAZARD_GATE_BOUNDS_FIX=0. It is validated by its own small queue
+    (3 harness runs + 1 shard), compared value for value with the recorded f3* runs.
+    It runs in its own pool (TAGPFX r3).
+  - The maintainer's correction of the Q6 rationale is recorded in
+    outputs/ungated_report.txt and the runner register.
