@@ -1,0 +1,948 @@
+================================================================================
+SEARCHERFIRE - PART 1
+Does the victim searcher get stuck on burning or scorched ground,
+and if so does it cost anything?
+DIAGNOSIS ROUND. READ-ONLY. NO IMPLEMENTATION. NO SIMULATION RUN.
+================================================================================
+
+BRANCH / HEAD AS FOUND
+  git branch --show-current  -> searcherfire     (expected: main)
+  git log --oneline -1       -> 6281542          (expected: 6281542)  MATCH
+  main and searcherfire both point at 6281542; `git diff main..HEAD` is empty and
+  the tracked working tree is clean. So the expected commit was correct and the
+  work branch already existed. All work below was done on `searcherfire`.
+
+SOURCE PROVENANCE
+  Another session is concurrently editing source in E:\Projects\SAS. Every source
+  statement in this report was read from a PINNED DETACHED WORKTREE of 6281542:
+      <scratch>/src6281542     (git worktree add --detach, verified clean)
+  Nothing in E:\Projects\SAS was modified. The only file this round writes into
+  the repo is this report.
+
+FORBIDDEN DIRECTORY
+  outputs/_firemech_rewound_20260914/ : ZERO CONTACT this round. Every corpus
+  enumeration was non-recursive (glob '*.json' with cwd=outputs, or 'ls
+  outputs/*.json'); no recursive grep and no ** glob was issued under outputs/.
+  The six sub-agents each independently report zero contact.
+
+ENVIRONMENT (as required)
+  sys.version    : 3.10.11 (tags/v3.10.11:7d4cc5a, Apr  5 2023) [MSC v.1929 64 bit]
+  mesa.__version__: 1.2.1
+  interpreter    : E:\Projects\SAS\.venv\Scripts\python.exe
+
+SIMULATION COST
+  NONE. No run was executed. The whole round is derived from the committed
+  corpus, because the three-way ground categorisation turned out to be EXACTLY
+  reconstructible offline (proved in section 0). Quota spent: zero runs.
+
+REPRODUCIBILITY
+  outputs/_sf_cat.py      the per-step ground categoriser (burning / scorched /
+                          burnt / virgin) used by everything below.
+  outputs/_sf_analyze.py  regenerates the validation check and the headline
+                          tables of sections 1, 2, 3 and 6 verbatim:
+                              cd outputs
+                              E:\Projects\SAS\.venv\Scripts\python.exe _sf_analyze.py
+  Both are read-only over outputs/*.json and run no simulation.
+
+================================================================================
+0. METHOD, AND WHY NO RUN WAS NEEDED
+================================================================================
+
+0.1 THE RECONSTRUCTION
+The harness records, per run, `burn_intervals` (per cell, the half-open [start,
+end) step intervals during which it was observed burning) and `fire_ground_final`
+(per cell, [has_burned, burnt, burning] at the horizon). At the shipped default
+FF_FIREFIGHT_EXTINGUISH = FF_FIREFIGHT_FIREBREAK = 0, so nothing but burning ever
+consumes fuel. Therefore, for any step t:
+    BURNING  <- t lies inside one of the cell's intervals
+    VIRGIN   <- no interval starts at or before t
+    BURNT    <- fire_ground_final marks the cell burnt, and t is at or after the
+                END of its LAST interval (burnt is absorbing: fuel is gone)
+    SCORCHED <- everything else, i.e. it has burned, has fuel left, is not
+                burning now. This is the category that re-ignites.
+
+0.2 THE RECONSTRUCTION IS EXACT, NOT ASSUMED - THREE INDEPENDENT CHECKS
+V1  Against the harness's live per-UAV burning bit (uav_actions[t][i][2]):
+        orchestrator's implementation : 0 disagreements / 85,440 UAV-steps / 89 runs
+        sub-agent A1's implementation : 0 disagreements / 291,840 UAV-steps / 304 runs
+    The step alignment is step_number = uav_steps index + 1; offsets -2,-1,+1,+2
+    give 5841 / 3236 / 3530 / 7128 disagreements, so the alignment is forced by
+    the data, not chosen.
+    WHAT V1 DOES NOT PROVE, and an earlier draft of this report got wrong. That
+    bit is NOT an independent witness. In _ffr_harness.py the per-step set
+    `burning_now` is built once and used BOTH to open/close burn_intervals AND
+    (as `burning_cells`) to compute the uav_actions bit. So V1 establishes the
+    interval encode/decode and the index offset exactly - which is what the
+    off-by-one risk needed - but it says nothing about the fire model, and it
+    gives NO support at all to the scorched/burnt split. That split rests
+    entirely on V2 and V3 below, which are genuinely independent of it.
+V2  Fuel arithmetic. Every cell whose final state is burnt must have burned for
+    fuel x FIRE_SPREAD_SPEED = {7..10} x 3 = {21,24,27,30} steps. Over 349,066
+    final-burnt cells in 304 runs the totals are exactly 21/24/27/30, with ONE
+    systematic exception: the original ignition cell, which is constructed burning
+    before step 1 and so lands one step short at {20,23,26,29} (261 cells, ~1 per
+    run). No other exception exists.
+V3  Absorbing-state check: no cell is ever burnt at t and burning at t' > t.
+
+0.3 A SECOND ALIGNMENT THAT HAD TO BE PINNED DOWN (and nearly produced a
+    false result here, exactly as the round brief warns)
+`selected_dir` is recorded post-step. It is NOT "the direction the UAV will take
+next"; it is the direction ALREADY APPLIED during the step just recorded, moving
+the UAV from its previous cell to its recorded cell. Tested on 11,472 UAV-steps:
+    hypothesis A (dir@i moved p[i-1] -> p[i]) : 93.3% landed on the intended cell,
+                                                6.7% refused,  0.0% UNEXPLAINED
+    hypothesis B (dir@i applies next step)    : 39.5% UNEXPLAINED
+A is correct and accounts for every single UAV-step. Under the wrong alignment a
+"tracker holds pointing off-grid" artefact appears that does not exist. Every
+off-grid figure in this report uses A, and is restricted to steps on which the
+UAV DEMONSTRABLY DID NOT MOVE - so it is a measured refusal, not an inference.
+
+0.4 WHAT IS A HOOKED DECISION HERE (the project's five-times failure mode)
+Used as decisions, never inferred: `uav_actions[t][i][1]`, the action label taken
+straight from model.latest_execution_result['local']['uav_results'][uid]['action'];
+and `partition_steps[t]['targets'][uid]`, the UAV's actual current target cell.
+Used as observations: positions, selected_dir, base_state, battery.
+Derived by pure arithmetic on two recorded observations (not inferred): whether a
+refused move's target was off the grid.
+
+0.5 SEED PROVENANCE
+The five shipped-default arms (dcD, d4D, dfD, drhD, flhD) pool to 113 run-records
+but only 57 DISTINCT (wind, roles, seed) tuples. dcD/dfD/drhD/flhD deliberately
+repeat the same tuples - that is what makes them seed-matched - so every
+per-event figure below is reported DE-DUPLICATED, and the counted form is given
+where it differs. The cost analysis (section 7) uses dcD-half + d4D-half = 46
+distinct tuples over 36 distinct seeds (d4D drew a new seed per tuple; dcD reuses
+10 seeds across two winds, and the same seed under two winds shares the ignition
+cell and all 2,500 fuel draws, so those are NOT independent worlds).
+
+0.6 THE CLEAN NATURAL EXPERIMENT
+dcoff (BASE_STATION_MODE 0) and dcD (MODE 3) are the same checkout, same harness,
+same 23 tuples. Their `fire_digests` are IDENTICAL on all 240 steps of all 23
+pairs. The fire is bit-for-bit the same world; only UAV behaviour differs. Every
+base-station attribution in section 2 rests on that, which is far stronger than
+comparing across commits.
+
+================================================================================
+1. REQUIREMENT 1 - THE EXPOSURE, SPLIT INTO CATEGORIES
+================================================================================
+
+Per UAV-step, the category of the cell the UAV is standing on. "MAP AVAIL" is the
+mean fraction of the 2,500 cells in each category over the same steps - the
+correct denominator for asking whether exposure is attraction or incident.
+
+  dcD - CURRENT SHIPPED DEFAULT (23 tuples)
+    role              n        burning  scorched   burnt   virgin
+    victim_searcher   10,320    4.21%    9.50%    22.73%  63.57%
+    fire_tracker      11,760    1.62%    7.50%    18.56%  72.31%
+    MAP AVAIL                   6.19%   10.57%    22.23%  61.00%
+
+  dcoff - MODE 0, SAME COMMIT, IDENTICAL FIRES (23 tuples)
+    victim_searcher   10,320    2.59%    9.63%    20.09%  67.69%
+    fire_tracker      11,760    0.90%    5.19%    12.76%  81.15%
+
+  ihbase - 8520706 baseline, canonical 13
+    victim_searcher    5,520    2.12%   10.34%    19.89%  67.64%
+  ihbasefresh - 8520706 baseline, fresh 10
+    victim_searcher    4,800    2.98%    9.48%    17.08%  70.46%
+
+RE-DERIVATION OF THE TWO PRIOR FIGURES - BOTH REPRODUCE EXACTLY
+  "2.1% canonical / 3.0% fresh at 8520706"  ->  measured 2.12% (117/5,520) and
+  2.98% (143/4,800). Matches to the digit. Definition confirmed as searcher-steps
+  only, all 240 frames of every searcher UAV (sub-agent A6 calls this E1 and
+  traced it to interiorhazard_report.txt s.6 tables 6.1/6.2).
+  "3.55% searcher-only and 2.42% all-UAV on the 18 route_blocked seeds at the
+  current shipped default"  ->  measured on drhD: 307/8,640 = 3.5532% searcher-
+  only and 419/17,280 = 2.4248% all-UAV. Both match to three significant figures.
+  PROVENANCE CAVEAT ON THAT FIGURE: the "18 route_blocked seeds" are 18 distinct
+  (wind, roles, seed) tuples but only 13 DISTINCT SEEDS, and a seed shared across
+  two winds shares the ignition cell and all 2,500 fuel draws. The effective
+  sample is 13 worlds, not 18.
+  DENOMINATOR CAVEAT, and it matters for how the figure is quoted: "3.55%" is
+  NOT "3.55% of search steps". The published E1 denominator is all 240 frames of
+  every searcher, docked and returning included. Re-split on drhD:
+      all frames          307 / 8,640 = 3.5532%
+      undocked only       274 / 8,172 = 3.3529%
+      genuine search only 220 / 7,041 = 3.1246%   (base_state '')
+      return leg           54 / 1,131 = 4.7745%
+      docked / charging    33 /   468 = 7.0513%
+  A parked searcher is on burning ground at DOUBLE the overall rate. And this
+  biases every MODE 3 vs MODE 0 comparison, because a MODE 0 arm has no docked
+  and no returning frames at all: 1,599 of drhD's 8,640 frames are in a state
+  the OFF arm cannot occupy. Under the search-only denominator the drhD-drhZ gap
+  shrinks from 1.817pp to 1.389pp - i.e. 24% of that headline gap is depot and
+  return-leg frames with no counterpart in the OFF arm. This is the same finding
+  section 2 reaches by a different route.
+  INCIDENTAL: drhK (the same arm with BASE_STATION_DOCK_FIX = 0) gives an
+  identical 307 searcher burning-steps. The dock fix is exposure-inert.
+  CAVEAT CARRIED FORWARD FROM A6, not mine but load-bearing: dockfix_report.txt
+  and basestation_report.txt each label their all-UAV (E2) tables as "the same
+  definition" as the 2.1%/3.0% searcher-only (E1) figure. That is wrong on role
+  scope and was already corrected in dcd4_report.txt s.4. Under E2, 8520706
+  canonical is 1.45%, not 2.12%. Any pre-flip exposure number quoted from those
+  two reports is all-UAV whatever the surrounding sentence says.
+
+EXPOSURE / AVAILABILITY RATIO - the interpretable number
+  1.0 = the UAV stands on that ground exactly as often as a randomly placed agent
+  would. Below 1 = UNDER-REPRESENTED. Read that as avoidance ONLY for burning,
+  which is the single category a UAV can perceive; for scorched and burnt no
+  channel exists (section 5), so a ratio there is a geometric fact, not a
+  decision. Estimator: ratio of sums (total category-cells over total cells,
+  across steps). The alternative estimator, the unweighted mean of per-step
+  ratios, moves these figures by about 4% relative; direction is invariant under
+  both, and under every null model an independent verifier tried.
+
+    dcD              burning  scorched   burnt   virgin
+    victim_searcher    0.68      0.90     1.02     1.04
+    fire_tracker       0.26      0.71     0.84     1.19
+
+  TWO CAVEATS AN ADVERSARIAL RE-DERIVATION ADDED, both accepted:
+  (a) POOLING HIDES A SIGN INVERSION, and it is the one the maintainer most
+      plausibly saw. Split by state, the searcher's burning ratio while PARKED
+      (docked/charging) is 1.235 - while sitting on its berth the searcher is
+      MORE likely than chance to be on burning ground. The pooled 0.68 conceals
+      it. On genuine SEARCH steps only, the ratio falls to about 0.56. So
+      "the searcher avoids fire" is true of searching and false of parking.
+  (b) THE TRACKER'S SCORCHED AND BURNT RATIOS DO NOT SURVIVE SEED CLUSTERING.
+      Clustered on the 14 independent seeds, tracker scorched is 0.809 +/- 0.258
+      and tracker burnt 1.016 +/- 0.287 - both at chance, the pooled 0.71/0.84
+      being pooling artefacts smaller than the between-run spread. Only the
+      tracker's BURNING ratio (0.242, 16.6 SE) survives. Corrected statement:
+      the tracker avoids BURNING much harder than the searcher; on scorched and
+      burnt neither role is measurably different from chance - exactly what the
+      single-bit sensor predicts.
+
+THE HEADLINE OF THIS SECTION. The maintainer's claim is specifically about
+SCORCHED ground. The searcher stands on scorched ground at ratio 0.90 - at, in
+fact slightly BELOW, the rate implied by how much of the map is scorched. There
+is no attraction to scorched ground. Burning ground is at 0.68, i.e. actively
+under-represented. Scorched exposure did not rise with the base station either
+(9.63% -> 9.50%, a 0.13-point FALL on identical fires).
+
+================================================================================
+2. REQUIREMENT 2 - DEPOT-CHARGING EXPOSURE vs SEARCH EXPOSURE
+================================================================================
+(The brief calls this the single most useful number the round can produce.)
+
+Seed-matched, same commit, IDENTICAL FIRES. Victim-searcher steps on BURNING
+ground, decomposed by context. Context is read from the recorded base_state
+('docked'/'charging'/'returning') and from the depot footprint in the run's own
+base_station block, not guessed.
+
+  component                    dcoff M0    dcD M3     delta   % of the rise
+  DEPOT - parked/charging             0        33       +33        19.8%
+  DEPOT - inside footprint            0        14       +14         8.4%
+  RETURN LEG (base_state=returning)   0        56       +56        33.5%
+  EDGE-PIN LIVELOCK (section 3)      12        66       +54        32.3%
+  ORDINARY SEARCHING                255       265       +10         6.0%
+  TOTAL                             267       434      +167
+  searcher burning rate            2.59%     4.21%
+
+  BASE-STATION MACHINERY (depot parked + depot footprint + return leg)
+                                                      +103 = 62% of the rise
+  EDGE-PIN LIVELOCK growth                             +54 = 32% of the rise
+  RESIDUAL ORDINARY SEARCHING                          +10 =  6% of the rise
+
+HOW MUCH OF THIS IS SOLID, AND HOW MUCH IS NOISE - stated separately, because
+they are not the same kind of claim.
+  EXACT, NOT STATISTICAL: the DEPOT and RETURN-LEG rows. A MODE 0 UAV has no
+  depot and no return leg, so those three components are structurally zero in
+  the OFF arm. 103 of the 434 burning steps at MODE 3 sit in states that cannot
+  exist at MODE 0. That is an accounting identity on the recorded base_state, not
+  an inference, and no amount of between-seed variance touches it.
+  MARGINAL: the AGGREGATE rise itself. Paired per tuple on identical fires, the
+  searcher burning rate rises +1.812pp (sd 3.740, t=2.32, n=23 tuples, signs
+  14+/7-/2 ties). Clustered on the 10 DISTINCT seeds - the honest unit, since a
+  seed under two winds is one world - it is +1.656pp (sd 3.127, t=1.67). An
+  independent verifier found the same on a different arm pair (drhD vs drhZ:
+  +1.817pp, t=2.25, falling to +1.474pp, t=1.83 clustered on 13 seeds). Per-run
+  rates range 0.00%-14.79% against a mean of 4.29%. So "exposure roughly doubled"
+  is the right central estimate from two independent arm pairs, but it is NOT
+  comfortably above between-seed noise, and this report does not claim it is.
+
+Subject to that, almost none of the rise is the searcher searching more
+dangerously. 62% is the machinery the base station added - UAVs
+parked in or walking home to a depot that happens to be on fire - and 32% is a
+livelock that the base station made more frequent rather than created.
+ORDINARY SEARCHING EXPOSURE IS ESSENTIALLY UNCHANGED: 255 -> 265 steps, +4%.
+
+SCORCHED, same contrast: 994 -> 980 searcher-steps. The base station did not
+increase scorched exposure at all.
+
+WHAT THE CONCURRENT FIREPROOF-DEPOT ROUND WILL AND WILL NOT REMOVE
+Making depot ground non-burnable removes the two DEPOT rows exactly: 47 of the
+434 searcher burning-steps at dcD. It does NOT remove the return leg (56 steps,
+outside the footprint) and does not touch the livelock.
+  residual searcher burning exposure after fireproof depots: 387/10,320 = 3.75%
+  i.e. it removes 10.8% of today's searcher burning exposure, not the bulk of it.
+An independent implementation over a broader shipped-default set (dfD, drhD,
+flhD, f3OFF, fmOFF, fmREF - 27 tuples, 14 distinct seeds) gets the same answer:
+searcher burning 3.80% today, 198 of 2,382 burning-steps in a depot, residual
+3.49%, i.e. 8.3% removed. So the depot component of SEARCHER burning exposure is
+8-11%, and fireproofing depots leaves ~3.5-3.75% standing.
+For SCORCHED the depot share is smaller still: 183 of 5,353 = 3.4% removed.
+The two problems are genuinely separate, which is what this round was asked to
+establish.
+
+A NOTE ON THE dcd4 FIGURE THE BRIEF CITES ("14 of 23 same-cell burning-step stays
+were UAVs charging in a burning depot"). That figure is about STAYS - dwell
+events - and it survives: depot parking does dominate the all-UAV dwell events.
+It is not a statement about total exposure, and it should not be read as one. For
+the SEARCHER specifically, depot contexts are only 47 of 434 burning-steps (11%).
+
+================================================================================
+3. REQUIREMENT 3 - STUCK VERSUS TRANSITING
+================================================================================
+
+3.1 DEFINITIONS (both reported, because they answer different questions)
+  D1 CONSECUTIVE-CATEGORY RUN: a maximal run of consecutive steps during which
+     the UAV is on the category. This is what the brief literally asks for.
+  D2 SAME-CELL OCCUPANCY RUN: a maximal run of consecutive steps on the SAME
+     CELL that touches the category at least once. This is what "parked on it"
+     means, and it is the one that exposes the defect, because a pinned UAV's
+     cell cycles burning -> scorched -> burning underneath it and D1 chops that
+     single 27-step event into several shorter runs.
+  A D2 run is further classified by the MEASURED reason the move failed:
+     TRANSIT      - the cell changes every step (it is crossing)
+     OFF-GRID     - the UAV did not move and its applied direction pointed off
+                    the grid, so agents.py move() refused it on out_of_bounds
+     UAV-BLOCKED  - the UAV did not move and the target was on-grid but occupied
+                    by another UAV, so not_UAV_adjacent refused it
+  Both refusal reasons are computed from two recorded quantities (position and
+  the applied selected_dir); neither is inferred from where the UAV ended up.
+
+3.2 D1 - CONSECUTIVE STEPS ON BURNING GROUND (de-duplicated, 57 tuples)
+     679 runs / 1,243 steps. Length histogram:
+        1 step  465 runs | 2: 84 | 3: 51 | 4-5: 54 | 6-10: 19 | 11-20: 6 | 21+: 0
+     longest consecutive-burning run: 18 steps
+     classified TRANSIT 631 runs (997 steps), DWELL 41 (176), MIXED 7 (70)
+
+3.3 D2 - SAME-CELL OCCUPANCY RUNS THAT TOUCH BURNING GROUND
+    (dcD + d4D, 53 distinct tuples; runs / burning-steps within them)
+
+     role             cause            runs  burn-steps  length histogram
+     victim_searcher  TRANSIT (len 1)   683        683   all length 1
+     victim_searcher  OFF-GRID            9         99   5-10:1  11-20:3  21+:5
+     victim_searcher  UAV-BLOCKED        13         68   2:1 3-4:2 5-10:2 11-20:8
+     fire_tracker     TRANSIT (len 1)   314        314   all length 1
+     fire_tracker     UAV-BLOCKED        20         74   2:5 3-4:1 5-10:1 11-20:13
+     fire_tracker     OFF-GRID            0          0   -
+
+  97% of the searcher's contacts with burning ground (683 of 705) are SINGLE-STEP
+  CROSSINGS. One step crossing a cell is the overwhelmingly common case. The
+  stuck cases are 22 events, and they split into two mechanically distinct modes.
+
+3.4 MODE 1 - THE OFF-GRID PIN. SEARCHER-ONLY. THIS IS THE DEFECT.
+De-duplicated over the five shipped-default arms (57 distinct tuples):
+  10 DISTINCT pin events, 160 pinned searcher-steps, longest 26 consecutive
+  refused steps (a 27-step occupancy). Ground beneath them: 92 burning, 43
+  scorched, 25 other. The ground RE-IGNITED under the pinned searcher 10 times,
+  in 6 of the 10 pins.
+
+  wind   roles    seed        uid   cell      len  burn  scor  reig  edge
+  south  half     404         2502  (27, 0)    26    20     6     2   S
+  south  half     423146201   2503  (49,12)    25    12    13     3   E
+  east   default  303         2503  (49,24)    23     4     3     1   E
+  east   default  101         2503  (39,49)    22    17     5     1   N
+  south  half     101         2502  ( 0, 0)    20    14     6     2   W+S
+  east   half     1686422896  2503  (49,42)    12     6     0     0   E
+  east   half     909         2503  (49,38)    11    11     0     0   E
+  south  half     207893904   2502  (23, 0)    10     7     3     1   S
+  east   half     606         2502  (49, 3)     8     1     7     0   E
+  south  half     505         2503  (49, 1)     3     0     0     0   E
+
+  ALL TEN ARE ON A GRID BOUNDARY. None is in the interior.
+  EVERY STEP OF EVERY PIN carries exactly ONE hooked action label:
+  `victim_search_hazard_retreat`. Not a mixture - one label, ten events.
+
+  Worked example, the 27-step occupancy at (27,0), seed 404 south (steps 85-113).
+  At step 85 the searcher is at (27,1) with all four neighbours burning. It moves
+  south to (27,0), the only non-burning option - and (27,0) is on the y=0 edge.
+  From step 86 to 112 its applied direction is 1 (south) on EVERY step; south from
+  y=0 is (27,-1), off the grid, so move() refuses it every time. Battery drains
+  74.2 -> 71.6. The cell burns at 86-89, goes scorched 90-92, burns 93-107, goes
+  scorched 108-110, burns 111-112 - the ground re-ignites under it twice. At step
+  113 the retreat finally yields direction 3 and `victim_search_escape_bfs` walks
+  it out west.
+
+  INDEPENDENT CONFIRMATION, on a wider population and by different code. A
+  second implementation, written without sight of these measurements, scanned
+  167 run-records / 57 tuples / 160,320 UAV-steps and reports:
+    - the longest searcher immobility on burning ground is 27 consecutive steps
+      on one cell while FREE-FLYING (base_state ''), not parked - the same event;
+    - its stricter definition (same cell AND all steps burning) brackets it from
+      the other side at 15 steps, steps 93-107, exactly the uninterrupted burning
+      stretch inside the 27-step occupancy, with the scorched gaps at 90-92 and
+      108-110 excluded by that definition;
+    - EVERY searcher dwell of 2+ steps on burning ground while free-flying
+      carries exactly one action label, victim_search_hazard_retreat: 431 of 431;
+    - ALL 657 out-of-bounds refusals in that whole population are victim
+      searchers, all 657 carrying that label - not one tracker;
+    - 97.1% of the steps in long free-search dwells touching burning ground are
+      on a grid edge or corner;
+    - NO searcher dwell run on burning ground ever reduced its distance to its
+      HOOKED target: 94 of 94 counted, 25 of 25 de-duplicated. That is the
+      livelock established against the hooked target rather than against
+      position, which is the check this project's history demands.
+
+3.5 MODE 2 - THE BERTH JAM. BOTH ROLES. NOT SEARCHER-SPECIFIC.
+  13 searcher events (68 burning steps) and 20 tracker events (74 burning steps),
+  almost all of length 11-20, almost all starting at step 204-206, all at or
+  beside depot berths ((45,4),(4,45),(45,3),(3,45),(46,3),(3,46),(4,46),(46,4)),
+  all with base_state 'returning'. Multiple UAVs trigger return-to-base at the
+  same time near the horizon, converge on the depot, and block each other via
+  not_UAV_adjacent while the depot ground burns. This is the same family as the
+  dock-fix and depot rounds, and it affects trackers slightly MORE than searchers.
+
+================================================================================
+4. REQUIREMENT 4 - TARGETED, OR ARRIVED AT INCIDENTALLY?
+================================================================================
+
+Using partition_steps targets (the hooked target cell), dcD + d4D. "NEWLY SET" is
+the step on which the target changes - the actual selection moment.
+
+  role             when                      n     burning scorched  burnt  virgin
+  victim_searcher  held (every step)     23,661     1.57%    5.30%  18.13%  75.00%
+  victim_searcher  NEWLY SET              2,208     1.18%    9.74%  24.46%  64.63%
+  fire_tracker     held (every step)     27,120     0.39%    3.97%  22.38%  73.26%
+  fire_tracker     NEWLY SET              1,257     0.16%    4.61%  22.99%  72.24%
+  MAP AVAILABILITY                   31,800,000     5.92%   10.02%  20.96%  63.10%
+
+  SELECTION-TIME RATIO (selection rate / availability)
+    victim_searcher   burning 0.20   scorched 0.97   burnt 1.17   virgin 1.02
+    fire_tracker      burning 0.03   scorched 0.46   burnt 1.10   virgin 1.14
+
+THREE-WAY SPLIT OF THE SEARCHER'S OWN HAZARD STEPS (de-duplicated, 57 tuples).
+For every searcher-step on burning / on scorched ground, was the UAV standing on
+its own current target, in transit toward it, or neither?
+
+                          burning (854 steps)    scorched (2,173 steps)
+    ON its own target          0    ( 0.00%)         0    ( 0.00%)
+    in transit toward it     349    (40.87%)     1,333    (61.34%)
+    moved, but not toward    350    (40.98%)       688    (31.66%)
+    did not move at all      155    (18.15%)       152    ( 6.99%)
+    (no target that step)      0                     0
+
+  ZERO. Not "few" - zero. In 3,027 searcher-steps on burning or scorched ground
+  across 57 tuples, the searcher was never once standing on the cell it was
+  targeting. Hazard ground is somewhere it passes through or is stuck on, never
+  somewhere it went.
+
+  And when a target does happen to be burning, it is abandoned fast: target
+  change rate on the next step is 41.1% for burning targets against 13.8%
+  scorched, 11.9% burnt and 7.6% virgin.
+
+WHAT THE SEARCHER IS DOING ON EACH KIND OF GROUND (hooked action labels)
+    on BURNING  ground: victim_search_hazard_retreat 525 of 854 (61%),
+                        retarget_to_interior 226, escape_bfs 96
+    on SCORCHED ground: retarget_to_interior 1,328 of 2,173 (61%),
+                        escape_bfs 477, hazard_retreat 289
+  On scorched ground the searcher is overwhelmingly doing ORDINARY SEARCH. On
+  burning ground it is overwhelmingly in HAZARD RETREAT. That is the whole story
+  of this round in two lines.
+
+ANSWER: NOT TARGETED. The searcher picks burning cells as targets at one fifth of
+the rate chance would give (1.18% against 5.92% available) - burning ground is
+strongly and deliberately avoided at selection time. Scorched cells are picked at
+0.97 of the map rate: statistically indistinguishable from indifference. The
+searcher is neither drawn to nor repelled by scorched ground - which is what a
+mostly-absent signal predicts (section 5: smoke marks recent scorch, nothing
+marks stale scorch, and most scorched exposure is on stale ground).
+
+Burning-ground exposure is therefore arrival, not selection: 97% of it is
+single-step transit (section 3.3), and the concentrated remainder is the pin,
+where the searcher is not pursuing anything - it is issuing an illegal move.
+
+================================================================================
+5. REQUIREMENT 5 - DOES THE SINGLE-BIT SENSOR MATTER?
+================================================================================
+
+The sensor limitation is real and confirmed in the pinned source.
+`UAV.surrounding_states()` (agents.py:398-412) encodes each observed cell as
+`int(agent.is_burning() is True)`. `_strict_victim_hazard_level`
+(uav_executor.py:1844-1851) grades a cell out-of-bounds 3 / burning 2 / smoke 1 /
+else 0. Sub-agents A3 and A4 enumerated every route by which ground state can
+reach a UAV decision and found no channel anywhere - not the visibility model,
+not the shared operational picture, not fire_runtime_model - that carries
+has_burned, fuel or burnt to a UAV. As a GROUND-STATE read, scorched is
+genuinely invisible.
+
+BUT THERE IS A SECOND CHANNEL, AND AN EARLIER DRAFT OF THIS REPORT MISSED IT.
+SMOKE. Smoke is attached to each Fire cell, activates once the cell has burned
+and persists for `fuel` ticks after it stops (agents.py Smoke.smoke_step), and
+`_strict_victim_hazard_level` grades a smoky cell as hazard level 1 - so it DOES
+reach the searcher's decision, through the retreat's own filters. Measured on the
+UAV's own cell, dcD + d4D:
+
+    P(smoke | ground category)     searcher      tracker
+      burning                        53.4%        57.0%
+      scorched                       13.4%        17.0%
+      burnt                           0.4%         0.4%
+      virgin                          0.00%        0.00%       (exactly zero)
+
+  Smoke is a ONE-WAY MARKER: it never appears on virgin ground, so smoke implies
+  the cell has burned. And it decays, so it marks only RECENTLY scorched ground:
+
+    P(smoke | scorched), by age of the scorch   searcher   tracker
+      stopped burning <= 3 steps ago              28.9%     57.8%
+      4-9 steps ago                               21.8%     49.2%
+      10-21 steps ago                             15.1%     20.6%
+      22+ steps ago                                0.6%      3.1%
+      (n = 568 / 344 / 245 / 951 searcher-steps)
+
+  So the correct statement is NOT "scorched is invisible". It is: scorched ground
+  carries a partial, decaying, one-way signal via smoke, strong on freshly
+  scorched ground and gone after about 20 steps; the majority of the searcher's
+  scorched exposure (951 of 2,108 steps) is on ground old enough to carry no
+  signal at all.
+
+THE OBSERVABLE PREDICTION. Measured selection-time ratios: scorched 0.97, virgin
+1.02 - close to indifference, which is what a mostly-absent signal predicts. And
+the bit it DOES have is demonstrably in use: burning 0.20 at selection, 0.68 at
+occupancy.
+
+CONTROLLED FOR THE SPATIAL CONFOUND. Scorched ground clusters where the fire has
+been, so raw ratios could hide an effect. Conditioning occupancy on the recorded
+distance to the nearest burning cell (fire_dist, de-duplicated, 57 tuples):
+
+    fire_dist band   n steps    scorched obs/exp = ratio    virgin ratio
+       1-2             4,252    1,070 / 1,748  = 0.61          1.50
+       3-5             3,278      302 /   384  = 0.79          1.07
+       6-8             2,408      161 /   175  = 0.92          1.04
+       9+             14,888      640 /   788  = 0.81          1.02
+
+  In EVERY band the searcher is on scorched ground LESS than availability, never
+  more. There is no hidden attraction that proximity was masking.
+
+BUT THE BLINDNESS IS NOT THE PROBLEM, AND CLOSING IT WOULD NOT HELP.
+  (a) UAVs are fire-immune. `_check_fire_casualties` (wildfire_model.py:5143)
+      builds its fire set from is_burning() and marks only victim markers and
+      firefighter markers dead - verified by reading the whole function in the
+      pinned checkout; there is no UAV branch and no other UAV death path.
+      Standing on scorched ground costs a UAV precisely nothing.
+  (b) The scorched exposure is at 0.90 of availability - there is no excess to
+      remove.
+  (c) Every long stuck event happens on BURNING ground, which the searcher
+      already sees perfectly well, and is caused by a control-flow fall-through
+      (section 6), not by a perception gap.
+  (d) The part of scorched ground that is most dangerous - freshly burned, and
+      so most likely to re-ignite - is the part ALREADY signalled, by smoke, at
+      29% on the searcher's own cell within 3 steps. The gap that remains is
+      over old scorch, which re-ignites least and harms nobody anyway.
+ANSWER TO REQUIREMENT 5: NO, the sensor limitation does not matter here, but the
+reason is narrower than "the searcher is blind to scorched". It is partially
+sighted - via smoke, on recent scorch - and what it cannot see is the stale
+scorch that carries the least risk. The exposure is not attributable to the
+sensor either way: it sits at or below availability, and the stuck events are on
+burning ground the searcher sees perfectly. This also matches the
+already-measured result that a scorched hazard penalty (#9-A1) was harmful, and
+explains why: it would pay a real cost to avoid ground that harms nobody, on top
+of a smoke signal that already covers the risky subset.
+
+================================================================================
+6. REQUIREMENT 6 - COMPARED AGAINST FIRE TRACKERS
+================================================================================
+
+THE ASYMMETRY HOLDS, AND FOR THE SEARCHER-SPECIFIC MODE IT IS CATEGORICAL, NOT A
+RATE DIFFERENCE.
+
+  OFF-GRID REFUSED MOVES (the UAV did not move; its applied direction left the grid)
+    arm     role              steps    off-grid refusals   hooked action label
+    dcD     victim_searcher  10,277            113         victim_search_hazard_retreat (113/113)
+    dcD     fire_tracker     11,711              0         -
+    dcoff   victim_searcher  10,277             19         victim_search_hazard_retreat (19/19)
+    dcoff   fire_tracker     11,711              0         -
+
+  Zero. In both arms. Trackers never do this.
+
+  UAV-BLOCKED refusals, for contrast, are shared and are a base-station effect:
+    dcD   tracker 755 (6.45%)  searcher 619 (6.02%)
+    dcoff tracker 143 (1.22%)  searcher 146 (1.42%)
+
+WHAT DIFFERS BETWEEN THE ROLES - THE CODE REASON
+`_apply_victim_searcher_hazard_gate` (uav_executor.py:2307-2402) is reached only
+by victim searchers. Its documented job is to be the "final safety pass on a
+victim searcher's chosen direction". Its candidate filters are correctly
+bounds-checked (`_strict_victim_hazard_level` returns 3 for out-of-bounds, so
+`_retreat_to_safe_interior_direction` can never RETURN an off-grid direction).
+The failure is in what happens when it can return nothing:
+
+    uav_executor.py:2318-2321
+        if <the cell I am standing on is hazardous>:
+            retreat = self._retreat_to_safe_interior_direction(agent)
+            if retreat is not None:
+                return retreat, "victim_search_hazard_retreat"
+            return chosen_dir, "victim_search_hazard_retreat"   <-- UNVALIDATED
+    uav_executor.py:2399-2402  (same shape; best_dir defaults to chosen_dir)
+
+When every in-bounds neighbour is hazardous or edge-blocked, the retreat returns
+None and the gate hands back the upstream direction UNCHANGED, while stamping it
+with the label `victim_search_hazard_retreat`. Sub-agent A3, reading source
+independently and without seeing any of the measurements, flagged exactly this
+line as "an action label that reads like a retreat and is not one". The hazard
+geometry that produced the fall-through does not change from step to step, so the
+same illegal direction is re-emitted every step and the UAV is pinned until the
+fire around it burns out.
+
+Trackers are immune because the gate is victim-searcher code. Its primary
+dispatch call site is explicitly role-guarded (uav_executor.py:419, `elif
+self._role_is_victim_searcher(role) and action != "hold"`) and its five other
+call sites sit inside the victim-search planning path. This round did not
+exhaustively prove every one of those five is unreachable by a tracker; what it
+did establish directly is the outcome - zero off-grid refusals in 23,422
+tracker-steps across both arms.
+
+Contributing factor, identified in source by A3 and consistent with the data but
+NOT isolated by this round: at VICTIM_SEARCHER_HAZARD_RETREAT_RANGE = 99 (the
+shipped default) the boundary terms in the retreat scorer are zeroed, and when no
+hazard is in range all four directions tie and direction 0 - EAST - wins on
+first-wins ordering (uav_executor.py:2286-2288; pinned by
+tests/test_victim_searcher_hazard_retreat.py:87-96). Measured: searcher direction
+choice is east-biased (29.8% east against 25.0% uniform), searchers spend 11.0% of
+steps in the x>=45 rim at dcD against 4.9% at dcoff, and 6 of the 10 pins are on
+the east edge - including 2 under SOUTH wind, so it is not purely the fire being
+blown east. Treat this as a plausible contributing mechanism, not a proven one.
+
+WHERE THE ASYMMETRY DOES NOT HOLD - partial verdict (D)
+On the berth-jam mode (section 3.5) trackers are affected slightly MORE than
+searchers: 20 events / 74 burning steps against 13 / 68. "Trackers are fine" is
+true of the searcher-specific livelock and false of stuck-in-a-burning-depot.
+
+================================================================================
+7. REQUIREMENT 7 - DOES IT COST ANYTHING?
+================================================================================
+
+Sample: dcD-half + d4D-half, 46 runs, 46 distinct tuples, 36 distinct seeds
+(stratified to roles=half so searcher count is constant at 2; the 'def' runs have
+1 searcher and mixing them confounds every per-run total).
+
+  MAGNITUDE       pins occur in 8 of 46 runs (17%). 115 pinned searcher-steps in
+                  total = 0.52% of all searcher time; worst single run 5.42%.
+  MECHANICAL      a pinned step contributes zero new coverage by construction.
+                  This part is certain and needs no statistics.
+  THE DOMINANT CONFOUND. A bigger fire produces both more exposure and worse
+                  outcomes, and here it is very strong: searcher burning fraction
+                  vs eval.burnt_cells rho = +0.552 (p < 0.0001), scorched vs
+                  burnt_cells rho = +0.661 (p < 0.0001), n=57. NOTHING in this
+                  section is interpretable without partialling it out. A second
+                  confound is role composition: 'def' runs have 1 searcher and
+                  'half' runs have 2, and n_searchers vs scorched fraction is
+                  -0.389 (p=0.003). Both are controlled below.
+
+  OUTCOMES - NOTHING SURVIVES THE CONTROL (Spearman raw -> partial on burnt_cells)
+                    burning  vs rescued         -0.270 p=0.041 -> -0.062 p=0.64
+                    scorched vs rescued         -0.440 p=0.0008-> -0.252 p=0.060
+                    burning  vs dead            +0.237 p=0.077 -> -0.025 p=0.85
+                    scorched vs dead            +0.297 p=0.025 -> -0.014 p=0.92
+                    burning  vs never_detected  +0.135 p=0.33  -> +0.216 p=0.11
+                  In the role-stratified half-only pool (n=50) the same picture:
+                  scorched vs rescued -0.396 (p=0.005) collapses to -0.077
+                  (p=0.60). Every apparent outcome cost is the fire being bigger.
+
+  COVERAGE - THIS ONE DOES SURVIVE, on several measures and several pools.
+                  Using a NON-SATURATING measure (mean instantaneous coverage:
+                  covered (cell,step) pairs / 2500x240, a pure geometric replay
+                  of recorded positions):
+                    burning fraction vs mean inst. coverage, all UAVs
+                       grand pool  n=57   -0.449 p=0.0004 -> partial -0.336 p=0.012
+                       half only   n=50   -0.442 p=0.0015 -> partial -0.242 p=0.088
+                       shipped only n=27  -0.413 p=0.033  -> partial -0.400 p=0.038
+                    LONGEST BURNING DWELL vs mean inst. coverage
+                       grand pool  n=57   -0.449 p=0.0008 -> partial -0.343 p=0.010
+                       half only   n=50   -0.441 p=0.0019 -> partial -0.257 p=0.068
+                    burning fraction vs searcher-only mean inst. coverage
+                       grand pool  n=57   -0.284 p=0.034  -> partial -0.251 p=0.062
+                    pinned steps vs searcher footprint (unique cells stood on),
+                    my own independent measure, n=46 half-only, permutation p:
+                                          -0.325 p=0.028  -> partial -0.275 p=0.068
+                                          tertiles -0.305 / -0.319 / -0.416
+                  Consistent in sign across every pool and every measure, and it
+                  survives the fire-size control where the outcome effects do not.
+
+  COVERAGE TIMELINESS - THE STRONGEST SURVIVOR, and the one I under-reported in
+                  an earlier draft by confusing two different variables.
+                  det_max_first_seen is the step at which the LAST victim first
+                  enters a searcher's observation box: a purely geometric replay
+                  of recorded positions, independent of any status bookkeeping.
+                  Partial rho on exposure, controlling fire size:
+                    burning  vs det_max_first_seen  grand n=57  +0.465 p=0.0005
+                                                    half  n=50  +0.442 p=0.0014
+                                                    shipped n=27 +0.438 p=0.023
+                    scorched vs det_max_first_seen  grand       +0.486 p=0.0001
+                                                    half        +0.361 p=0.0098
+                                                    shipped     +0.472 p=0.016
+                    longest burning dwell vs same   grand       +0.274 p=0.043
+                                                    shipped     +0.394 p=0.040
+                  It replicates in ALL THREE pools and STRENGTHENS under the
+                  control rather than weakening. By exposure tertile, the last
+                  victim is first seen at 73.2 / 89.2 / 115.7 steps - a ~42-step
+                  spread on a 240-step horizon.
+                  BUT A COMMON CAUSE FITS IT AS WELL AS A COST DOES: a searcher
+                  pinned near the rim both accumulates exposure and is slow to
+                  reach the far corner. This is an association, not a demonstrated
+                  causal cost, and the round does not claim otherwise.
+
+  WHAT I AM NOT CLAIMING. The STATUS-based detection variables (det_mean_first,
+                  det_max_first, from victim status transitions) do show partial
+                  correlations of +0.27 to +0.36 in the grand pool, but those
+                  disappear under role stratification (half-only +0.209 p=0.14).
+                  Those are a role-composition artefact. They are a different
+                  measurement from det_max_first_seen above and should not be
+                  pooled with it.
+
+  A DEFECT IN eval.never_detected, worth recording for every future round.
+                  It undercuts itself by roughly threefold: 23 of 228 victims
+                  never reached 'assigned' or 'confirmed', spread over 21 of 57
+                  runs, yet eval.never_detected is non-zero in only 6 of them - a
+                  victim that dies while still 'candidate' is booked to eval.dead
+                  and never appears in never_detected. Re-running the correlations
+                  against the corrected count does NOT rescue any result (burning
+                  +0.092 p=0.49; scorched +0.279 p=0.037 falling to partial +0.210
+                  p=0.117), so the outcome null stands on the better metric too.
+
+  MULTIPLE COMPARISONS, stated properly. The full battery is 240 tests, of which
+                  45 reached p < 0.05 against about 12 expected by chance. That
+                  excess is real but it does not license picking winners. The two
+                  results I stand behind are the ones that (i) replicate in all
+                  three pools, (ii) hold on two independently written exposure
+                  measures, and (iii) strengthen rather than weaken under the
+                  fire-size control: mean instantaneous coverage, and
+                  det_max_first_seen. Everything else in the battery should be
+                  read as null.
+
+  POWER ON OUTCOMES. never_detected is 0 in 43 of 46 half-only runs, and
+                  ever-covered fraction saturates (0.99+ for all UAVs, because
+                  one UAV at UAV_OBSERVATION_RADIUS 8 sees a 17x17 block). The
+                  corpus has very little power to detect a small OUTCOME cost, so
+                  the outcome nulls are weak evidence of absence.
+
+HONEST SUMMARY: a certain mechanical loss of search effort; a reduction in
+coverage AND a materially later first sighting of the last victim, both real,
+both replicated in three pools, both surviving - and the second strengthening
+under - the fire-size control; and no detectable effect on rescue or deaths once
+fire size and role composition are accounted for, on outcome variables that are
+in any case too close to their floor to detect a small effect. The coverage
+association is not proven causal: a searcher pinned near the rim both accumulates
+exposure and is slow to reach the far corner, and this corpus cannot separate
+those.
+
+================================================================================
+VERDICT
+================================================================================
+
+PRIMARY: (A) CONFIRMED AND COSTLY - with the MECHANISM NOT AS DESCRIBED, i.e.
+         (A) on substance, (C) on cause.
+
+All three of (A)'s conditions are met. The searcher DOES get stuck; it IS
+attributable, to a single named line of code; and it DOES cost coverage, on a
+measure that survives the fire-size control and replicates across three pools and
+four independently written metrics. What is not as described is WHY - the
+maintainer's observation is accurate and their causal reading of it is inverted.
+A fix is scoped below. It is deliberately none of three already-discredited
+options: not local hazard avoidance for searchers, not a scorched-hazard penalty
+(the two the brief rules out), and not turning the hazard retreat down - which
+this round found is a third harmful option, measured worse at every setting.
+
+  CONFIRMED: the victim searcher does get stuck. 10 distinct pins across 57
+  shipped-default tuples, up to 26 consecutive refused steps (a 27-step
+  occupancy, 11% of the horizon), and in 6 of the 10 the ground genuinely
+  re-ignited underneath the stuck searcher. Anyone watching a replay would
+  describe exactly what the maintainer described: a searcher sitting in fire on
+  ground that keeps re-igniting.
+
+  NOT AS DESCRIBED: scorched ground is not why. The searcher targets scorched
+  cells at 0.97 of their map availability - pure indifference - and stands on
+  them at 0.90, slightly LESS than chance. Scorched exposure did not rise with
+  the base station (9.63% -> 9.50% on identical fires). And the sensor story is
+  weaker than the brief assumes: the searcher is not blind to scorched ground but
+  PARTIALLY SIGHTED, because smoke marks recently burned cells (P(smoke|virgin) =
+  0.00%, P(smoke|scorched within 3 steps) = 28.9%) and smoke IS read as a hazard.
+  What it cannot see is stale scorch, which re-ignites least. Either way the
+  blindness is inert: a fire-immune UAV loses nothing by standing on scorched
+  ground.
+
+  WHAT IS ACTUALLY HAPPENING: a searcher-only livelock at the grid boundary. When
+  a searcher is surrounded by hazard with no safe in-bounds neighbour,
+  `_apply_victim_searcher_hazard_gate` falls through at uav_executor.py:2321 (and
+  :2402) and returns the upstream direction UNVALIDATED under the label
+  `victim_search_hazard_retreat`. At a grid edge that direction points off the
+  map, agents.py move() refuses it on out_of_bounds, the hazard geometry is
+  unchanged next step, and the same illegal move is re-emitted until the local
+  fire burns out. All 10 pins are on a boundary; all 113 off-grid refusals at dcD
+  carry that one label; trackers have exactly zero, in 23,422 tracker-steps
+  across both arms. The gate's primary dispatch call site is role-guarded
+  (uav_executor.py:419 `elif self._role_is_victim_searcher(role) ...`) and its
+  five other call sites sit inside victim-search planning code, so a tracker
+  should not reach it at all - the measured zero is consistent with that, and the
+  zero is the part this round established directly.
+  The re-ignition the maintainer saw is a CONSEQUENCE of being pinned in the fire
+  zone, not the cause of the pin.
+
+SECONDARY, partial (D): trackers are not fine either, on a different mode. The
+berth jam at return-to-base (steps ~204+, UAVs blocking each other in a burning
+depot) hits trackers slightly harder than searchers (20 events / 74 burning steps
+vs 13 / 68).
+
+ON COST - THE (A)/(B) SPLIT, STATED PRECISELY.
+  COSTS COVERAGE - yes, and this is what makes it (A) rather than (B). Two
+  measures, both surviving the fire-size control that kills every outcome effect:
+    - mean instantaneous coverage falls: partial rho -0.336 (p=0.012, n=57),
+      -0.400 (p=0.038, n=27), -0.242 (p=0.088, n=50); longest burning dwell
+      -0.343 (p=0.010); searcher-only coverage -0.251 (p=0.062); and an
+      independently written footprint measure -0.275 (p=0.068).
+    - THE LAST VICTIM IS FIRST SEEN LATER, and this one strengthens under the
+      control instead of weakening: partial +0.465 (p=0.0005, n=57), +0.442
+      (p=0.0014, n=50), +0.438 (p=0.023, n=27). By exposure tertile the last
+      victim enters a searcher's box at 73.2 / 89.2 / 115.7 steps.
+  A pinned step also contributes zero new coverage by construction, so part of
+  this is mechanically certain and needs no statistics at all. What is NOT
+  established is causality: a searcher pinned near the rim both accumulates
+  exposure and is slow to reach the far corner, and this corpus cannot separate
+  the cost from that common cause.
+  COSTS OUTCOMES - no, and (B) is right about this half. Every apparent
+  association with rescued, dead, never_detected or candidate collapses once fire
+  size is partialled out (e.g. scorched vs rescued -0.440 p=0.0008 -> -0.252
+  p=0.060; scorched vs dead +0.297 p=0.025 -> -0.014 p=0.92). The detection-timing
+  effects exist only in the pool that mixes 1-searcher and 2-searcher runs and
+  vanish under role stratification.
+  So: it costs search coverage, it does not measurably cost rescues - and the
+  outcome nulls are weak, because never_detected is 0 in 43 of 46 runs.
+
+A POINTED NOTE ON THE ROUND'S OWN PREMISE - AND THE TRAP IN IT.
+The brief says local hazard avoidance for searchers is "already measured
+ineffective". The situation is sharper and more awkward than that. The always-on
+hazard retreat that actually shipped (VICTIM_SEARCHER_HAZARD_RETREAT_RANGE = 99,
+documented in common_fixed_variables.py:157-163 as an accident made deliberate)
+is the PROXIMATE CAUSE of every long searcher pin in the corpus - all 113
+off-grid refusals at dcD carry its label, and trackers have zero. The feature
+added to keep searchers out of fire is what holds them in it.
+
+AND YET IT IS THE BEST SETTING MEASURED. On the same 23 tuples (canonical 13 +
+fresh 10), searcher steps on burning ground by retreat range:
+
+    range 99  (always on, SHIPPED)   267 / 10,320 = 2.59%
+    range 6   (local avoidance)      320 / 10,320 = 3.10%
+    range 0   (edge-only gate)       356 / 10,320 = 3.45%
+    (8520706 baseline, accidentally always-on: 260 / 10,320 = 2.52%)
+
+Turning the retreat DOWN makes aggregate exposure WORSE, by up to +0.86 points.
+This is consistent with the source's own note ("0 ... measured at +1.1 points of
+searcher steps on a burning cell") and with the range-6 arm recovering only part
+of the benefit.
+
+So the two effects run in opposite directions: the always-on retreat cuts the
+common case (the 97% single-step transits) and creates the rare catastrophic case
+(the boundary pin). THE FIX MUST THEREFORE NOT BE "TURN THE RETREAT DOWN" - that
+is a third already-measured-harmful option, alongside the two the brief names. It
+must keep the retreat's aggregate benefit and remove only its failure mode, which
+is exactly what a legality guard on the fall-through does.
+
+================================================================================
+SCOPE OF A FIX - DESIGN ONLY, NOT IMPLEMENTED, NOT RUN
+================================================================================
+
+The brief requires that any fix be neither of the two already-discredited
+approaches. This one is neither: it is not a hazard-scoring change and not a
+scorched penalty. It adds no preference of any kind. It is a LEGALITY GUARD on an
+existing fall-through.
+
+  THE SITE   uav_executor.py:2321 and uav_executor.py:2402 - the two returns in
+             `_apply_victim_searcher_hazard_gate` that hand back `chosen_dir` /
+             `best_dir` without the bounds test every other path in that function
+             applies. (`_retreat_to_safe_interior_direction` is already correct
+             and needs no change.)
+  THE RULE   before returning a direction the gate did not validate, if that
+             direction leaves the grid, substitute any legal in-bounds direction;
+             prefer one onto non-burning ground when one exists.
+  WHY IT IS SUFFICIENT - measured, not assumed. Across the five shipped-default
+             arms there are 431 pinned searcher-steps as counted (160 after
+             de-duplicating the arms that repeat tuples). On 100% of them there
+             were 2 or 3 legal, in-bounds, unoccupied moves available at that
+             very step (2 legal on 80 steps, 3 legal on 351); on 65.7% at least
+             one of those led onto NON-burning ground. The livelock is entirely
+             gratuitous - the UAV always had somewhere legal to go, and usually
+             somewhere legal and safe.
+  WHY IT IS LOW RISK  it is a no-op on every step whose direction is already
+             legal, i.e. on 98.9% of searcher-steps at dcD. It cannot fire for a
+             fire tracker at all.
+  THE GATE IT MUST PASS  off-grid refused moves 113 -> 0 and pins 10 -> 0 on the
+             57 shipped-default tuples; rescued/dead/never_detected not worse on
+             the canonical 13 AND on the d4D 30 (the canonical 13 is a screen,
+             not evidence - three prior rounds had a canonical gain evaporate);
+             route_blocked unchanged on drhD 18; simulation value-identity on any
+             run containing no off-grid searcher intent.
+  WHAT IT WILL NOT FIX  the berth jam (section 3.5) and the return-leg exposure
+             (56 steps, 34% of the base-station rise) are untouched by it, and
+             the depot component (47 steps) belongs to the concurrent fireproof
+             round. Those are three separate problems and should stay separate.
+
+================================================================================
+VERIFICATION STATUS OF THIS REPORT
+================================================================================
+Every headline figure was produced twice, by implementations written
+independently of each other and of the claimant's code, then put to an
+adversarial pass whose instruction was to REFUTE it.
+
+  claims submitted to adversarial verification : 14
+  verifiers that completed                     : 12
+  REFUTED                                      : 0
+  CONFIRMED                                    : 4
+  CONFIRMED WITH CORRECTION                    : 8
+  not verified (ran out of session quota)      : 2  - C10 and C13 of the depot
+      block, i.e. the dcd4 "14 of 23 stays" re-count and the claim that the
+      return leg is the larger single mechanism. Both are reported above; both
+      are UNVERIFIED and should be treated as the weakest numbers in the report.
+  completeness critic                          : DID NOT RUN (same quota).
+      So no independent pass asked "what is missing". The LIMITS section below
+      is my own, and is therefore less trustworthy than it would otherwise be.
+
+In all 12 completed verifications the ARITHMETIC reproduced exactly - the
+corrections were to surrounding assertions, not to numbers. Five of those
+corrections changed this report and are incorporated above:
+  1. V1 is NOT an independent ground-truth check (section 0.2). The harness
+     builds burn_intervals and the uav_actions burning bit from the SAME per-step
+     set, so V1 validates the encode/decode and the index offset only.
+  2. Smoke is a real second channel marking recently scorched ground (section 5).
+     The earlier claim that scorched is indistinguishable from virgin was wrong.
+  3. The tracker's scorched and burnt "avoidance" does not survive seed
+     clustering; only its burning ratio does (section 1).
+  4. Pooling hides a sign inversion: the searcher's PARKED burning ratio is 1.235,
+     above chance, against a pooled 0.68 (section 1).
+  5. The coverage-timeliness result (det_max_first_seen) is stronger and
+     replicates in all three pools; an earlier draft conflated it with the
+     status-based detection variables and wrongly dismissed both (section 7).
+
+================================================================================
+LIMITS OF THIS ROUND - what is NOT established
+================================================================================
+ 1. WHICH of the two fall-through returns (:2321 or :2402) fires on a given
+    pinned step is DERIVED from the code plus the recorded neighbour states, not
+    hooked. For the observed pins every in-bounds neighbour is burning or
+    edge-blocked, which forces the retreat to None on both paths, so the
+    conclusion does not depend on which - but a fix round should hook the two
+    return sites directly rather than inherit this derivation. One instrumented
+    run on seed 404 south would settle it.
+ 2. The east tie-break (section 6) is a plausible contributing mechanism
+    identified in source and consistent with three measurements; it has not been
+    isolated, and this round does not claim it as a cause.
+ 3. The cost analysis is underpowered (section 7) and cannot rule out a real
+    outcome cost.
+ 4. Cross-commit comparison against 8520706 is confounded by everything shipped
+    between (base station, dock fix, latch 808, dimension fix, base-mark). All
+    causal claims in section 2 use the same-commit dcoff/dcD pair instead, where
+    the fires are bit-identical.
+ 5. Only east and south winds exist in the corpus. West and north are unmeasured,
+    and the east tie-break makes a west-wind check genuinely informative.
+ 6. Arms with firefighting ON (fm*, f3GATE, f2c*) are excluded from every
+    category figure, because firefighter fuel writes break the burnt/scorched
+    derivation of section 0.1.
+ 7. PROVENANCE OF THE COVERAGE RESULT, which is what makes the verdict (A)
+    rather than (B). The mean-instantaneous-coverage correlations in section 7
+    come from a second implementation, not from _sf_analyze.py; what I
+    re-implemented independently is the searcher-footprint measure (partial
+    -0.275, p=0.068), which agrees in sign and magnitude. The two are not fully
+    independent - both replay the same recorded positions - so treat them as one
+    finding confirmed twice, not two findings. It is also one significant result
+    among ~150 correlation tests; it replicates across three pools and four
+    metrics, which is why I stand behind it, but a fix round should re-measure
+    coverage as a pre-registered gate item rather than inherit this number.
+================================================================================
