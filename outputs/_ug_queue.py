@@ -42,11 +42,16 @@ RB_SHARDS = [("a", "east", "101,202,303,404,505"), ("b", "east", "606,707,808,90
 
 
 def u30():
+    """The pre-registered U30 from the FROZEN record (outputs/_ug_seeds.txt), cross-checked
+    against a fresh run of the selector, as _ug_analyze._u30() does. Added after the horizon
+    follow-up's verification pass: this function still called the live selector, which is the
+    self-reference defect class fixed in f737a3a (a mismatch now stops instead of writing a
+    queue for a different set)."""
+    frozen = _ug_seeds.frozen_u30()
     tuples, _rej, _src, _n = _ug_seeds.choose()
-    out = []
-    for combo, seed, _cell, _idx in tuples:
-        wind, roles = combo.split("|")
-        out.append((wind, roles, seed))
+    if [(combo, seed) for combo, seed, _cell, _idx in tuples] != frozen:
+        raise SystemExit("U30 MISMATCH: the selector no longer reproduces outputs/_ug_seeds.txt")
+    out = [(combo.split("|")[0], combo.split("|")[1], seed) for combo, seed in frozen]
     assert len(out) == 30
     return out
 
