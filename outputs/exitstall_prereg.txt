@@ -1,0 +1,77 @@
+================================================================================
+EXIT-LEG STALL - PART 1 (DIAGNOSIS ONLY): PRE-REGISTRATION OF THE PROBE WAVE
+Written before the wave runs. Branch ungated-firefighting at ac6e78d. No source edits.
+================================================================================
+
+WHAT WAS ALREADY RUN BEFORE THIS FILE (stated so nothing below is read as blind)
+  - outputs/_xs_census.py -> _xs_census.txt: exit-leg stalls counted over every
+    recorded harness run in outputs/. It is the first result of this round and it
+    changes the premise:
+      fire mechanic OFF in the run   32 of 909 distinct legs stalled
+      fire mechanic ON               29 of 689
+      matched on the same tuples, OFF vs ON:
+        U30 360-step stock   0/104 vs 5/102
+        U30 CRN              4/96  vs 3/96
+        round-1 screen       2/68  vs 1/66
+        round-2 screen       4/72  vs 2/69
+    The CRN control ugKC (11c3661 code, fire mechanic off) stalls on the same
+    victims as the ungated arms.
+  - One 120-step smoke run of the probe (uhD east/half/2070841104): value-identical to
+    the recorded run's first 120 steps on every per-step series and event list.
+
+THE HYPOTHESIS UNDER TEST (the maintainer's): state from the firefighting mode
+survives into the rescue and drives the carrying leg.
+
+THE WAVE: outputs/_xs_queue.txt (25 runs, pool HARNESS=outputs/_xs_probe.py)
+  Traces of every stalled leg:
+    xsTD  5 shipped legs
+    xsTY  2 positioning-only legs
+    xsTK  4 control legs (11c3661, CRN)
+  Counterfactuals on the 7 ungated legs:
+    xsRED/xsREY  XS_RESET=exit
+    xsRAD/xsRAY  XS_RESET=assign
+
+CHECKS BEFORE ANY READING
+  T0  Every trace run is value-identical to its recorded run over the steps it ran:
+      all per-step series, every event list cut at that step, and the harness eval.
+      A trace that is not identical is not read.
+
+TESTS AND HOW EACH IS READ
+  H1  STATE LEAK ONTO THE CARRYING LEG. From every carrying advance in all 11 traced
+      runs, not only the stalled legs:
+        (a) Is any firefighting- or idle-mode field READ?
+              _firefight_suspended, _idle_retreat_origin, _idle_retreat_steps,
+              _idle_retreat_stalled, _idle_retreat_last_cell
+        (b) Is ff_firefight_engaged_retreat_range CALLED?
+        (c) Does any movement on a carrying advance come from anything other than
+            _move_toward(exit_target)?
+        (d) Are the xsRED/xsREY carrying legs identical, position for position, to the
+            recorded legs?
+      H1 is REFUTED for the carrying leg if (a) finds no read, (b) finds no call, (c)
+      finds only _move_toward, and (d) finds all 7 legs identical. It is SUPPORTED if
+      any of the four fails, and the failing item names the field.
+  H2  THE MECHANISM. Each step of each of the 11 stalled legs is classed by
+      _move_toward's own tier:
+        tier 1  a strictly improving step with no fire-adjacency and no smoke
+        tier 2  maintaining
+        tier 3  any safe cell - can move AWAY from the exit
+        tier 4  least risk
+      also recorded: the fire and smoke around the unit and at its fixed exit cell.
+      Read: which tiers carry the stall steps, and what blocks the improving cells.
+  H3  WHY POSITIONING-ONLY STALLS. The same trace on xsTY. Its fire is identical to
+      the control's, so any difference is in where and when the leg starts.
+  H4  APPROACH LEG (the same defect class, a different leg). Do the xsRAD/xsRAY runs
+      differ from the recorded ones before the carrying leg starts? Reported. Not
+      part of the exit-stall verdict.
+
+VERDICT RULE
+  (A) DEFECT WITH A SCOPED FIX: the stall is caused by a defect in code or state that
+      a scoped change removes, whether or not it is the hypothesised one. The report
+      then says which, and whether it is specific to the ungated configuration.
+  (B) REAL BUT INERT: the stall is real, but costs no outcome (no rescue lost, delayed
+      past a horizon, or death) on any recorded run.
+  (C) NOT AS DESCRIBED: the hypothesised cause (firefighting state leaking into the
+      rescue) or the premise (zero with firefighting off) does not hold. (C) can be
+      combined with (A) or (B) for the stall itself; the report states both parts.
+  Nothing is implemented in this part. A fix, if any, is scoped and the round STOPS
+  for confirmation.
