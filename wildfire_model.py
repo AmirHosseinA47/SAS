@@ -719,7 +719,9 @@ class WildFireModel(mesa.Model):
         canonical winds; the lane is the only stable home region a UAV owns.
         TRACKERS AND FIREFIGHTERS STAY AT DEPOT 0: a tracker sector is recomputed
         every step from the fire bounding box so there is no stable region to
-        match, and firefighters are fire-vulnerable and the second depot burns.
+        match, and firefighters have no return leg and no region of their own.
+        (This used to add "and the second depot burns"; since BASE_STATION_FIREPROOF
+        no depot can burn, so that is no longer a reason, and nothing here changes.)
 
         Deterministic and RNG-free: every input is a config constant, an agent
         index or the grid extent.

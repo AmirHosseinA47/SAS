@@ -1,0 +1,948 @@
+================================================================================
+UNGATED FIREFIGHTING - PART 1: THE FLIP CHECKLIST AND THE DESIGN (NO SOURCE EDITS)
+Firefighters fight fire WHILE the drones search: FF_FIREFIGHT_MISSION_GATE 1 -> 0,
+with extinguish, firebreak and engaged-retreat suppression on.
+================================================================================
+
+BRANCH   ungated-firefighting, cut from main 11c3661 (tag searcher-livelock-fixed).
+         Verified before anything ran: branch main, HEAD 11c3661, tag
+         searcher-livelock-fixed points at HEAD, 0 dirty tracked files, no python or
+         bash process running.
+ENV      sys.version       3.10.11 (tags/v3.10.11:7d4cc5a, Apr  5 2023, 00:38:17)
+                           [MSC v.1929 64 bit (AMD64)]
+         mesa.__version__  1.2.1   (E:\Projects\SAS\.venv - printed in-process and in
+                                    the header of every suite log below)
+SOURCE   NO SOURCE FILE WAS EDITED. Part 1 added untracked files under outputs/ only
+         (section 8).
+SCOPE    The ungated policy is the maintainer's decision and this document does not
+         revisit it. It designs the flip, checks the brief's premises against the code
+         and the record, and pre-registers the validation.
+
+--------------------------------------------------------------------------------
+0. SUMMARY
+--------------------------------------------------------------------------------
+THE FLIP IS SMALL:
+  - 4 constants
+  - 4 accessors: 10 literal sites plus 3 truncation holes, rewritten on one exact-integer
+    helper
+  - 16 comment or text sites
+  - 3 deliberate test pins
+  - 8 one-token runner pins
+MEASURED (section 2.4): flipping the four constants in a full-suite run fails exactly
+the two deliberate pins and nothing else. 8 -> 10 failed, and the 8 known failures fail
+for the same reason. The flip is test-cheap for a worrying reason: no behavioural test
+outside the mechanic's own file notices firefighters fighting fire from step 1.
+
+EIGHT OF THE BRIEF'S PREMISES NEED CORRECTING (section 1). Three change the design:
+  P1 THE BASE STATION IS NOT A CHANGE SINCE THE COST WAS MEASURED.
+     - Both fire-mechanic rounds descend from the flip commit 68c75a9 and ran at dcD.
+     - Firefighters already spawned in the depot then.
+     - Two things did change after the measurement:
+         - non-burnable depots (6668368)
+         - the searcher guard (629a321)
+       Both change the world, so the cost must still be re-measured.
+  P3 "-6/72 UNDER CRN" IS THE DRY ARM (positioning alone, no writes).
+     - The configuration this round ships was measured in the same instrument at -3/72.
+     - So which CRN threshold gates the shipped arm is a maintainer decision (Q2).
+  P8 THE ROUND-1 ANALYZER WOULD PUT THE FEATURE ARM 50 CELLS PER RUN BELOW THE CONTROL.
+     - Cause: depot cells are counted as "cleared".
+     - The bias is the same order as the effect being measured.
+     - Intact vegetation is redefined in 6.4.
+
+ACCESSOR PATTERN (section 4):
+  - Only an EXACT integral zero disables.
+  - A MISSING attribute takes the SHIPPED value.
+  - Anything that is not an exact integer ARMS.
+  - Implemented on one helper that never raises and closes all three holes the common
+    pattern still has: non-integral truncation, Decimal/Fraction truncation, inf.
+  - Measured on 27 edge values before and after: outputs/_ug_accessor_matrix.txt.
+
+PRE-REGISTERED FOR PART 3 (section 6):
+  - A fresh set of 30 seeds, chosen by code before any run, used by no prior round
+    (outputs/_ug_seeds.txt).
+  - 10 arms, 280 harness runs + 8 route_blocked shards.
+  - Gate formulas fixed now, before any number exists.
+
+DECISIONS NEEDED BEFORE PART 2 (section 7): Q1-Q7. Each has a recommendation.
+
+--------------------------------------------------------------------------------
+1. THE BRIEF'S PREMISES, RE-VERIFIED
+--------------------------------------------------------------------------------
+CONFIRMED (evidence in brackets):
+  - The mechanic ships OFF at 11c3661 (common_fixed_variables.py:254-258):
+      EXTINGUISH 0, FIREBREAK 0, ENGAGED_RETREAT_RANGE 3, DRY_RUN 0, MISSION_GATE 1.
+    Extinguish acts at reach 2. Firebreak works a euclidean band (2,5] and acts within
+    reach 1 (agents.py:1525-1528). A rescue assignment preempts on the next advance:
+    _firefight_prepare returns None once target_pos is set (agents.py:2429).
+  - f3RES (gate 0) == fmES, value-identical 13/13 (firemech2_report.txt:58-59).
+  - The ungated cost is POSITIONING, not the fire writes:
+      firemech_report.txt:115-148
+      firemech2_report.txt:165-169
+  - Leash and distance-aware chooser were tested and refused. At first dispatch the two
+    units stand 1 cell apart on 21 of 23 runs (firemech2_report.txt:141-159).
+  - Both round-1 anomalies reduce to displacement of the fire's single random stream
+    (firemech2_report.txt:174-196).
+  - Round 2 recommended firebreak OFF for the GATED configuration only
+    (firemech2_report.txt:214-222).
+  - Non-burnable depots cost nothing and gained rescues:
+      stock: canonical +1, fresh +4 (depotfireproof_report.txt:37)
+      CRN:   +3 over 33 pinned pairs, 100 -> 103 (:661-667)
+    Its section 14.2 records the firebreak interaction as UNMEASURED (:796-798).
+  - The four known route_blocked regressions at the shipped default are east/707,
+    south/101, south/202 and south/404 (searcherfix G8, at 629a321).
+  - "the 41 are 27 distinct runs" (rbgate-sample-overlap).
+  - "8 of the fresh 10 had run in earlier rounds" (firemech_report.txt:317-320). By now
+    all 23 canonical+fresh tuples have been run in at least six rounds.
+  - The base-station flip's figures are as quoted: 53 shell runners, 560 queue lines and
+    81 probe scripts, 49 still silent after its commit (flip_runner_register.txt:17-26).
+
+P1 THE BASE STATION IS NOT A CHANGE SINCE THE COST WAS MEASURED.
+   - 68c75a9 (the base-station flip) is an ancestor of 003ed91 (round-1 code) and of
+     d3640e3 (round 2). Checked with git merge-base --is-ancestor.
+   - At 003ed91 the flip's defaults were already live (git show
+     003ed91:common_fixed_variables.py):
+       BASE_STATION_MODE 3, DEPOTS 9, SPAWN_SPLIT 2, SPAWN_FIREFIGHTERS 1
+   - Round 1's own header: its BASE is e8b911b, which is 6adeb4f source. Its fmREF equals
+     dfD, the flip round's shipped-default arm, on 23/23 runs (firemech_report.txt:16,
+     :173-175).
+   - The recorded runs carry the depots. Each of these three has
+       base_station.depots          [[0,45],[45,0]]
+       firefighter_berths           [[2,45],[2,46]]
+     _ffr_fmOFF_east_half_101.json, _ffr_fmEFS_south_half_404.json,
+     _ffr_f3GATE_east_half_101.json.
+   - Since d3640e3, exactly two commits changed simulation code:
+       6668368  non-burnable depots. A fire-spread change: 50 of 2,500 cells can no
+                longer ignite.
+       629a321  the searcher off-grid guard. UAV movement only.
+     The other commits since d3640e3 are:
+       - 5d4006f and e0f4d51 (base-mark): rendering only, proven value-identical
+       - 6281542 and 737b6c7: documents and reports
+       - 11c3661: outputs only. `git diff --stat 629a321 11c3661 -- . ':(exclude)outputs'`
+         is empty.
+   => The re-measurement is still required, but because of fireproofing and the searcher
+      fix, not the base station.
+P2 THERE IS ONE FIREFIGHTER SPAWN DEPOT, NOT TWO.
+   - wildfire_model._assign_depot_homes keeps every firefighter at depot 0
+     (wildfire_model.py:720-722, :776-779).
+   - Depot 0 is the block with origin (0,45) (_base_station_origins, corner 0 =
+     (0, WIDTH-SIZE)). The two berths are (2,45) and (2,46), ADJACENT. The second depot,
+     origin (45,0), never hosts a firefighter.
+   - Round 2's "1 cell apart at first dispatch" was measured on exactly this spawn.
+   - What IS new for the spawn: since 6668368 the spawn depot cannot burn (section 3.2).
+P3 THE CRN FIGURE IS THE DRY ARM.
+   - -6/72 is f2cDRY 66 vs f2cOFF 72: positioning alone, every write suppressed
+     (firemech2_part1.txt:89-90, :332-333).
+   - The configuration this round ships (ungated E+F+S) was measured in the same
+     instrument as f2cEFS: 69 vs 72 = -3/72 (firemech2_part1.txt:446;
+     firemech2_report.txt:343-346).
+   - Under CRN the writes recovered 3 of the 6 positioning losses.
+   - So the like-for-like CRN reference is:
+       -3/72  for the shipped arm
+       -6/72  for a DRY arm
+   - Gating the shipped arm on -6/72 is the lenient reading of the brief. See Q2.
+P4 "CURRENT MAIN E1 2.50% / E2 1.61%" IS NOT CURRENT MAIN.
+   - It is dfpON at 6668368, on rb18, before the searcher guard.
+   - searcherfix measured only canonical+fresh:
+       E1 3.411 -> 3.101
+       E2 2.174 -> 2.034
+     Its own report says rb18 is a different sample (searcherfix_report.txt:166-168).
+   - rb18 at 11c3661 has NOT been measured. The control arm measures it, and that is the
+     reference.
+P5 "SUPPRESSION ON" MEANS FF_FIREFIGHT_ENGAGED_RETREAT_RANGE 3 -> 1. This is round 1's S:
+   fmEFS set K=1.
+   - K=2 would NOT do. Extinguish requires the range to be below its reach of 2
+     (agents.py:2442). At K=2 the "full configuration" is silently firebreak-only.
+P6 THE FOUR-TIMES DEFECT LIST: THE FOUR ARE NOT ONE SHAPE.
+   - The mission gate (round 2) and BASE_STATION_FIREPROOF are TRUNCATION, closed by a
+     float test.
+   - _hazard_retreat_range is a bare int(), and still carries it.
+   - The searcher guard is `level <= 0` (uav_executor.py:2161): it DISARMS ON -1. That is
+     a comparison defect, not a truncation (sfx2_part1.txt s.6.1).
+   - bool False reads as an exact zero in EVERY one of them, including the canonical
+     base_station_fireproof. The mission gate's own test pins False -> off
+     (tests/test_firefighter_fire_mechanic.py:204-206).
+   - Two holes remain even in the canonical pattern, and both are measured here:
+       - Decimal/Fraction still truncate
+       - inf raises OverflowError
+   See section 4 and Q3.
+P7 THE RECORDED FIRE-MECHANIC ARMS ALREADY CHANGED MEANING AT d3640e3.
+   - Round 2 shipped the gate at 1. From then on, every recorded arm that set no
+     MISSION_GATE runs GATED when re-run at HEAD:
+       fm*, fmg*, f2*, _firemech_cycle_search.py
+   - The probe harness applies the in-tree gate ON TOP of FM2P_GATE
+     (_fm2_probe_harness.py wraps the original _firefight_prepare, which contains the
+     gate at agents.py:2438).
+   - This round's flip RESTORES the arms that set E, F and K. It moves every other arm to
+     the full ungated configuration (section 2.5).
+P8 THE INTACT-VEGETATION INSTRUMENT IS BIASED AT THE CURRENT TREE. The fireproof report's
+   14.1 hazard is now LIVE.
+   - _firemech_analyze.py:167-168 computes
+       intact = 2500 - ever - fire_cleared_unburned_final
+   - The harness emits fire_cleared_unburned_final ONLY in runs that created a firefight
+     log (outputs/_ffr_harness.py:798-815). At 11c3661 that count includes the 50
+     fuel-less depot cells.
+   - Reused unchanged, the analyzer puts every feature run 50 cells below its control:
+       -1,500 over the 30 fresh runs
+     That is the same order as the effect being measured (round 1: +1,979 over 23).
+   - Section 6.4 defines intact from the run's OWN depot set, with a per-run
+     cross-check.
+
+--------------------------------------------------------------------------------
+2. THE FLIP CHECKLIST (re-derived from the code at 11c3661)
+--------------------------------------------------------------------------------
+2.1 CONSTANTS - common_fixed_variables.py
+  A1  :254  FF_FIREFIGHT_EXTINGUISH              0 -> 1
+  A2  :255  FF_FIREFIGHT_FIREBREAK               0 -> 1
+  A3  :256  FF_FIREFIGHT_ENGAGED_RETREAT_RANGE   3 -> 1   (P5)
+  A4  :258  FF_FIREFIGHT_MISSION_GATE            1 -> 0
+  --  :257  FF_FIREFIGHT_DRY_RUN                 0, UNCHANGED (diagnostic arm, never shipped)
+  Unchanged and NOT switches:
+    - agents.py FIREFIGHT_EXTINGUISH_REACH 2
+    - FIREBREAK_REACH 1
+    - BAND_INNER_SQ 4 / OUTER_SQ 25
+    - IDLE_RETREAT_SAFETY_BUFFER 3
+  No other file declares or overrides these five names. A grep of the whole tree
+  (--exclude-dir=_firemech_rewound_20260914) finds them only in:
+    - common_fixed_variables.py
+    - agents.py
+    - tests/test_firefighter_fire_mechanic.py
+    - outputs/ tooling
+  None of these sets any of them:
+    - evaluate_scenarios presets
+    - serve_dashboard presets
+    - main.py
+
+2.2 ACCESSOR FALLBACKS - agents.py. Every one encodes the OLD default. Measured on 27
+    edge values: outputs/_ug_accessor_matrix.txt.
+  B1  :1120  ff_firefight_extinguish   getattr default 0          -> shipped 1
+  B2  :1122                            except -> False            -> shipped True
+  B3  :1120                            int(0.5)==0 truncates: 0.5, -0.5, Decimal('0.5'),
+                                       Fraction(1,2) all read OFF today; inf RAISES
+                                       OverflowError                -> shipped True
+  B4  :1128  ff_firefight_firebreak    getattr default 0          -> shipped 1
+  B5  :1130                            except -> False            -> shipped True
+  B6  :1128                            same truncation as B3      -> shipped True
+  B7  :1140  ff_firefight_engaged_retreat_range  getattr default IDLE_RETREAT_SAFETY_BUFFER
+                                       (3)                        -> shipped 1
+  B8  :1141-1145  except -> 3; a negative -> 3; 0.5 -> 3 (int 0 = no suppression, which
+                  ALSO silently kills extinguish, P5); 2.5 -> 2 (truncated)
+                                       -> negative / non-integral / junk take shipped 1;
+                                          exact 0 stays "no suppression" (the kill switch);
+                                          an explicit integer >= 3 stays the buffer
+  B9  :1169  ff_firefight_mission_gate getattr default 1          -> shipped 0 (a MISSING
+                                       attribute must agree with the shipped default)
+  B10 :1170-1176  junk / non-integral float -> ON: KEEP. A typo may only close the gate.
+                  Decimal('0.5') / Fraction(1,2) read OFF today (truncation hole)
+                                                                   -> ON
+  NOT CHANGED, AND WHY:
+    ff_firefight_dry_run :1151/:1153
+      - Its default does not change.
+      - Its truncation (0.5 -> not dry) is RECORDED and FORWARDED to the accessor round.
+        Maintainer ruling: that class is its own round, never a fold-in. It sits with
+        the other 16 accessors named in bare-int-cast-defect-class.
+    agents.py:1675 `firefight["T"] if firefight is not None else IDLE_RETREAT_SAFETY_BUFFER`
+    and the default parameter of _needs_immediate_survival_retreat (:1909)
+      - These are the retreat distance of a unit with NO plan. That is correct at any
+        configuration, so these are not fallbacks.
+
+2.3 COMMENTS, DOCSTRINGS AND TEXT THAT BECOME FALSE AT THE FLIP
+  C1  common_fixed_variables.py:231-235  ENGAGED_RETREAT_RANGE: "3 - and 0, negatives or
+      anything unparseable - means no suppression" (negatives and junk now arm)
+  C2  :239-244  MISSION_GATE: add "shipped 0 since the ungated round"; keep the
+      definition of both values
+  C3  :245-252  "THE ACTION SWITCHES ARE ALL OFF BY DEFAULT ... FF_FIREFIGHT_MISSION_GATE
+      IS THE ONE DELIBERATE EXCEPTION ... falls back to 1"
+  C4  :218-230  header block: add the shipped policy, the measured cost it carries
+      (both channels, both references), and the measurement scope (2 firefighters,
+      east/south winds, 240 steps)
+  C5  agents.py:1109-1115  "every ACTION fallback here is the OFF value ... dark by
+      default ... ONE DELIBERATE EXCEPTION"
+  C6  agents.py:1117-1131  the two switch docstrings: state the exact-zero rule
+  C7  agents.py:1133-1138  range docstring (the 0 / 1-2 / >=3 / junk mapping)
+  C8  agents.py:1156-1168  gate docstring: "The fallback is ON, unlike every action
+      switch above ... a missing attribute - falls back to ON"
+  C9  wildfire_model.py:722  "firefighters are fire-vulnerable and the second depot
+      burns". FALSE since 6668368: no depot burns. Pre-existing, not caused by the flip;
+      correct the clause (firefighters simply have no return leg or region).
+  C10 serve_dashboard.py:1004 (column tooltip "3 idle, 1 with a target"), :1011-1018
+      (comment) and :1025 ffRange = assigned ? 1 : 3.
+      - The column claims to show "the retreat range the model applies to THIS unit on
+        THIS step".
+      - For an ENGAGED idle unit under suppression the model applies T=1 (agents.py:1673-1676).
+        The column shows 3.
+      - From the flip on, the default dashboard shows a unit standing 2 cells from the
+        fire as "d 2 / r 3".
+      - This is DISPLAY CODE, not a comment. See Q4.
+  C11 tests/test_firefighter_fire_mechanic.py:9-16 module docstring; :69-74 _model()
+      docstring ("NOT the shipped default (1)"); :625-626 section comment ("leave the
+      SHIPPED default in place (= 1)"); :642 docstring ("The shipped default, ...")
+  C12 README.md:145-149. The Firefighters section never says firefighters fight fire.
+      Shipping the behaviour ON with no user-facing line is a documentation gap. See Q5.
+  C13 outputs/_ffr_harness.py:810  "only a firebreak produces it" is false since
+      6668368. Fix the comment only; no value or schema change (P8, section 6.4).
+  C14 outputs/_firemech_analyze.py:12-15 and :167-168 carry the P8 definition.
+      - This is round 1's frozen analyzer: do NOT edit it.
+      - This round's analyzer carries the corrected definition. Registered.
+  C15 outputs/_bm_capture2.py:42  truth() hardcodes the idle range 3. Same class as
+      C10. Registered.
+  C16 outputs/_flip_behaviour_diff.py:21  hardcodes the cfv expectations, so a default
+      re-run prints BAD after the flip. That is loud, and correct. Registered.
+
+2.4 TESTS - MEASURED, not predicted
+  METHOD
+    - outputs/_ug_simplugin.py is the flip round's _flip_simplugin.py with the four
+      constants swapped.
+    - It sets them on the cfv MODULE at pytest plugin import, before collection. Every
+      FF accessor reads cfv.<NAME> at call time.
+    - Valid because tests/ still has no conftest.py and no reload / subprocess /
+      os.system / Popen (re-checked at 11c3661).
+    - Accessor FALLBACKS are not simulated (they are source edits). Only the
+      deliberate-pin tests reach them.
+    - Runner: outputs/_ug_pytest.sh. Three variants run concurrently, serial inside
+      each: base (no plugin), p0 (plugin loaded, no patch) and sim (plugin, patched).
+  RESULTS (compared by NAME SET: outputs/_flip_pytest_names.py; log and junit agree
+  in every variant)
+    variant  plugin          failed  passed  testcases  wall
+    base     none              8      738      746      58:57
+    p0       loaded, UG_SIM=0  8      738      746      57:58   IDENTICAL name set to base
+    sim      loaded, UG_SIM=1 10      736      746      55:30   base's 8 + exactly 2
+    - base is 11c3661 as it stands: the same 8 names every round since the dcD flip
+      has carried, and 738 = searcherfix's recorded 738.
+    - p0 == base proves the plugin's early import changes nothing by itself.
+    - sim ADDS EXACTLY THE TWO DELIBERATE PINS, and nothing else:
+        D1 test_every_switch_ships_off_and_every_fallback_is_off
+           assert 1 == 0, where 1 = cfv.FF_FIREFIGHT_EXTINGUISH
+        D2 test_mission_gate_ships_on_and_falls_back_on
+           assert 0 == 1, where 0 = cfv.FF_FIREFIGHT_MISSION_GATE
+      Both are UPDATED in Part 2. Their failure is the flip itself, not a problem.
+    - D3 (test_retreat_range_only_one_and_two_suppress) PASSES under sim. The plugin
+      cannot simulate an accessor fallback, and D3 sets its values explicitly.
+      - It WILL fail on (-1,3), ("x",3) and (None,3) once B8 lands.
+      - Those are deliberate pins too, updated together with the accessor.
+    THE 8 KNOWN FAILURES FAIL FOR THE SAME REASON UNDER THE FLIP (junit messages
+    compared, memory addresses normalised):
+      - 6 have identical tracebacks.
+      - test_fire_tracker_uavs_receive_different_target_sets differs only in an object
+        address.
+      - The two MODE=0-pinned wind-trajectory divergence tests fail on the SAME
+        assertion ("assert (24.0, 45.0) != (24.0, 45.0)"), but the trace they fail on is
+        DIFFERENT:
+          - the searcher's last recorded action label changes from ..._escape_bfs to
+            ..._retarget_to_interior
+          - firefighting now reaches their 40-step centre-spawn runs and changes the fire
+            they fly over
+        The defect they exist to keep visible (flip_part1.txt 3.4) is still visible.
+        NO PIN PROPOSED: firefighting is part of the shipped world, and the failing
+        assertion did not move. The flip round pinned MODE=0 only because the default
+        moved the failure to an EARLIER assertion. Recorded, not changed.
+    COVERAGE FINDING - IMPORTANT FOR READING PART 3:
+      - No behavioural test outside the mechanic's own file reacts to the flip. 736
+        tests pass with firefighters fighting fire from step 1.
+      - That includes every file that steps a real model with firefighters in it:
+          test_victim_fire_flight, test_executor_routing_and_burnt,
+          test_firefighter_fire_avoidance, test_phantom_rescue_release,
+          test_dashboard_state, test_firefighter_rescue_absence, test_depot_fireproof
+      - So the suite cannot see a regression in the ungated behaviour except through
+        tests/test_firefighter_fire_mechanic.py.
+      - T-E4 (Part 2) is the one behavioural pin of the new default. The Part 3 wave is
+        the evidence.
+    PRE-DECLARED FOR PART 3 G6
+      - Failing name set == these same 8 names.
+      - passed = 738 - 0 + N_new. D1/D2/D3 are rewritten in place, so they are not
+        removed.
+      - N_new is stated in the Part 2 commit: the T-E1 matrix cases, T-E3, T-E4, and the
+        5 added D3 cases.
+
+2.5 RUNNERS, QUEUES AND PROBES THAT CHANGE MEANING SILENTLY
+  REACHABILITY RULE, read from agents.Firefighter._firefight_prepare (:2425-2446):
+    - EXTINGUISH and FIREBREAK are read first. If both are 0 the function returns None
+      and nothing else is read.
+    - Otherwise the gate (:2438), then the range (:2441), then DRY_RUN (:2446).
+    - DRY_RUN's default does not change.
+  => FF-SAFE iff E and F are both set explicitly, AND (E = F = 0, OR K and G are set too).
+     The minimal pin is --set FF_FIREFIGHT_EXTINGUISH=0 --set FF_FIREFIGHT_FIREBREAK=0.
+  SCAN: outputs/_ug_register_scan.py -> outputs/_ug_register_scan.txt
+    - The universe is `git ls-files` plus --others --exclude-standard. No directory is
+      walked.
+    - Quarantine paths seen by the listing: 0.
+    - Files that existed at b853617 carry the flip audit's class
+      (_flip_audit_coverage.json). No FF switch existed before 003ed91, so NONE of them
+      can set one.
+
+  QUEUE FILES: 35
+    - 33 parsed.
+    - Plus _l808_queue.txt and _l808_queue2.txt: a 3-field seed|mode|wind format run by
+      their own pools, classified by hand from the flip audit.
+    Lines (runs):
+      FF-SAFE           0
+      SILENT            1,053 (1,137 runs) + 34 (_l808_queue2 via _l808_pool2.sh)
+      PARTIAL             585 (627 runs)
+      FAILS-LOUDLY        302 (330 runs) + 28 (_l808_queue, CRLF death under its pool).
+                          The checkout is gone: E:/Projects/SAS_wt/ is EMPTY, so every
+                          dfp, sfREF, ih/dim/bs base line dies at import.
+      OTHER-CHECKOUT       23 (fmREF on the base6adeb4f worktree, pre-feature: unaffected)
+    => 1,672 of 2,025 lines change meaning silently. The base-station flip had 560 of
+       1,092.
+  THE PARTIAL ARMS, by the effective configuration at three points: recorded / HEAD /
+  after the flip.
+    RESTORED BY THE FLIP. They set E, F and K; they ran before the gate existed. So they
+    are GATED at HEAD (P7), and after the flip they are ungated again, as recorded
+    (modulo the two world changes):
+      fmEFS, fmDRY, fmgEFS{a,b,c,s}
+      f2cEFS, f2cDRY, f2IDD, f2GD, f2GW, f2L3D, f2L8D, f2U0D, f2U1D, f2b404s{9,12,13,14,16}
+      _firemech_cycle_search.py
+    MOVED TO THE FULL UNGATED CONFIGURATION (E+F+S, no gate):
+      fmE, fmEF, fmES, fmF, fmFS, fmS, fmgFB{a,b,c,s}
+      f2cES, f2cF, f2GES, f2GF, f2cGES, f2cGF
+      f3RES (was E+S, gate 0)
+      f3GATE and f3RBG{a,b,c,s}. Named "GATE", they would run ungated WITH firebreak -
+      the most misleading lines in the corpus.
+    SILENT (no FF key), also now the full ungated configuration:
+      fmOFF, fmgOFF*, f2cOFF, f3OFF, and every arm of every non-fire-mechanic queue.
+      The flip round's "FLIP-SAFE" (MODE=0) arms are FF-silent too: their references
+      had no firefighting.
+  SHELL / POWERSHELL: 94 files.
+    - 92 tracked, plus this round's _ug_pytest.sh and the flip round's _flip_pytest.sh.
+    - NONE sets an FF switch. Every simulation-launching one is FF-silent:
+        flip SILENT-CHANGE   51
+        FLIP-SAFE             1
+        PASSTHROUGH           5
+        PYTEST                8
+        _dfp_pool.sh          1 (queue-driven)
+        _flip_pytest.sh       1
+    - FAILS-LOUDLY stays loud: 7.
+    - NOT-A-SIM: 19.
+    The flip round's danger ranking applies unchanged: flip_part1.txt 5.1-5.4.
+    HIGHEST DANGER: no skip, overwrites a tracked artifact, no FF trace in the output:
+      _ir/rbgate.sh, _gs_runall.sh, _gs_runall_dyn.sh, _lane_matrix_driver.sh,
+      _lane_clamp_driver2.sh, _ir/batch3.sh, _rb_eval_after.sh, the round-internal
+      probe runners of 5.1
+  PYTHON: 320 files.
+    - 317 tracked, plus 3 new this round.
+    - At b853617 (flip audit), everything that runs the model is FF-silent:
+        SILENT-CHANGE                81
+        SIM-EXPLICIT                  4 (MODE explicit, FF not)
+        FAILS-LOUDLY/SILENT           6
+        OTHER-CHECKOUT/SILENT         1
+        HARNESS/LIBRARY passthrough   7
+    - Since b853617, 90 new files. The 28 that touch a model or a comparator were
+      audited one by one (read-only agent, file:line evidence):
+        SILENT-CHANGE       _bm_capture, _bm_capture2, _bm_trace, _dfp_frames
+                            (_dfp_frames overwrites the tracked _dfp_frame_{pre,post}.json;
+                            _dfp_page_gate then compares arms built from the new frames)
+        LOUD-DOWNSTREAM     _bm_payload: _bm_compare.py:71-85 needs its digests to equal
+                            the recorded _bm/p3/pre payload.
+                            _dfp_payload: its FIREPROOF=0 control requires 0 cleared cells,
+                            and a firebreak clear counts. It prints FAIL and exits 1.
+        FF-PARTIAL          _firemech_cycle_search (sets D/E/F/K, not G). Gated at HEAD,
+                            restored by the flip.
+        OTHER-CHECKOUT GONE _dfp_colour (SAS_wt/dfp): crashes
+        UNAFFECTED          everything else: fire-only replays that never advance a
+                            firefighter (_fm2_fire_replay, _fm2_verify_replay,
+                            _fm2_rng_offset, _fm2_rng_pinned), readers, comparators
+  ENTRY POINTS:
+    - evaluate_scenarios.py, serve_dashboard.py and main.py set no FF switch. They show
+      and score the ungated feature from the flip on.
+    - A bare `python main.py` is now firefighters fighting fire from step 1.
+  WHAT BETRAYS A POST-FLIP RUN AFTER THE FACT:
+    - Harness JSON gains firefight_log / firefight_counters / firefight_shadow /
+      fire_cleared_unburned_final as soon as any unit engages.
+    - These do NOT: _rblatch_camp2_* gate shards, evaluate_scenarios text, custom probe
+      JSON. (_bm_trace records E/F/K but not G.)
+  PIN PROPOSAL (Q6) - the cheap ones:
+    - The 8 lines the flip round already pinned to MODE=0 through a --set channel get
+      the minimal FF-SAFE pin on the same line. That restores exactly their recorded
+      reference configuration.
+    - The lines:
+        _ir/rbgate.sh:21
+        _vm_runwaves.sh:16, :18
+        _vm_runwaves2.sh:14, :16
+        _ih_post.sh:14
+        _dim_post.sh:13
+        _vm_postwave.sh:13
+    - Everything else is REGISTERED in outputs/ungated_runner_register.txt, generated in
+      Part 2 from the scan plus these rulings.
+    NOT DONE, deliberately:
+      - Completed queue files are not edited in place: the pools would quarantine the
+        committed runs and silently rerun them under the edited line
+        (flip_part1.txt 4.2).
+      - No harness or campaign read-back of the effective FF values: that is a schema
+        change, and the instrument is frozen for Part 3.
+
+--------------------------------------------------------------------------------
+3. INTERACTIONS WITH WHAT SHIPPED SINCE THE COST WAS MEASURED
+--------------------------------------------------------------------------------
+3.1 NON-BURNABLE DEPOTS - CONFIRMED FROM CODE: DEPOT CELLS ARE NEVER WORK AND NEVER FUEL.
+  THE DEPOT CELL'S STATE
+    - reset() clears every depot cell's fuel once. wildfire_model.py:198 calls
+      _fireproof_base_station, which calls Fire.firefighter_remove_fuel.
+    - A depot cell never ignites: probability_of_fire computes P only under
+      `if self.fuel > 0` (agents.py:58), else P = 0 (:85).
+    - So it is never burning. Its own smoke never activates (smoke_step is driven by
+      self.burning), and it never becomes burnt.
+  THE PLANNER
+    - _firefight_prepare's sets exclude depot cells:
+        fuel     = not burning, not burnt, fuel > 0  (agents.py:2466)
+        burning  a depot cell is never in it
+        smoke    a depot cell is never in it
+    - FRONT: a burning cell with a 4-neighbour in `fuel` (:2593-2598). A burning cell
+      whose only unburnt neighbours are depot cells is NOT front. Correct: the fire
+      cannot spread there.
+    - EXTINGUISH target: the nearest FRONT cell, which is burning, so never a depot cell.
+    - FIREBREAK band: euclidean (2,5] from burning AND `c in fuel` (:2623), so never a
+      depot cell. The clear target is band[0].
+    - Belt and braces: firefighter_remove_fuel re-checks `fuel <= 0` (:165), so even a
+      mis-targeted write would write nothing.
+  WHERE DEPOT CELLS DO TAKE PART, as intended
+    - As GROUND: `standable` (:2643-2648) and the exit guard (:2541-2566).
+    - A unit may stand on or retreat into the depot. It is ground that cannot burn from
+      step 0 on (burnt cells and, with the feature, cleared firebreak cells cannot burn
+      either, but only once the fire or a unit has made them so).
+  COVERAGE GAP
+    - The mechanic tests' _quiet_map sets fuel 8 on EVERY cell
+      (tests/test_firefighter_fire_mechanic.py:96-105). That RE-FUELS the depots, so no
+      test exercises the fireproofed state.
+    - Part 2 adds one (T-E3).
+  INSTRUMENT CONSEQUENCE: P8. Intact is redefined in 6.4.
+3.2 THE SPAWN - see P2. The positioning cost was measured WITH this spawn. Two things
+    around it changed, and each can move the cost either way:
+  (a) THE SPAWN DEPOT CANNOT BURN.
+      - A unit that retreats toward it now has non-burnable refuge.
+      - The fire near both corners is physically smaller: 0.14 pp of searcher exposure
+        under CRN, and a bookkeeping remainder of +57 cells/run (depotfireproof_report.txt
+        section 5 and section 11).
+      - Under CRN the fireproof round saw ff_deaths 15 -> 16, with rescued up.
+  (b) THE SEARCHER GUARD changes searcher paths on 4 of 23 runs. So it moves detection
+      and dispatch timing, and dispatch timing is where round 2 located the loss.
+  => NO PREDICTION. The cost is re-measured (section 6). The first-dispatch spacing
+     (21/23 at 1 cell) is re-measured in Part 3 too, from the recorded unit positions.
+3.3 THE SEARCHER GUARD - NO SHARED CODE PATH. CONFIRMED.
+    - The guard lives in src_extension/execution/uav_executor.py
+      (_offgrid_guard_level :2115, _offgrid_guard_direction :2147). It is reached only
+      from the victim-searcher hazard gate.
+    - uav_executor.py never references Firefighter, fuel or FF_FIREFIGHT_*: grep, 0 hits.
+    - The fire mechanic lives in agents.Firefighter and calls nothing in uav_executor.
+    - Neither draws from any RNG.
+    - The ONLY coupling is SHARED STATE. Firefighter writes change which cells burn or
+      smoke. The hazard gate reads that, so a searcher may take a different path and the
+      guard may fire more or less often. That is an ordinary consequence of a different
+      fire, not an interaction.
+    - Part 3 re-checks the guard's own structural invariant: off-grid refusals = 0 in
+      EVERY run of every arm (_sfx_analyze.py pins).
+
+--------------------------------------------------------------------------------
+4. THE ACCESSOR PATTERN
+--------------------------------------------------------------------------------
+THE RULE, for every switch this round changes:
+  (i)   Only an EXACT integral zero disables.
+  (ii)  A MISSING attribute takes the SHIPPED value. So "missing" can never silently
+        disagree with the default.
+  (iii) Anything that is not an exact integer - junk, None, non-integral float, inf,
+        nan, non-integral Decimal/Fraction - ARMS. Nothing can silently take the zero
+        path.
+  (iv)  The accessor never raises.
+
+WHY NOT THE COMMON PATTERN (base_station_fireproof, agents.py:1064-1086). Measured in
+_ug_accessor_matrix.txt, it still has three holes:
+    - `int(Decimal('0.5'))` and `int(Fraction(1,2))` truncate to 0 and pass the float
+      test
+    - `int(float('inf'))` raises OverflowError
+    - the searcher guard's `level <= 0` disarms on -1
+  The helper below has none of them. It is used by the four CHANGED switches only.
+  Retrofitting the other 16 accessors (and DRY_RUN) stays with the accessor round, per
+  the maintainer's ruling.
+
+  def _exact_integer(raw):
+      """raw as an int iff it denotes an exact integer; else None. Never raises."""
+      if isinstance(raw, bool):   return int(raw)
+      if isinstance(raw, int):    return raw
+      if isinstance(raw, float):  return int(raw) if raw.is_integer() else None
+      if isinstance(raw, str):
+          try:    return int(raw.strip())          # "0.5", "off", "" -> None
+          except ValueError: return None
+      try:    value = int(raw)                     # Decimal, Fraction, numpy ...
+      except (TypeError, ValueError, OverflowError): return None
+      try:    return value if raw == value else None
+      except Exception: return None
+
+  EXTINGUISH, FIREBREAK   v = _exact_integer(getattr(cfv, NAME, 1))
+                          -> True if v is None else v != 0
+  ENGAGED_RETREAT_RANGE   v = _exact_integer(getattr(cfv, NAME, 1))
+                          None or negative -> 1 (shipped)
+                          0                -> 3 (the kill switch: no suppression)
+                          1, 2             -> v
+                          >= 3             -> 3 (an explicit unsuppressed buffer)
+      A DISTANCE, not a switch. 3 is an explicit value still in use: round 1's fmF/fmEF
+      arms and the test helper's retreat_range=3. It is not junk. A negative is junk,
+      and ARMS.
+  MISSION_GATE            v = _exact_integer(getattr(cfv, NAME, 0))
+                          -> True if v is None else v != 0
+      The one switch whose shipped value IS the zero:
+        - missing -> 0, agreeing with the shipped default
+        - junk    -> gate ON. A typo can only CLOSE the gate, and that can only make the
+          feature more rescue-neutral. Round 2's guarantee is kept.
+
+MEASURED, proposed vs current (outputs/_ug_accessor_matrix.txt, 27 values each). The
+rows that change:
+  EXTINGUISH / FIREBREAK
+      missing, None, 'off', ''         False -> True
+      0.5, -0.5, '0.5', '2.0', nan     False -> True
+      Decimal('0.5'), Fraction(1,2)    False -> True
+      inf                              RAISES -> True
+  RANGE
+      missing, None, 'off', ''          3 -> 1
+      -1, -1.0, 0.5, -0.5               3 -> 1
+      2.5                               2 -> 1
+      '0.5', '2.0', nan                 3 -> 1
+      Decimal('0.5'), Fraction(1,2)     3 -> 1
+      inf                          RAISES -> 1
+  GATE
+      missing                          True -> False
+      Decimal('0.5'), Fraction(1,2)    False -> True
+      inf                              RAISES -> True
+  UNCHANGED everywhere else:
+      every exact integer, including 0, 0.0, '0', False, 1, True, 2, 3, 7
+  Only '2.0' (a string) reads as junk. _ffr_harness._parse_value never produces it: it
+  turns "2.0" into the float 2.0.
+
+bool: True/False read as 1/0. This keeps the mission gate's pinned test and
+`--set X=false` meaning off. See Q3.
+
+TESTS for the pattern (Part 2):
+  - The three pins are rewritten (section 5).
+  - New: T-E1 the helper matrix.
+  - New: T-E2 the mutant check. For EACH changed literal site, compile the accessor with
+    the pre-flip literal put back and require that the pin test KILLS it. This is
+    outputs/_flip_fallback_mutants.py's method, as outputs/_ug_fallback_mutants.py,
+    run in Part 3.
+
+--------------------------------------------------------------------------------
+5. PART 2 - WHAT THE COMMIT WILL CONTAIN (after confirmation)
+--------------------------------------------------------------------------------
+  - A1-A4, the constants.
+  - B1-B10: the accessors on _exact_integer.
+  - C1-C9 and C11: comments and docstrings.
+  - C13: the harness comment only.
+  TESTS
+    tests/test_firefighter_fire_mechanic.py
+      - D1  test_every_switch_ships_off_and_every_fallback_is_off (:170)
+            -> renamed: ships E=1 F=1 K=1 G=0 DRY=0; missing/junk arm; exact zero
+               disables
+      - D2  test_mission_gate_ships_on_and_falls_back_on (:190)
+            -> ships 0; missing -> off; junk and Decimal/Fraction -> on; exact zeros ->
+               off
+      - D3  test_retreat_range_only_one_and_two_suppress (:213) parametrization:
+               (-1,3)   -> (-1,1)
+               ("x",3)  -> ("x",1)
+               (None,3) -> (None,1)
+            adding (0.5,1), (2.5,1), (3.0,3), (inf,1), and missing -> 1
+      - Each carries a docstring stating the new default, and what re-running a flip
+        requires:
+          - flip the constant
+          - flip the getattr default
+          - re-run _ug_fallback_mutants.py
+          - re-run the plugin suite to find the non-pin failures
+      - T-E1  the helper matrix
+      - T-E3  on a REAL fireproofed model (no _quiet_map on depot cells): no depot cell
+              is ever in the plan's fuel set, and no target or write ever lands in a
+              depot
+      - T-E4  a model at the SHIPPED defaults engages at step 1 while every victim is
+              unresolved. This pins the ungated policy behaviourally, not just the
+              constant.
+      - _model()'s explicit OFF defaults stay. They are test parameters and every OFF
+        case relies on them. Only their docstring changes (C11).
+    Any test the plugin suite shows failing for a REAL reason is handled per 2.4:
+    updated only if it pins the old default, otherwise reported.
+  RUNNERS: the 8 pins (Q6) + outputs/ungated_runner_register.txt.
+  DOCS: README paragraph (Q5). serve_dashboard per Q4.
+
+--------------------------------------------------------------------------------
+6. PART 3 - VALIDATION DESIGN, PRE-REGISTERED NOW
+--------------------------------------------------------------------------------
+6.1 THE FRESH INDEPENDENT SEED SET - chosen by outputs/_ug_seeds.py before any run.
+    Output: outputs/_ug_seeds.txt. A rerun prints the identical set (checked twice, same
+    md5).
+  METHOD (the dcd4 round's, widened to everything run since)
+    - Candidates come from SHA-256 in counter mode over the declared label:
+        "SAS ungated-firefighting fresh independent seed set, declared 2026-09-21,
+         candidate %d"
+    - A candidate is REJECTED if it, or its negative, is in the used universe. That
+      universe has 179 distinct values:
+        - the dcd4 audit list
+        - the dcd4 fourth set itself
+        - every integer >= 100 in any outputs/ file name
+        - every integer >= 100 in any tracked queue file
+        - every literal seed in tests/
+    - It is also REJECTED if its ignition cell equals that of a canonical, fresh, rbgate
+      or dcd4 seed, or of an already-accepted seed.
+    - NO OUTCOME SCREEN. Result: 2 rejected (ignition cell), 0 rejected as used.
+  COMPOSITION: 13 east/half, 13 south/half, 4 east/default. That is the dcd4
+  composition, which mirrors canonical+fresh. One seed per tuple: 30 seeds, 30 fires,
+  none shared across winds.
+    east/half    2070841104 1147610331 1291443119 1433805104 1636723358 1252362635
+                 294124329 1723100518 1532569567 498896028 1401495347 133894353
+                 1788979460
+    south/half   1486866530 536769381 791464433 706299103 1364948962 937041678
+                 954838929 139925734 1624156665 285242396 573250932 1048395951
+                 903347495
+    east/default 2038269169 1749069988 1420331661 1480870832
+  WHY 30 AND NOT 23
+    - The accepted losses are 2-6 victims per sample. 23 tuples resolve that barely.
+    - 30 is the dcd4 precedent, at 7 extra runs per arm.
+6.2 CHECKOUTS AND INSTRUMENTS
+    FLIP  E:/Projects/SAS on ungated-firefighting at the Part 2 commit. It must stay
+          clean for the whole wave.
+    CTRL  a detached worktree E:/Projects/SAS_wt/base11c3661 at 11c3661, with a .venv
+          junction.
+    - Every harness run: outputs/_ffr_harness.py --steps 240 --uav-actions. The harness
+      is unchanged since 003ed91, so the round-1/2 corpus is same-instrument.
+    - CRN runs: HARNESS=outputs/_fm2_probe_harness.py --set FM2P_CRN=1.
+    - The pool is a copy of outputs/_dfp_pool.sh with 2 lines changed (cd, PY).
+    - Tags are new, and none is a prefix of another. 0 files carry `ug` today.
+6.3 ARMS
+    tag   checkout  instrument  --set                                   samples
+    ugC   CTRL      stock       (none)                                  C13+F10, rb4, U30
+    ugD   FLIP      stock       (none)  = the shipped default           C13+F10, rb4, U30
+    ugX   CTRL      stock       E=1 F=1 K=1 G=0                         C13+F10
+    ugA   CTRL      stock       E=1 F=1 K=1 G=0 BASE_STATION_FIREPROOF=0
+                                VICTIM_SEARCHER_HAZARD_GATE_BOUNDS_FIX=0  C13+F10
+    ugY   FLIP      stock       FF_FIREFIGHT_DRY_RUN=1                  U30
+    ugKC  CTRL      CRN         FM2P_CRN=1                              U30
+    ugKD  FLIP      CRN         FM2P_CRN=1                              U30
+    ugKY  FLIP      CRN         FM2P_CRN=1 FF_FIREFIGHT_DRY_RUN=1       U30
+    ugGC  CTRL      rb shards   (none)                                  rb18 (4 shards)
+    ugGD  FLIP      rb shards   (none)                                  rb18 (4 shards)
+    Sample key:
+      C13+F10  the canonical 13 and fresh 10
+      rb4      east/half 111/222/333/444, the rb18 tuples outside C13+F10
+      U30      section 6.1
+    TOTAL: 280 harness runs + 8 shards.
+    At the dfp/dcd4 rate (MAXPAR 10-12, ~7 min/run) that is about 3 hours. Firefighting
+    adds a per-idle-unit scan of the fire agents, so allow up to 4 hours.
+    CONDITIONAL, with triggers fixed now:
+      - ugKC/ugKD on C13+F10 (46 runs). Only if G2's CRN item breaches, to separate a
+        world change (same seeds as round 2) from sample variance.
+      - A CRN pair on any rb18 tuple that G5 finds NEW and re-rolled.
+6.4 DEFINITIONS
+    OUTCOMES
+      - rescued, dead, ff_deaths (firefighter_deaths), never_detected and terminal_step
+        come from eval.
+      - Non-terminal runs are counted and excluded from mean terminal_step. Both are
+        reported.
+    UNTOUCHED VEGETATION AT STEP 240 (replaces P8's definition)
+        intact = |fire_ground_final| - ever_burned - depot_unburned - ff_cleared_unburned
+      - ever_burned: cells whose has_burned is set at step 240.
+      - depot cells: read FROM THE RUN (base_station.depots origins, 5x5 each).
+      - ff_cleared_unburned: firefight_counters.cleared_unburned, 0 when absent.
+      - Cross-check per run, when present:
+          fire_cleared_unburned_final - depot_unburned == firefight_counters.cleared_unburned
+        A mismatch stops the analysis.
+      - Reported beside burnt_cells, ever_burned and cleared, always. burnt_cells is
+        ambiguous by construction: extinguish inflates it, firebreak deflates it.
+    DRONE STEPS IN FIRE
+      - E1 searcher-only and E2 all-UAV, interior-hazard definition, with the depot
+        split, via outputs/_dfp_analyze.py.
+      - Samples: C13+F10, rb18 (the 14 overlapping tuples + rb4) and U30.
+    FIREFIGHTER DEATHS
+      - Classified with _firemech_analyze.py's definitions from the firefight log:
+          engaged     plan on the death step
+          prev        plan on the step before
+          streak      engaged anywhere in the idle run that ended in death
+          preempted   latest assignment landed while engaged
+          enclosure   every in-bounds 4-neighbour burning
+          after_terminal
+      - Positioning vs writes via the DRY arms: ugY in stock, ugKY under CRN.
+    RE-ROLLED
+      - A run whose fire digest first differs from its control's BEFORE the control's
+        terminal_step. For a non-terminal control, before step 240.
+      - Stock only. Under CRN nothing re-rolls by construction.
+    ATTRIBUTION SANITY (round 1's test, cheap)
+      - ugY's fire == ugC's fire 240/240 on every U30 run.
+      - ugD's fire first differs from ugC's EXACTLY at its first write step. Positioning
+        cannot touch the fire.
+    STRUCTURAL: off-grid refusals = 0 in every run of every arm (_sfx_analyze.py pins).
+    FIRST-DISPATCH SPACING: the distance between the two units at each run's first ok
+    assignment. The P2/3.2 re-measurement of round 2's "1 cell apart".
+6.5 THE GATE, PRE-REGISTERED. It matches what was accepted.
+    G1 IDENTITY
+      - ugD == ugX, value-identical on 23/23. Every recorded value except tag, repo,
+        wall_s, params and extra_params.
+      - PLUS ugA == the recorded fmEFS corpus on 23/23: the accepted configuration,
+        reproduced at the current tree with the two world changes switched off.
+          - Expected by the chain of proven kill switches:
+              - f3RES == fmES (gate 0)
+              - base-mark value-identical
+              - FIREPROOF=0 == 6281542
+              - BOUNDS_FIX=0 == 737b6c7
+              - harness unchanged since 003ed91
+          - If it fails, something ADJACENT changed. STOP.
+      - PLUS ugC == sfON on 23/23. Control instrument parity: 629a321 and 11c3661 have
+        the same source.
+    G2 RESCUE COST ON U30. Formulas fixed now; R = the control's rescued; M = 3 (Q1).
+       STOCK (channel 1)       loss(ugD vs ugC)   must be <= (2/68)*R_ugC  + M
+       CRN, shipped arm        loss(ugKD vs ugKC) must be <= (3/72)*R_ugKC + M
+                               like-for-like, Q2. The brief's reading: (6/72)*R + M.
+       CRN, positioning only   loss(ugKY vs ugKC) reported against (6/72)*R_ugKC + M
+       - Under CRN every victim that flips is listed, both directions, per seed.
+       - The two channels are never pooled.
+       - A breach is a STOP: report, no merge.
+    G3 THE MECHANIC DOES SOMETHING
+      - intact(ugD) > intact(ugC), pooled, on U30 AND on C13+F10.
+      - intact(ugKD) > intact(ugKC) under CRN on U30.
+      - Per-run up/down counts are reported, not gated: stock per-run signs are re-roll
+        noise (firemech2_report.txt:198-206).
+    G4 FIREFIGHTER DEATHS
+      - ugD <= ugC on U30 and on C13+F10.
+      - OR every added death is classified, with positioning vs writes shown by
+        ugY/ugKY. That is the "measured, explained cause".
+      - A death ENGAGED at the moment of death is reported as a direct risk cost, never
+        folded into "explained".
+    G5 ROUTE_BLOCKED
+      - `_ffr_rbcompare.py --new ugGD --old ihrest`. The regression set must be a SUBSET
+        of {east/707, south/101, south/202, south/404}.
+      - Any other regressing seed:
+          - Re-roll status comes from the ugC/ugD harness digests. 14 of 18 tuples are
+            C13+F10 and 4 are rb4, so every rb18 tuple has one.
+          - A re-rolled seed is judged on the pooled rescued of the re-rolled seeds
+            (ugGD vs ugGC). This is the fireproof round's method.
+          - Where the verdict hinges on one seed, its CRN pair decides:
+              - a loss under CRN is NEW
+              - no loss under CRN is re-roll
+      - Also reported:
+          - --new ugGC --old ihrest (the control reproduces the four)
+          - --new ugGD --old ugGC (the feature's own delta)
+    G6 TESTS
+      - The full suite at the final HEAD (_ug_pytest.sh VARIANT=post).
+      - Its failing NAME SET must equal the base NAME SET.
+      - passed = base passed + the new tests.
+      - Compared by name with outputs/_flip_pytest_names.py.
+    G7 STRUCTURAL (not gated by the brief, but a STOP if broken)
+      - off-grid refusals 0
+      - attribution sanity
+      - the per-run intact cross-check
+      - the mutant check kills every changed literal
+    REPORTING RULES
+      - Canonical first, then fresh, then U30.
+      - Counted AND de-duplicated. east/def shares its fire with east/half in C13;
+        U30 has no shared fire.
+      - C13+F10 are SCREENS: used in six or more rounds, never called evidence.
+      - U30 is the evidence.
+      - Every number from its own JSON. The analyzer refuses any run whose recorded
+        repo or extra_params is not exactly its arm's (worktree-round-isolation).
+6.6 TOOLS FOR PART 3 (new):
+      - _ug_queue.py, which writes the queue from _ug_seeds.py and the arm table
+      - _ug_pool.sh
+      - _ug_analyze.py: every item above
+      - _ug_fallback_mutants.py
+    Reused as-is:
+      - _dfp_analyze (E1/E2)
+      - _sfx_analyze pins
+      - _firemech_analyze's death classifier, imported
+      - _ffr_rbcompare
+      - _flip_pytest_names
+    An independent re-derivation pass checks the report before it is sent. The last
+    three rounds' passes found 16, 54 and 22 errors.
+
+--------------------------------------------------------------------------------
+7. DECISIONS FOR THE MAINTAINER (recommendation first)
+--------------------------------------------------------------------------------
+  Q1 MATERIALITY MARGIN M in G2. RECOMMEND M = 3 rescues on U30.
+     - Scaled acceptances at R ~ 90:
+         stock           2.6
+         CRN shipped     3.8
+         CRN positioning 7.5
+     - So STOP at a stock loss of 6 or more, and a CRN shipped loss of 7 or more.
+     - 3 is about one standard deviation of the net victim-flip count the two rounds
+       saw (round 1: 4 losses, 2 gains, net -2).
+  Q2 THE CRN REFERENCE FOR THE SHIPPED ARM. RECOMMEND -3/72, like-for-like (P3), with
+     the DRY arm gated against -6/72.
+     - The brief's text gates the shipped arm on -6/72.
+     - If the shipped arm lands between the two lines, the round reports it as exceeding
+       the like-for-like reference and asks, rather than passing silently.
+  Q3 bool False READS AS EXACT ZERO. RECOMMEND KEEP.
+     - It is `--set X=false`, a typed "off", not a truncation.
+     - Every existing accessor, the canonical one included, already does this, and the
+       mission gate's test pins it.
+     - The alternative, False arms, is a one-line change.
+  Q4 THE DASHBOARD'S "fire d/r" COLUMN (C10) SHOWS r=3 FOR AN ENGAGED UNIT WHOSE REAL
+     RANGE IS 1. RECOMMEND: record it and fix it in its own display round.
+     - That round needs the base-mark / fireproof full-page gate
+       (dashboard-validation-blind-to-layout), and a payload key from the model: the
+       unit's T this step.
+     - This round's commit then stays simulation-only.
+     - The cost: the column is wrong at the default from this merge until that round.
+     - Alternative: include it here, adding the page gate to Part 3.
+  Q5 README PARAGRAPH (C12). RECOMMEND DO. Five lines:
+       - the switches
+       - the policy
+       - the measured cost and its two channels
+  Q6 THE 8 RUNNER PINS (2.5). RECOMMEND DO. Each is one --set pair on a line that
+     already carries MODE=0. Everything else is registered.
+  Q7 THE WAVE. RECOMMEND AS DESIGNED: 280 runs + 8 shards, about 3-4 hours, with the
+     ugA anchor.
+     - ugA (23 runs) is what proves the flip is "exactly the measured configuration and
+       nothing adjacent", not just "equal to an explicit arm on the same tree".
+     - Dropping it saves 23 runs and loses that.
+
+--------------------------------------------------------------------------------
+8. ARTIFACTS OF PART 1 (all untracked, all under outputs/; no source edits)
+--------------------------------------------------------------------------------
+  ungated_part1.txt          this document
+  _ug_simplugin.py           pytest plugin: the four constants flipped at import (UG_SIM)
+  _ug_pytest.sh              the suite runner (VARIANT base / p0 / sim / post)
+  _ug1_pytest_{base,p0,sim}.log / .xml   the three measured suites (2.4)
+  _ug_register_scan.py/.txt  the runner / queue / probe scan (2.5)
+  _ug_accessor_matrix.py/.txt  current vs proposed accessor values, 27 edge values (4)
+  _ug_seeds.py/.txt          the pre-registered fresh seed set (6.1)
+  QUARANTINE CONTACT
+    ONE POSSIBLE CONTACT, by the orchestrator, at the start of Part 1:
+      - One Grep TOOL call (pattern FF_FIREFIGHT, path = repo root, glob *.py) carried
+        no explicit exclude.
+      - ripgrep honours .git/info/exclude by default, which lists the directory, so it
+        most likely did not descend. But the required flag was not passed.
+      - Reported as possible traversal. No file under it matched; nothing was read or
+        used.
+    Every later search passed --exclude-dir or used git listings / explicit file lists.
+    The sub-agent that audited the 28 probes used Read and single-file grep only, and
+    reported no recursive command.
+
+--------------------------------------------------------------------------------
+9. MAINTAINER DECISIONS AND ERRATA - appended before Part 2 was committed and before
+   any Part 3 run (the Part 3 pools hash this file into their logs as PREREG)
+--------------------------------------------------------------------------------
+DECISIONS (maintainer, 2026-09-21): all seven as recommended.
+  Q1 M = 3 rescues on the scaled accepted rate.  Q2 shipped arm gated on -3/72 like-for-
+  like; positioning-only arm on -6/72.  Q3 bool False stays off (False == 0).  Q4 the
+  dashboard column is recorded and fixed separately; this commit is simulation-only.
+  Q5 README paragraph.  Q6 the 8 pins.  Q7 the wave as designed, ugA anchor included.
+  ADDITION: a test that at the shipped default at least one firefighter engages BEFORE
+  terminal_step on a canonical seed (implemented as
+  test_shipped_default_engages_before_terminal_step_on_a_canonical_seed, east/half/101).
+
+ERRATA, found by the Part 2 adversarial review (outputs/_ug_part2_review.txt):
+  E1 Q6's stated reason is NOT met by the 8 pins. They are the base-station flip's MODE=0
+     lines; none is a fire-mechanic line. f3GATE/f3RBG*/f3OFF/f3RES (round 2) and every
+     CHANGED fm*/f2* arm are REGISTERED ONLY (ungated_runner_register.txt, first block,
+     with the exact reproduction recipe). Pinning them would mean new generator output
+     under new tags - a maintainer decision, raised in the report, not done here.
+  E2 4 (RANGE): "3 is an explicit value still in use: round 1's fmF/fmEF arms" is wrong.
+     Those arms never set RANGE; they ran at the then-default 3. The reason 3 maps to the
+     buffer is agreement with the old accessor for every integer >= 3; only the test
+     helper passes 3 explicitly.
+  E3 P3 / Q2: -3/72 is the COUNTED CRN cost of the shipped configuration. De-duplicated
+     (east/def removed, 20 runs) it is -5/66, the same as positioning alone (61 vs 61):
+     the writes' counted +3 is one run, east/def/101 (dry 1 -> writes 4), whose fire
+     east/half/101 shares. The G2 gate stays on the approved -3/72 (4.2%), which is the
+     STRICTER of the two rates (-5/66 = 7.6%); the report carries both.
+  E4 2.4 PRE-DECLARED G6 COUNT. The test module grows 42 -> 87 (+45 net): 28 + 5 = 33
+     _exact_integer matrix cases, D3 8 -> 16 cases, T-E3 x2, T-E4, and the maintainer's
+     canonical-seed test. Removed names (renamed/re-parametrised, not dropped):
+     test_every_switch_ships_off_and_every_fallback_is_off,
+     test_mission_gate_ships_on_and_falls_back_on,
+     test_retreat_range_only_one_and_two_suppress[-1-3] / [x-3] / [None-3].
+     G6 is therefore: failing NAME SET == the base 8; passed == 738 + 45 = 783;
+     collected == 746 + 45 = 791; the collected sets differ by exactly those 5 removed
+     and 50 added names.
+  E5 _exact_integer is hardened so "never raises" is literally true (any exception ->
+     None; int subclasses returned as plain int). Every value of the 27-value matrix is
+     unchanged.

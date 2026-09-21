@@ -1106,41 +1106,101 @@ def base_station_fireproof_dry_run() -> bool:
     return value != 0
 
 
-# --- Fire mechanic (round 1) configuration ------------------------------------
+# --- Fire mechanic configuration ------------------------------------------------
 # Read through `cfv` at call time for the same reason as the base-station
-# accessors above. UNLIKE them, every ACTION fallback here is the OFF value, which
-# is also what common_fixed_variables ships: this feature is dark by default, so a
-# missing or unparseable override must not arm it. ff_firefight_mission_gate is the
-# ONE DELIBERATE EXCEPTION (round 2): it cannot arm anything by itself, and its
-# conservative value is ON, so its fallback is 1.
+# accessors above. SHIPPED ON AND UNGATED since the ungated round
+# (outputs/ungated_part1.txt): EXTINGUISH 1, FIREBREAK 1, ENGAGED_RETREAT_RANGE 1,
+# MISSION_GATE 0. The four accessors below share ONE rule, built on _exact_integer:
+#   - only an EXACT integral zero disables (0, 0.0, "0", False);
+#   - a MISSING attribute takes the SHIPPED value, so it can never silently
+#     disagree with common_fixed_variables;
+#   - anything that is not an exact integer (junk, None, 0.5, inf, nan,
+#     Decimal("0.5"), Fraction(1, 2)) ARMS - it takes the shipped value, or for the
+#     gate closes it - rather than silently taking the zero path. A bare int() would
+#     truncate 0.5 to 0 and disarm the feature while params recorded 0.5 - the
+#     truncation this repo has met three times (the mission gate,
+#     BASE_STATION_FIREPROOF, _hazard_retreat_range); the searcher guard's
+#     `level <= 0`, which disarms on -1, is a separate comparison defect
+#     (outputs/ungated_part1.txt P6);
+#   - no accessor raises (a bare int(float("inf")) raises OverflowError).
+# The edge values are measured in outputs/_ug_accessor_matrix.txt and pinned by
+# tests/test_firefighter_fire_mechanic.py. ff_firefight_dry_run keeps its round-1
+# bare-int form on purpose: its default did not change, and closing that
+# truncation is the accessor round's, not a fold-in here.
+
+
+def _exact_integer(raw) -> int | None:
+    """`raw` as an int iff it denotes an exact integer, else None. Never raises.
+
+    bool is an int (False -> 0, True -> 1): `--set NAME=false` reaches an accessor
+    through _ffr_harness._parse_value as bool False, a typed "off", not a
+    truncation. An int subclass (IntEnum) comes back as a plain int, read through
+    int.__int__ so no subclass hook runs. A float counts only when integral (inf and
+    nan are not). A string counts only as an integer literal ("0", " 1 "; not "0.5",
+    "2.0", "off", ""). Anything else (Decimal, Fraction, numpy scalars) counts only
+    when it compares equal to its own int(), which is what stops Decimal("0.5") -> 0.
+    Any exception at all - an object whose __int__ or __eq__ raises - means None.
+    """
+    try:
+        if isinstance(raw, int):
+            return int.__int__(raw)
+        if isinstance(raw, float):
+            return float.__int__(raw) if float.is_integer(raw) else None
+        if isinstance(raw, str):
+            try:
+                return int(str.strip(raw))
+            except ValueError:
+                return None
+        value = int.__int__(int(raw))
+        return value if raw == value else None
+    except Exception:
+        return None
+
 
 def ff_firefight_extinguish() -> bool:
-    """True when idle firefighters may extinguish burning front cells."""
-    try:
-        return int(getattr(cfv, "FF_FIREFIGHT_EXTINGUISH", 0)) != 0
-    except (TypeError, ValueError):
-        return False
+    """True when idle firefighters may extinguish burning front cells.
+
+    Shipped 1. Only an exact integral zero turns it off; missing or junk -> 1.
+    """
+    value = _exact_integer(getattr(cfv, "FF_FIREFIGHT_EXTINGUISH", 1))
+    if value is None:
+        return True
+    return value != 0
 
 
 def ff_firefight_firebreak() -> bool:
-    """True when idle firefighters may clear fuel from the firebreak band."""
-    try:
-        return int(getattr(cfv, "FF_FIREFIGHT_FIREBREAK", 0)) != 0
-    except (TypeError, ValueError):
-        return False
+    """True when idle firefighters may clear fuel from the firebreak band.
+
+    Shipped 1. Only an exact integral zero turns it off; missing or junk -> 1.
+    """
+    value = _exact_integer(getattr(cfv, "FF_FIREFIGHT_FIREBREAK", 1))
+    if value is None:
+        return True
+    return value != 0
 
 
 def ff_firefight_engaged_retreat_range() -> int:
-    """Idle retreat distance while engaged: 1 or 2 suppress, else the full buffer.
+    """Idle retreat distance while engaged. Shipped 1.
 
-    Anything outside 1..IDLE_RETREAT_SAFETY_BUFFER-1 - the buffer itself, larger
-    values, 0, negatives and junk - returns the buffer, i.e. no suppression.
+    A DISTANCE, not a switch:
+      exact 0            -> IDLE_RETREAT_SAFETY_BUFFER: no suppression (its kill switch)
+      1, 2               -> that distance (suppression)
+      an integer >= 3    -> IDLE_RETREAT_SAFETY_BUFFER: an explicit unsuppressed buffer
+                            - what the old accessor returned for every integer >= 3,
+                            which the flip preserves (the test helper passes 3; round
+                            1's firebreak-only arms never set it, they ran at the
+                            then-default 3 - set 3 explicitly to reproduce them)
+      missing, negative, non-integral, junk -> 1, the shipped value
+    Extinguish acts at reach 2, so it is only possible below 2: a junk value that
+    fell back to the buffer would silently make the shipped configuration
+    firebreak-only, which is why junk arms here.
     """
-    try:
-        value = int(getattr(cfv, "FF_FIREFIGHT_ENGAGED_RETREAT_RANGE", IDLE_RETREAT_SAFETY_BUFFER))
-    except (TypeError, ValueError):
+    value = _exact_integer(getattr(cfv, "FF_FIREFIGHT_ENGAGED_RETREAT_RANGE", 1))
+    if value is None or value < 0:
+        return 1
+    if value == 0:
         return IDLE_RETREAT_SAFETY_BUFFER
-    if 1 <= value < IDLE_RETREAT_SAFETY_BUFFER:
+    if value < IDLE_RETREAT_SAFETY_BUFFER:
         return value
     return IDLE_RETREAT_SAFETY_BUFFER
 
@@ -1156,22 +1216,21 @@ def ff_firefight_dry_run() -> bool:
 def ff_firefight_mission_gate() -> bool:
     """True when a unit may engage ONLY after every victim is rescued or dead.
 
-    Round 2. This is what makes the feature rescue-neutral by construction: while
+    Round 2. With the gate ON the feature is rescue-neutral by construction: while
     any victim can still be dispatched to, every unit behaves exactly as it does
-    with the feature off, so no rescue outcome can change. 0 restores round 1's
-    policy, any idle unit at any time (outputs/firemech2_part1.txt 4.2).
+    with the feature off, so no rescue outcome can change. 0 is round 1's policy,
+    any idle unit at any time (outputs/firemech2_part1.txt 4.2) - and SINCE THE
+    UNGATED ROUND IT IS THE SHIPPED VALUE (outputs/ungated_part1.txt).
 
-    The fallback is ON, unlike every action switch above: this switch cannot arm
-    the feature, so a junk override may only ever make it more conservative. Only
-    an EXACT zero (0, 0.0, "0", False) turns it off; anything unparseable or
-    non-integral - 0.5, "", None, a missing attribute - falls back to ON.
+    The one FF switch whose shipped value IS the zero, so the two halves of the rule
+    point different ways here: a MISSING attribute takes the shipped 0 (it must not
+    silently disagree with common_fixed_variables), while junk that is not an exact
+    integer - 0.5, "", None, "off", inf, Decimal("0.5") - CLOSES the gate. The gate
+    cannot arm the feature, so a typo may only ever make it more conservative. Only
+    an EXACT integral zero (0, 0.0, "0", False) opens it.
     """
-    raw = getattr(cfv, "FF_FIREFIGHT_MISSION_GATE", 1)
-    try:
-        value = int(raw)
-    except (TypeError, ValueError):
-        return True
-    if isinstance(raw, float) and raw != value:
+    value = _exact_integer(getattr(cfv, "FF_FIREFIGHT_MISSION_GATE", 0))
+    if value is None:
         return True
     return value != 0
 

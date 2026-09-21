@@ -6,21 +6,31 @@ tests/test_victim_fire_flight.py: the whole map is quieted, a test lays out
 exactly which cells burn, and one firefighter's advance() is called directly so
 nothing else moves. Design: outputs/firemech_part1.txt, outputs/firemech2_part1.txt.
 
-THE SHIPPED DEFAULT IS FF_FIREFIGHT_MISSION_GATE = 1: a unit may engage only once
-every managed victim is rescued or dead. A real WildFireModel starts with every
-victim unresolved, so under the default the gate is CLOSED here and no firefighting
-code runs at all. Every round-1 case below is about the MECHANIC, so _model() opens
-the gate explicitly (mission_gate=0) - that is round 1's policy, any idle unit at any
-time. The gate itself is tested at the end of this file, where the default is left
-alone and the victims are driven to a terminal status on purpose.
+THE SHIPPED DEFAULT, SINCE THE UNGATED ROUND (outputs/ungated_part1.txt), IS THE
+FEATURE ON AND UNGATED: EXTINGUISH 1, FIREBREAK 1, ENGAGED_RETREAT_RANGE 1,
+MISSION_GATE 0 - any idle unit engages at any time, while the drones search. Every
+round-1 case below is about the MECHANIC and passes its whole configuration to _model()
+explicitly, so none of them depends on the default. The round-2 gate cases arm the gate
+explicitly (mission_gate=1), since it is no longer the default. The shipped default
+itself is pinned in the "switches" section (constants and fallbacks) and, as
+BEHAVIOUR, by the two "shipped default engages" cases near the end: at the shipped
+values a unit fights fire while victims are still unresolved.
+
+A full-suite run with the four constants flipped (outputs/_ug_simplugin.py,
+outputs/ungated_part1.txt 2.4) showed that NOTHING outside this file notices whether
+firefighters fight fire from step 1. The behavioural pins at the end are the tests that
+would catch the feature being re-gated or switched off by accident.
 """
 
 from __future__ import annotations
 
 import contextlib
+import enum
 import io
 import os
 import random
+from decimal import Decimal
+from fractions import Fraction
 
 import pytest
 
@@ -64,14 +74,15 @@ def _restore_module_config():
 
 def _model(seed: int = 101, extinguish=0, firebreak=0, retreat_range=3, dry=0,
            mission_gate=0) -> WildFireModel:
-    """A real model with the map quieted.
+    """A real model with the map quieted, EVERY switch passed explicitly.
 
-    mission_gate defaults to 0 HERE, which is NOT the shipped default (1). Every
-    round-1 case in this file asserts what an engaged unit does, and the shipped gate
-    would keep all of them from ever engaging: the model's victims are all at status
-    "candidate" from reset, so "every victim rescued or dead" is false. Passing 0 is
-    round 1's policy - any idle unit, any time - which is exactly what those cases are
-    about. The gate's own behaviour is tested separately, with the default left alone.
+    The keyword defaults here are the feature OFF (extinguish 0, firebreak 0, range 3)
+    with the gate open (0). They are TEST PARAMETERS, not the shipped defaults (which
+    since the ungated round are 1 / 1 / 1 / gate 0): the OFF-path cases call _model()
+    bare and must keep getting the OFF path whatever ships, and every other case names
+    the configuration it tests. mission_gate=0 matters for the round-1 cases: the
+    model's victims are all "candidate" from reset, so a closed gate would keep every
+    one of them from ever engaging.
     """
     rng = random.Random(seed)
     cfv.SYSTEM_RANDOM = rng
@@ -167,53 +178,140 @@ def _fire_steps(model: WildFireModel, n: int) -> None:
 # switches
 # ---------------------------------------------------------------------------
 
-def test_every_switch_ships_off_and_every_fallback_is_off(monkeypatch) -> None:
-    """Every ACTION switch ships off and falls back off; the gate is the exception."""
-    assert cfv.FF_FIREFIGHT_EXTINGUISH == 0
-    assert cfv.FF_FIREFIGHT_FIREBREAK == 0
-    assert cfv.FF_FIREFIGHT_ENGAGED_RETREAT_RANGE == agents.IDLE_RETREAT_SAFETY_BUFFER
-    assert cfv.FF_FIREFIGHT_DRY_RUN == 0
-    buffer = agents.IDLE_RETREAT_SAFETY_BUFFER
-    for name, accessor, off in (
-        ("FF_FIREFIGHT_EXTINGUISH", agents.ff_firefight_extinguish, False),
-        ("FF_FIREFIGHT_FIREBREAK", agents.ff_firefight_firebreak, False),
-        ("FF_FIREFIGHT_ENGAGED_RETREAT_RANGE", agents.ff_firefight_engaged_retreat_range, buffer),
-        ("FF_FIREFIGHT_DRY_RUN", agents.ff_firefight_dry_run, False),
-    ):
-        assert accessor() == off, name
-        monkeypatch.setattr(cfv, name, "off", raising=False)
-        assert accessor() == off, name + " junk"
-        monkeypatch.delattr(cfv, name, raising=False)
-        assert accessor() == off, name + " missing"
+# RE-RUNNING A FLIP OF THESE SWITCHES (what the ungated round had to do, in order):
+#   1. the constant in common_fixed_variables.py;
+#   2. the getattr default in the agents.py accessor - it IS the shipped value, so a
+#      missing attribute agrees with the file;
+#   3. the expected values in the three pins below;
+#   4. outputs/_ug_fallback_mutants.py - puts each pre-flip literal back into its
+#      accessor and requires these pins to FAIL on it (a pin that cannot fail is not a
+#      pin);
+#   5. the full suite with the flip simulated (outputs/_ug_simplugin.py via
+#      outputs/_ug_pytest.sh VARIANT=sim) to find every NON-pin test the flip breaks;
+#   6. the runner register (outputs/ungated_runner_register.txt) for every script and
+#      queue line whose meaning the flip changes silently.
+
+# Values that are not an exact integer: each must ARM (take the shipped value), never
+# silently take the zero path. inf used to raise OverflowError; Decimal("0.5") and
+# Fraction(1, 2) used to truncate to 0 (outputs/_ug_accessor_matrix.txt).
+_JUNK = ("off", "", None, 0.5, -0.5, "0.5", "2.0", float("inf"), float("nan"),
+         Decimal("0.5"), Fraction(1, 2), [], object())
+_EXACT_ZEROS = (0, 0.0, "0", " 0 ", False, Decimal("0"))
 
 
-def test_mission_gate_ships_on_and_falls_back_on(monkeypatch) -> None:
-    """The one deliberate exception to "every fallback is the OFF value".
+class _IntEnum(enum.IntEnum):
+    ZERO = 0
+    ONE = 1
 
-    The gate cannot arm the feature - that still needs EXTINGUISH or FIREBREAK - and
-    its conservative value is ON, so a junk or missing override must leave it ON.
+
+class _IntSub(int):
+    pass
+
+
+class _RaisingInt:
+    """An object whose __int__ raises something other than TypeError/ValueError."""
+
+    def __int__(self):
+        raise RuntimeError("no int here")
+
+
+def test_every_switch_ships_on_and_every_fallback_is_the_shipped_value(monkeypatch) -> None:
+    """SHIPPED (ungated round): EXTINGUISH 1, FIREBREAK 1, RANGE 1, DRY_RUN 0.
+
+    For the two action switches: a MISSING attribute and every non-exact-integer value
+    arm the feature, and only an exact integral zero turns it off. DRY_RUN keeps its
+    round-1 accessor (fallback 0, bare int) on purpose - its default did not change and
+    its truncation belongs to the accessor round - so only its unchanged fallback is
+    pinned. RANGE has its own pin below. See the flip checklist above this test.
     """
-    assert cfv.FF_FIREFIGHT_MISSION_GATE == 1
-    assert agents.ff_firefight_mission_gate() is True
-    monkeypatch.setattr(cfv, "FF_FIREFIGHT_MISSION_GATE", "off", raising=False)
-    assert agents.ff_firefight_mission_gate() is True
-    monkeypatch.setattr(cfv, "FF_FIREFIGHT_MISSION_GATE", None, raising=False)
-    assert agents.ff_firefight_mission_gate() is True
+    assert cfv.FF_FIREFIGHT_EXTINGUISH == 1
+    assert cfv.FF_FIREFIGHT_FIREBREAK == 1
+    assert cfv.FF_FIREFIGHT_ENGAGED_RETREAT_RANGE == 1
+    assert cfv.FF_FIREFIGHT_DRY_RUN == 0
+    for name, accessor in (
+        ("FF_FIREFIGHT_EXTINGUISH", agents.ff_firefight_extinguish),
+        ("FF_FIREFIGHT_FIREBREAK", agents.ff_firefight_firebreak),
+    ):
+        assert accessor() is True, name
+        for zero in _EXACT_ZEROS:
+            monkeypatch.setattr(cfv, name, zero, raising=False)
+            assert accessor() is False, (name, zero)
+        for one in (1, 1.0, "1", True, -1, 2, 7):
+            monkeypatch.setattr(cfv, name, one, raising=False)
+            assert accessor() is True, (name, one)
+        for junk in _JUNK:
+            monkeypatch.setattr(cfv, name, junk, raising=False)
+            assert accessor() is True, (name, junk)
+        monkeypatch.delattr(cfv, name, raising=False)
+        assert accessor() is True, name + " missing"
+    assert agents.ff_firefight_engaged_retreat_range() == 1
+    monkeypatch.delattr(cfv, "FF_FIREFIGHT_ENGAGED_RETREAT_RANGE", raising=False)
+    assert agents.ff_firefight_engaged_retreat_range() == 1, "RANGE missing"
+    assert agents.ff_firefight_dry_run() is False
+    monkeypatch.setattr(cfv, "FF_FIREFIGHT_DRY_RUN", "off", raising=False)
+    assert agents.ff_firefight_dry_run() is False, "DRY_RUN junk"
+    monkeypatch.delattr(cfv, "FF_FIREFIGHT_DRY_RUN", raising=False)
+    assert agents.ff_firefight_dry_run() is False, "DRY_RUN missing"
+
+
+def test_mission_gate_ships_off_missing_is_off_and_junk_closes_it(monkeypatch) -> None:
+    """SHIPPED (ungated round): MISSION_GATE 0 - any idle unit engages at any time.
+
+    The one FF switch whose shipped value IS the zero, so the two halves of the rule
+    point different ways: a MISSING attribute takes the shipped 0 (it must not silently
+    disagree with common_fixed_variables), while anything that is not an exact integer
+    CLOSES the gate. The gate cannot arm the feature, so a typo can only make it more
+    rescue-neutral. Only an exact integral zero opens it. See the flip checklist above.
+    """
+    assert cfv.FF_FIREFIGHT_MISSION_GATE == 0
+    assert agents.ff_firefight_mission_gate() is False
     monkeypatch.delattr(cfv, "FF_FIREFIGHT_MISSION_GATE", raising=False)
-    assert agents.ff_firefight_mission_gate() is True
-    for off in (0, 0.0, "0", False):
-        monkeypatch.setattr(cfv, "FF_FIREFIGHT_MISSION_GATE", off, raising=False)
-        assert agents.ff_firefight_mission_gate() is False, off
-    # a non-integral float is a typo, not a setting: it must NOT open the gate
-    for junk in (0.5, -0.5, "0.5", "", [], object()):
+    assert agents.ff_firefight_mission_gate() is False, "missing"
+    for zero in _EXACT_ZEROS:
+        monkeypatch.setattr(cfv, "FF_FIREFIGHT_MISSION_GATE", zero, raising=False)
+        assert agents.ff_firefight_mission_gate() is False, zero
+    for on in (1, 1.0, "1", True, -1, 2):
+        monkeypatch.setattr(cfv, "FF_FIREFIGHT_MISSION_GATE", on, raising=False)
+        assert agents.ff_firefight_mission_gate() is True, on
+    for junk in _JUNK:
         monkeypatch.setattr(cfv, "FF_FIREFIGHT_MISSION_GATE", junk, raising=False)
         assert agents.ff_firefight_mission_gate() is True, junk
 
 
-@pytest.mark.parametrize("raw,expected", [(1, 1), (2, 2), (3, 3), (0, 3), (-1, 3), (7, 3), ("x", 3), (None, 3)])
+@pytest.mark.parametrize("raw,expected", [
+    (1, 1), (2, 2), (3, 3), (7, 3), (3.0, 3), (True, 1),
+    (0, 3), (False, 3), (0.0, 3),                     # the exact-zero kill switch: no suppression
+    (-1, 1), ("x", 1), (None, 1), (0.5, 1), (2.5, 1),  # junk arms the shipped 1
+    (float("inf"), 1), (Decimal("0.5"), 1),
+])
 def test_retreat_range_only_one_and_two_suppress(monkeypatch, raw, expected) -> None:
+    """SHIPPED (ungated round): 1. A DISTANCE, not a switch.
+
+    exact 0 -> the buffer (no suppression, its kill switch); 1 and 2 suppress; an explicit
+    integer >= 3 is the unsuppressed buffer; negative / non-integral / junk / missing take
+    the shipped 1 - a junk value that fell to the buffer would silently make the shipped
+    configuration firebreak-only, since extinguish at reach 2 needs a range below 2.
+    Until the ungated round (-1, "x", None) read 3, 0.5 read 3 and 2.5 truncated to 2.
+    See the flip checklist above.
+    """
     monkeypatch.setattr(cfv, "FF_FIREFIGHT_ENGAGED_RETREAT_RANGE", raw, raising=False)
     assert agents.ff_firefight_engaged_retreat_range() == expected
+
+
+@pytest.mark.parametrize("raw,expected", [
+    (0, 0), (1, 1), (-1, -1), (7, 7), (True, 1), (False, 0),
+    (0.0, 0), (3.0, 3), (-2.0, -2), (0.5, None), (-0.5, None),
+    (float("inf"), None), (float("-inf"), None), (float("nan"), None),
+    ("0", 0), (" 1 ", 1), ("-1", -1), ("0.5", None), ("2.0", None), ("off", None), ("", None),
+    (None, None), ([], None), (Decimal("0"), 0), (Decimal("2"), 2), (Decimal("0.5"), None),
+    (Fraction(1, 2), None), (Fraction(4, 2), 2),
+    (_IntEnum.ONE, 1), (_IntEnum.ZERO, 0), (_IntSub(5), 5), (_RaisingInt(), None), (b"1", None),
+])
+def test_exact_integer_accepts_only_exact_integers_and_never_raises(raw, expected) -> None:
+    """The helper under all four changed accessors (outputs/_ug_accessor_matrix.txt)."""
+    assert agents._exact_integer(raw) == expected
+    if expected is not None:
+        assert type(agents._exact_integer(raw)) is int
 
 
 # ---------------------------------------------------------------------------
@@ -622,8 +720,10 @@ def test_same_state_same_decisions() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Round 2: the mission gate. These cases leave the SHIPPED default in place
-# (FF_FIREFIGHT_MISSION_GATE = 1) and drive the victims themselves.
+# Round 2: the mission gate. It shipped at 1 in round 2 and has shipped at 0 since the
+# ungated round, so these cases ARM IT EXPLICITLY (mission_gate=1) and drive the
+# victims themselves. They test the gate's mechanism, which is unchanged and still
+# available as a per-run setting.
 # ---------------------------------------------------------------------------
 
 
@@ -639,7 +739,7 @@ def _engaged_rows(model) -> int:
 
 
 def test_gate_closed_while_any_victim_is_unresolved_runs_no_feature_code() -> None:
-    """The shipped default, with victims as a real run starts them: nothing engages.
+    """Gate armed, with victims as a real run starts them: nothing engages.
 
     Not merely "does not write": prepare returns before any accessor below it, so no
     model attribute is created and no log row exists.
@@ -757,3 +857,184 @@ def test_gate_predicate_draws_no_rng_and_creates_nothing() -> None:
         ff._firefight_mission_resolved()
     assert agents.random.getstate() == before_state
     assert set(vars(model)) == before_attrs
+
+
+# ---------------------------------------------------------------------------
+# The ungated round: the SHIPPED DEFAULT as behaviour, and the fireproof depots.
+# No case below passes an FF switch - each runs whatever common_fixed_variables ships.
+# A full-suite run with the constants flipped showed that nothing outside this file
+# notices firefighters fighting fire from step 1 (outputs/ungated_part1.txt 2.4), so
+# these are the tests that catch the feature being re-gated or switched off.
+# ---------------------------------------------------------------------------
+
+
+def _shipped_model(seed: int = 101) -> WildFireModel:
+    """A real model at the SHIPPED FF configuration: no switch is passed."""
+    rng = random.Random(seed)
+    cfv.SYSTEM_RANDOM = rng
+    wf.SYSTEM_RANDOM = rng
+    agents.random = rng
+    with contextlib.redirect_stdout(io.StringIO()):
+        model = WildFireModel()
+    model.debug_log = False
+    return model
+
+
+def _depot_cells(model: WildFireModel) -> set:
+    cells = {tuple(c) for c in (getattr(model, "base_station_fireproof_cells", ()) or ())}
+    assert len(cells) == 50, "two 5x5 fireproof depots expected at the shipped default"
+    return cells
+
+
+def _quiet_map_keeping_depots(model: WildFireModel, depots: set) -> None:
+    """_quiet_map for every cell EXCEPT the depot, which keeps its fireproofed fuel 0.
+
+    _quiet_map re-fuels every cell, depots included, so no case above ever sees the
+    fireproofed state; this one does.
+    """
+    for agent in model.schedule.agents:
+        if type(agent) is agents.Fire:
+            agent.burning = False
+            agent.burnt = False
+            agent.has_burned = False
+            agent.next_burning_state = False
+            agent.smoke.smoke = False
+            if (int(agent.pos[0]), int(agent.pos[1])) not in depots:
+                agent.fuel = 8
+
+
+def test_shipped_default_engages_while_every_victim_is_unresolved() -> None:
+    """At the shipped values an idle unit fights fire BEFORE the mission is decided.
+
+    Every victim of a fresh model is unresolved, so a gate-closed configuration would
+    return None here (test_gate_closed_while_any_victim_is_unresolved_runs_no_feature_code).
+    Ungated, the unit plans and engages, and retreat suppression is live (K = 1).
+    """
+    model = _shipped_model()
+    _quiet_map(model)
+    _line_x(model, 20)
+    ff = _unit(model, (24, 25))
+    assert ff._firefight_mission_resolved() is False
+    ctx = ff._firefight_prepare()
+    assert ctx is not None and ctx["plan"] is not None
+    assert ctx["K"] == 1 and ctx["extinguish"] is True and ctx["firebreak"] is True
+    ff.advance()
+    assert _engaged_rows(model) >= 1
+
+
+# The canonical tuple east/half/101 exactly as outputs/_ffr_harness.py builds it with no
+# --set (scenario D, --roles half; the 9 keys of its params build). The recorded
+# outputs/_ffr_sfON_east_half_101.json params add one --set extra,
+# VICTIM_SEARCHER_HAZARD_GATE_BOUNDS_FIX=1, the shipped default, so it is omitted here:
+# pinning it would hide a future change of that default from this guard.
+_CANONICAL_EAST_HALF = {
+    "NUM_AGENTS": 4, "NUM_VICTIMS": 4, "NUM_FIREFIGHTERS": 2, "WIND_DIRECTION": "east",
+    "BATCH_SIZE": 300, "FIRE_SPREAD_MULTIPLIER": 0.75, "PROBABILITY_MAP": False,
+    "NUM_FIRE_TRACKERS": 2, "NUM_VICTIM_SEARCHERS": 2,
+}
+
+
+def test_shipped_default_engages_before_terminal_step_on_a_canonical_seed(monkeypatch) -> None:
+    """THE RE-GATING GUARD: a full canonical run engages a firefighter while victims live.
+
+    east/half/101 with scenario D's parameters, seeded the way evaluate_scenarios and the
+    harness seed it, at the SHIPPED FF configuration. The run is stepped until the first
+    engaged firefight row appears, checking all_victims_terminal after every step exactly
+    as evaluate_scenarios._run_seed does. The first engagement must come while the mission
+    is still undecided, i.e. strictly before terminal_step.
+
+    Re-gating the feature (MISSION_GATE back to 1), switching both actions off, or
+    breaking suppression so that no plan forms all fail this. Nothing OUTSIDE this file
+    would notice (outputs/ungated_part1.txt 2.4). Inside it, the constant pins and
+    test_shipped_default_engages_while_every_victim_is_unresolved catch the same
+    constant flips (outputs/_ug_fallback_mutants.txt); this is the only test that checks
+    engagement in a real stepped canonical run, strictly before terminal_step. Every
+    value set here is set through monkeypatch, so nothing leaks into later tests.
+    """
+    rng = random.Random(101)
+    for mod in (cfv, wf):
+        monkeypatch.setattr(mod, "SYSTEM_RANDOM", rng, raising=False)
+        for key, value in _CANONICAL_EAST_HALF.items():
+            monkeypatch.setattr(mod, key, value, raising=False)
+    monkeypatch.setattr(agents, "random", rng)
+    engaged_at = None
+    terminal_at = None
+    with contextlib.redirect_stdout(io.StringIO()):
+        model = WildFireModel()
+        model.debug_log = False
+        for step in range(1, 61):
+            model.step()
+            if any(row["engaged"] for row in _log(model)):
+                engaged_at = step
+            mission = model.get_dashboard_state().get("mission_status", {}) or {}
+            if mission.get("all_victims_terminal"):
+                terminal_at = step
+                break
+            if engaged_at is not None:
+                break
+    assert engaged_at is not None, "no firefighter engaged in 60 steps at the shipped default"
+    assert terminal_at is None, "the mission was decided no later than the first engagement"
+    first = min(row["step"] for row in _log(model) if row["engaged"])
+    assert first <= engaged_at
+    managed = getattr(model, "managed_victims", None) or {}
+    assert any(
+        str(getattr(s, "status", "") or "").strip().lower() not in ("rescued", "dead")
+        for s in managed.values() if s is not None
+    ), "every victim was already resolved when the unit engaged"
+
+
+def test_fireproof_depot_cells_are_never_fuel_work_or_a_target() -> None:
+    """Non-burnable depots x the fire mechanic (outputs/ungated_part1.txt 3.1).
+
+    At the shipped default both features are on: the depot cells have fuel 0 from
+    reset, so the plan's fuel set must exclude them, no firebreak band cell may be a
+    depot cell, and no target or write may land in one. The geometry puts depot 0's
+    cells (x 0-4, y 45-49) inside the band of a burning line at x = 7 and stands the
+    unit INSIDE the depot, so a depot cell would be the nearest band cell if it were
+    ever treated as fuel.
+    """
+    model = _shipped_model()
+    depots = _depot_cells(model)
+    assert all(_fire(model, c).fuel <= 0 for c in depots)
+    _quiet_map_keeping_depots(model, depots)
+    _ignite(model, *[(7, y) for y in range(38, 50)])
+    ff = _unit(model, (2, 47))
+    assert (2, 47) in depots
+    ctx = ff._firefight_prepare()
+    assert ctx is not None and ctx["plan"] is not None
+    assert not (ctx["fuel"] & depots)
+    assert tuple(ctx["plan"][2]) not in depots
+    for _ in range(15):
+        ff.advance()
+    rows = _log(model)
+    assert rows
+    for row in rows:
+        if row.get("target") is not None:
+            assert tuple(row["target"]) not in depots, row
+    assert all(_fire(model, c).fuel <= 0 and not _fire(model, c).burning for c in depots)
+
+
+def test_a_burning_cell_bordering_only_the_depot_is_not_front() -> None:
+    """A burning cell whose only unburnt 4-neighbour is a depot cell is not FRONT and is
+    never an extinguish target (outputs/ungated_part1.txt 3.1).
+
+    The planner's front test is 4-neighbour only and depot cells (fuel 0) are never in
+    its fuel set; the fire cannot spread INTO the depot. The cell CAN still ignite fuel
+    diagonally or within the radius-3 spread neighbourhood, so "not front" is the
+    planner's heuristic, not a claim that the cell cannot spread.
+    """
+    model = _shipped_model()
+    depots = _depot_cells(model)
+    _quiet_map_keeping_depots(model, depots)
+    assert (4, 47) in depots
+    _ignite(model, (5, 47))
+    for cell in ((6, 47), (5, 46), (5, 48)):
+        fire = _fire(model, cell)
+        fire.has_burned = True
+        fire.burnt = True
+        fire.fuel = 0
+    ff = _unit(model, (5, 45))
+    ctx = ff._firefight_prepare()
+    assert ctx is not None
+    assert ctx["n_front"] == 0
+    assert ctx["plan"] is None or ctx["plan"][0] != "extinguish"

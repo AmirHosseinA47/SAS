@@ -11,7 +11,7 @@ echo "VMON2_SEEN $(date +%H:%M:%S)"
 echo "=== FEATURE WAVE, BOTH GUARDS (vmon3) ==="
 # dcD flip (2026-09-14): BASE_STATION_MODE ships at 3. These waves measured the
 # mode-0 default, so the mode is now pinned explicitly (outputs/flip_runner_register.txt).
-bash outputs/_ffr_runall.sh vmon3 /e/Projects/SAS --set BASE_STATION_MODE=0
+bash outputs/_ffr_runall.sh vmon3 /e/Projects/SAS --set BASE_STATION_MODE=0 --set FF_FIREFIGHT_EXTINGUISH=0 --set FF_FIREFIGHT_FIREBREAK=0  # FF pin, ungated round: outputs/ungated_runner_register.txt
 echo "=== KILL-SWITCH CONTROL WITH BOTH GUARDS (vmoff2) ==="
-bash outputs/_ffr_runall.sh vmoff2 /e/Projects/SAS --set VICTIM_FLEE_TRIGGER_DISTANCE=0 --set BASE_STATION_MODE=0
+bash outputs/_ffr_runall.sh vmoff2 /e/Projects/SAS --set VICTIM_FLEE_TRIGGER_DISTANCE=0 --set BASE_STATION_MODE=0 --set FF_FIREFIGHT_EXTINGUISH=0 --set FF_FIREFIGHT_FIREBREAK=0  # FF pin, ungated round: outputs/ungated_runner_register.txt
 echo "ALL_GUARD_WAVES_COMPLETE $(date +%H:%M:%S)"

@@ -18,7 +18,7 @@ PY=.venv/Scripts/python.exe
 # params gain that key; see outputs/flip_runner_register.txt).
 run() {  # tag wind seeds
   $PY outputs/_rblatch_campaign2.py --scenario D --wind "$2" --steps 240 \
-      --seeds "$3" --tag "$1" --set BASE_STATION_MODE=0 >/dev/null 2>>"outputs/_ir/rbgate_$1_$2.err"
+      --seeds "$3" --tag "$1" --set BASE_STATION_MODE=0 --set FF_FIREFIGHT_EXTINGUISH=0 --set FF_FIREFIGHT_FIREBREAK=0 >/dev/null 2>>"outputs/_ir/rbgate_$1_$2.err"  # FF pin, ungated round: outputs/ungated_runner_register.txt
   rc=$?
   f="outputs/_rblatch_camp2_$1_D_$2.json"
   if [ $rc -ne 0 ] || [ ! -s "$f" ]; then

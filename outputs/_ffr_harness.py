@@ -15,9 +15,18 @@ Recorded per run:
   - eval        : serve_dashboard._build_evaluation, exactly as evaluate_scenarios
   - fire_digests: sha256 of (burning, burnt, fuel) of every Fire agent after
                   every step. The fire RNG stream is independent of the rescue
-                  subsystem, so a seed-matched feature run must reproduce these
-                  digests step for step; the first differing step, if any,
-                  localises an unintended perturbation.
+                  subsystem ONLY WHILE NO FIREFIGHTER WRITES FUEL: then a
+                  seed-matched feature run must reproduce these digests step for
+                  step, and the first differing step localises an unintended
+                  perturbation. Since the ungated round (FF_FIREFIGHT_* shipped
+                  E1 F1 K1 G0) idle firefighters write from step 1 and rescue
+                  dispatch decides where they stand, and a write re-rolls the
+                  fire's single random stream (firemech2_report.txt section 3) -
+                  so at the shipped default a rescue-side change is EXPECTED to
+                  change the digests. Digest identity localises a perturbation
+                  again with --set FF_FIREFIGHT_EXTINGUISH=0 --set
+                  FF_FIREFIGHT_FIREBREAK=0, or under FM2P_CRN=1 with
+                  _fm2_probe_harness.py.
   - ff_steps    : per-step (pos, status, assigned, exiting, dead) of every
                   firefighter -> idle-on-edge share, absence windows, gaps
   - completions : rescue completions (Firefighter.advance flips rescue_completed)
@@ -41,7 +50,12 @@ base-station configuration the JSON records only what was passed with --set (in
 params and extra_params), not the effective defaults or the commit. After the fact,
 base_station (None vs a depot dict) separates mode 0 from mode >= 1; rtb_log shows
 mode >= 2 only once a return has triggered (not before step ~151 on 50x50), and a
-released_step shows mode 3.
+released_step shows mode 3. Since the ungated round a bare run ALSO has ungated
+firefighting (FF_FIREFIGHT_* E1 F1 K1 G0), and fireproof depots since 6668368, so it
+is no longer the drhD / d4D configuration; the firefighting-off pin is --set
+FF_FIREFIGHT_EXTINGUISH=0 --set FF_FIREFIGHT_FIREBREAK=0. The firefight_log /
+firefight_counters block in the JSON is what shows, after the fact, that a unit
+engaged (outputs/ungated_runner_register.txt).
 """
 from __future__ import annotations
 
@@ -807,7 +821,12 @@ def main() -> int:
         out["firefight_shadow"] = (
             sorted([int(c[0]), int(c[1])] for c in shadow) if isinstance(shadow, set) else None
         )
-        # fuel exhausted on a cell that never burned: only a firebreak produces it
+        # fuel exhausted on a cell that never burned. NOT only a firebreak: since
+        # BASE_STATION_FIREPROOF (6668368) every fuel-less depot cell counts here too,
+        # up to 50 cells, and this block is emitted only in runs that created a
+        # firefight log. Subtract the run's own depot cells before using it as a
+        # firebreak count (outputs/ungated_part1.txt P8; _ug_analyze.py does).
+        # Comment only - the recorded value is unchanged, so the instrument is too.
         out["fire_cleared_unburned_final"] = sum(
             1 for a in model.schedule.agents
             if type(a).__name__ == "Fire" and getattr(a, "pos", None) is not None

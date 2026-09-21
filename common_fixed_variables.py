@@ -215,10 +215,10 @@ VICTIM_SEARCHER_HAZARD_RETREAT_RANGE = 99
 # has now hit three times. Deterministic; draws from no RNG.
 VICTIM_SEARCHER_HAZARD_GATE_BOUNDS_FIX = 1
 
-# Firefighter fire mechanic (round 1, outputs/firemech_part1.txt). An IDLE
-# firefighter - one the rescue dispatcher counts as available and that has no
-# target - works against the fire front; any rescue assignment preempts it on its
-# very next advance. Both actions are the same write, removing a cell's fuel, and
+# Firefighter fire mechanic (round 1, outputs/firemech_part1.txt; SHIPPED ON and
+# ungated since the ungated round - see below). An IDLE firefighter - one the rescue
+# dispatcher counts as available and that has no target - works against the fire
+# front from step 1; any rescue assignment preempts it on its very next advance. Both actions are the same write, removing a cell's fuel, and
 # the Fire state machine does the rest:
 #   EXTINGUISH  a burning front cell within manhattan 2: it stops burning at once
 #               and turns burnt (absorbing) at the next fire tick.
@@ -231,31 +231,57 @@ VICTIM_SEARCHER_HAZARD_GATE_BOUNDS_FIX = 1
 # FF_FIREFIGHT_ENGAGED_RETREAT_RANGE is retreat suppression: while a unit is
 # engaged, its idle retreat distance (IDLE_RETREAT_SAFETY_BUFFER, 3) drops to this
 # value. 1 is the distance an ASSIGNED firefighter already retreats at. Extinguish
-# at reach 2 is only possible below 2, so without suppression it never acts.
-# 3 - and 0, negatives or anything unparseable - means no suppression.
+# at reach 2 is only possible below 2, so without suppression it never acts - which
+# is why the shipped value is 1 and not 2: at 2 the shipped configuration would
+# silently be firebreak-only. It is a DISTANCE, not a switch: an exact 0 is its
+# kill switch (no suppression), 1 and 2 suppress, and an explicit integer 3 or more
+# is the unsuppressed buffer itself - what the old accessor returned for every integer
+# >= 3, which the flip preserves. (Round 1's firebreak-only arms never set it: they ran
+# at the then-default 3, so re-run now they get 1; set 3 explicitly to reproduce them.)
+# A negative, non-integral or unparseable value is junk and takes the shipped 1.
 # FF_FIREFIGHT_DRY_RUN keeps every decision and suppresses every fire write (the
 # targeting then treats the would-be-written cell as done), which isolates the
-# behaviour from its effect on the fire.
+# behaviour from its effect on the fire. A diagnostic arm, never shipped.
 # FF_FIREFIGHT_MISSION_GATE (round 2) is WHEN a unit may engage: 1 = only once every
-# managed victim's status is rescued or dead, 0 = round 1's policy (any idle unit, any
-# time). The gate is what makes the feature rescue-neutral BY CONSTRUCTION - before it
-# opens no unit moves differently and no fire write lands, so no victim outcome can
-# change - at the price of giving up every effect before the mission is decided
-# (outputs/firemech2_part1.txt sections 1 and 4).
-# THE ACTION SWITCHES ARE ALL OFF BY DEFAULT, and their accessor fallbacks in agents.py
-# are the OFF value, so a missing or junk override cannot arm anything. With both action
-# switches 0 no firefighter code path changes. FF_FIREFIGHT_MISSION_GATE IS THE ONE
-# DELIBERATE EXCEPTION to that rule: it cannot arm the feature (that still needs
-# EXTINGUISH or FIREBREAK), and its conservative value is 1. Only an EXACT zero
-# (0, 0.0, "0", False) turns the gate off; anything unparseable or non-integral falls
-# back to 1, so a typo can only make the feature more rescue-neutral, never less.
+# managed victim's status is rescued or dead, 0 = any idle unit at any time (round 1's
+# policy). The gate makes the feature rescue-neutral BY CONSTRUCTION - before it opens
+# no unit moves differently and no fire write lands - at the price of giving up every
+# effect before the mission is decided (outputs/firemech2_part1.txt sections 1 and 4).
+#
+# SHIPPED UNGATED (outputs/ungated_part1.txt, outputs/ungated_report.txt): the
+# supervisor's policy, "by the time drones are looking for the victims, the
+# firefighter must fight with the fire". EXTINGUISH 1, FIREBREAK 1, RANGE 1, GATE 0 -
+# round 1's full configuration (fmEFS). THIS CARRIES A MEASURED, ACCEPTED RESCUE COST,
+# by two channels that are never pooled: -2 of 68 rescued in the stock realisation
+# (round 1; -2 of 59 de-duplicated), and under common random numbers -3 of 72 counted
+# for this configuration (-5 of 66 de-duplicated), where positioning alone (the dry arm)
+# is -6 counted / -5 de-duplicated. The writes' counted +3 over the dry arm is ONE run,
+# east/def/101, whose fire east/half/101 shares; de-duplicated the writes change no
+# rescue (61 vs 61; firemech2_part1.txt:445-447). Under CRN the cost is positioning: idle
+# units have walked toward the fire when a rescue is dispatched, which re-times the
+# rescue chain (firemech2_report.txt:165-169). In the stock model, which is what ships,
+# the writes ALSO re-roll the fire's single random stream and so move individual rescues
+# both ways (round 1: positioning -2 / writes +0 counted, -1 / -1 de-duplicated).
+# Re-measured at the ungated commit on a fresh independent seed set:
+# outputs/ungated_report.txt. Measured with two firefighters (scenario D), east and
+# south winds, 240 steps; west/north winds, longer runs and more units are unmeasured.
+#
+# THE ACCESSORS (agents.py ff_firefight_*) share one rule: ONLY AN EXACT INTEGRAL ZERO
+# DISABLES (0, 0.0, "0", False); a MISSING attribute takes the SHIPPED value, so a
+# missing value can never silently disagree with this file; anything that is not an
+# exact integer - junk, None, 0.5, inf, nan, Decimal("0.5") - ARMS rather than taking
+# the zero path. For EXTINGUISH, FIREBREAK and RANGE "arms" is the shipped value. The
+# gate is the one switch whose shipped value IS the zero: missing -> 0, and junk
+# closes it (ON), so a typo can only make the feature more rescue-neutral, never
+# less. FF_FIREFIGHT_DRY_RUN keeps its round-1 accessor (a bare int, fallback 0): its
+# default did not change, and closing that truncation belongs to the accessor round.
 # Overridable per run through apply_scenario_config like every other scenario parameter,
 # and read at call time. Deterministic - it draws from no RNG.
-FF_FIREFIGHT_EXTINGUISH = 0
-FF_FIREFIGHT_FIREBREAK = 0
-FF_FIREFIGHT_ENGAGED_RETREAT_RANGE = 3
+FF_FIREFIGHT_EXTINGUISH = 1
+FF_FIREFIGHT_FIREBREAK = 1
+FF_FIREFIGHT_ENGAGED_RETREAT_RANGE = 1
 FF_FIREFIGHT_DRY_RUN = 0
-FF_FIREFIGHT_MISSION_GATE = 1
+FF_FIREFIGHT_MISSION_GATE = 0
 
 # Base station (feature 3). A set of 5x5 depots - shipped as two, NW and SE (see
 # BASE_STATION_DEPOTS) - that the UAV team and the firefighters launch from, that a

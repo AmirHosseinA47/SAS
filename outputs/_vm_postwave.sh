@@ -10,7 +10,7 @@ tail -14 outputs/_vm_pytest_feature.txt
 echo "=== ROUTE_BLOCKED GATE (feature source at defaults) ==="
 # dcD flip (2026-09-14): pinned to the mode-0 default vmon measured. The pytest stage
 # above still runs the SHIPPED default (see outputs/flip_runner_register.txt).
-bash outputs/_ffr_rbgate.sh vmon --set BASE_STATION_MODE=0
+bash outputs/_ffr_rbgate.sh vmon --set BASE_STATION_MODE=0 --set FF_FIREFIGHT_EXTINGUISH=0 --set FF_FIREFIGHT_FIREBREAK=0  # FF pin, ungated round: outputs/ungated_runner_register.txt
 ./.venv/Scripts/python.exe outputs/_ir_rbmerge.py --prefix vmon > outputs/_vm_gate_rb.txt 2>&1
 tail -30 outputs/_vm_gate_rb.txt
 echo "VM_POSTWAVE_COMPLETE $(date +%H:%M:%S)"

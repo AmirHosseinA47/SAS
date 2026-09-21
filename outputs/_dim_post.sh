@@ -10,7 +10,7 @@ LOG=outputs/_dim_post.log
   ( MPLBACKEND=Agg $PY -m pytest tests -p no:cacheprovider -q > outputs/_dim_pytest_fix.log 2>&1; echo "PYTEST DONE rc=$? $(date +%H:%M:%S) $(tail -1 outputs/_dim_pytest_fix.log)" ) &
   # dcD flip (2026-09-14): pinned to the mode-0 default dimfix measured. The pytest
   # stage above still runs the SHIPPED default (see outputs/flip_runner_register.txt).
-  bash outputs/_ffr_rbgate.sh dimfix --set BASE_STATION_MODE=0
+  bash outputs/_ffr_rbgate.sh dimfix --set BASE_STATION_MODE=0 --set FF_FIREFIGHT_EXTINGUISH=0 --set FF_FIREFIGHT_FIREBREAK=0  # FF pin, ungated round: outputs/ungated_runner_register.txt
   echo "RBGATE SHARDS DONE $(date +%H:%M:%S)"
   $PY outputs/_ir_rbmerge.py --prefix dimfix > outputs/_dim_rbgate_dimfix.txt 2>&1
   echo "RBMERGE DONE rc=$? $(date +%H:%M:%S)"
