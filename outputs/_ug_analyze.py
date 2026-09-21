@@ -436,6 +436,10 @@ def sec_g4():
     return ok
 
 
+def pct(n, d):
+    return 100.0 * n / d if d else 0.0
+
+
 def sec_exposure():
     say("")
     say("=" * 88)
@@ -452,8 +456,8 @@ def sec_exposure():
                 if S is not None:
                     agg.update(S["exp"])
             say("  %-32s %-5s E1 %5.2f%% (%d/%d; depot %d)   E2 %5.2f%% (%d/%d; depot %d)" % (
-                name, tag, DFP.pct(agg["e1n"], agg["e1d"]), agg["e1n"], agg["e1d"], agg["e1n_dep"],
-                DFP.pct(agg["e2n"], agg["e2d"]), agg["e2n"], agg["e2d"], agg["e2n_dep"]))
+                name, tag, pct(agg["e1n"], agg["e1d"]), agg["e1n"], agg["e1d"], agg["e1n_dep"],
+                pct(agg["e2n"], agg["e2d"]), agg["e2n"], agg["e2d"], agg["e2n_dep"]))
 
 
 def sec_structural():

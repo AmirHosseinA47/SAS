@@ -1,0 +1,570 @@
+================================================================================
+UNGATED FIREFIGHTING - REPORT (Parts 2 and 3)
+Firefighters fight fire WHILE the drones search: implemented, validated, and STOPPED
+at the gate - the stock rescue cost on the fresh set exceeds the accepted cost.
+================================================================================
+
+BRANCH   ungated-firefighting, from main 11c3661 (tag searcher-livelock-fixed).
+         NOT merged, NOT pushed.
+COMMITS  ba58491  Part 2. The flip, the accessors, the tests, the 8 pins, the runner
+                  register, and the Part 1 / Part 3 tooling. The wave ran from this
+                  commit.
+         The Part 3 commit on top of it holds the results and this report.
+ENV      sys.version       3.10.11 (tags/v3.10.11:7d4cc5a, Apr  5 2023, 00:38:17)
+                           [MSC v.1929 64 bit (AMD64)]
+         mesa.__version__  1.2.1   (E:\Projects\SAS\.venv; every pool log's ENV line agrees)
+DESIGN   outputs/ungated_part1.txt, the pre-registration.
+           - Q1-Q7 as recommended, plus the maintainer's added test.
+           - Section 9 (decisions and errata) was appended before any Part 3 run.
+           - Every pool hashed the file into its log (prereg_sha256 8d17132f4fc0b776).
+CHECKOUTS  FLIP  E:/Projects/SAS at ba58491. 0 dirty tracked files at every pool start.
+           CTRL  E:/Projects/SAS_wt/base11c3661, a detached worktree at 11c3661 with the
+                 old defaults (the pool logs print them: E0 F0 K3 G1).
+WAVE     280 harness runs + 8 route_blocked shards. 0 failed, 0 refused. Every run was
+         checked against its arm's repo, extra_params and tuple before use.
+         10:31-14:55 on 2026-09-21. Full test suite 10:31-11:40.
+
+================================================================================
+0. VERDICT: STOP. THE STOCK RESCUE COST EXCEEDS WHAT WAS ACCEPTED.
+================================================================================
+  The brief: "If it is worse, STOP and report - the maintainer accepted a measured
+  cost, not an unmeasured one." It is worse, in ONE of the two channels.
+
+  GATE (pre-registered in ungated_part1.txt 6.5 and 9; M = 3, Q1; CRN -3/72, Q2)
+    G1 flip == explicitly configured arm ............... PASS 23/23 value-identical
+       + anchor == round 1's accepted fmEFS runs ......... PASS 23/23 value-identical
+       + control parity (11c3661 == 629a321) ............. PASS 23/23
+    G2 rescue cost on the fresh independent 30 (U30)
+       STOCK      ugC 101 -> ugD 93   loss 8   limit 5.97   BREACH
+       CRN        ugKC 95 -> ugKD 96  loss -1  limit 6.96   PASS  (a gain of 1)
+       CRN, positioning only  95 -> 97  loss -2  limit 10.92  PASS
+    G3 untouched vegetation rises ...................... FAIL as pre-registered:
+       rises on U30 stock (+2,970) and U30 CRN (+741), but not on the canonical+fresh
+       stock screen (-13). The rule required all three (section 5).
+    G4 firefighter deaths do not increase .............. PASS
+       U30 stock 7 -> 6; CRN 12 -> 5; canonical+fresh 6 -> 6. 0 engaged at death.
+    G5 no NEW route_blocked failures ................... PASS
+       the regression set is 3 of the known 4; south/202 recovers
+    G6 no NEW test failures ............................ PASS
+       same 8 names; 783 passed, exactly as pre-declared
+    G7 structural + attribution ........................ PASS
+       0 off-grid refusals in the 257 runs of the 7 guard-on arms; ugA, whose guard is
+       off by design, has 106 - a departure from the pre-registered "every run of every
+       arm" wording, recorded rather than hidden. Every write run diverges exactly at
+       its first write.
+
+  THE BREACH, IN ONE PARAGRAPH
+    - On the fresh 30 in the stock model, rescued falls 101 -> 93. The pre-registered
+      limit is the accepted -2/68 scaled to 101 (2.97) plus M = 3, i.e. 5.97.
+    - It is almost all POSITIONING. The DRY arm, whose fire is identical to the
+      control's 240/240 on 30/30 runs, loses 7 by itself.
+    - 9 of the 11 lost victims are lost in the DRY arm too, with the same status. The
+      other 2, both in east/half/1252362635, are the writes' fire re-roll.
+    - It is mostly LATE, NOT FATAL. Of the 11 victims lost:
+        - 7 were still ASSIGNED at step 240, with their unit closing in or already
+          carrying them out.
+        - 2 became unreachable.
+        - 2 died.
+      Victim deaths FELL 13 -> 12.
+    - The mechanism (section 4.3): 5 of the 11 were first dispatched LATE (steps
+      170-199), each to a unit that was fighting fire, and were still in progress at
+      step 240. One of these 5 is re-roll. The other 2 in-progress losses were long
+      rescues with reassignments that had needed until step 212-220 in the control.
+    - UNDER COMMON RANDOM NUMBERS THE SAME 30 SEEDS SHOW NO COST: +1 shipped, +2
+      positioning only.
+
+  WHAT THIS MEANS
+    - The ungated policy's positioning channel has much higher variance than the two
+      earlier samples suggested. Four measurements now exist:
+        round 1 stock     -2/68
+        round 2 CRN       -6/72
+        this stock        -7/101
+        this CRN          +2/95
+    - By count, this sample's stock positioning draw (-7/101) is the largest of the
+      four. By rate (6.9%), round 2's CRN -6/72 (8.3%) is larger.
+    - The gate is on the SHIPPED stock arm, -8/101. That breaches the pre-registered
+      rule, and the decision goes back to the maintainer (section 11).
+    - Nothing in this round re-litigates ungated versus gated. The options in
+      section 11 are about the cost that was accepted.
+
+================================================================================
+1. THREE PREMISE CORRECTIONS - WHAT EACH WOULD HAVE CHANGED
+   (plus one found in Part 2 that changes what the pins protect)
+   The STOP itself rests on G2's stock channel, which none of the three touches.
+   C1 would have misattributed the cost. C2 would have tested the shipped arm
+   against the lenient reference. C3 would have turned the fire effect under CRN
+   into an apparent loss.
+================================================================================
+[C1] THE BASE STATION PREDATES BOTH FIRE-MECHANIC MEASUREMENTS.
+     - The brief listed the base station (68c75a9) as a change since the cost was
+       measured. It is an ancestor of 003ed91 (round 1's code) and of d3640e3
+       (round 2's).
+     - Both rounds ran at dcD, with both firefighters spawning in depot 0 on adjacent
+       berths (2,45)/(2,46). The recorded fmOFF/fmEFS/f3GATE JSON carries both.
+     - Since round 2 (d3640e3), only two things changed the simulation:
+         - fireproof depots (6668368)
+         - the searcher off-grid guard (629a321)
+       The mission gate itself (d3640e3) changed code after round 1, but it is inert at
+       gate 0 (ugA == fmEFS 23/23).
+     - WHAT THEY DID TO THE COST (section 4.4):
+         - Turned off in the ugA anchor, the flip reproduces round 1's fmEFS value for
+           value, 23/23.
+         - Turned on, they lifted the UNGATED arm by only +1 (66 -> 67), measured
+           in-round (ugA vs ugX).
+         - They lifted the CONTROL on canonical+fresh by +5 (68 -> 73). This compares
+           this round's ugC with round 1's recorded fmOFF through the proven
+           kill-switch chain (f3OFF == fmOFF, dfpOFF/dfpB == fmOFF, dfpON == sfOFF,
+           sfON == ugC).
+       Crediting the base-station spawn would have blamed something that did not
+       change.
+[C2] -6/72 WAS THE POSITIONING-ONLY ARM.
+     - f2cDRY 66 vs f2cOFF 72 had every write suppressed.
+     - The configuration that ships, ungated E+F+S (f2cEFS), cost -3/72 under CRN
+       counted: the writes won back 3 of the 6.
+     - Gating the shipped arm on -6/72 would have been the lenient reading. The
+       maintainer ruled -3/72 like-for-like for the shipped arm and -6/72 for the dry
+       arm (Q2).
+     - Found in Part 2 (ungated_part1.txt 9, E3): de-duplicated, both are -5/66. The
+       writes' counted +3 is ONE run, east/def/101, whose fire east/half/101 shares.
+     - The gate used -3/72, the stricter rate. This round's CRN shipped arm passed it
+       with a GAIN of 1, so here the correction did not decide the outcome; it decided
+       which test was applied. U30 has no shared fires, so counted and de-duplicated
+       are the same on U30.
+[C3] THE ROUND-1 ANALYZER COUNTS FIREPROOF DEPOT CELLS AS "CLEARED" - ONLY IN RUNS WHERE
+     FIREFIGHTERS WORKED.
+     - _firemech_analyze.py:167-168 computes
+         intact = 2500 - ever - fire_cleared_unburned_final
+       The harness writes that key only when a firefight log exists, and since
+       6668368 it includes the 50 fuel-less depot cells.
+     - Reused unchanged, it would have put every feature run about 50 cells below its
+       control: about -1,500 over U30, about half the +2,970 measured.
+     - Uncorrected, G3 would ALSO have failed on U30 CRN (-759, instead of +741) and
+       deepened on canonical+fresh (-1,163, instead of -13). The physical fire effect
+       under common random numbers would have read as a LOSS.
+     - This round's intact reads the depot cells from each run and subtracts them in
+       BOTH arms.
+     - A per-run cross-check against the firefight counters agrees on every run
+       (section 5).
+[C4] (Part 2 review) THE 8 Q6 PINS DO NOT PROTECT A REPRODUCTION OF ROUND 2.
+     - The 8 pins are the base-station flip's MODE=0 lines; none is a fire-mechanic line.
+     - These round-2 lines are REGISTERED ONLY, not pinned:
+         f3GATE           27 lines
+         f3RBG{a,b,c,s}   18 runs
+         f3OFF            27 lines
+         f3RES            13 lines
+     - Re-run as-is after the flip:
+         - f3GATE and f3RBG* become "E F K1 ungated" (firebreak on, gate off)
+         - f3OFF becomes the full shipped feature
+         - f3RES gains firebreak
+     - The reproduction recipe is the first block of
+       outputs/ungated_runner_register.txt.
+     - The FF switches alone restore the recorded CONFIGURATION. To reproduce the
+       recorded RUNS value for value at the current tree, the recipe also passes
+       BASE_STATION_FIREPROOF=0 and VICTIM_SEARCHER_HAZARD_GATE_BOUNDS_FIX=0. Proven:
+       ugA, which does, equals fmEFS 23/23; ugX, which does not, 0/23.
+     - Completed queue files were not edited in place. A decision is needed
+       (section 11).
+
+================================================================================
+2. WHAT WAS IMPLEMENTED (Part 2, ba58491)
+================================================================================
+  CONSTANTS  FF_FIREFIGHT_EXTINGUISH 0->1, FIREBREAK 0->1, ENGAGED_RETREAT_RANGE 3->1,
+             MISSION_GATE 1->0. DRY_RUN stays 0. This is round 1's fmEFS.
+  ACCESSORS  The four changed switches share one rule, on a new helper _exact_integer:
+               - only an EXACT integral zero disables;
+               - a MISSING attribute takes the SHIPPED value;
+               - anything not an exact integer (junk, None, 0.5, inf, nan,
+                 Decimal("0.5"), Fraction(1,2), an object whose __int__ raises) ARMS:
+                 the shipped value, or for the gate, closed;
+               - nothing raises.
+             This closes the old accessors' holes:
+               - 0.5 disarmed extinguish and firebreak, and turned suppression off
+                 (which also silently disabled extinguish);
+               - Decimal/Fraction truncated;
+               - inf raised.
+             Every exact integer reads as before, except negative RANGE values
+             (deliberate). Measured: _ug_accessor_matrix.txt / _post.txt.
+             FF_FIREFIGHT_DRY_RUN keeps its bare int(); it goes to the accessor round.
+  TESTS      tests/test_firefighter_fire_mechanic.py grows from 42 to 87:
+               - the three deliberate pins rewritten, with docstrings stating the new
+                 default, under a comment block giving the six steps a re-flip requires;
+               - the helper matrix (33 cases);
+               - fireproof depots x the mechanic on a REAL fireproofed model (2);
+               - the shipped default engaging while every victim is unresolved;
+               - THE MAINTAINER'S TEST: test_shipped_default_engages_before_terminal_step_on_a_canonical_seed
+                 runs east/half/101 exactly as the harness seeds it.
+             outputs/_ug_fallback_mutants.py: every pre-flip literal, a removed catch-all,
+             re-gating (MISSION_GATE 1), switching off (E0 F0) and suppression off (K3)
+             are all KILLED; the unmutated control passes. Re-gating is killed by the
+             maintainer's test among others.
+  PINS       The 8 MODE=0 lines get --set FF_FIREFIGHT_EXTINGUISH=0
+             --set FF_FIREFIGHT_FIREBREAK=0, each with an end-of-line pointer to the
+             register (C4 for what they do not cover).
+  REGISTER   outputs/ungated_runner_register.txt, 2,025 legacy queue lines:
+               CHANGED          1,389 (silently)
+               RESTORED           283 fire-mechanic lines that had silently become gated
+                                      at d3640e3
+               FAILS-LOUDLY       330 (302 whose checkouts are gone; 28 lines of
+                                      _l808_queue.txt, a CRLF death under its own pool)
+               OTHER-CHECKOUT      23
+             None of the 95 shell runners at ba58491 sets an FF switch on a command line
+             apart from the pins. _ug_pytest.sh VARIANT=sim sets the shipped values
+             through its plugin.
+             Of the 28 new model-touching probes:
+               change silently      5 (4, plus _dfp_page_gate, which inherits _dfp_frames)
+               fail or flag loudly  4
+               restored             1
+               unaffected          18
+  TEXT       cfv, agents, harness docstrings; the stale "second depot burns" clause
+             (wildfire_model.py); a README paragraph.
+             NOT changed, per Q4: the dashboard's fire d/r column still shows r=3 for an
+             engaged unit whose real range is 1.
+  REVIEW     A 21-agent adversarial review of the diff: 15 findings confirmed, 2
+             refuted. None touched the simulation. All were fixed or recorded:
+             outputs/_ug_part2_review.txt.
+
+================================================================================
+3. SAMPLES AND SEED PROVENANCE
+================================================================================
+  CANONICAL 13  east/half and south/half 101-505, east/def 101-303
+  FRESH 10      east/half and south/half 606-1010
+  - Both are SCREENS. Every one of these 23 tuples has run in six or more earlier
+    rounds. All 10 of the "fresh 10" had run before round 1, and 8 of them (606-909)
+    were used even before the set was named fresh (idleretreat, route_blocked). "The
+    41" were 27 distinct runs (rbgate-sample-overlap).
+  - east/def and east/half on one seed share their fire in the control. In the
+    writing arms they share it only until the first firefighter write. The pooled
+    screen is reported counted and de-duplicated (east/def dropped from both arms).
+  RB4           east/half 111-444, the rb18 tuples outside the 23.
+  U30, THE EVIDENCE
+    - 30 tuples, one new seed each.
+    - Chosen by outputs/_ug_seeds.py BEFORE any run: SHA-256 counter mode over a
+      declared label.
+    - Rejected any seed in the 179-value used universe:
+        - the dcd4 audit list and fourth set
+        - outputs/ file-name tokens
+        - tracked queue files
+        - tests/ literals
+      Also rejected any seed whose ignition cell matched a canonical, fresh, rbgate,
+      dcd4 or already-accepted seed.
+    - 2 were rejected, both on ignition cell. No outcome screen.
+    - 13 east/half, 13 south/half, 4 east/default.
+    - Written into ungated_part1.txt 6.1 in Part 1 and committed in ba58491 before the
+      wave.
+    - 30 seeds, 30 distinct fires, so counted = de-duplicated.
+
+================================================================================
+4. RESCUE COST (G2) - TWO CHANNELS, NEVER POOLED
+================================================================================
+4.1 THE GATE ON U30 (limit = accepted rate x control rescued + M, M = 3)
+      channel                 control -> arm   loss   accepted   limit    verdict  flips lost/gained
+      stock, shipped          ugC 101 -> 93      8    2/68       5.97     BREACH   11 / 3
+      CRN, shipped            ugKC 95 -> 96     -1    3/72       6.96     PASS      1 / 2
+      CRN, positioning only   ugKC 95 -> 97     -2    6/72      10.92     PASS      1 / 3
+    Reported, not gated:
+      stock, positioning only ugC 101 -> 94      7    (6/72)    11.42     within    9 / 2
+      CRN shipped vs -6/72    95 -> 96          -1    6/72      10.92     within
+    VICTIM OUTCOMES AT STEP 240, U30 (120 victims per arm):
+      arm    rescued  dead  still assigned  unreachable
+      ugC      101     13         4              2
+      ugY       94     15         7              4
+      ugD       93     12         9              6
+      ugKC      95     18         3              4
+      ugKY      97     18         3              2
+      ugKD      96     18         5              1
+4.2 THE SCREENS (stock; not evidence)
+      canonical 13     ugC 40 -> ugD 37   (-3)       de-duplicated 31 -> 29
+      fresh 10         ugC 33 -> ugD 30   (-3)
+      canonical+fresh  ugC 73 -> ugD 67   (-6)       would EXCEED the same rule (limit 5.15)
+      Round 1 on the same 23 (003ed91): 68 -> 66 (-2).
+4.3 THE MECHANISM (outputs/_ug_loss_diag.txt; every victim rescued in ugC and not in ugD)
+      11 losses = 9 POSITIONING + 2 RE-ROLL.
+        - The 9 are ALL shared with the positioning-only arm (ugY), whose fire is
+          identical to the control's. Each has the same final status there:
+          5 still assigned, 2 unreachable, 2 dead.
+        - The 2 re-roll losses are both in east/half/1252362635 (victim_0 and victim_2).
+          ugY rescues them at steps 208 and 129; in ugD the fire diverges at step 12,
+          the first write.
+      By kind:
+        7  HORIZON  still assigned at 240, the unit alive and closing (distance over
+                    the last 30 steps: 46->16, 11->7, 42->12, 41->31, 21->3, 33->11) or
+                    already carrying the victim out
+        2  UNREACHABLE
+        2  DEAD
+      - 5 OF THE 11 WERE FIRST DISPATCHED LATE, at steps 170, 198, 198, 198 and 199,
+        all to a unit ENGAGED in firefighting on the assign step. All 5 are among the 7
+        in progress at 240.
+          start distance, ugD vs the control's assignment:
+            58 vs 33   (east/half/1252362635 victim_0: re-roll; also confirmed 110
+                        steps later, 198 vs 88)
+            53 vs 10
+            53 vs 34
+            37 vs 38   (assigned 6 steps later)
+            38 vs 34   (assigned 3 steps later)
+      - The other 2 in-progress losses were EARLY victims (confirmed at 53 and 14) whose
+        rescues needed reassignments and ran until steps 220 and 212 in the control. One
+        of them (east/half/1252362635 victim_2) is re-roll.
+      - The 6 remaining losses were first dispatched early (steps 14-132), including both
+        unreachable and both dead.
+      - DETECTION DID NOT MOVE in the positioning-only arm:
+        - 8 of its 9 lost victims were confirmed at the SAME step as in the control; the
+          ninth, earlier.
+        - The first dispatch happens at the same step in all three arms (mean 14.7).
+        What moved is where the idle unit stands when a victim is dispatched: at the
+        fire front rather than at its standby.
+      - This is round 2's positioning finding. On this sample it concentrates on late
+        dispatches and long rescues against the 240-step horizon.
+4.4 WHY THE COST GREW FROM ROUND 1 (the world changes, measured)
+      canonical+fresh 23      round 1 (003ed91)   this round (ba58491 / 11c3661)
+      control                 fmOFF 68            ugC 73   (+5)
+      ungated, full config    fmEFS 66            ugD 67   (+1)
+      anchor, both world changes off:  ugA 66 = fmEFS 66, value-identical 23/23
+      - Fireproof depots and the searcher guard raised the control's rescues by 5 on
+        this screen. That is the fireproof round's recorded +1 canonical / +4 fresh.
+      - They raised the ungated arm's by 1 (measured in-round: ugA 66 vs ugX 67 on the
+        same checkout). The control's +5 comes from the recorded kill-switch chain (C1).
+      - Units that leave the depot at step 1 do not collect the depot-related gain.
+        This is an observation on 23 screen runs, not a mechanism this round measured.
+4.5 THE POSITIONING CHANNEL HAS HIGH VARIANCE ACROSS REALISATIONS
+      positioning alone (DRY arm, fire identical to its control):
+        round 1  canonical+fresh, stock   fmDRY 66 vs fmOFF 68    -2
+        round 2  canonical+fresh, CRN     f2cDRY 66 vs f2cOFF 72  -6
+        this     U30, stock               ugY 94 vs ugC 101       -7
+        this     U30, CRN                 ugKY 97 vs ugKC 95      +2
+      - The same 30 seeds, positioning only, give -7 in the stock fire and +2 in the
+        CRN fire.
+      - Each is a valid paired comparison within its own fire.
+      - The spread tracks the late rescues each control made:
+          - In the stock fire, ugC rescued 5 of its 8 victims confirmed at step 160 or
+            later, and the positioning-only arm lost 4 of those 5.
+          - In the CRN fire, ugKC rescued none of its 6 late-confirmed victims, so
+            there was no late rescue to lose. ugKY's one loss was confirmed early, and
+            it gained 3, one of them late.
+      - Where victims lie relative to the fire front was not measured, and the CRN
+        losses were not diagnosed.
+      - The channels are not pooled here. The spread is reported so the maintainer can
+        see what "the accepted cost" was a sample of.
+
+================================================================================
+5. THE FIRE EFFECT (G3) - UNTOUCHED VEGETATION AND burnt_cells, BOTH
+================================================================================
+  intact = cells - ever_burned - depot cells never burned - firefighter-cleared cells
+  never burned (C3). The per-run cross-check against the firefight counters AGREES on
+  every run.
+      sample / instrument             intact            burnt_cells       ever_burned       ff cleared   burning@240
+      U30 stock    ugC -> ugD    23,555 -> 26,525 (+2,970)  36,216 -> 32,605  49,945 -> 44,824     0 -> 2,151   2,210 -> 1,191
+                   per run up/down/eq 19/7/4
+      U30 CRN      ugKC -> ugKD  26,332 -> 27,073 (+741)    33,506 -> 31,750  47,168 -> 44,284     0 -> 2,143   2,630 -> 1,955
+                   per run 15/11/4
+      canonical+fresh stock      20,706 -> 20,693 (-13)     25,663 -> 24,860  35,644 -> 34,229     0 -> 1,428   1,501 -> 1,143
+                   per run 10/10/3   (canonical -110, 5/8/0; fresh +97, 5/2/3)
+      canonical+fresh, DE-DUPLICATED (east/def dropped, 20 runs):
+                                 17,587 -> 17,585 (-2)      22,711 -> 22,013  31,413 -> 30,178     0 -> 1,237   1,390 -> 1,012
+                   per run 8/9/3
+      DRY arms (must be 0)       +0 stock, +0 CRN, 0/0/30 each
+  G3 AS PRE-REGISTERED FAILS on the canonical+fresh screen: counted -13,
+  de-duplicated -2.
+    - Ever-burned fell by 1,415 there, but the units cleared 1,428 cells that never
+      burned, and intact counts a cleared cell as lost vegetation.
+    - "The mechanic is doing something" is otherwise shown without doubt:
+        - attribution is exact (G7)
+        - ever-burned falls on every sample
+        - burning at step 240 falls on every sample
+        - intact rises by 2,970 on the independent set and by 741 under CRN
+    - It is reported as the pre-registered FAIL, not re-scored.
+  burnt_cells falls everywhere. It is ambiguous by construction: extinguish inflates
+  it, firebreak deflates it.
+
+================================================================================
+6. FIREFIGHTER DEATHS (G4) - THE RISK METRIC
+================================================================================
+      U30 stock        ugC 7 -> ugD 6        (positioning only ugY 11)
+      U30 CRN          ugKC 12 -> ugKD 5     (positioning only ugKY 10)
+      canonical+fresh  ugC 6 -> ugD 6        (de-duplicated 5 -> 6)
+  - NO UNIT DIED WHILE FIREFIGHTING, in any arm: 0 engaged at death, 0 on the step
+    before.
+  - The death mix shifts, as in round 1. Across U30+canonical+fresh:
+      control: 13 deaths, 5 of them after terminal_step (idle units)
+      ugD:     12 deaths, 7 of them PREEMPTED - pulled onto a rescue from a
+               firefighting position, dying before completing it - and 1 after
+               terminal_step
+  - The stock positioning-only arm ADDS deaths (ugY 7 -> 11), and the writes remove
+    them (ugD 6), as round 1 found. Under CRN the positioning-only arm does not add
+    deaths (ugKY 10 vs 12), and the shipped arm removes more (ugKD 5).
+  - DE-DUPLICATED, canonical+fresh deaths RISE by one (5 -> 6).
+      - Added: east/404, south/404, south/808 and south/909. Three of the four are
+        PREEMPTED rescue deaths at steps 36-72, and south/404, 808 and 909 are the same
+        runs round 1 flagged.
+      - Removed: east/505, east/1010 and south/606, all post-terminal idle deaths in the
+        control.
+    G4 passes on its pre-registered counted reading (6 -> 6). De-duplicated, the one
+    added death is classified: its OR clause.
+  - THE RISK MESSAGE: deaths move from AFTER the mission (idle units on the edge, no
+    effect on any victim) to DURING rescues (units pulled from a firefighting
+    position). The total does not rise.
+  - Every death is classified run by run in outputs/_ug_analysis.txt G4.
+
+================================================================================
+7. DRONE STEPS IN FIRE (item 5) - E1 searcher-only, E2 all-UAV, interior-hazard
+================================================================================
+      sample                           arm    E1       E2
+      rb18 (14 screen tuples + rb4)    ugC   2.30%    1.52%    (current main 11c3661)
+                                       ugD   2.23%    1.63%
+      canonical+fresh 23               ugC   3.10%    2.03%
+                                       ugD   3.03%    2.04%
+      U30 stock                        ugC   3.26%    2.18%
+                                       ugD   2.62%    1.73%
+                                       ugY   3.36%    2.22%
+      U30 CRN                          ugKC  2.47%    1.65%
+                                       ugKD  2.09%    1.43%
+                                       ugKY  2.47%    1.70%
+  - The brief's baseline, E1 2.50% / E2 1.61%, is 6668368, before the searcher guard.
+    Current main on rb18 is 2.30% / 1.52%.
+  - Depot component: 0 in every fireproof arm (every arm tabled). The untabled ugA
+    anchor, not fireproof, is non-zero.
+  - Both fall on U30, stock and CRN.
+  - On the screens E1 is flat (rb18 -0.07 pp, canonical+fresh -0.07 pp). E2 is flat on
+    canonical+fresh and RISES on rb18 (+0.12 pp).
+  - On rb18 the per-run paired deltas are within noise: E1 -0.07 +- 0.27 pp, E2
+    +0.12 +- 0.15 pp (SE).
+
+================================================================================
+8. OUTCOMES PER ARM (item 6) - canonical first
+================================================================================
+      sample      arm   rescued  dead  ff_deaths  never_detected  non-terminal  mean terminal
+      canonical   ugC      40     11       4            1              0           156.8
+                  ugD      37      9       4            0              3           134.6
+                  ugX      37      9       4            0              3           134.6   (== ugD)
+                  ugA      38     11       6            1              1           140.8   (== fmEFS)
+       de-dup     ugC      31      9       3            0              0           150.9
+                  ugD      29      7       4            0              2           129.6
+      fresh       ugC      33      4       2            2              1           171.6
+                  ugD      30      4       2            2              3           143.1
+                  ugA      28      6       3            2              4           157.2
+      U30         ugC     101     13       7            2              4           170.8
+                  ugD      93     12       6            4              7           161.5
+                  ugY      94     15      11            2              6           163.5
+                  ugKC     95     18      12            2              3           162.4
+                  ugKD     96     18       5            1              5           157.8
+                  ugKY     97     18      10            2              3           161.1
+      rb4         ugC      15      1       1            0              0           150.0
+                  ugD      15      1       0            0              0           147.5
+  - terminal_step: the mean over terminal runs FALLS in the shipped arm, while the
+    count of runs that never finish RISES. This is the horizon effect of 4.3.
+
+================================================================================
+9. ROUTE_BLOCKED GATE (G5) - outputs/_ug_rbgate.txt
+================================================================================
+  - --new ugGC --old ihrest (the control): east/707, south/101, south/202, south/404
+    - exactly the known four.
+  - --new ugGD --old ihrest (the flip): east/707, south/101, south/404
+    - a SUBSET of the known four. No new seed. south/202 recovers (3 -> 4), as in
+      round 1.
+  - The re-roll method: 15 of the 18 seeds re-roll before the control's terminal_step.
+    No regression lies outside the known four, so no CRN pair was needed.
+  - --new ugGD --old ugGC (the feature's own delta):
+      rescued 59 -> 56, dead 11 -> 9, ff_deaths 4 -> 4
+      per seed: east/101 -1, east/606 -1, south/404 3 -> 1 (deepens, as in round 1),
+      south/202 +1
+    Recovery still recovers (19 -> 13); no unit is left latched.
+  - Provenance, all 18/18:
+      - ugGC == sfRBG (629a321, same source)
+      - every shard's eval == its harness run's eval, in both arms
+
+================================================================================
+10. TESTS (G6) AND STRUCTURE (G7)
+================================================================================
+  FULL SUITE at ba58491 (_ug1_pytest_post):
+    - 8 failed, 783 passed, 791 collected.
+    - The FAILING NAME SET is IDENTICAL to the base's: the 8 names every round has
+      carried since the dcD flip.
+    - passed = 738 + 45 and collected = 746 + 45, exactly as pre-declared
+      (ungated_part1.txt 9 E4).
+    - The collected sets differ by exactly the 5 pre-declared renamed/re-parametrised
+      names removed and 50 added, all in the mechanic's test file.
+  STRUCTURE:
+    - off-grid refusals: 0 in every run of every guard-on arm (257 runs).
+      - ugA switches the guard off on purpose: 106 refusals, in 5 of its 23 runs.
+      - The pre-registration said "every run of every arm". Excluding ugA is a
+        departure, recorded here. ugA's refusals are the guard's designed kill-switch
+        behaviour.
+    - DRY fire == control fire 240/240: 30/30 stock, 30/30 CRN.
+    - Attribution: every writing run's fire diverges EXACTLY at its first write step.
+        stock: 50 runs; 7 with no write are identical
+        CRN:   30 runs
+      0 violations.
+    - The shipped default engages at step 1 in 57/57 runs, before terminal_step in all
+      of them.
+    - First dispatch: the two units stand 1 cell apart in 53/53 control runs and 50/53
+      shipped runs.
+
+================================================================================
+11. FOR THE MAINTAINER TO DECIDE
+================================================================================
+  THE STOP.
+    - The shipped configuration's stock rescue cost on an independent set is -8/101.
+      The accepted cost was -2/68; the pre-registered limit on this set was 5.97.
+    - The CRN channel passes with a gain.
+    - The code is on the branch, unmerged. It is exactly the accepted configuration
+      (G1: the anchor reproduces fmEFS value for value).
+    - Options, not re-litigating ungated vs gated:
+      (a) Accept the larger measured cost and merge as is:
+            - stock -8/101: 9 positioning, 2 re-roll
+            - 7 of the 11 losses still in progress at step 240
+            - victim deaths not up
+            - firefighter deaths not up in total, but moved into rescues
+      (b) Do not merge now. Open a round on WHERE AN IDLE UNIT FIGHTS relative to
+          late-found victims. Round 2's leash and chooser were refused for the EARLY
+          dispatch. 5 of the 11 losses here were first dispatched LATE (steps 170-199),
+          and round 2 did not examine late dispatch.
+      (c) Measure more before deciding. A second independent set, or the same U30 at a
+          longer horizon, would show how much of the -8 is the 240-step cut-off. This is
+          not run: the brief says stop.
+  C4.  Whether to add a pinned reproduction path for round 2's f3* arms: a new generator
+       writing new tags, with the FF switches AND the two world-change kill switches.
+       The 8 pins do not cover them.
+  Q4.  The dashboard fire d/r column (serve_dashboard.py:1025) shows r=3 for engaged
+       units. It is recorded for its own display round.
+
+================================================================================
+12. ERRATA TO PART 1, AND ARTIFACTS
+================================================================================
+  THIS REPORT WAS INDEPENDENTLY RE-DERIVED BEFORE SENDING
+    - 42 agents: 4 re-derived their slice from raw JSON, logs and junit without this
+      round's analyzers; 1 adversarial verifier per claimed mismatch.
+    - 27 corrections confirmed and applied, 11 claims refuted:
+      outputs/_ug_report_verify.txt.
+    - None changed a gate result.
+    - The substantive ones:
+        - the 9 + 2 split of the losses
+        - C3's effect
+        - the -7/101 "worst" claim
+        - the f3 recipe's world pins
+        - the de-duplicated deaths
+        - 257 guard-on runs, not 280
+  ERRATA (all recorded in ungated_part1.txt 9 before the wave):
+    - C4 (the pins)
+    - the RANGE "3 in use by round-1 arms" wording (those arms ran at the default)
+    - the counted vs de-duplicated CRN reference
+    - the G6 count (45, not 35)
+    - the helper's "never raises" made literally true
+  ARTIFACTS (outputs/)
+    ungated_part1.txt, ungated_report.txt, ungated_runner_register.txt, _ug_part2_review.txt
+    _ug_analysis.txt (every gate item), _ug_rbgate.txt, _ug_loss_diag.txt,
+    _ug_report_verify.txt
+    _ug_analyze.py, _ug_rbgate.py, _ug_loss_diag.py, _ug_queue.py, _ug_pool.sh,
+    _ug_seeds.py/.txt, _ug_register*.py, _ug_fallback_mutants.py/.txt,
+    _ug_accessor_matrix*.txt, _ug_simplugin.py, _ug_pytest.sh
+    _ug1_pytest_{base,p0,sim,post}.log/.xml
+    _ug_wave.log, _ug_crn_wave.log, _ug_rbC_wave.log, _ug_rbD_wave.log (pool logs:
+    ENV, SHIPPED, SHIPPED-CONTROL)
+    _ffr_ug{C,D,X,A,Y,KC,KD,KY}_*.json (280 runs), _rblatch_camp2_ugG{C,D}*_D_*.json
+    (8 shards; ugGC ran from the control worktree and was copied in)
+  QUARANTINE (outputs/_firemech_rewound_20260914/)
+    - One possible contact, in Part 1: one Grep TOOL call from the repo root without
+      --exclude-dir. ripgrep honours .git/info/exclude, which lists the directory; no
+      file under it matched or was used.
+    - Every other search passed --exclude-dir or used git listings or explicit file
+      lists.
+    - Every sub-agent (1 in Part 1, 21 in Part 2, 42 in the report re-derivation)
+      reported no recursive traversal of outputs/.
