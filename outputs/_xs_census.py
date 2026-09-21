@@ -74,7 +74,7 @@ def matched(names):
         common = set.intersection(*(set(by_tag[t]) for t in tags)) if all(by_tag[t] for t in tags) else set()
         say("  %s - %d common tuples" % (title, len(common)))
         for t in tags:
-            nl = ns = 0
+            nl = ns = excess = 0
             lst = []
             for tup in sorted(common):
                 with open(os.path.join(HERE, by_tag[t][tup]), encoding="utf-8") as f:
@@ -83,13 +83,66 @@ def matched(names):
                     nl += 1
                     if s1 - s0 > dist + 5:
                         ns += 1
+                        excess += (s1 - s0) - dist - 1      # a clean leg takes dist + 1 steps
                         lst.append("%s/%s/%d %s %d steps for %d cells (%d-%d)" % (tup[0], tup[1], tup[2], vid, s1 - s0, dist, s0, s1))
-            say("    %-6s stalled %d of %d legs%s" % (t, ns, nl, "".join("\n           " + x for x in lst)))
+            say("    %-6s stalled %d of %d legs, %d excess steps on them (leg - distance - 1)%s" % (
+                t, ns, nl, excess, "".join("\n           " + x for x in lst)))
+        say("    BROKEN carrying legs (an exit start with no completion by that unit for that victim):")
+        for t in tags:
+            lst = []
+            for tup in sorted(common):
+                with open(os.path.join(HERE, by_tag[t][tup]), encoding="utf-8") as f:
+                    d = json.load(f)
+                for b in broken(d):
+                    lst.append("%s/%s/%d %s" % (tup[0], tup[1], tup[2], b))
+            say("      %-6s %d%s" % (t, len(lst), "".join("\n           " + x for x in lst)))
+
+
+def broken(d):
+    """Carrying legs that did not complete: how each ended and what became of the victim.
+
+    A leg starts at an exit_start (ff, victim). It completes if that ff completes that
+    victim before the victim's next exit_start. Otherwise the end is read from ff_steps:
+    the first step after the start at which the unit's row no longer says exiting."""
+    out = []
+    starts = d.get("exit_starts") or []
+    comps = d.get("completions") or []
+    ffs = d.get("ff_steps") or []
+    vs = d.get("victim_steps") or []
+    for i, e in enumerate(starts):
+        nxt = next((x["step"] for x in starts[i + 1:] if x.get("victim") == e.get("victim")), 10 ** 9)
+        if any(c.get("victim") == e.get("victim") and c.get("ff") == e.get("ff") and e["step"] <= c["step"] <= nxt
+               for c in comps):
+            continue
+        end, cause = None, "still carrying at the run's last step"
+        for k in range(e["step"], len(ffs)):
+            row = next((r for r in ffs[k] if r[0] == e.get("ff")), None)
+            if row is None or not row[4]:
+                end = k + 1
+                if row is None:
+                    cause = "unit left the grid"
+                elif row[5]:
+                    cause = "unit DIED while carrying"
+                elif row[2] == "route_blocked":
+                    cause = "unit turned route_blocked and dropped the victim"
+                else:
+                    cause = "unit released the victim (status %s)" % row[2]
+                break
+        fate = next((v[2] for v in (vs[-1] if vs else []) if v[0] == e.get("victim")), "?")
+        died = next((k + 1 for k, rw in enumerate(vs) for v in rw if v[0] == e.get("victim") and v[2] == "dead"), None)
+        out.append("%s %s: carry from %d at %s, ended %s: %s; victim final %s%s" % (
+            e.get("victim"), e.get("ff"), e["step"], e.get("ff_pos"), end, cause, fate,
+            "" if died is None else " (dead from step %d)" % died))
+    return out
 
 
 def main():
     sys.stdout.reconfigure(newline="\n")
-    names = sorted(n for n in os.listdir(HERE) if n != QUAR and n.startswith("_ffr_") and n.endswith(".json"))
+    # OWN OUTPUTS EXCLUDED (the seed-selector self-reference lesson): this round's probe runs
+    # (_ffr_xs*) are replays and counterfactuals of recorded runs, and its .xstrace.json files
+    # also match _ffr_*.json. Counting them would change the census after the wave.
+    names = sorted(n for n in os.listdir(HERE) if n != QUAR and n.startswith("_ffr_") and n.endswith(".json")
+                   and not n.startswith("_ffr_xs") and ".xstrace." not in n)
     per_tag = collections.defaultdict(lambda: [0, 0, 0])      # runs, legs, stalled
     distinct = {}                                              # key -> (stalled, tag example)
     skipped = collections.Counter()

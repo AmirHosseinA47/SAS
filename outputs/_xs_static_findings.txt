@@ -1,0 +1,1709 @@
+EXIT-LEG STALL, PART 1 - STATIC ANALYSIS FINDINGS (workflow wf_289b53d1-1a8)
+Six independent read-only agents, no simulation run, run while the probe wave ran.
+Recorded verbatim below. outputs/exitstall_part1.txt folds them in, marked "static", and
+the probe traces (outputs/_xs_analysis.txt) confirm or supersede each code-level claim.
+
+============================================================================================
+AGENT mode-fields
+============================================================================================
+  QUARANTINE: None. I never entered, listed, read or searched
+  E:/Projects/SAS/outputs/_firemech_rewound_20260914/. Every search was a git grep over
+  tracked files with the pathspecs ':!outputs/**' and
+  ':!outputs/_firemech_rewound_20260914/**', or grep/awk/sed/Read on explicitly named files.
+  I read JSON only by explicit filename (outputs/_ffr_uh{C,D,Y}_*.json,
+  outputs/_xs_census.txt, outputs/exitstall_prereg.txt, outputs/_xs_census.py). I did no
+  recursive filesystem traversal: no find, os.walk, Glob with **, Grep on a directory, or
+  git status.
+
+ANSWER:
+  This was static work only: code reading, an AST pass over agents.Firefighter, and reads of
+  recorded JSON files. I ran no simulation. The simulation source at HEAD a538a6e is
+  identical to ac6e78d (`git diff --quiet` on agents.py, wildfire_model.py,
+  common_fixed_variables.py and src_extension). Python was .venv 3.10.11, always run with
+  -B. I wrote nothing into the repo; my scripts are in scratchpad/xs_static/
+  (ff_attr_ast.py, leg_view.py, leg_replay.py, legs_all.py).
+
+  (1) Assign, wildfire_model.py:4621-4626. This is the only assign writer; the executor
+  reaches it through rescue_executor.py:248-253. It writes exactly six fields:
+  assigned=True, target_pos, rescued_victim, status='en_route', exiting=False,
+  exit_target=None. So status is reset. Every other field survives the assign:
+  - _firefight_suspended
+  - _idle_retreat_origin, _idle_retreat_steps, _idle_retreat_stalled,
+  _idle_retreat_last_cell
+  - _last_move_tier, _last_move_risk
+  - movement_reason and _movement_last_*
+  - rescue_completed, off_grid, absent_until_step, absence_exit_cell
+
+  Recycle (2472-2479), off-grid (2556-2566) and return (2714-2716) do not reset the idle-
+  retreat fields or _firefight_suspended either.
+
+  (2) The exiting flip, agents.py:1783/1793, resets nothing. It writes only exiting,
+  exit_target and the movement-reason bookkeeping. target_pos stays set to the victim's cell
+  for the whole carry.
+
+  (3) What a carrying advance reads. It checks pos and dead (1722). Then
+  _refresh_target_from_victim returns at 1701 or 1703. Then _firefight_prepare calls two
+  pure config accessors, ff_firefight_extinguish (2484) and ff_firefight_firebreak (2485),
+  and returns None at 2487 or 2488. It returns on target_pos being truthy, so it never even
+  evaluates exiting. It never reaches the mission gate, ff_firefight_engaged_retreat_range
+  (2500), the dry-run check, _firefight_suspended (2535) or the plan.
+  - _needs_immediate_survival_retreat returns False at 1973 on exiting, before idle_buffer
+  is used.
+  - The branch at 1819 then either completes the rescue (1820-1838) or calls
+  _move_toward(exit_target) at 1840.
+  - _move_toward reads pos, exiting (the path check at 2388 is skipped), the neighbour
+  cells' fire, fire-adjacency and smoke, and status/assigned only for the route_blocked
+  relabel (2461-2463).
+  - No firefighting-mode or idle-mode field is read anywhere on this path. On a carrying leg
+  the only thing that can move the unit is agents.py:2464. The model's other movers (2468,
+  2711/2713, 2554) run only at recycle, off-grid or return.
+
+  (4) The engaged retreat range cannot reach a carrying advance. The accessor has one call
+  site (2500). K and T live only in a dict rebuilt each step (2549-2570) and are never
+  stored on the unit. No retreat distance applies to a carrying unit at all (1973). On the
+  approach leg the "1" is a hard-coded threshold (1985-1988), not K. The dashboard shows the
+  same mapping (serve_dashboard.py:1025: exiting none, assigned 1, idle 3).
+
+  (5) Approach leg (assigned, not exiting). Here the class does show up statically.
+  _survival_move, reached from 1743, reads the surviving idle-retreat fields:
+  - origin at 2052: the re-anchor at 2053-2057 only runs for a non-None origin when there is
+  no target, so an origin left over from idle mode leashes the candidates (2173-2175).
+  - stalled at 2077: routes the unit to _assigned_one_step_retreat (2078-2080). No reset
+  that an assigned unit can reach will clear it during the approach.
+  - steps at 2084 (the at-cap branch) and last_cell at 2088 (the anti-oscillation filter).
+
+  _firefight_suspended is not read on the approach. These reads date from before the fire
+  mechanic, so they are not specific to the ungated configuration, and whether they change
+  any outcome is not measured yet (the pre-registration's H4).
+
+  What drives the stall is _move_toward itself, which keeps no memory between steps. Tier 1
+  needs an improving cell that is not next to fire and not smoky. Tier 3 accepts any safe
+  cell, including one that moves away from the exit. exit_target is fixed at pickup, and the
+  rescue completes only when the unit stands exactly on it (1820). When the improving cell
+  is flagged, the unit alternates tier 3 then tier 1 in a two-cell cycle.
+
+  I replayed the rule offline against recorded fire for all 7 ungated stalled legs (5
+  shipped, 2 positioning-only):
+  - 304 of 374 carrying moves match the rule exactly using burning cells alone.
+  - The other 70 fit if some neighbours that had already burned were smoky. Smoke is not
+  recorded, so this part is a fit, not a proof.
+  - None of the 374 moves is unexplained, and 144 of them are tier-3 steps away from the
+  exit.
+  - One limit: I fitted the fire-timing offset on the 1433805104 leg and then applied it
+  unchanged to the other six.
+  - In the example leg, the unit reached (49,16) at step 218. At 219 it stepped back by tier
+  3, because the exit cell (49,17) had burning neighbours (48,17) and (49,18).
+
+  The positioning-only arm's fire is identical to the control's at every recorded step on
+  all five tuples. Its 2 stalled legs are the same legs as 2 of the shipped 5, and the
+  shipped arm's fire first differs only after those legs end (index 146 against a leg ending
+  at 143; 115 against 112). So 4 of the 7 stalled legs ran under fire identical to the
+  control's.
+
+  Across the three arms the same victims are picked up at different times and places. On
+  294124329 the pickup cell (37,25) and exit (49,25) are the same, but pickup is at step 127
+  in control against 90. Completion is 142 against 143. So the positioning arm's "stall"
+  there was an early carrier waiting for the hazard to clear.
+
+  Two of the 5 shipped stalls end past step 240: 1433805104 at 282 (7 cells from step 206)
+  and 1048395951 at 263 (16 cells from step 132). That links the stalls directly to the
+  240-step over-count.
+
+  My reading, which the probe traces should confirm:
+  - The carrying leg is not another instance of the class. Its movement is a pure function
+  of position, the fixed exit cell, and the current fire and smoke. It is the same kind of
+  stateless livelock the dock-fix round found, and it predates the fire mechanic (census: 32
+  of 909 distinct legs stall with it off; under CRN it is 4/96 off against 3/96 on).
+  - So on the carrying leg the hypothesis reads as (C). The stall itself is not inert at a
+  240-step horizon.
+  - The approach leg does have a real cross-mode read, but it predates the fire mechanic and
+  is unmeasured.
+
+  Possible fixes, scoped only and not implemented, each shipped OFF behind a switch:
+  - Complete the rescue on any boundary cell instead of only exit_target.
+  - Let the step onto exit_target ignore fire-adjacency and smoke, as long as the cell is
+  not burning.
+  - Re-choose exit_target during the carry.
+  - Add carry-leg anti-oscillation memory. This one adds exactly the kind of state this
+  class comes from.
+
+  I have not written outputs/exitstall_part1.txt or the memory note about the 240-step over-
+  count, because this task was read-only. The orchestrator needs to write both.
+
+FINDINGS:
+  - [verified] Inventory of rescue/assignment fields on agents.Firefighter (the writers and
+  - readers, with mode labels, are verified by an AST pass over the class plus git grep of
+  - tracked non-output sources)
+      evidence: assigned: init 1605; written by model at assign 4621 (approach), unassign
+      4715, recycle 2473, off-grid 2557; read 2463 (_move_toward relabel,
+      approach/carrying), model 3308, 4607, 2829/2832, 4567, 5317. target_pos: init 1607;
+      written by _refresh_target_from_victim 1719 (approach only, returns on exiting at
+      1703), model 4622/4716/2474/2558; read at 1703, 1718, 1745-1816 (approach), 1873 (idle
+      standby), 1979 and 1994 (mode switch), 2054-2149 (_survival_move), 2488
+      (_firefight_prepare guard), model 5318, 4031. It is never cleared by the exiting flip.
+      rescued_victim: init 1608; model 4623/4717/2477/2561; read 1672, 1705, and 1824-1844
+      (carrying). exiting: init 1609; set True ONLY at 1783; set False by model 4625, 4718,
+      2475, 2559, 5336; read 1703, 1746, 1781, 1819, 1874, 1973, 1992, 2388, 2488, Victim
+      1540, model 2826/2834/3310/3844/4325/5005. exit_target: init 1610; set ONLY at 1793;
+      set None by 4626, 4719, 2476, 2560, 5337; read only in advance 1798-1851 (no model
+      reader). status: init 1604; written by 2357 (route_blocked), 2463, model 4624
+      ('en_route'), 2472, 2556, 2923, 3883, 3898, 4064, 5335. rescue_completed: 1611, 1828
+      (carrying completion), model 2478/2562. dead: 1603, model 2479/2563/5334. marker_only:
+      written at 1606 only, with no reader in production source.
+  - [verified] Inventory of idle-retreat and firefighting-mode fields: writers, readers and
+  - reset points
+      evidence: _idle_retreat_origin: W 1618, 2037 (reset), 2071 (re-anchor); R 2052
+      (_survival_move: idle OR approach). _idle_retreat_steps: W 1619, 2038, 2072, 2144
+      (idle/approach scan move), 2284 (idle revalidate); R 2084 (idle/approach), 2281
+      (idle). _idle_retreat_stalled: W 1620, 2039, 2073, 2097/2132/2139 (idle OR approach),
+      2111/2127 (idle only), 2289 (idle revalidate clear); R 2077 (idle/approach), 2149
+      (idle only). _idle_retreat_last_cell: W 1621, 2040, 2074, 2142, 2282; R 2088
+      (idle/approach), 2269 (idle). Reset sites via _reset_idle_retreat_state (2036-2040):
+      1880 (idle standby), 2049, 2120 (idle), 2147 (idle/approach, after a move onto an
+      ideal standoff), 2151 (idle), 2875 (idle-firefighting execute, when required-safe).
+      _firefight_suspended: NOT in __init__; W 2907 (idle engaged retreat, K<3), 2538
+      (clear, idle, ideal standoff); R 2535 only (idle, after the 2488 guard and the mission
+      gate at 2497). The only other reader of any of these fields in tracked source is
+      tests/ (git grep).
+  - [verified] Movement bookkeeping fields have no bearing on movement. _last_move_risk and
+  - marker_only are written but never read.
+      evidence: _last_move_tier: W 1623, 2457; R 1755, 1759, 1812, 1815, 1852, all movement-
+      reason logging, each after the same step's _move_toward wrote it. It is stale only if
+      _move_toward returned early at 2413 (no non-burning neighbour). _last_move_risk: W
+      1624, 2458, with zero readers in agents.py (AST pass) or in tracked non-output source.
+      movement_reason/_movement_last_notable_category/_movement_last_transition_key:
+      1622/1637/1644/1669, read at 1632/1636 and by the dashboard
+      (explanation_engine.py:548,589). Absence fields
+      off_grid/absent_until_step/absence_exit_cell: init 1615-1617, set at model 2564-2566,
+      cleared at 2714-2716, read at model 2641, 3411-3412, 4324 and
+      dashboard_state_builder.py:344-345.
+  - [verified] (1) A rescue assign resets exactly 6 fields. Every idle-retreat and
+  - firefighting field survives it, and also survives recycle, off-grid and return.
+      evidence: wildfire_model.py:4621-4626 writes assigned, target_pos, rescued_victim,
+      status='en_route', exiting=False, exit_target=None and nothing else on the marker (the
+      rest of 4628-4703 writes managed state or the knowledge model). The executor path goes
+      RescueExecutor.execute_physical_command -> model.apply_physical_rescue_command
+      (rescue_executor.py:248-253); _dispatch_firefighter_to_victim (5139-5154) goes through
+      the same path; _apply_firefighter_model (rescue_executor.py:595-621) writes only the
+      knowledge model. The survivors are _firefight_suspended, all 4 _idle_retreat_*,
+      _last_move_tier/_risk, movement_reason/_movement_last_*, rescue_completed, off_grid,
+      absent_until_step, absence_exit_cell. Recycle 2472-2479, off-grid 2556-2566 and return
+      2714-2716 also leave the idle and firefighting fields untouched.
+  - [verified] (2) The exiting flip resets nothing
+      evidence: agents.py:1782-1803: sets exiting=True (1783) and exit_target = nearest
+      boundary cell of the pickup cell (1784-1793), and records the movement reason.
+      target_pos (still the victim's cell), status ('en_route' throughout the carry,
+      confirmed in the recorded ff_steps of uhD east/half/1433805104), rescued_victim, idle-
+      retreat state and _firefight_suspended are all untouched. The unit does not move on
+      the flip step.
+  - [verified] (3) On a carrying advance (exiting=True at entry), no firefighting-mode or
+  - idle-mode field is read, and _firefight_prepare returns after two pure config reads
+      evidence: Path: 1722 (pos, dead) -> 1726 _refresh_target_from_victim:
+      victim_flee_trigger_distance() (agents.py:881, reads cfv) then return at 1701 or 1703
+      -> 1732 _firefight_prepare: ff_firefight_extinguish() 2484 and
+      ff_firefight_firebreak() 2485 (pure _exact_integer reads of cfv, 1160-1179). Returns
+      None at 2487 if both are off, else at 2488, on target_pos being truthy (short-circuit;
+      exiting is not even evaluated). Never reached: _firefighter_available_for_dispatch
+      2490, mission gate 2497, ff_firefight_engaged_retreat_range 2500, dry_run 2505,
+      _firefight_shadow, the Fire scan, _firefight_suspended 2535, the plan; no
+      _firefight_log row is written (1774/1780/2886 need a non-None ctx). -> 1734
+      idle_buffer=3 -> 1736 _needs_immediate_survival_retreat returns False at 1973 on
+      exiting -> 1781 False -> 1819 -> 1820 completion (writes rescue_completed,
+      model._agents_pending_removal, _rescue_path_clear_requested) OR 1840
+      _move_toward(exit_target): reads pos, exiting (2388, so no path BFS and no _fire_cells
+      call), the neighbours' fire/adjacency/smoke via the grid (2394-2409), status at 2461
+      and assigned at 2463 (route_blocked relabel only); writes _last_move_tier/_risk and
+      moves at 2464; then 1843 moves the victim, and 1848-1853 logs using _last_move_tier.
+      Firefighter positions change only at agents.py 2143/2283/2314/2464/2848 and model
+      2468/2711/2713/2554; on a carrying step only 2464 is reachable.
+  - [verified] (4) The engaged retreat range K is not reachable on a carrying advance, is
+  - not persistent state, and no retreat distance (1 or 3) applies to a carrying unit
+      evidence: ff_firefight_engaged_retreat_range has one call site, agents.py:2500 (git
+      grep over tracked source). K and T exist only in the per-step ctx dict (2549-2570) and
+      in the local idle_buffer (1733-1735); no field stores them.
+      _needs_immediate_survival_retreat returns False at 1973 for exiting before any
+      distance test. For assigned approach units idle_buffer is ignored as well: the
+      target_pos branch uses a hard-coded adjacent-or-<=1 test (1985-1988), and idle_buffer
+      only matters when there is no target (1979-1984). The dashboard's '1' for assigned
+      units (serve_dashboard.py:1025) is that hard-coded threshold, not K; its tooltip at
+      1028 says exiting units have no retreat range.
+  - [verified] (5) The approach leg does read idle-retreat state that survived the assign (a
+  - static instance of the cross-mode class). It predates the fire mechanic, and its outcome
+  - effect is unmeasured.
+      evidence: Approach survival branch 1736 -> 1743 _survival_move. At 2052-2057 the
+      origin re-anchor is guarded by `not self.target_pos` for a non-None origin, so an
+      origin from before the assign is kept and leashes the candidates (_retreat_candidates
+      2173-2175); an empty candidate set leads to _assigned_one_step_retreat (2095) or
+      stalled=True (2097). At 2077-2080 a surviving _idle_retreat_stalled=True sends every
+      approach survival step to _assigned_one_step_retreat and returns. No reset reachable
+      by an assigned unit clears it: 2049 needs an ideal standoff, which contradicts the
+      entry test at 1976/1985-1988; 2120, 2151, 1880, 2875 and 2289 are idle-only; and 2147
+      is behind the early return at 2080. _idle_retreat_steps (2084, the at-cap branch
+      2112-2127) and _idle_retreat_last_cell (2088, filter at 2171) are read too.
+      _firefight_suspended is NOT read on the approach (2535 is behind 2488). All of these
+      fields exist independent of FF_FIREFIGHT_*, so this is not specific to the ungated
+      configuration.
+  - [verified] The stall mechanism: _move_toward keeps no memory between steps, its tier 3
+  - allows a step AWAY from the exit, exit_target is fixed at pickup, and completion
+  - requires exact arrival. Together these make a two-cell cycle while the improving cell is
+  - next to fire or smoky.
+      evidence: agents.py:2422-2455: tier 1 = improving and not fire-adjacent and not smoky;
+      tier 2 = same distance and clean; tier 3 = any clean cell chosen by min dist_after
+      (can be dist_before+1); tier 4 = min risk. There is no last-cell memory in
+      _move_toward (unlike _retreat_candidates 2171). exit_target is written only at 1793
+      and only nulled elsewhere. Completion is `self.pos == self.exit_target` at 1820, so
+      standing on another boundary cell does not count. Example worked through: from (49,13)
+      toward (49,17) the only improving cell (49,14) is flagged, so tier 3 picks (48,13)
+      (first in _neighbor_cells order, 1961); from (48,13), tier 1 picks (49,13) again.
+  - [inferred] All 374 carrying moves of the 7 ungated stalled legs are reproduced by the
+  - memoryless _move_toward rule against the recorded burning intervals: 304 exactly, 70 if
+  - some already-burned neighbours were smoky, 0 unexplained. 144 moves are tier-3 steps
+  - away from the exit.
+      evidence: scratchpad/xs_static/leg_replay.py + legs_all.py (legs_all.out), reading
+      outputs/_ffr_uh{D,Y}_*.json burn_intervals/ff_steps/exit_starts/completions. Per leg
+      (exact/smoke-fit/unexplained; tiers): uhD east/def/1749069988 17/2/0 {1:12,3:7}; uhD
+      east/half/294124329 34/18/0 {1:32,3:20}; uhD east/half/1433805104 62/13/0 {1:41,3:34};
+      uhD east/half/2070841104 22/1/0 {1:10,3:5,4:8}; uhD south/half/1048395951 113/17/0
+      {1:69,3:53,4:8}; uhY 294124329 and 2070841104 identical to uhD. Example: step 218
+      (48,16)->(49,16) tier 1; step 219 (49,16)->(49,15) tier 3 while (48,17) and (49,18),
+      the exit cell's neighbours, were burning. Caveats: smoke is not recorded, so the 70
+      are an existential fit; the fire-timing offset (0, exclusive) was fitted on
+      1433805104, where other offsets left 5-29 moves unexplained, and then applied
+      unchanged to the other 6 legs.
+  - [verified] The positioning-only arm's fire equals the control's at every recorded step.
+  - Its 2 stalled legs are the same legs as 2 of the shipped 5, and those ran under fire
+  - identical to the control's, so 4 of the 7 stalled legs saw no fire write.
+      evidence: fire_digests compared per step: uhC == uhY over all 360 steps for 294124329,
+      2070841104, 1433805104, 1048395951 and 1749069988. The uhD digest first differs at
+      index 146 (294124329, leg ends 143), 115 (2070841104, leg ends 112), 108 (1433805104),
+      64 (1048395951) and 26 (1749069988). uhY and uhD exit_starts/completions are identical
+      for 294124329 and 2070841104.
+  - [verified] Across arms the same victims are carried at different times and places, which
+  - explains why the control shows 0 stalls without any state difference (H3)
+      evidence: 294124329 victim_0: pickup at (37,25), exit (49,25) in all arms; control
+      picks up at step 127 and completes at 142, against pickup at 90 and completion at 143
+      in D and Y. The early carrier waits out the hazard and delivers only 1 step later than
+      control. 2070841104 victim_0: control picks up at (49,49) at step 245 and completes at
+      246, against (38,28) at step 88 and completion at 112 in D and Y, i.e. 134 steps
+      earlier despite the stall. 1433805104 victim_0: control (49,9) at 198, completing 199;
+      D (42,17) at 206, completing 282; Y (48,1) at 298, completing 300.
+  - [inferred] Two of the 5 shipped stalls push a completion past step 240, tying the stall
+  - to the 240-step over-count (the counterfactual completion step is inferred)
+      evidence: uhD east/half/1433805104: leg 206-282 over 7 cells; without the stall it
+      would complete around step 214 (inferred), but the recorded completion is 282. uhD
+      south/half/1048395951: leg 132-263 over 16 cells; without the stall around 149
+      (inferred), recorded 263. The other three shipped stalls end at 143, 112 and 199.
+  - [verified] _firefight_suspended carries across a rescue into the NEXT idle period, not
+  - into the rescue itself
+      evidence: It is set at 2907 and cleared only at 2536-2538, when the unit stands on an
+      ideal standoff during an idle _firefight_prepare. Assign (4621-4626), recycle
+      (2472-2479), off-grid (2556-2566) and return (2714-2716) do not touch it, and it is
+      read only at 2535, in idle mode. Its effect is to keep a recycled unit at the full
+      buffer T=3 until it reaches an ideal standoff, which is more cautious, never less.
+  - [inferred] Side note: the reset at the top of _survival_move (2049) can never fire
+      evidence: Every caller's entry condition contradicts an ideal standoff (safe and min
+      distance >= 4). Callers: 1860 via _idle_needs_survival_move (2000-2005: fire,
+      adjacent, smoke or distance <= 3) and 1743 via _needs_immediate_survival_retreat
+      (1976, 1980-1983 with idle_buffer <= 3, 1985-1988). Both compute fire_cells from the
+      same schedule on the same step.
+
+OPEN QUESTIONS:
+  - Smoke is not recorded in the _ffr_*.json files, so 70 of the 374 replayed carrying moves
+  - are explained only on the assumption of smoke on already-burned neighbours. The probe
+  - traces (H2) need to confirm the tier and the blocking cause for each step.
+  - The fire-timing alignment for the offline replay (offset 0, exclusive intervals) was
+  - fitted on one leg and then applied unchanged to the other six. The probe's exact per-
+  - advance records should replace it.
+  - Verdict (A) or (B) for the stall itself: the stall is pre-existing and not caused by
+  - leaked state, but 2 of the 5 shipped stalls cross step 240. Whether that counts as a
+  - cost depends on which horizon the gate uses. The orchestrator or maintainer decides.
+  - Fix choice, scoped but not implemented: complete on any boundary cell; let the step onto
+  - exit_target ignore fire-adjacency and smoke when the cell is not burning; re-choose
+  - exit_target during the carry; or add carry-leg anti-oscillation memory (which adds
+  - cross-step state of exactly this class). Does completing on any boundary cell conflict
+  - with the base-station or depot semantics? Not checked.
+  - The approach-leg cross-mode reads (surviving idle-retreat origin, stalled, steps and
+  - last_cell): do they change any outcome? That needs the XS_RESET=assign counterfactuals
+  - (H4). If it becomes a fix, the likely scope is _reset_idle_retreat_state at assign
+  - (wildfire_model.py:4621-4626), possibly also at recycle.
+  - I did not write outputs/exitstall_part1.txt or the memory note ('a 240-step evaluation
+  - of the ungated configuration reports about 4x its true cost: loss 8/4/3/2 at
+  - 240/270/300/330'), because this task was read-only on the repo. A writer step must do
+  - both.
+
+============================================================================================
+AGENT model-paths
+============================================================================================
+  QUARANTINE: None. I never entered, listed the contents of, or searched
+  E:/Projects/SAS/outputs/_firemech_rewound_20260914/. Every recursive grep, over
+  src_extension and the repo root, had --exclude-dir=_firemech_rewound_20260914 plus .venv,
+  .git and __pycache__; the root-level ones also excluded outputs and tests. All reads under
+  outputs/ were explicit file paths or non-recursive globs (shell and Python glob of
+  _ffr_*.json, filtered to files). The only exposure was a plain non-recursive `ls` of
+  outputs/ (piped to grep '^_xs' and to name filters), which lists that directory's name as
+  an entry but never opens it. No files were created or changed in the repo or in
+  E:/Projects/SAS_wt; the control tree's source was read only through `git show`/`git diff`
+  on this repo's objects. No simulations were run. Scratch scripts and outputs are in
+  C:/Users/ahrar/AppData/Local/Temp/claude/E--Projects-SAS/e5e891da-
+  af9a-40cc-9698-0d2307731681/scratchpad/xs_static/ (trace_leg.py, carrier_unassign_scan.py,
+  scan_out.txt, drop_outcomes.py, leg_invariants.py, boundary_first.py,
+  uncompleted_legs.py).
+
+ANSWER:
+  Model-side, no firefighting-mode state reaches a carrying unit. wildfire_model.py and
+  src_extension/ never read FF_FIREFIGHT_* or any _firefight_* field (grep). On the agent
+  side, _firefight_prepare returns None for a unit that is exiting (agents.py:2488), so an
+  exiting unit's advance() skips both retreat branches (1973, 1992) and goes straight to
+  _move_toward(exit_target) (1840). The carrier code is the same in the control tree and on
+  the branch: `git diff 11c3661 ac6e78d` changes only a docstring in wildfire_model.py and
+  the ff_firefight_* accessors in agents.py (1109-1232).
+
+  **The 7 stalled completed legs.** From the recorded JSON, every model-side path was inert
+  during all seven:
+  - the carrier's (status, assigned, exiting, dead, bound victim, dispatchable,
+  rescue_completed, off_grid) was one constant tuple for the whole leg;
+  - no assign, unassign or unreachable mark happened for any unit in the window;
+  - the victim stood on the carrier's cell every step;
+  - the carrier wrote no firefight_log rows;
+  - the exit target stayed the one chosen at pickup.
+
+  The positioning-only arm is also explained. Its fire digests match control at every step
+  (4 tuples checked). The shipped arm first differs at steps 109-147. In
+  east/half/294124329, control, positioning-only and shipped all pick up victim_0 at
+  (37,25):
+  - Control: dispatched at 89, picked up at 127, finished at 142 (15 steps, no stall).
+  - Positioning-only and shipped: dispatched at 51, picked up at 90, finished at 143 (53
+  steps, stalled).
+
+  The fire is identical in control and positioning-only, so what differs is only when the
+  carry happens relative to the fire. On the maintainer's hypothesis (firefighting state
+  surviving into the rescue), the verdict is (C), not as described.
+
+  **What the stall actually is.** The exit target is fixed at pickup (agents.py:1784-1793),
+  and the rescue completes only when pos == exit_target exactly (1820). Nothing on the model
+  side ever recomputes it. In uhD east/half/1433805104 the carrier was on the boundary for
+  26 of its 76 carrying steps, first at step 218. It was held off (49,17) because that cell
+  was burning or next to fire, and _move_toward's risk tiers let it step away from the
+  target. Seed 1291443119 is the same pattern in all three arms: the carrier reached the
+  boundary 9-10 cells from its exit target ((49,33)) at step 107 (shipped and positioning-
+  only) or 138 (control) and never completed.
+
+  **Two model-side paths end a stalled carry as a loss.** This happens in every arm,
+  including control, and the completed-leg census cannot see it:
+  1. **Route-blocked drop.** When no neighbour is free of fire, _move_toward calls
+  _mark_route_blocked (agents.py:2411-2413). That goes to _on_firefighter_route_blocked
+  (wildfire_model.py:5156-5189) and then the route_blocked incident handler (3660-3680). The
+  handler unassigns the carrier with reset_victim_pending, so the unit drops its victim.
+  2. **Geographic-isolation cancel.** _update_unreachable_victims leaves exiting units out
+  (5005-5006), so a carried victim never counts as served. After 30 steps with no other unit
+  able to reach it, the carrier is unassigned and the victim marked unreachable (5108-5137).
+
+  Across 2497 recorded runs, 30 distinct carries ended this way. All 22 route-blocked drops
+  were followed by the victim's death, 0-11 steps later. All 8 isolation cancels marked the
+  victim unreachable, 7 of them exactly 29 steps after pickup. Many are in fire-mechanic-OFF
+  tags.
+
+  In the 360-step arms, seed 1291443119 dropped in control at step 168 (an 88-step carry)
+  and in shipped and positioning-only at 148 (64 steps). In those two arms the unit escaped
+  at 150 and the victim, left behind at (47,42), burned at 150. The route_blocked branch is
+  the same bug class: the approach-phase replacement mechanism fires on a carrier, even
+  though agents.py:2382-2386 says that response is wrong for one. Whether a trapped carrier
+  drops its victim also depends on approach-phase memory: _blocked_replacement_attempted is
+  never cleared (379, 3668-3670).
+
+  **Scoped fixes, none implemented:**
+  - (i) Agent side: complete on any boundary cell, or re-choose the exit cell when the fixed
+  one is burning or next to fire (1784-1793 / 1820).
+  - (ii) Model side: never unassign an exiting unit in the route_blocked handler.
+  - (iii) Model side: count a carrier as serving its victim in the geographic-isolation
+  check.
+
+  **240-step note.** In ugD east/half/1433805104, victim_0 was still being carried at step
+  240 while control had rescued it. At 360 steps it completes at 282. So at least one of the
+  240-step losses is this stalled carry, not a real loss.
+
+FINDINGS:
+  - [verified] Nothing except the carrier's own advance() moves a carrying unit.
+      evidence: Model-side grid writes on a firefighter: wildfire_model.py:2468 (recycle),
+      2554 (absence removal), 2711/2713 (return). All run only after completion, from the
+      pending-removal drain (2937-3086), and the only code that queues a Firefighter for
+      removal is agents.py:1823. src_extension has no move_agent/place_agent/remove_agent
+      (grep). In agents.py the carrier moves only via _move_toward (2464, called at 1840).
+      The survival moves (2143/2283/2314) cannot run for an exiting unit (1973, 1992), and
+      neither can the firefight move (2848) because of the check at 2488.
+  - [verified] exit_target is set once at pickup and never recomputed during a leg. Every
+  - model write to it (to None) ends the carry.
+      evidence: Set at agents.py:1784-1793, only when target_pos is set, exiting is False
+      and pos == target_pos. Model writes: 2476 (recycle), 2560 (absence), 4626 (assign),
+      4719 (unassign), 5337 (casualty). A new exit target is only possible after a drop and
+      re-pickup, which happened in none of the 30 recorded drops.
+  - [verified] The assign action can never target a carrier.
+      evidence: select_rescue_assignment only chooses units marked available
+      (rescue_planner.py:591-593), and availability is False while exiting
+      (wildfire_model.py:3310, reported via 3407). apply_physical_pairing_decision refuses
+      when the victim already has an active pair (rescue_executor.py:386). The only override
+      route, execute_physical_dispatch with a preferred unit (rescue_executor.py:161-205),
+      has no caller. The only assign command is built at rescue_executor.py:403.
+  - [verified] Paths that can clear exiting on a live carrier: the route_blocked handler,
+  - _release_other_claimants, the geographic-isolation check, and the fire-casualty sweep.
+  - The stale-clear and revalidation passes explicitly skip exiting units.
+      evidence: All clear it through the unassign action (4715-4719, which leaves status
+      unchanged). Callers: route_blocked handler 3671 (with reset_victim_pending);
+      _release_other_claimants 3850 (terminal victim; the named carrier is kept by 3841-3847
+      unless a completer exists); _update_unreachable_victims 5111; casualty 5325 plus
+      5334-5337. _clear_stale_route_blocks is excluded at 2826 and
+      _revalidate_route_blocked_firefighters at 2834. _unassign_firefighter (4902) has no
+      caller.
+  - [verified] When a carrier has no fire-free neighbour, _mark_route_blocked triggers the
+  - approach-phase replacement mechanism and the carrier drops its victim, unless the same
+  - unit and victim already raised route_blocked earlier (for example during the approach).
+      evidence: agents.py:2388-2391 skips the path test while exiting, but 2411-2413 (no
+      fire-free neighbour) still calls _mark_route_blocked (2355-2360). That calls
+      _on_firefighter_route_blocked (5156-5189), which queues an incident and processes it
+      immediately inside schedule.step's advance loop. The handler (3660-3680) unassigns
+      with reset_victim_pending: exiting, exit_target, target_pos and rescued_victim are
+      cleared, status stays route_blocked, and the victim is relabelled confirmed
+      (4757/4765). The planner then reassigns or delays (3682-3691). If the unit/victim pair
+      is already in _blocked_replacement_attempted (never cleared: 379, 3668-3670), the
+      handler returns early. In that case the carrier keeps the victim, but its
+      route_blocked status hides the pair from _find_active_firefighter_for_victim
+      (3739-3741) until the next successful move resets it to assigned
+      (agents.py:2460-2463). The comment at agents.py:2382-2386 says the replacement
+      mechanism is the wrong response for a carrier.
+  - [verified] The model never credits a carrier with serving its own victim, so a carry
+  - longer than 30 steps with no other unit able to reach it is cancelled and the victim can
+  - no longer be rescued.
+      evidence: _update_unreachable_victims excludes exiting units from the search start
+      points and from the set of active units (5005-5006). The served test needs the
+      assigned unit to be one of those active units and getting closer (5052-5066;
+      rescue_planner.py:443-448). With the threshold of 30 (rescue_planner.py:47), the
+      carrier is unassigned (5108-5119) and the victim marked unreachable and cancelled
+      (5135, 4784-4792). finalize_rescue then refuses a cancelled victim (4842-4848).
+  - [verified] These drops are recorded: 30 distinct carries (123 records) across the 2497
+  - _ffr_*.json runs ended with a model unassign while carrying. The victim died after every
+  - route-blocked drop and was marked unreachable after every isolation cancel. None was
+  - picked up again.
+      evidence: scratchpad xs_static/carrier_unassign_scan.py and drop_outcomes.py. 22 were
+      replacement_after_blocked, with the victim dead 0-11 steps later in all 22. 8 were
+      geographically_isolated, 7 of them exactly 29 steps after pickup. They occur in fire-
+      mechanic-OFF tags too (bsbase, dcoff, d4off, dimA, ...). Ungated arms: uhC/ugC
+      east/half/1291443119 dropped at 168 (carry from 80); uhD/uhY/ugD/ugY dropped at 148
+      (carry from 84), with the victim burning at (47,42) at 150 while the freed unit moved
+      to (47,43). No isolation cancels occurred in the uh/ug arms.
+  - [verified] Rescue completes only at agents.py:1820-1829 (pos == exit_target exactly).
+  - Nothing else completes one, and standing on any other boundary cell does not count.
+      evidence: The only code that queues a Firefighter for removal is agents.py:1823 (the
+      model's 3271 queues PathMarkers only, type check at 3277). The drain (3016-3027) leads
+      to _finalize_rescued_victim (5486-5527), then the rescue_complete incident
+      (3604-3658), then finalize_rescue (4833-4898). state.rescued = True is written only at
+      4851.
+  - [verified] Order within a step: pre-move cycle, then all step() calls, then advance() in
+  - insertion order (Fire, UAV, Victim, Firefighter), then post-move cycle, then the
+  - geographic-isolation check. A firefighting unit's fire writes in the same advance pass
+  - are visible to firefighters advanced after it.
+      evidence: wildfire_model.py:5836 (pre-move: adaptation_manager.py:96-127) → 5844
+      schedule.step, SimultaneousActivation (mesa time.py:138-151): Fire.step draws random()
+      and steps smoke (agents.py:89-115), then advance: Fire.advance commits burning
+      (119-125); agents were inserted fires (182), UAVs (214-245), victims (256),
+      firefighters (260). → 5845 post-move (adaptation_manager.py:144-191): drain →
+      detection and incidents → knowledge → _check_fire_casualties (5208-5379) → incidents →
+      route_blocked revalidation (5381-5384) → victim status sync → invariant check. → 5846
+      _update_unreachable_victims. _firefight_execute writes Fire state at
+      agents.py:2856-2859.
+  - [verified] A carried victim never moves on its own; only the carry moves it.
+      evidence: Victim.advance guard G4 (agents.py:1325-1326) and _in_firefighter_custody
+      (1540-1541, exiting). The carry move is at 1841-1847. In the data, the victim stood on
+      the carrier's cell at every step of all 7 stalled legs.
+  - [verified] No model-side path depends on the fire-mechanic configuration directly. The
+  - dependence is only indirect, through the fire map, other units' positions and dispatch
+  - timing, and the shared random stream.
+      evidence: There are zero FF_FIREFIGHT / _firefight_* references in wildfire_model.py
+      or src_extension (grep; the only matches are NUM_FIREFIGHTERS). _firefight_prepare
+      only reads the model's availability predicate (agents.py:2490). Carrier code is the
+      same in control (11c3661) and on the branch (diff: docstring plus agents.py accessors
+      1109-1232).
+  - [verified] All 7 stalled completed legs (shipped 5, positioning-only 2) had no model-
+  - side involvement.
+      evidence: xs_static/leg_invariants.py: one constant state tuple per leg (status
+      en_route or assigned, assigned, exiting, bound, not dispatchable). No assigns,
+      unassigns or unreachable marks for any unit in the window. Victim on the carrier's
+      cell every step, no firefight rows for the carrier, completion at the exit target
+      chosen at pickup.
+  - [verified] The positioning-only arm has exactly control's fire. Its stalls come from
+  - carry timing, not from state or fire.
+      evidence: fire_digests are identical at every step between uhC and uhY for 294124329,
+      2070841104, 1291443119 and 1433805104; uhD first diverges at 147/116/144/109. In
+      294124329, both arms pick up victim_0 at (37,25). Control: dispatch 89, pickup 127,
+      done 142. Positioning-only and shipped: dispatch 51, pickup 90, done 143.
+  - [inferred] The fixed exit cell is what holds several stalled carriers on or near the
+  - boundary. Completing on any boundary cell would have ended them much earlier; this is a
+  - counterfactual that was not run.
+      evidence: xs_static/boundary_first.py. uhD 1433805104: on the boundary 26 of 76 steps,
+      first at 218 ((49,16)); visited (49,12)-(49,17). Seed 1291443119: shipped and
+      positioning-only on the boundary from 107 (11 of 64 steps), control from 138 (10 of
+      88); none reached the exit target (49,33). The other 5 stalled legs touched only their
+      exit cell, so their stall is inland. Trace: at step 219 the exit cell (49,17) was next
+      to burning (48,17) and (49,18), so tier 1 was empty and tier 3 picked (49,15).
+  - [verified] The 240-step overstatement is partly stalled carries cut off by the horizon.
+      evidence: ugD east/half/1433805104: victim_0 still being carried at 240 (status
+      assigned, carry from 206) while ugC rescued it; uhD completes it at 282. ugD
+      south/half/1048395951 was also mid-carry at 240 (ugC also unrescued there); uhD
+      completes it at 263 while uhC does not.
+  - [inferred] A latent accounting path exists, but it is not movement: the MAPE rescue
+  - executor's cancel/delay can relabel a carried victim's managed state, and a cancelled
+  - victim is then refused at completion.
+      evidence: rescue_executor.py:575-590 writes VictimState.status delayed/cancelled
+      (delay is refused only for an active pair, at 45-95). finalize refuses a cancelled
+      victim (4842-4848, 5502-5508). How often this hits a carried victim was not measured.
+
+OPEN QUESTIONS:
+  - Should the two model-side carry-drop paths be fixed in this round or in their own round?
+  - They are the route_blocked handler unassigning an exiting unit
+  - (wildfire_model.py:3660-3680) and the isolation check not counting a carrier as serving
+  - its victim (5005-5006 / 5052-5066). Both have been in main for many tags, are outcome-
+  - changing, and turn stalls into deaths or unreachable marks in all arms.
+  - Is the fixed exit cell (agents.py:1820) intended, or should any boundary cell complete
+  - the exit (class docstring: 'exits at boundary')? If fixed, should the exit cell be re-
+  - chosen when it is burning or next to fire?
+  - The counterfactual gains (1433805104 done at ~219 instead of 282; victim_0 saved on
+  - 1291443119 in all arms) are inferred only, because no runs were allowed.
+  - The completed-leg census cannot see stalled carries that are aborted (route-blocked
+  - drop, isolation cancel) or cut by the horizon. The control's 0/104 hides an 88-step
+  - stalled carry on 1291443119 that ended in a drop and death. Should the census count all
+  - carries?
+  - Why dispatch came earlier in the shipped and positioning-only arms on 294124329 (51 vs
+  - 89) was not traced; availability and pairing history is presumed.
+  - The dropped-victim marker relabel at 4765 is unguarded against dead victims. It is
+  - already documented in code comments; not investigated here.
+
+============================================================================================
+AGENT movement-rule
+============================================================================================
+  QUARANTINE: None. I never entered, listed, read, or recursed into
+  E:/Projects/SAS/outputs/_firemech_rewound_20260914/. Two top-level listings of
+  E:/Projects/SAS/outputs (`ls -d */` and `ls | grep ...`) printed its name as a directory
+  entry of outputs/. Those listings looked at the entry itself and never at its contents.
+  Every recursive search used --exclude-dir=_firemech_rewound_20260914 (plus .venv, .git,
+  __pycache__). All other reads were explicit file paths, top-level globs such as
+  outputs/*.txt and _ffr_xsTD_*, or git object-store and commit-message queries. The
+  quarantine directory is untracked, so git never touches it.
+
+ANSWER:
+  SCOPE. This was a read-only pass. I read the code at HEAD a538a6e (agents.py and
+  wildfire_model.py are identical to ac6e78d; `git diff --stat` between them is empty) and
+  git history. I also read three probe traces that the running wave had finished and marked
+  valid (xsTD east/def/1749069988, east/half/2070841104, south/half/1048395951). I started
+  no simulation and wrote nothing to the repo. My scripts are in scratchpad/xs_static/:
+  fnhist.py, fndiff.py, xs_rule_check.py and rule_check_out.txt.
+
+  (1) THE RULE. Each carrying advance goes straight to agents.py:1819-1854 and calls
+  `_move_toward(exit_target)` (2369-2464):
+  - **Neighbours.** It takes the 4 in-bounds neighbours in a fixed order: +x, -x, +y, -y
+  (1958-1965). Burning cells are dropped (2395).
+  - **Flags per remaining cell.** improving or maintaining; adjacent_fire (any 4-neighbour
+  of that cell is burning; out-of-bounds counts as not burning, 1913); smoke (the cell's own
+  Fire agent's smoke); preferred (the larger-axis step toward the target, x winning ties);
+  risk = 100*adjacent + 10*smoke.
+  - **No neighbour left.** It marks route_blocked and returns without moving (2411-2413).
+  This is the only way the unit holds still.
+  - **Tiers.** Tier 1 is improving and clean. Tier 2 is maintaining and clean, and it is
+  always empty: every step changes Manhattan distance by exactly +/-1. Tier 3 is any clean
+  cell, which in practice means a clean cell that moves away. The first non-empty tier wins,
+  with min by (dist_after, not-preferred) and then list order. Because tier 3 never contains
+  the preferred cell, its choice is pure neighbour order. Tier 4 is min over all non-burning
+  cells by (risk, dist_after, not-preferred).
+  - **No memory, no hold, no timeout.** The step is a pure function of (pos, exit_target,
+  burning set, smoke set, bounds). The reachability search is off for carrying units
+  (2387-2391).
+  - **Checked against recorded data.** I re-derived the rule from the recorded neighbour
+  flags for all 210 carrying `_move_toward` calls in the three traces. It matched the actual
+  cell and tier 210/210. No call had a maintaining neighbour.
+
+  (2) HOW IT OSCILLATES. Take p at distance k from the exit and q next to it at k+1.
+  - At p every improving neighbour is burning, fire-adjacent or smoky, and q is the first
+  clean worsening neighbour in list order. So tier 3 moves p->q.
+  - At q, p is a clean improving cell that wins the tie-break. So tier 1 moves q->p.
+  - The tier sequence is 3,1,3,1... It is stable for as long as the board around p and q
+  does not change.
+  - There is also a tier-4 version (4,4). It happens when no clean neighbour exists and the
+  exit has a higher risk than a neighbour that moves away.
+
+  At the exit itself: from distance 1, the only improving cell is the exit cell E. So E is
+  refused whenever:
+  - E is burning, or
+  - any of its 3 in-grid neighbours is burning (this includes the unit's own cell), or
+  - E is smoky.
+
+  A smoky-only E has risk 10. It is entered in tier 4 when every alternative is fire-
+  adjacent, but refused as soon as a single clean distance-2 cell exists. In other words,
+  the exit is refused exactly when the unit's surroundings are safe.
+
+  How long it lasts depends on smoke timing (Smoke class 172-220, Fire.step 89-115):
+  - Smoke switches on at the 3rd smoke_step call after the cell is first seen burning
+  (SMOKE_PRE_DISPELLING_COUNTER=2).
+  - It stays on for F+1 more calls, where F is the cell's initial fuel, 7-10.
+  - Calls happen every fire tick (every 3 steps) while the cell is not burnt, and every step
+  once it is burnt.
+  - So a cell that burns briefly and is left scorched with fuel remaining smokes for about
+  3(F+1) = 24-33 steps, all after its fire has gone out. A cell that burns out continuously
+  smokes for about 16-25 steps, mostly while still burning.
+  - Burning itself is not permanent. It is re-drawn every fire tick from the radius-3
+  neighbourhood while fuel remains, so it can go out and restart. That corrects
+  moveoscillation_part1.txt section 6.2, which says a cell burns at most once. Smoke really
+  is one-shot.
+
+  Trace evidence: in south/half/1048395951, E=(49,27) burned from step 222 to 230 and was
+  smoky from 231 to 260. The unit alternated (48,27) tier 3 and (47,27) tier 1 from 242 to
+  261, and entered E at 262. The same leg also shows a second shape: a fire front between
+  the unit and E (steps 133-236), where the unit cycles in tiers 1 and 3, drifts away in
+  tier 3, and pushes forward through adjacent cells in tier 4.
+
+  (3) NO RETREAT, AND NOTHING ELSE CAN BREAK THE CYCLE. A carrying unit never retreats:
+  - The survival check returns False for a carrying unit (1973), and so does the idle check
+  (1992).
+  - `_assigned_one_step_retreat` can only be reached from inside `_survival_move`
+  (2079/2095/2130/2137), even though its docstring says "Assigned/exiting FF".
+  - The reachability search is off (2388), and the unreachable-victim timeout skips carrying
+  units (wildfire_model.py:5005-5006).
+
+  So on the carrying leg the only thing that ends a tier-1/3 cycle is the fire and smoke
+  changing. The earlier oscillation round (a78f393) found that half of the approach-leg
+  episodes (31 of 62) were ended by `_survival_move`. That route is closed here, which fits
+  carrying stalls lasting tens of steps (up to 131) against at most 14 in that round.
+
+  It cannot die while oscillating. Casualty is burning-only (wildfire_model.py:5302-5337).
+  The scheduler runs step() for everything, then advance() in insertion order, and Fire
+  agents are inserted first (182, 2339-2366). Fire changes only in Fire.advance, plus the
+  fire-mechanic writers, which never ignite anything. The casualty check runs after
+  schedule.step (adaptation_manager.py:182). So a unit that moves lands on a cell nothing
+  can ignite before the check. It dies only if every neighbour is burning and its own cell
+  burns; that is the east/333 corner case recorded in 70e1b33. Two further points:
+  - Entering E is always survivable. The rescue completes at 1820 on the next advance,
+  before any fire check, and the removal (adaptation_manager.py:144) runs before the
+  casualty sweep. Smoke is never lethal. So refusing the last step into a smoky or fire-
+  adjacent E protects against nothing the model scores.
+  - Trace 2070841104, step 111: the unit's own cell was burning when its advance began. It
+  stepped onto E and completed at 112.
+
+  (4) EXACT CELL. exit_target is set once at pickup (1781-1803):
+  - It is the nearest of the four straight-line boundary cells (x=0, x=H-1, y=0, y=W-1).
+  Ties go to that listed order.
+  - It ignores fire and is never recomputed.
+  - Completion needs pos == exit_target exactly (1820).
+
+  There is no other definition of "exit" in the code:
+  - the harness `_on_boundary` (outputs/_ffr_harness.py:170-174) is only used for
+  measurement;
+  - the absence `exit_cell` is simply where the unit stood when removed, which equals
+  exit_target by construction;
+  - `Victim._cell_has_onward_exit` is a dead-end test for fleeing victims;
+  - src_extension has none.
+
+  In uhD east/half/1433805104 the unit stood on boundary cells 25 times before completing at
+  282.
+
+  (5) HISTORY. I hashed each function body across all 15 commits that touch agents.py:
+  - The carrying branch, the exit_target rule, `_move_toward`'s tiers and the carrying check
+  in the survival retreat all arrived in the bulk import a4a01b4 (2026-07-27), with no
+  rationale.
+  - `_move_toward` changed once since, at f2827ed: the reachability search, explicitly off
+  for carrying units.
+  - advance changed at 5000f70 (a target refresh that returns at once for carrying units)
+  and at 003ed91 (the firefight prepare step and idle_buffer, both before the carrying
+  branch).
+  - e76c806 exposed HEIGHT/WIDTH; that makes no difference on 50x50.
+  - No round has ever changed the carrying leg.
+  - a78f393 (moveoscillation_part1.txt) diagnosed this exact tier-1/3 cycle on the approach
+  leg only (0 of 144 reversals on carrying legs). Its verdict was (B). It noted tier 2 is
+  dead code and named "take the first step of the reachability search" as the direction if
+  anyone revisits it.
+
+  (6) NO RULE DEPENDS ON THE SWITCHES.
+  - Neither `_move_toward` nor the exit_target choice reads a switch or a firefighting
+  field.
+  - On every carrying advance, the firefight prepare step calls the extinguish and firebreak
+  switches (2484-2485) and then returns None because the unit is carrying (2488).
+  - The engaged retreat range is read only at 2500, which a carrying unit never reaches. It
+  is never stored on the unit: it lives in a per-step dict and a local variable. So "retreat
+  range 1 persisting onto the carrying leg" cannot happen. The traces agree: on carrying
+  advances only those two switches were called, and prepare returned None every time.
+  - `_firefight_suspended` does survive the rescue. Nothing clears it at assign, unassign,
+  recycle or absence, and it was True on all 131 carrying advances of the 1048395951 leg.
+  But it was never read there.
+  - The fire mechanic reaches the carrying leg only through the board (extinguish leaves
+  smoke alone; firebreak prevents burning and smoke) and through where and when a leg
+  starts. That start-point effect is my inferred explanation for the positioning-only stalls
+  (uhY, FF_FIREFIGHT_DRY_RUN=1).
+
+  INPUT FOR THE VERDICT (not a verdict):
+  - The hypothesis that firefighting state drives the carrying leg does not hold, so that
+  part reads (C). It is also not another cross-mode latch like route_blocked, idle-retreat
+  or last_cell: the one leftover field is never read on this leg.
+  - The premise "zero with firefighting off" is false: the census found 32 of 909 distinct
+  legs stalling with the mechanic off.
+  - The stall is the original memoryless greedy carrying rule, with every outside repair
+  disabled on the carrying leg, plus the fixed exact exit cell. It does cost outcomes at 240
+  steps (east/half/1433805104).
+  - Candidate scoped fixes, not implemented:
+  - let a carrying unit step onto a non-burning exit cell regardless of smoke or adjacency
+  (shown above to be non-lethal);
+  - complete the rescue on any boundary cell, or re-pick the exit;
+  - larger: take the first step of the reachability search.
+  - Earlier rounds (a78f393 and the last_cell round) found that anti-oscillation guards make
+  things worse.
+
+  The 240-step note (reports about 4x the true cost: loss 8/4/3/2 at 240/270/300/330) was
+  not written to memory or the report by me. Both belong to the parent.
+
+FINDINGS:
+  - [verified] The carrying leg's step is decided solely by _move_toward(exit_target),
+  - called each carrying advance after all other branches short-circuit on self.exiting.
+      evidence: agents.py:1819-1854 (carrying branch); _refresh_target_from_victim returns
+      when exiting (1703); _firefight_prepare returns None when exiting (2488) or switches
+      off (2486); _needs_immediate_survival_retreat returns False when exiting (1973);
+      _idle_needs_survival_move False (1992). Probe traces: 220 carrying advances, 0 moves
+      made by anything other than _move_toward.
+  - [verified] Formal rule: 4-neighbours in order +x,-x,+y,-y (in-bounds), burning cells
+  - dropped; flags
+  - improving/maintaining/adjacent_fire/smoke/preferred/risk(100*adj+10*smoke);
+  - tier1=improving&clean, tier2=maintaining&clean, tier3=clean, first non-empty tier chosen
+  - by min(dist_after, not-preferred) then list order; tier4=min over all non-burning by
+  - (risk, dist_after, not-preferred); no non-burning neighbour -> _mark_route_blocked and
+  - NO move; otherwise the unit ALWAYS moves (no hold option). No previous-cell memory,
+  - visited set or counter.
+      evidence: agents.py:2369-2464, 1958-1965, 1941-1956, 1912-1939. Re-deriving the rule
+      from recorded neighbour flags matched the actual cell AND tier on 210/210 carrying
+      _move_toward calls in xsTD traces 1749069988, 2070841104, 1048395951 (scratchpad
+      xs_static/xs_rule_check.py).
+  - [verified] Tier 2 is unreachable (Manhattan parity), so the method is 3-tier; in tier 3
+  - the preferred cell is never present, so the retreat cell is chosen purely by neighbour
+  - order.
+      evidence: Every 4-neighbour step changes Manhattan distance by exactly +/-1; preferred
+      is always an improving step when dist>0. 0 of 210 carrying calls had any maintaining
+      neighbour. Same finding recorded in outputs/moveoscillation_part1.txt section 8.1
+      (a78f393).
+  - [verified] Oscillation condition: p (dist k) whose improving neighbours are all
+  - burning/fire-adjacent/smoky, and q (k+1) a clean neighbour first in list order -> tier 3
+  - p->q; from q, p is clean improving and wins the tie -> tier 1 q->p. Tier sequence
+  - 3,1,3,1... persisting while the board around p,q is unchanged; a tier-4 (4,4) variant
+  - exists when no clean neighbour exists and E is riskier than a retreat cell. At distance
+  - 1 the only improving cell is the exit E, so E is refused iff E burns, any of its <=3 in-
+  - grid neighbours burns (including the unit's own cell), or E is smoky; a smoky-only E
+  - (risk 10) is entered in tier 4 but refused whenever one clean distance-2 cell exists.
+      evidence: agents.py:2422-2455; trace south/half/1048395951 steps 242-261:
+      (48,27)->(47,27) t3 / (47,27)->(48,27) t1 with blockedImproving=[(49,27),'S'], entry
+      at 262 the step after E's smoke cleared; trace 2070841104 steps 109-111 tier-4 phase
+      ending on smoky+adjacent E.
+  - [inferred] Smoke timing makes exit blockage last tens of steps: smoke activates on the
+  - 3rd smoke_step call after the cell is first seen burning
+  - (SMOKE_PRE_DISPELLING_COUNTER=2) and stays active F+1 further calls (F = initial fuel
+  - 7-10); calls occur every fire tick (3 steps) while not burnt, every step once burnt. A
+  - scorched-but-not-burnt cell smokes ~3(F+1)=24-33 steps after its fire; a continuously
+  - burning cell ~16-25 steps overlapping its burning. Burning is NOT absorbing (re-drawn
+  - each fire tick from radius-3 neighbours while fuel>0), correcting
+  - moveoscillation_part1.txt 6.2; smoke is one-shot.
+      evidence: agents.py:89-125 (Fire.step/advance, burnt branch calls smoke_step every
+      step), 172-220 (Smoke state machine); common_fixed_variables.py:11,22,23,30,31,69.
+      Trace south/half/1048395951: E=(49,27) burning 222-230, smoky 231-260 (30 steps),
+      consistent with an unburnt scorched cell.
+  - [verified] Two stall shapes exist: S1 exit-cell barrier (unit alternates dist 1<->2
+  - while E is fire-adjacent/smoky) and S2 mid-route barrier (fire front between unit and
+  - the fixed E: tier1/3 cycles, tier-3 ratchet away, tier-4 forward drift through fire-
+  - adjacent cells).
+      evidence: xsTD traces: 1048395951 steps 133-236 S2 at dist 6-19, then 242-261 S1;
+      2070841104 steps 98-111 S2 then tier-4 push; 1749069988 steps 182-194 cycle at dist
+      3-4 while E=(27,0) was burning then smoky.
+  - [verified] A carrying unit never retreats and every out-of-function repair is disabled
+  - on the carrying leg; only board change ends a cycle.
+      evidence: agents.py:1973 and 1992 (survival/idle retreat skip when exiting);
+      _assigned_one_step_retreat reachable only from _survival_move (2079, 2095, 2130, 2137)
+      despite docstring 'Assigned/exiting FF' (2294); route_blocked BFS disabled when
+      exiting (2387-2391); unreachable-victim streak skips exiting units
+      (wildfire_model.py:5005-5006). a78f393 found 31/62 approach-leg episodes ended by
+      _survival_move - unavailable here.
+  - [verified] Oscillation is not lethal: a carrying unit can die only when no in-grid
+  - neighbour is non-burning (it then does not move) and its own cell burns; entering E is
+  - always survivable and completes next advance.
+      evidence: Casualty = burning cell only (wildfire_model.py:5210-5223, 5302-5337); mesa
+      1.2.1 SimultaneousActivation steps all then advances all in insertion order; Fire
+      agents inserted first (wildfire_model.py:182, 2339-2366; agents.py:1302-1308); Fire
+      state changes only in Fire.advance (agents.py:119-125) and non-igniting mechanic
+      writers (142-168); casualty check post-move (adaptation_manager.py:182) after
+      schedule.step (wildfire_model.py:5844-5845); completion at agents.py:1820 precedes any
+      fire check and removal runs before the sweep (adaptation_manager.py:144). Trace
+      2070841104 step 111: own cell burning, unit moved onto E and completed at 112.
+      Precedent: 70e1b33 message, east/333 carrying unit trapped in a corner died at step
+      45.
+  - [verified] Rescue requires the exact exit cell: exit_target is chosen once at pickup as
+  - the nearest of (0,y),(H-1,y),(x,0),(x,W-1) (ties to that order), ignoring fire, never
+  - recomputed; completion only on pos == exit_target. There is no other exit definition in
+  - the code base.
+      evidence: agents.py:1781-1803, 1820; writers of exit_target only 1793 and clears at
+      wildfire_model.py:2476, 2560, 4626, 4719, 5337. Harness _on_boundary
+      (outputs/_ffr_harness.py:170-174) is measurement-only; absence exit_cell
+      (wildfire_model.py:2552-2566) is the removal position = exit_target, used for re-entry
+      (2622-2678); Victim._cell_has_onward_exit (agents.py:1477-1510) is a victim flight
+      test; no exit_target/boundary definition in src_extension. uhD 1433805104 stood on
+      boundary cells (49,12)-(49,16) 25 times before completing at 282
+      (outputs/_uh_report_verify.txt:1009-1033).
+  - [verified] History: the carrying rule, exit_target selection, _move_toward tiers and the
+  - exiting short-circuit of the survival retreat all come from the bulk import a4a01b4
+  - (2026-07-27) with no rationale; no round ever changed the carrying leg's movement.
+      evidence: Function-body hashes across all 15 agents.py commits (scratchpad fnhist.py):
+      _move_toward changed only at f2827ed (route_blocked BFS, gated 'if not self.exiting');
+      advance at 5000f70 (refresh, returns when exiting) and 003ed91
+      (firefight_prepare/idle_buffer before the carrying branch);
+      _needs_immediate_survival_retreat only at 003ed91 (idle_buffer); e76c806 exposed
+      HEIGHT/WIDTH (no effect at 50x50; gridscale_part1.txt W1). a78f393
+      (outputs/moveoscillation_part1.txt) diagnosed the same tier1<->tier3 barrier cycle on
+      the approach leg only (0/144 on exiting path), verdict (B), tier 2 dead code, BFS
+      first step named as the direction if revisited.
+  - [verified] Nothing in the carrying rule depends on the fire-mechanic switches; the
+  - engaged retreat range cannot persist onto the carrying leg because it is never stored on
+  - the unit.
+      evidence: _firefight_prepare calls ff_firefight_extinguish/firebreak (2484-2485)
+      before its exiting return (2488); ff_firefight_engaged_retreat_range read only at 2500
+      (unreachable when exiting); K/T live in the ctx dict (2549-2569) and local idle_buffer
+      (1733-1735), passed to _needs_immediate_survival_retreat which returns at 1973 before
+      reading it. Traces: accessor calls on 220 carrying advances = extinguish+firebreak
+      from _firefight_prepare only; prepare() returned None on all.
+  - [verified] _firefight_suspended DOES survive the rescue (state from the firefighting
+  - mode persists) but is inert on the carrying leg; this leg is therefore not another
+  - instance of the cross-mode latch class.
+      evidence: Not cleared at assign (wildfire_model.py:4620-4626), unassign (4715-4719),
+      recycle (2472-2479) or absence (2556-2566); only read at agents.py:2535 behind the
+      exiting/target_pos return at 2488. Trace south/half/1048395951: value True on 131/148
+      carrying advances (the whole stalled leg), yet absent from the attribute-read set on
+      every carrying advance. Possible post-rescue effect (stale suspension governing the
+      next idle firefighting steps until 2536-2538 clears it) is outside the carrying leg
+      and unmeasured.
+  - [inferred] The fire mechanic reaches the carrying leg only through the board and through
+  - where/when legs start; positioning-only (uhY, FF_FIREFIGHT_DRY_RUN=1) stalls are the
+  - same rule on a different leg start.
+      evidence: Extinguish zeroes fuel/burning and does not touch smoke (agents.py:137-156),
+      so an already-started smoke still appears and decays per step once burnt; firebreak on
+      an unburned cell prevents burning and smoke (158-168); dry run makes no fire writes
+      but moves units (2847-2855). The positioning explanation is not yet traced (H3
+      pending).
+  - [verified] The premise 'zero with firefighting off' does not hold beyond the U30 sample.
+      evidence: outputs/_xs_census.txt: fire mechanic OFF 32 of 909 distinct legs stalled
+      (e.g. ugKC CRN control 4/96); ON 29 of 689; uhC 0/104 is a sample property.
+
+OPEN QUESTIONS:
+  - The uhD east/half/1433805104 leg (steps 206-282) and the 2 positioning-only legs had no
+  - finished trace when I read; whether their exit cell (49,17) was fire-adjacent or smoky
+  - at 218-280 (S1) or they met a mid-route barrier needs the xsTD/xsTY traces.
+  - I did not run the T0 value-identity check (_xs_analyze.py) on the three traces. I only
+  - relied on the wave log's 'valid' marks.
+  - How much each scoped fix would recover is unmeasured. The fixes: (i) take a non-burning
+  - exit cell regardless of smoke/adjacency, (ii) complete on any boundary cell or re-select
+  - the exit, (iii) step along the first move of the fire-avoiding route search. Earlier
+  - rounds (a78f393, last_cell) found anti-oscillation guards harmful, so (i) and (ii)
+  - change different things than a guard does.
+  - For the victim, I reasoned from code ordering that entering E is survivable (status
+  - rescued is set in the drain before the casualty sweep skips it). No trace was checked
+  - for a victim on a burning E at the completion step.
+  - Is the stale _firefight_suspended after recycle a separate post-rescue effect (the unit
+  - is more cautious until an ideal standoff clears it)? This is outside the carrying leg
+  - and was not measured.
+  - I did not write the 240-step note to memory or the report (read-only brief). The parent
+  - must record: a 240-step evaluation of the ungated configuration reports about 4x its
+  - true cost (loss 8/4/3/2 at 240/270/300/330).
+
+============================================================================================
+AGENT defect-class
+============================================================================================
+  QUARANTINE: None. I never entered, listed the contents of, or read
+  E:/Projects/SAS/outputs/_firemech_rewound_20260914/. I ran no recursive search and no git
+  status. Every grep ran on named files: agents.py, wildfire_model.py,
+  common_fixed_variables.py, outputs/_mto_analyse.py, outputs/_ffr_harness.py and named
+  outputs/*.txt docs. The git diff/log/show/blame commands read the object store, not the
+  working tree. The shell globs outputs/_xs_*, outputs/exitstall*, outputs/*standby*,
+  outputs/idleretreat*, outputs/rblatch* and outputs/mto* read only outputs/'s own entry
+  list. That list includes the quarantine directory's name, but the directory matches none
+  of those patterns and was not opened. The Python scripts opened explicit _ffr_*.json paths
+  only. One command, git diff --stat ac6e78d a538a6e -- '*.py', compared two commit trees
+  and walked nothing on disk.
+
+ANSWER:
+  SHORT ANSWER: No. The exit-leg stall is not another instance of the project's recurring
+  defect, where state written in one mode is read by another. The code rules out the
+  maintainer's hypothesis (a) for the carrying leg. The mechanism the code and the recorded
+  runs support is mainly (c): _move_toward remembers nothing between steps and gets stuck at
+  a fire barrier. (b) is also present, but narrower: it covers the maintainer's example leg
+  and none of the other six.
+
+  THE THREE NAMED INSTANCES
+  All three are latches: the same kind of mistake, and each one stuck permanently.
+  - route_blocked consumer latch (found f2827ed, fixed 70e1b33, second shape closed by
+  4795708, ROUTE_BLOCK_STALE_CLEAR=1).
+  - State: status=="route_blocked". It is written by _mark_route_blocked
+  (agents.py:2355-2362) from _move_toward (2411-2418) while a unit approaches one target.
+  - Read by: the dispatch gates, as a property of the unit, after that unit has been
+  unassigned.
+  - Premise that stopped holding: "this unit cannot reach that one target". The only in-run
+  clear, at the end of _move_toward (2460-2463), needs a dispatch that the flag itself
+  refuses (outputs/rblatch_part1.txt:46-62).
+  - Fix: a live-BFS revalidation, _revalidate_route_blocked_firefighters
+  (wildfire_model.py:2790), plus a no-referent clear at :2852.
+  - Idle-retreat stall latch (62b4fbe, part 4a).
+  - State: _idle_retreat_stalled, written by one step's retreat scan
+  (agents.py:2097/2111/2127/2132/2139).
+  - Read by: later steps, as if permanent.
+  - Premise that stopped holding: that the neighbourhood had not changed since the scan.
+  - Fix: _revalidate_idle_retreat_stall (2246-2289).
+  - Same commit, part 4b: the stale _idle_retreat_origin is re-anchored (2052-2075, blamed
+  to 62b4fbe). The origin was written when a retreat began and read as the leash centre
+  after a different mode (walk to a victim, one-step retreat, unassign) had moved the unit.
+  - last_cell guard (c4d5a25).
+  - State: _idle_retreat_last_cell, written by the previous retreat step.
+  - Premise that stopped holding: that the step back is a free-cell ping-pong. It does not
+  hold when the unit's own cell is burning (outputs/lastcell_part1.txt:331-360).
+  - Fix: re-run the scan without the guard when there are no candidates and current_dist==0
+  (2190-2202).
+
+  THE CARRYING LEG, FROM THE CODE
+  With exiting=True, each carrying advance runs these checks in order:
+  1. _refresh_target_from_victim returns at 1703.
+  2. _firefight_prepare returns None at 2488.
+  3. _needs_immediate_survival_retreat returns False at 1973.
+  4. The only branch left is 1819-1840, which calls _move_toward(exit_target).
+
+  _idle_needs_survival_move also returns False at 1992. So the only thing that can move a
+  carrying unit is _move_toward's move_agent at 2464. That function reads pos, the target,
+  exiting (2388), the fire/smoke board, and status/assigned (only to clear route_blocked).
+  It reads no firefighting or idle field.
+
+  The engaged retreat range is not stored state. It exists only as a local for one step
+  (idle_buffer 1733-1735, ctx["T"] 2569). It is consulted only in the not-target_pos branch
+  at 1979-1984, and its accessor is called only at 2500, after the early return at 2488. So
+  it cannot persist onto any assigned unit, let alone a carrying one.
+
+  The firefighting and idle fields are not cleared at assign (wildfire_model.py:4621-4626),
+  at pickup (agents.py:1782-1803) or at exit/recycle (wildfire_model.py:2472-2479,
+  2556-2566). They do survive, but nothing reads them on the carrying leg.
+
+  Between the control code (11c3661) and ac6e78d, agents.py changes only in the
+  configuration accessors: no diff hunk falls after new line ~1232, and the Firefighter
+  class starts at 1597. The carrying branch and most of _move_toward date back to the
+  initial commit a4a01b4. So (a) is refuted by the code.
+
+  (c) IS THE MECHANISM
+  Every recorded carrying step in all 7 ungated stalled legs and all 4 CRN-control stalled
+  legs is consistent with _move_toward(exit_target) on the recorded burning board.
+  - Steps away from the exit are tier 3 or tier 4; steps toward it are tier 1.
+  - Tier 2 never occurs. As a78f393 established, it cannot: one step on a 4-connected grid
+  always changes the Manhattan distance by exactly 1.
+  - This is the tier1<->tier3 barrier cycle already diagnosed in a78f393.
+  - That round's verdict (B) came from approach legs only: it found 0 reversals with the
+  exiting role (outputs/_mto_analyse.py:208-211). In that sample, 31 of 62 episodes ended
+  when _survival_move took over. On the carrying leg that route cannot be reached (1973), so
+  only a change in the fire can end the cycle.
+
+  "Missing anti-oscillation memory" is literally true, but a78f393 measured a guard as never
+  better (0 of 144 better, 75 equal or worse). What the carrying leg really lacks is a way
+  to re-plan: no path search around the barrier (the BFS at 2318-2353 is only used as a
+  yes/no route check on the approach leg, 2388), no choice of another exit, and no survival
+  backstop.
+
+  (b) IS REAL BUT NARROW
+  exit_target is written once, at 1793. It is chosen by geometry alone, with no fire test
+  (1784-1793). It is never refreshed, because the only refresh skips exiting units (1703),
+  and the unit only completes by standing on that exact cell (1820). This matters in 1 of
+  the 7 legs, uhD east/half/1433805104, the maintainer's example: the unit stood on 5 other
+  edge cells ((49,12) to (49,16)) from step 218, 64 steps before it completed. In the other
+  6 legs, the first edge cell the unit touched was the exit cell itself, one step before
+  completion, so all of their excess came before reaching the edge.
+
+  In 5 of the 7 legs, the straight route to the exit was already burning or next to fire at
+  pickup. So the target's premise mostly never held in the first place; it did not go stale.
+  That makes this a fire-blind target chosen once, not state left over from another mode.
+
+  WHY THE NUMBERS DIFFER BY ARM
+  The positioning-only arm's 2 stalled legs are value-identical to the shipped arm's and run
+  on the control's own fire (identical final fire digests in uhY and uhC for all 5 tuples).
+  The CRN control ugKC, with the fire mechanic off, stalls on the same two victims. The
+  difference from uhC is when the leg starts: pickup at steps 90 and 88 against 127 and 245.
+  So "zero in control" does not hold robustly, and the census has 32 of 909 distinct legs
+  stalling with the fire mechanic off.
+
+  VERDICT
+  - For the class question: not an instance. It belongs with the movement-near-fire
+  livelocks: a78f393, the 30-step hazard-standoff oscillation noted in the latch808 round,
+  and the dock-fix livelock. Unlike the named latches, all 7 legs completed once the fire
+  picture changed.
+  - For the round verdict: the hypothesised cause reads (C), NOT AS DESCRIBED. Whether the
+  stall itself is (A) or (B) depends on the probe wave, and on whether a change to the exit
+  rule is justified. Such a change has not been measured on the carrying leg.
+
+  Scratch scripts, read-only on explicit JSON paths, no simulation run:
+  C:/Users/ahrar/AppData/Local/Temp/claude/E--Projects-SAS/e5e891da-
+  af9a-40cc-9698-0d2307731681/scratchpad/xs_static/ (leg_view.py, leg_split.py,
+  mt_replay.py, mt_controls.py, premise.py). Nothing was written to E:/Projects/SAS or
+  E:/Projects/SAS_wt.
+
+FINDINGS:
+  - [verified] On a carrying advance, no firefighting-mode or idle-mode field is read, and
+  - the only thing that can move the unit is _move_toward(exit_target).
+      evidence: agents.py:1703 (_refresh_target_from_victim returns if exiting); 2488
+      (_firefight_prepare returns None if target_pos or exiting); 1973
+      (_needs_immediate_survival_retreat returns False if exiting); 1992
+      (_idle_needs_survival_move returns False if exiting); 1781 needs 'not self.exiting';
+      so control reaches 1819-1840 -> _move_toward. _move_toward (2369-2464) reads pos,
+      target, exiting (2388), per-cell fire/smoke, and status/assigned (2460-2463) only. The
+      other Firefighter move sites (2143 _survival_move, 2283 revalidate, 2314 one-step
+      retreat, 2848 firefight move) are unreachable while exiting. The model-side moves
+      (wildfire_model.py:2468 recycle, 2711-2713 absence return) apply only after exit.
+  - [verified] The engaged retreat range (K=1 while firefighting, 3 otherwise) is not
+  - persistent state, so it cannot carry onto any assigned or carrying unit.
+      evidence: It exists only as a per-step local: idle_buffer (agents.py:1733-1735) and
+      ctx['T'] (2569). It is consumed only in the 'not self.target_pos' branch of
+      _needs_immediate_survival_retreat (1979-1984). ff_firefight_engaged_retreat_range()
+      (1182) has one call site, 2500, after the 2488 early return.
+      common_fixed_variables.py:231-235 notes that 1 is already the distance an assigned
+      unit retreats at (agents.py:1987).
+  - [verified] The firefighting and idle fields are NOT cleared when a rescue preempts them
+  - or ends. They survive into the rescue and past it, but nothing reads them on the
+  - carrying leg.
+      evidence: Assign (wildfire_model.py:4621-4626), pickup (agents.py:1782-1803), recycle
+      (wildfire_model.py:2472-2479) and absence (2556-2566) never touch _firefight_suspended
+      or _idle_retreat_*. _firefight_suspended is cleared only at agents.py:2538, and
+      _idle_retreat_* only via _reset_idle_retreat_state and the re-anchor. The readers are
+      _survival_move/_retreat_candidates/revalidate (2052-2289), reached from 1743 (needs
+      not exiting) and 1860, and _firefight_prepare 2535. So the survival is real, but it
+      reaches only the approach leg and the next idle phase.
+  - [verified] The carrying-leg code is identical in the control and the ungated arm, and
+  - predates every fire-mechanic commit.
+      evidence: git diff 11c3661 ac6e78d -- agents.py: every hunk is at or before new line
+      ~1232 (config accessors); the Firefighter class starts at 1597. wildfire_model.py
+      changes by one docstring only. git blame: 1781-1803 and 1819-1854 come from a4a01b4
+      (initial commit, 2026-07-27); _move_toward 2369-2464 is 77 lines from a4a01b4 and 19
+      from f2827ed (route_blocked BFS).
+  - [inferred] All 11 recorded stalled carrying legs (7 ungated, 4 CRN control) move the way
+  - _move_toward's tier1<->tier3 barrier cycle predicts. Every step away from the exit is
+  - tier 3 or 4; tier 2 never occurs.
+      evidence: scratchpad xs_static/mt_replay.py reimplements agents.py:2369-2455 on the
+      recorded burn_intervals, trying every subset of scorched neighbours as smoke because
+      smoke is not recorded. Result: 413/413 ungated and 177/177 control carrying steps
+      consistent on board N. Tier histograms contain only 1, 3 and 4. Steps away from the
+      exit: 7/20/34/6/57/20/6 on the ungated legs. CAVEAT: a wrong-target control is also
+      consistent on 17-100% of steps, so this static check is weak. The code-path argument
+      and the probe wave's traces are the real evidence.
+  - [verified] Only 1 of the 7 ungated stalled legs stalls ON the edge. That is uhD
+  - east/half/1433805104, where the unit stood on 5 non-exit edge cells for 64 steps. In the
+  - other 6, the first edge contact is the exit cell itself, one step before completion.
+      evidence: xs_static/leg_split.py on recorded ff_steps. For 1433805104: first on the
+      edge at step 218, cells [49,12]..[49,16], on x=49 at 26 post-step observations,
+      completion at 282. The exit cell (49,17) burned in [210,216), [222,228), [234,237) and
+      [243,249). In the other legs, first_boundary_step = completion-1 and
+      other_boundary_cells = []. ugKC 2070841104 is the exception, with 2 steps on one other
+      edge cell.
+  - [verified] exit_target is fire-blind, written once, and needs an exact-cell match. Its
+  - premise mostly never held, rather than going stale.
+      evidence: Chosen by geometry alone (agents.py:1784-1793). The only refresh skips
+      exiting units (1703). Completion requires pos == exit_target (1820). Nulled only at
+      assign/unassign/recycle/absence/death (wildfire_model.py:4625-4626, 4718-4719,
+      2475-2476, 2559-2560, 5336-5337). xs_static/premise.py: the straight route start->exit
+      was burning or next to fire AT PICKUP in 5 of 7 ungated legs (9 of 11 including
+      control). Only 2070841104 (both arms) and ugKC 903347495 were clean at pickup, and
+      fire reached their route within 2 steps.
+  - [verified] The earlier _move_toward oscillation verdict (a78f393, (B) real but not a
+  - defect) was measured on approach legs only. Its main repair route cannot be reached on
+  - the carrying leg.
+      evidence: outputs/_mto_analysis.txt §2.1: 144/144 reversals were assigned_transit,
+      although _mto_analyse.py:208-211 classifies an exiting role (0 found).
+      outputs/_mto_episodes.txt: 31/62 episodes ended by SURVIVAL takeover and 31 by a BOARD
+      change. On the carrying leg _needs_immediate_survival_retreat returns False
+      (agents.py:1973), and route_blocked fires only when no cell can be scored (2388,
+      2411), so only a board change can end the cycle. a78f393 also measured an anti-
+      oscillation guard: 0/144 better, 75 equal or worse.
+  - [verified] The positioning-only arm stalls because of when and where its legs start, not
+  - because of unit state or fire writes. The CRN control stalls on the same two victims.
+      evidence: The uhY and uhD legs for 294124329 and 2070841104 are identical (s0/s1
+      90-143 and 88-112, same reversal counts). fire_final_digest uhY == uhC on all 5
+      tuples, so DRY writes no fire. ugKC (11c3661, fire mechanic off) stalls on the same
+      victim_0 in both tuples (121-171, 82-119). uhC picks up the same victims at 127 and
+      245 without stalling. The census has 32/909 distinct legs stalling with the fire
+      mechanic off (outputs/_xs_census.txt).
+  - [verified] The named instances are cross-context state latches. route_blocked: a
+  - (unit,target) fact read as a unit property, circularly uncleared. stall flag: one scan's
+  - verdict read as permanent. origin leash: an anchor from an earlier manoeuvre used after
+  - another mode moved the unit. last_cell: a guard whose premise fails on a burning cell.
+      evidence: 70e1b33 plus outputs/rblatch_part1.txt:46-62. 4795708 plus
+      outputs/latchfix_part1.txt, with the clear at wildfire_model.py:2852. 62b4fbe plus
+      outputs/idleretreat_part1.txt, with fixes at agents.py:2246-2289 (4a) and 2052-2075
+      (4b, blamed to 62b4fbe). c4d5a25 plus outputs/lastcell_part1.txt:331-360, with the fix
+      at agents.py:2190-2202. Each was permanent until a re-check was added.
+  - [inferred] The exit-leg stall is not another instance of that class. It belongs to the
+  - movement-near-fire livelock family. All stalled legs self-resolved when the fire
+  - changed, unlike the latches.
+      evidence: This follows from the findings above: no cross-mode read on the carrying
+      leg, identical code in control and treatment, and every recorded step consistent with
+      memoryless _move_toward. All 7 legs completed (the census counts completed legs).
+      Precedents: a78f393; the latch808 memory note of a 30-step hazard-standoff oscillation
+      (not touched); the dockfix livelock memory.
+
+OPEN QUESTIONS:
+  - The probe wave's H1(c)/(d) traces are still running. The static replay cannot see smoke,
+  - and its wrong-target control is consistent on 17-100% of steps, so step-by-step proof of
+  - which function moved the unit, and with what field values, must come from those traces.
+  - Would a change to the exit rule shorten legs without adding hazard? The candidates are
+  - (i) completing on any edge cell, which on 1433805104 would have ended at about step 218
+  - instead of 282 (inferred from positions), or (ii) re-choosing exit_target. Neither is
+  - measured. a78f393's guard counterfactual covered approach legs only, and (i) would
+  - change 0 steps of the other 6 legs.
+  - Do the un-cleared _idle_retreat_* and _firefight_suspended fields matter on the APPROACH
+  - leg (read via agents.py:1743 -> 2052-2151 with target_pos set, where the stale-origin
+  - re-anchor is deliberately skipped for assigned units at 2054) or in the next idle phase
+  - after recycle or absence? Their outcomes were not examined here. This is H4 territory,
+  - not the carrying leg.
+  - The mid-leg stalls (6 of 7) happen before the unit reaches any edge. Is the fix
+  - direction there path planning around the barrier (the BFS at 2318-2353 exists but only
+  - as a yes/no route check on the approach leg), or should they be left as (B), as a78f393
+  - did for approach legs?
+
+============================================================================================
+AGENT outcome-cost
+============================================================================================
+  QUARANTINE: None. outputs/ was only ever listed non-recursively (os.listdir and 'ls -1').
+  The entry _firemech_rewound_20260914 was filtered out by name before any use, and the
+  directory was never entered, opened or traversed. No recursive search of any kind was run:
+  every Grep call targeted an explicit file (agents.py, wildfire_model.py,
+  outputs/_ffr_harness.py), and every file read was an explicit path. E:/Projects/SAS_wt was
+  not touched; its path appears only as the 'repo' string inside a JSON. No simulation was
+  started, and nothing was written to the repo. Scripts and outputs are in
+  C:/Users/ahrar/AppData/Local/Temp/claude/E--Projects-SAS/e5e891da-
+  af9a-40cc-9698-0d2307731681/scratchpad/xs_static/ (xs_cost.py/.txt, xs_cost2.py/.txt,
+  xs_cost3.py/.txt, traj.txt).
+
+ANSWER:
+  WHAT STALLS COST, from the recorded runs (read-only JSON; nothing was run, nothing was
+  written to the repo)
+
+  1. COMPLETED LEGS, using the census definition (tag: stalled legs / excess steps / rescues
+  pushed past 240 by the excess / saving bound if a unit could complete on any boundary
+  cell).
+  - uhC 0/0/0/0
+  - uhD 5/248/2/63
+  - uhY 2/52/0/0
+  - ugKC 4/118/0/1
+  - ugKD 3/176/0/1
+  - ugKY 3/176/0/1
+  - fmOFF 2/20/0/0
+  - fmEFS 1/8/0/7
+  - fmDRY 2/16/0/7
+  - f2cOFF 4/170/0/1
+  - f2cEFS 2/46/0/0
+  - f2cDRY 1/8/0/0
+
+  Only uhD has a stall that moves a rescue across a horizon: 2 past step 240
+  (east/half/1433805104 v0 and south/half/1048395951 v0), 1 past step 270 (1433805104), none
+  past 300. In the 240-step arms, no carrying leg was still open at 240 that would have
+  finished by 240 without the excess.
+
+  Across all 12 arms there are 1038 excess steps on stalled completed legs. 957 of them
+  happen before the unit first stands on any boundary cell; only 81 happen after, and 63 of
+  those 81 are in the single leg 1433805104. So "complete on any boundary cell" would fix
+  1433805104: completion at 219 instead of 282, inside 240. It does nothing for 1048395951:
+  that stall is in the interior, and the unit's first boundary cell is its exit cell,
+  reached at 262.
+
+  2. THE CENSUS MISSES THE EXPENSIVE CASE: BROKEN CARRYING LEGS. 17 carrying legs in these
+  arms went past distance + 5 and then ended without a completion. Every one lost its
+  victim.
+  - In 6 the carrying unit died while exiting. The victim died with it.
+  - In 10 the unit turned route_blocked while carrying and dropped the victim. The victim
+  died 1-3 steps later.
+  - In 1 (f2cDRY east/def/101) the planner marked the carried victim
+  geographically_isolated.
+
+  The controls have these too:
+  - uhC east/half/1291443119 v0: 88 steps for 9 cells. The unit stood on a boundary cell at
+  step 138 and died with its victim at 168.
+  - fmOFF east/half/606 v0
+  - f2cOFF east/def/202 v0
+
+  So "control 0/104" holds only for completed legs. Counting broken legs, the control is
+  1/106 and uhD is 6/103.
+
+  Where the arms differ:
+  - U30: the broken leg (1291443119) happens in all three arms, so it is not a difference
+  between them.
+  - Round 2: f2cOFF rescued 4 victims that f2cEFS lost through broken legs, and 4 that
+  f2cDRY lost the same way. The net loss at 240 is -3 and -6.
+  - Round 1: 1 each (fmEFS and fmDRY, east/half/101).
+  - CRN: none.
+
+  6 of the 17 broken legs had stood on a boundary cell before breaking, so an any-boundary
+  completion rule bounds 6 victim losses and 3 unit deaths. Verdict (B), "real but inert",
+  is excluded by the recorded outcomes.
+
+  3. THE 4x NOTE, verified from victim_steps. Loss uhD vs uhC is 8, 4, 3, 2, 2 at steps 240,
+  270, 300, 330, 360 (8/2 = 4x). uhY vs uhC is 7, 8, 3, 3, 3. To first order, the stall
+  excess accounts for 2 of the 8 at 240, 1 of the 4 at 270, and none from 300 on.
+
+  4. MECHANISM, from data only.
+  - firefight_log has 0 rows for any carrying unit inside any carrying leg, in every fire-
+  mechanic-ON arm.
+  - Every stalled or broken leg alternates improving and worsening moves. None of them has a
+  maintaining move or a step standing still.
+  - Of the non-improving moves, 856 are explained by the improving neighbour burning or
+  being next to a burning cell. The other 200 are explained by neither, so by the step-
+  choice code in _move_toward only smoke can explain them (inferred: the harness does not
+  record smoke).
+  - Both kinds occur with the fire mechanic OFF (ugKC 24 smoke-inferred, f2cOFF 21).
+  - Nothing in the recorded data supports firefighting state driving the carrying leg. The
+  code-level test belongs to the trace agents.
+
+  Per-step detail for the two named legs is in scratchpad/xs_static/xs_cost.txt, with
+  compact trajectories in traj.txt.
+
+  Environment: Python 3.10.11 (.venv, -B); HEAD a538a6e; agents.py and wildfire_model.py are
+  identical to ac6e78d. Two tracked files, outputs/ungated_horizon_report.txt and
+  outputs/ungated_report.txt, already had uncommitted changes when checked. I did not make
+  them.
+
+FINDINGS:
+  - [verified] Per-arm cost of completed stalled legs (stalled / completed legs, total
+  - excess on stalled legs, excess on all completed legs): uhC 0/104, 0, 2; uhD 5/102, 248,
+  - 248; uhY 2/101, 52, 52; ugKC 4/96, 118, 118; ugKD 3/96, 176, 176; ugKY 3/97, 176, 176;
+  - fmOFF 2/68, 20, 22; fmEFS 1/66, 8, 8; fmDRY 2/66, 16, 16; f2cOFF 4/72, 170, 170; f2cEFS
+  - 2/69, 46, 46; f2cDRY 1/66, 8, 8. Non-stalled legs have excess 0, except one excess-2 leg
+  - each in uhC and fmOFF.
+      evidence: scratchpad/xs_static/xs_cost.py -> xs_cost.txt. Matched common tuples as in
+      outputs/_xs_census.py matched(): 30/30/23/23. The stalled counts reproduce
+      _xs_census.txt lines 234-287 exactly. Exit target reconstructed by the rule at
+      agents.py:1784-1793: 0 mismatches. Alignment check (unit on its exit cell at step s1-1
+      and off grid at s1): 1002 of 1003 legs pass. The one exception, ugKC
+      east/half/1252362635 v1, shows the unit 'available' on the exit cell at s1 (11c3661
+      worktree run); the leg itself is valid.
+  - [verified] Stalled completed legs, with excess, first boundary step and saving bound.
+  - uhD (360 steps): east/def/1749069988 v3, 179-199, 20 steps for 5 cells, excess 14, first
+  - boundary step 198 at the exit cell (saving 0). east/half/294124329 v0, 90-143, excess
+  - 40, first boundary 142 (0). east/half/1433805104 v0, 206-282, excess 68, first boundary
+  - 218 at (49,16), 64 steps before completion (saving 63), crossed 240: YES.
+  - east/half/2070841104 v0, 88-112, excess 12 (0). south/half/1048395951 v0, 132-263,
+  - excess 114, first boundary 262 = exit cell (0), crossed 240: YES. uhY: 294124329 v0
+  - excess 40 and 2070841104 v0 excess 12, saving 0 for both. ugKC: 1420331661 (84-150,
+  - excess 52), 294124329 (121-171, 30), 2070841104 (82-119, 20, saving 1), south/903347495
+  - v2 (46-74, 16). ugKD and ugKY (identical): 1420331661 (86-157, 56), 294124329 (108-172,
+  - 44), 2070841104 (80-172, 76, saving 1). fmOFF: east/def/101 (204-215, 8), south/909 v3
+  - (203-218, 12). fmEFS: east/half/909 (100-117, 8, saving 7). fmDRY: east/def/101
+  - (205-216, 8), east/half/909 (100-117, 8, saving 7). f2cOFF: east/half/101 (157-182, 8),
+  - 202 (76-203, 118, saving 1), 404 (113-131, 10), 606 (113-167, 34). f2cEFS: east/def/101
+  - (128-182, 38), east/half/101 (157-182, 8). f2cDRY: east/half/101 (157-182, 8). No
+  - completed stall crossed 240 except the two uhD legs.
+      evidence: xs_cost.txt STALL lines. The completion rule at agents.py:1819-1828 fires on
+      the advance after the unit stands on exit_target, so a stall-free leg is distance + 1
+      steps and a completion on any boundary cell would land at first boundary step + 1.
+  - [verified] Of the 1038 excess steps on stalled completed legs (all 12 arms), 957 happen
+  - before the carrying unit first stands on any boundary cell and 81 after. 63 of the 81
+  - are uhD east/half/1433805104; the rest are 7+7 (east/half/909 in fmEFS and fmDRY) and 1
+  - each in ugKC, ugKD, ugKY and f2cOFF. A 'complete on any boundary cell' rule would
+  - therefore remove about 8% of the completed-leg stall excess. It would fix 1433805104
+  - (completion at 219, inside 240) but not 1048395951, whose stall runs from x=32 to x=48
+  - on row 27.
+      evidence: scratchpad/xs_static/xs_cost3.py -> xs_cost3.txt ('excess BEFORE/AFTER first
+      boundary cell' per arm): uhD 185/63, uhY 52/0, ugKC 117/1, ugKD 175/1, ugKY 175/1,
+      fmOFF 20/0, fmEFS 1/7, fmDRY 9/7, f2cOFF 169/1, f2cEFS 46/0, f2cDRY 8/0.
+  - [verified] The census misses broken carrying legs. 17 carrying legs exceeded distance +
+  - 5 and then ended without a completion, and every one lost its victim. uhC 1:
+  - east/half/1291443119 v0, 80-168, 9 cells; boundary at 138; unit and victim died at 168.
+  - uhD 1 and uhY 1: same victim, 84-148; boundary at 107; route_blocked at 148, victim dead
+  - at 150, unit dead at 165. fmOFF 1: east/half/606 v0, 165-205, route_blocked on boundary
+  - cell (49,2), victim dead at 207. fmEFS 1: east/half/101 v0, unit and victim died at 135.
+  - fmDRY 1: east/half/101 v0, route_blocked at 135, victim dead at 138. f2cOFF 1:
+  - east/def/202 v0, route_blocked at 169, victim dead at 171. f2cEFS 5: east/def/202,
+  - east/half/202 and east/half/404 route_blocked then victim dead; east/half/606 unit and
+  - victim dead at 192; south/half/1010 v3 unit and victim dead at 84. f2cDRY 5: the same
+  - except that east/half/404 is replaced by east/def/101 v0, whose carried victim was
+  - marked geographically_isolated at 177. Units that died while carrying: uhC 1, fmEFS 1,
+  - f2cEFS 2, f2cDRY 2. The victim's status while carried is always 'assigned'; death
+  - appears at the break step or 1-3 steps after the drop. ugKC, ugKD and ugKY have no
+  - broken legs.
+      evidence: xs_cost.txt 'NOT COMPLETED' and 'DEATH' lines; xs_cost2.txt break rows,
+      victim status changes and unassign reasons (replacement_after_blocked / fire_casualty
+      / geographically_isolated); xs_cost3.txt trajectories. All 17 flagged 'OVER dist+5'
+      (elapsed 25-97 steps against distances 3-16).
+  - [verified] Counting broken legs, the control is not stall-free. uhC has 1 stalled leg of
+  - 106 carrying legs (the fatal 1291443119 leg), against uhD 6/103 and uhY 3/102. With
+  - broken legs included: ugKC 4/96, ugKD 3/96, ugKY 3/98, fmOFF 3/69, fmEFS 2/69, fmDRY
+  - 3/69, f2cOFF 5/74, f2cEFS 7/74, f2cDRY 6/71. The 'CONTROL 0/104' figure is true only for
+  - completed legs.
+      evidence: xs_cost.txt per-arm lines (completed legs + 'carrying legs not completed'),
+      xs_cost2.txt BROKEN entries.
+  - [verified] Outcome cost differences between arms. U30 at 360: the broken leg costs the
+  - same victim in all three arms, so there is no differential. The completed-leg stalls
+  - cost uhD 2 rescues at 240, 1 at 270 and 0 from 300. Round-2 screen: f2cOFF rescued
+  - east/half/202, east/half/404, east/half/606 and south/half/1010 v3, all lost by f2cEFS
+  - through broken legs (4). f2cDRY lost east/half/202, east/half/606, south/half/1010 v3
+  - and east/def/101 through broken legs or the carried-victim unreachable mark (4). Net at
+  - 240 is f2cOFF 72, f2cEFS 69, f2cDRY 66. Round 1: fmEFS and fmDRY each lose east/half/101
+  - v0, which fmOFF rescued at 127 (net 68 vs 66 vs 66). CRN: no stall costs any outcome at
+  - 240.
+      evidence: Cross-arm victim outcomes read from victim_steps (inline script): e.g.
+      f2cOFF south/half/1010 v3 rescued at 73, f2cEFS and f2cDRY dead at 84; f2cOFF
+      east/half/606 v0 rescued at 167, EFS and DRY dead at 192. Per-arm status counts at
+      step 240 were computed from victim_steps[239].
+  - [inferred] 6 of the 17 broken legs had the carrying unit on a boundary cell before the
+  - break: the uhC, uhD and uhY 1291443119 legs, fmOFF east/half/606, and f2cEFS and f2cDRY
+  - south/half/1010 v3. In the 1010 case the unit walked (17,0)-(14,0) on the edge for 18
+  - steps (63-80), one cell from its exit cell (18,0), then died at 84. Completing on any
+  - boundary cell would bound-prevent those 6 victim losses and 3 of the unit deaths (uhC,
+  - f2cEFS, f2cDRY). The other 11 broken legs never reached a boundary.
+      evidence: xs_cost3.txt BROKEN lines (first_bd, boundary cells visited, trajectory).
+      Mechanically an exiting unit reaches the completion branch unimpeded:
+      _needs_immediate_survival_retreat returns False when exiting (agents.py:1973), and no
+      firefight_log row exists for a carrying unit. The saving itself is a counterfactual
+      bound.
+  - [verified] The '240 steps shows about 4x the true cost' note is correct on these runs.
+  - Rescued counts (uhC / uhD / uhY) are 101/93/94 at 240, 103/99/95 at 270, 104/101/101 at
+  - 300, 104/102/101 at 330 and 104/102/101 at 360. Loss uhD vs uhC is 8, 4, 3, 2, 2 (8/2 =
+  - 4x); uhY vs uhC is 7, 8, 3, 3, 3. To first order, the stall excess accounts for 2 of the
+  - 8 at 240 (1433805104 v0, which the control rescued at 199, and 1048395951 v0, which the
+  - control never finishes, so it would be a gain) and 1 of the 4 at 270.
+      evidence: xs_cost.txt section 'RESCUED BY STEP H' (victim_steps[H-1], status
+      'rescued'). Matches outputs/ungated_horizon_report.txt:93-98. The 2-of-8 attribution
+      assumes nothing else changes when the unit is freed earlier.
+  - [inferred] Recorded data gives no support to firefighting-mode state driving the
+  - carrying leg. firefight_log has 0 rows for the carrying unit inside any carrying leg, in
+  - every ON arm (uhD, uhY, ugKD, ugKY, fmEFS, fmDRY, f2cEFS, f2cDRY). Every stalled or
+  - broken leg alternates improving and worsening steps, with 0 maintaining moves and 0
+  - steps standing still. That fits the tier order in _move_toward (agents.py:2422-2455):
+  - tier 3 allows a worsening step when the improving neighbour is fire-adjacent or smoky,
+  - and tier 1 takes the unit back on the next step. 856 non-improving steps are explained
+  - by the recorded fire (improving neighbour burning or next to a burning cell, at step t-1
+  - or t). 200 are explained only by smoke, which is not recorded (e.g. uhD
+  - south/half/1048395951, steps 249-261: oscillating (47,27)<->(48,27) with the nearest
+  - burning cell 8-13 away). Both kinds occur with the fire mechanic off (ugKC 24 smoke-
+  - inferred, f2cOFF 21, uhC 47 fire-explained).
+      evidence: xs_cost.txt 'firefight_log rows ... 0 rows in 0 legs' for every arm;
+      xs_cost2.py/xs_cost2.txt per-leg move classes. Fire state is taken from
+      burn_intervals; SimultaneousActivation (wildfire_model.py:180, 5844) means the unit
+      sees a state between post-step t-1 and t, so both are tested. The smoke attribution is
+      inferred.
+  - [verified] (3) Per-step path of uhD east/half/1433805104 v0 (ff_unit_1, exit cell
+  - (49,17), * = boundary): 206:42,17 207:43,17 208:44,17 209:45,17 210:46,17 211:45,17
+  - 212:46,17 213:47,17 214:47,16 215:47,17 216:47,16 217:48,16 218:49,16* 219:49,15*
+  - 220:49,16* 221:49,15* 222:49,14* 223:49,15* 224:49,14* 225:49,15* 226:49,14* 227:49,15*
+  - 228:48,15 229:48,14 230:48,15 231:48,14 232:48,15 233:48,14 234:49,14* 235:49,15*
+  - 236:49,14* 237:49,13* 238:49,12* 239:49,13* 240:48,13 241:47,13 242:48,13 243:49,13*
+  - 244:48,13 245:49,13* 246:48,13 247:49,13* 248:48,13 249:49,13* 250:48,13 251:49,13*
+  - 252:48,13 253:48,12 254:48,13 255:47,13 256:46,13 257:47,13 258:48,13 259:49,13*
+  - 260:48,13 261:49,13* 262:48,13 263:49,13* 264:48,13 265:47,13 266:48,13 267:47,13
+  - 268:48,13 269:47,13 270:48,13 271:47,13 272:48,13 273:47,13 274:46,13 275:46,14
+  - 276:46,15 277:47,15 278:48,15 279:48,16 280:49,16* 281:49,17* (completion 282). 26
+  - boundary steps, 42 immediate reversals (A-B-A), victim co-located 76/76.
+      evidence: scratchpad/xs_static/traj.txt. The full per-step table (distance to exit,
+      nearest burning cell, 8-neighbourhood fire, exit cell burning) is in xs_cost.txt. The
+      42 reversals match ungated_horizon_report.txt:263-264.
+  - [verified] (3) Per-step path of uhD south/half/1048395951 v0 (ff_unit_0, exit cell
+  - (49,27)): 132:33,27 133:34,27 134:35,27 135:34,27 136:35,27 137:34,27 138:33,27
+  - 139:34,27 140:33,27 141:34,27 142:33,27 143:34,27 144:35,27 145:36,27 146:37,27
+  - 147:37,28 148:36,28 149:37,28 150:36,28 151:35,28 152:34,28 153:33,28 154:32,28
+  - 155:33,28 156:33,27 157:32,27 158:33,27 159:32,27 160:33,27 161:32,27 162:31,27
+  - 163:30,27 164:31,27 165:32,27 166:33,27 167:32,27 168:33,27 169:34,27 170:33,27
+  - 171:34,27 172:35,27 173:34,27 174:33,27 175:32,27 176:31,27 177:32,27 178:33,27
+  - 179:34,27 180:35,27 181:36,27 182:37,27 183:38,27 184:37,27 185:38,27 186:37,27
+  - 187:38,27 188:37,27 189:38,27 190:39,27 191:40,27 192:39,27 193:40,27 194:39,27
+  - 195:40,27 196:41,27 197:40,27 198:39,27 199:40,27 200:39,27 201:40,27 202:39,27
+  - 203:40,27 204:39,27 205:40,27 206:39,27 207:38,27 208:39,27 209:38,27 210:39,27
+  - 211:40,27 212:41,27 213:40,27 214:39,27 215:40,27 216:41,27 217:42,27 218:41,27
+  - 219:42,27 220:43,27 221:42,27 222:41,27 223:42,27 224:41,27 225:42,27 226:43,27
+  - 227:42,27 228:43,27 229:42,27 230:43,27 231:42,27 232:43,27 233:42,27 234:43,27
+  - 235:42,27 236:43,27 237:44,27 238:45,27 239:46,27 240:47,27 241:48,27 then
+  - (47,27)<->(48,27) every step through 261, 262:49,27* (completion 263). Only 1 boundary
+  - step (the exit cell itself), 82 immediate reversals, victim co-located 131/131.
+      evidence: scratchpad/xs_static/traj.txt and xs_cost.txt (per-step table: nearest
+      burning cell 8-13 cells away from step 249 on, exit cell never burning).
+  - [verified] No carried victim died while its carrier still had exiting=True. No ff_steps
+  - row is both exiting and dead, and no victim_steps status is 'dead' inside a carrying
+  - window: deaths show at the break step or later. No carrying leg open at a 240-step
+  - horizon would have completed within it with zero excess (ugKY east/def/2038269169,
+  - fmEFS/fmDRY south/half/808 and 909, and f2cOFF east/def/101 all started at 232 or
+  - later). uhC south/half/1048395951 is open at 360 after 4 steps.
+      evidence: Status census over all ff_steps rows: ('en_route', True, False) 7887,
+      ('assigned', True, False) 318, never exiting+dead. xs_cost.txt 'NOT COMPLETED ... open
+      at run end' lines.
+
+OPEN QUESTIONS:
+  - Smoke is not recorded by the harness. The 200 non-improving steps not explained by
+  - burning cells (e.g. uhD south/half/1048395951, steps 244-261, with the exit cell (49,27)
+  - apparently excluded from tier 1 while fire is 8-13 cells away) are only inferred to be
+  - smoke. The probe traces (xsTD/xsTY/xsTK, tier and smoke per step) should confirm them.
+  - Broken legs end through _move_toward finding no non-burning neighbour
+  - (agents.py:2411-2413, _mark_route_blocked) or through the unit's death. After the break
+  - the recorded row shows exiting False, and the victim is dropped and dies 1-3 steps
+  - later. Is dropping a carried victim on route_blocked intended? This is latch-round
+  - territory, and it is the most expensive outcome of the stall class (10 of 17 broken
+  - legs).
+  - f2cDRY east/def/101 v0: the planner marked the CARRIED victim geographically_isolated
+  - (unassign, unreachable_mark and rescue_failed at step 177) while its live carrier was at
+  - (45,20)-(46,20), 3-4 cells from exit cell (49,20). f2cEFS rescued the same victim at
+  - 182. This may be a separate defect (planner reachability ignoring the carrier), and it
+  - costs 1 victim.
+  - The counterfactuals (stall excess = 2 of the 8 losses at 240; any-boundary completion
+  - saving 6 victims and 3 units on broken legs, and 81 of 1038 excess steps on completed
+  - legs) are first-order bounds that hold everything else fixed. A freed unit would change
+  - later dispatch.
+  - The U30 arm difference (uhD 5 and uhY 2 completed stalls against uhC 0) appears with
+  - identical fire in uhY. That points to pickup time and place (positioning), not carrying-
+  - leg state, but this analysis does not demonstrate it.
+  - outputs/ungated_horizon_report.txt and outputs/ungated_report.txt already showed tracked
+  - modifications during this analysis. They were not made by this subagent; the
+  - orchestrator should confirm they are its own.
+
+============================================================================================
+AGENT fix-scope
+============================================================================================
+  QUARANTINE: None. The one recursive search (grep -r over the repo) excluded
+  _firemech_rewound_20260914, .venv, .git and __pycache__ with --exclude-dir. Every other
+  read used explicit paths or non-recursive shell globs on outputs/ (_xs_*, exitstall*,
+  _ffr_xs*, _ffr_<tag>_*.json). Those globs list outputs/ itself and never enter the
+  quarantine directory. The Grep tool was used only on explicit files. My scripts are in
+  scratchpad/xs_static/fixscope/; sibling agents are writing to xs_static/ too.
+
+ANSWER:
+  Scope only. Nothing was implemented and no simulation was started. I read the code and the
+  recorded JSON files, and ran offline replays against the recorded fire.
+
+  Recommendation: ship a single switch, FF_EXIT_LEG_MODE, with two modes:
+  - Mode 1 is F1: a carrying unit completes the rescue on any boundary cell.
+  - Mode 2 is F5 plus F1. F5 is a new candidate: each carrying step, the unit takes the
+  first step of a stateless breadth-first search over clean cells to the nearest boundary
+  cell. A clean cell here is one that is not burning, not next to fire and not smoky, which
+  is the same filter _move_toward uses for its tiers 1-3. If no clean route exists, the unit
+  falls back to the existing _move_toward(exit_target).
+
+  F1 is the smallest change and has no downside anywhere in the replays: no leg got longer
+  and exposure did not rise. But it only removes the stall where the unit is already on the
+  boundary. That is the maintainer's example: uhD east/half/1433805104 is on the boundary at
+  step 218 and would complete at 219, so the leg takes 13 steps instead of 76. It fixes only
+  1 of the 7 ungated stalled legs.
+
+  F5+F1 is the smallest change that removes the actual mechanism. The carrying leg uses a
+  greedy one-step rule with no memory. It prefers any clean cell over progress. When the
+  cell that would improve distance is next to fire or smoky, tier 3 takes a worsening clean
+  cell. For an exit on x=0 or x=49 that is the straight reverse step, because of the
+  neighbour order at agents.py:1961. From there the cell it just left is clean and improving
+  again, so the unit steps back. The result is a two-cell back-and-forth that can last
+  dozens of steps.
+
+  Offline replay setup:
+  - Fire and smoke are rebuilt from the recorded burn_intervals, using an exact copy of the
+  Fire.step and Smoke.smoke_step state machine.
+  - Validated against the probe's 7x7 windows on 436 carrying advances: burning matched
+  20202/20202 cells.
+  - Smoke errors fall only on cells whose starting fuel had to be guessed.
+  - The reconstructed rule chose the same cell 407/415 times.
+  - The closed-loop base replay reproduced 305 of 307 U30 leg lengths.
+
+  Results with the fire held at the recorded history:
+
+  | Set | Leg steps, base → F5 | Stalled legs, base → F5 | Legs changed | Fire-adjacent /
+  smoky carrier steps, base → F5 |
+  |---|---|---|---|---|
+  | uhD | 812 → 588 | 5 → 2 | — | 16/2 → 0/0 |
+  | uhY | 593 → 548 | 2 → 1 | — | — |
+  | ugKC (control) | 687 → 590 | — | 4 of 96, all shorter | — |
+  | uhC (control) | — | — | 1 of 104, by 1 step | — |
+  | All 61 files holding a census stall (212 legs) | 3507 → 1643 | 56 → 20 | 59, all
+  shorter, none longer | 123/36 → 12/3 |
+
+  F5 produced no deaths or timeouts in any set, and the results do not change when the fuel
+  guess is set to 7 or 10.
+
+  The other candidates:
+  - **F2** (re-select the exit): 37 legs shorter but 4 longer, 2 replay deaths, and it
+  leaves blockages in the middle of the route untouched.
+  - **F3** (retreat-style last-cell memory): harmful. Total leg steps rose from 3507 to
+  4793, 29 legs got longer, with 5 deaths and 1 timeout. Forbidding the return step keeps
+  the unit walking backward toward the fire front. It would also add a new cross-mode field
+  that has to be cleared at six sites, which is exactly the defect class under
+  investigation.
+  - **F4** (step onto a fire-adjacent exit when one cell away): small gain; F1 already
+  covers the on-boundary case.
+  - **F4b** (generalised F4): short legs but about 3x the fire-adjacent steps, and replay
+  deaths.
+  - **F6** (tie-break against the reverse step): mixed, some legs up to 105 steps, more
+  exposure.
+
+  All candidates are global. They change the fire-mechanic-OFF control and every baseline
+  wherever they trigger. Gating the fix on the fire mechanic would be wrong, because the
+  defect exists in the control (ugKC stalls 4/96; the census found 32 of 909 fire-mechanic-
+  OFF legs stalled). The fix needs its own measured round, with the reference set re-
+  measured at that round's commit.
+
+  Proposed switch, following the accessor rule:
+  - **Constant and accessor:** FF_EXIT_LEG_MODE in common_fixed_variables. An accessor next
+  to agents.py:1160-1236 reads it through _exact_integer.
+  - **Values:** exact 0 is today's behaviour and the kill switch. Exact 1 or 2 selects that
+  mode. A missing attribute takes the shipped value, which is 0 until flipped. Junk, None,
+  non-integral, negative or unknown integers select mode 2, so nothing disarms by truncation
+  or a `<= 0` comparison.
+  - **Mode 0 must be value-identical to ac6e78d:** the accessor is read only inside the
+  carrying branch, creates no model attribute and draws no RNG.
+
+  Proposed measurement gate:
+  1. Mode-0 value identity against the recorded ac6e78d runs.
+  2. A primary structural invariant on carrying legs: back-and-forth (reversal and cycle)
+  counts and legs longer than distance + 5 must fall; carrier steps next to fire or smoke
+  and carrier deaths must not rise.
+  3. Leg-level checks of the pre-registered replay predictions above.
+  4. Outcome arms: rescued, dead and firefighter deaths, for both the control and the
+  ungated configuration, stock and CRN (FM2P_CRN=1), at 360 steps with the 240/270/300/330
+  cuts reported. A 240-step cut reported about 4x the ungated cost: the loss is 8, 4, 3, 2
+  at steps 240, 270, 300, 330. The same seeds must then be confirmed on a second seed set.
+  5. The unit tests and the accessor edge-value matrix.
+
+  Stop for confirmation before implementing.
+
+FINDINGS:
+  - [verified] The carrying leg is driven only by _move_toward(exit_target). No
+  - firefighting-mode or idle-mode field is read on a carrying advance, and the engaged
+  - retreat range K is never computed there.
+      evidence: Code: _firefight_prepare returns None when self.exiting (agents.py:2488).
+      ff_firefight_engaged_retreat_range is called only at :2500, after that test.
+      idle_buffer falls back to IDLE_RETREAT_SAFETY_BUFFER (:1733-1735) and is consumed only
+      by _needs_immediate_survival_retreat, which returns False for exiting units (:1973).
+      The carrying branch calls _move_toward (:1819-1840), and _move_toward reads no mode
+      field (:2369-2464). Probe traces (7 xstrace files, 436 carrying advances): 0 mode-
+      field reads, prepare() None every time, 0 moves other than via _move_toward, 0 outside
+      moves. The only accessor calls on carrying advances are
+      ff_firefight_extinguish/firebreak (872 = 2 per advance), both made from
+      _firefight_prepare :2484-2485 before its exiting return.
+  - [verified] Idle-retreat state persists onto the carrying leg but is inert there. A fix
+  - must not add new persistent carrying-leg state; the stateless F5 does not.
+      evidence: xstrace: 151 of 436 carrying advances still have _idle_retreat_origin or
+      _idle_retreat_last_cell set (for example step 188, origin [24,7]). None of these
+      fields appears in the reads list of any carrying advance. They are reset only at
+      agents.py:2036-2040 and :2071-2074.
+  - [verified] Stall mechanism: when the improving neighbour is next to fire or smoky, tier
+  - 3 picks any clean cell even if it is farther from the exit. For an exit on x=0 or x=49
+  - that is the straight reverse step. From there the cell just left is clean and improving
+  - again (tier 1), so the unit steps back: a two-cell back-and-forth.
+      evidence: Tier pools and tie-break are at agents.py:2420-2444: min(dist_after,
+      preferred), with list order breaking remaining ties. Neighbour order is
+      (1,0),(-1,0),(0,1),(0,-1) (:1961), so for an east exit the first worsening cell is
+      (-1,0). Recorded traces show improving cells blocked by adjacency ('A') or smoke alone
+      ('S'). Example: xsTD south/1048395951 steps 242-260 alternate (48,27)<->(47,27) while
+      exit (49,27) is only smoky. All 61 census-stalled legs show 2 or more reversals.
+  - [verified] The offline replay used to score the fixes is validated.
+      evidence: Scripts are in scratchpad/xs_static/fixscope/ (fs_env.py, fs_rules.py,
+      fs_validate.py). Burning matched 20202/20202 window cells. Smoke errors (for example
+      fp 12 / fn 37 of 6881 cells at fuel guess 8) are all on cells whose initial fuel had
+      to be guessed. The reproduced _move_toward chose the same cell 407/415 times, with
+      408/415 tiers matching. The closed-loop base replay reproduced 305/307 U30 leg lengths
+      (uhC 104/104, uhD 100/102, uhY 101/101) and 96/96 in ugKC. Results do not change at
+      fuel guess 7, 8 or 10.
+  - [verified] F1 (complete on any boundary cell) is the smallest fix and never makes a leg
+  - worse, but it only fixes the case where the unit is already on the boundary. It fixes 1
+  - of the 7 ungated stalled legs, the maintainer's example.
+      evidence: Recorded ff_steps for uhD east/half/1433805104: the unit is first on a
+      boundary cell at 218 (49,16), so F1 completes at 219 and the leg takes 13 steps
+      instead of 76. Replay: uhD 812->747 total leg steps (1 leg changed), uhY 0 changed,
+      ugKC 1 leg shorter by 1, uhC 0 changed; census-file set 16/212 legs shorter, 0 longer,
+      stalled 56->54, exposure unchanged. For most stalled legs the first boundary cell is
+      reached only 1-2 steps before completion, because they oscillate in the interior.
+  - [verified] F1 code sites and interactions: change the test at agents.py:1820 to `pos ==
+  - exit_target or (mode >= 1 and on a boundary cell)`, with the boundary test done through
+  - grid.out_of_bounds on the 4 offsets, as _neighbor_cells does at :1958-1965 (the test
+  - fixture grids have out_of_bounds but no width/height). exit_target stays the planned
+  - exit. Add exit_cell=pos to the 'exiting_complete' reason (:1833-1837).
+      evidence: The drain uses the unit's position, not exit_target
+      (wildfire_model.py:3003-3060). The absence exit cell is pos (:2551-2552, :2566), and
+      the recycle standby is pos (:2453). _choose_firefighter_return_cell accepts any cell
+      (:2622-2678). Victim custody is unchanged: the victim is moved with the carrier each
+      step (agents.py:1841-1847) and queued at completion (:1824-1827). Nothing on the
+      route_blocked side changes: exiting units are skipped at wildfire_model.py:2826 and
+      :2834, and the exiting path skips the BFS at agents.py:2388. The harness records both
+      pos and exit_target at completion (outputs/_ffr_harness.py:351-357). The dashboard
+      maps only reason codes (movement_explainability.py:30). The drain runs before the
+      casualty check (adaptation_manager.py:144 vs :182).
+  - [verified] F5 (new; mode 2 together with F1) is the smallest fix that removes the
+  - mechanism: each carrying step, a stateless BFS over clean cells to the nearest boundary
+  - cell, falling back to _move_toward(exit_target) when no clean route exists. It has the
+  - best evidence of any candidate.
+      evidence: Replay with fire held at recorded history: uhD 812->588 leg steps, stalled
+      5->2, fire-adjacent/smoky carrier steps 16/2->0/0. uhY 593->548, stalled 2->1. ugKC
+      687->590. ugKD 755->597. uhC 1/104 legs changed (-1 step). Census-file set: 212 legs,
+      59 changed and all shorter (0 longer), 3507->1643 steps, stalled 56->20,
+      adjacent/smoky steps 123/36->12/3, 0 deaths, 0 timeouts. The 7 ungated legs go 20->15,
+      78->11, 24->14, 53->18, 127->20, 24->14 and 53->18 (base replay vs F5).
+  - [inferred] F5 code sites and risks: replace the call at agents.py:1840 with a mode-gated
+  - helper. It computes the fire set once via _fire_cells (:1900) and a smoke set once, runs
+  - a BFS in the :1961 neighbour order, calls grid.move_agent, and sets
+  - _last_move_tier/_last_move_risk (read at :1852 and :2458). The fallback keeps the
+  - 'nowhere to step' route_blocked signal (:2411-2413). It adds no persistent attribute and
+  - does not mutate exit_target.
+      evidence: Only one existing test advances a carrier through an interior move:
+      test_firefighter_fire_avoidance.py:144-164. Traced by hand, F5 steps to (5,4) and
+      keeps exit_target (0,5), so the test should still pass. Other carrier tests put the
+      unit on its exit cell: test_firefighter_rescue_absence.py:120-136 and
+      test_phantom_rescue_release.py:147-148, 406-407, 441-442, 626-627.
+      test_route_block_stale_clear.py:403-416 never advances the unit. Risks: a per-step BFS
+      costs O(cells); the route may end on a different boundary side than the pickup exit
+      (no replay leg got longer); the fallback keeps the back-and-forth when no clean route
+      exists (20/212 legs still stalled).
+  - [verified] F3 (retreat-style last-cell memory) is harmful and would itself be an
+  - instance of the cross-mode state-leak class.
+      evidence: Replay: census-file set 3507->4793 steps, 29 legs longer, 5 replay deaths
+      and 1 timeout. uhD/uhY east/half/2070841104 die in replay, and xsTK
+      east/def/1420331661 goes 66->102. Mechanism: with the reverse step forbidden, tier 3
+      keeps choosing (-1,0), walking the unit toward the front. It needs a new field cleared
+      at agents.py:1610 and wildfire_model.py:2476, 2560, 4625-4626, 4718-4719 and
+      5336-5337.
+  - [verified] F2 (re-select the exit) is inferior to F5; F4 is marginal; F4b and F6 are
+  - rejected.
+      evidence: Census-file set: F2 37 shorter / 4 longer / 2 replay deaths, and it leaves
+      blockages in the middle of the route untouched (ugKC/ugKD 294124329 unchanged at
+      50/64). It moves exit_target, which the harness and census read. F4: stalled 56->46, 0
+      change in the ugK arms; with the drain running before the casualty check
+      (adaptation_manager.py:144 vs :182), a step onto a fire-adjacent exit adds no real
+      death path. F4b: stalled 56->26 but fire-adjacent steps 123->402, smoky 36->188, 2
+      deaths. F6: 24 shorter / 5 longer, adjacent steps 123->215.
+  - [verified] Every candidate changes behaviour with the fire mechanic OFF, so none is
+  - scoped to the ungated configuration. Gating a fix on the fire mechanic would leave a
+  - known defect in the control.
+      evidence: The census found 32 of 909 fire-mechanic-OFF legs stalled, and ugKC (the
+      11c3661 control) has 4/96. Legs changed in the control sets: F1 changes ugKC 1 leg; F5
+      changes uhC 1/104 and ugKC 4/96. Neither the completion test nor _move_toward depends
+      on any ff_firefight_* value.
+  - [inferred] Switch design consistent with the accessor rule: FF_EXIT_LEG_MODE read
+  - through _exact_integer (agents.py:1132-1157). Exact 0 is off; exact 1 is F1; exact 2 is
+  - F5+F1. A missing attribute takes the shipped value (0 until the flip). Junk, None, non-
+  - integral, negative or unknown integers select mode 2, so nothing disarms by truncation
+  - or a <=0 comparison.
+      evidence: This mirrors the ff_firefight_* rules (agents.py:1109-1236) and the mission-
+      gate precedent that junk takes the non-zero value. The edge-value matrix should be
+      pinned as in tests/test_firefighter_fire_mechanic.py and
+      outputs/_ug_accessor_matrix.txt.
+  - [inferred] Proposed measurement gate. Mode-0 runs value-identical to ac6e78d. Primary
+  - structural invariant on carrying legs: back-and-forth (reversal/cycle) count and legs
+  - longer than distance + 5 fall, while carrier steps next to fire or smoke and carrier
+  - deaths do not rise. Pre-registered replay predictions as above. Outcomes for both the
+  - control and the ungated configuration, stock and CRN, at 360 steps with the
+  - 240/270/300/330 cuts, confirmed on a second seed set.
+      evidence: Project lessons in memory: a positional gate cannot see a livelock;
+      baselines must be re-measured at the round's own commit; CRN arms compare only with
+      CRN arms; the canonical 13 is a screen, not evidence. The user-stated horizon fact:
+      the loss is 8, 4, 3, 2 at steps 240, 270, 300, 330.
+
+OPEN QUESTIONS:
+  - Should F5 fall back to a route that allows fire-adjacent cells (a risk-weighted search)
+  - instead of the greedy _move_toward when no clean route exists? About 20 of 212 legs in
+  - the census-file set still stall under strict F5. A risk-weighted fallback would trade
+  - exposure for time and needs its own evidence.
+  - Smoke on cells that never burned out uses a guessed starting fuel (7-10). The
+  - conclusions hold at all three guesses, but a harness observer that records per-cell
+  - starting fuel would make future replays exact.
+  - The replay holds the fire fixed. That is exact for fire-mechanic-OFF runs, but in the
+  - ungated arms other units' fire writes could shift once a completion moves earlier.
+  - Downstream effects of an earlier completion (next dispatch, absence, recycle) are not
+  - modelled, so outcome deltas need the measured round, with CRN arms for attribution.
+  - Should mode 1 (F1 only) be kept as a shipped option or only as an attribution arm? It is
+  - strictly non-worsening in every replay but covers only the boundary subset.
+  - I did not write outputs/exitstall_part1.txt or the memory entry for the 240-step horizon
+  - fact (my rules for this task made the repo read-only). The orchestrator must record
+  - both.
+

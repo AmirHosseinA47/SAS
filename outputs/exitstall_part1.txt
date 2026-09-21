@@ -1,0 +1,765 @@
+================================================================================
+EXIT-LEG STALL - PART 1: DIAGNOSIS (nothing implemented)
+Why does a firefighter already CARRYING its victim oscillate near its exit
+instead of leaving? Branch ungated-firefighting, from ac6e78d. NOT merged, NOT
+pushed.
+================================================================================
+
+################################################################################
+# RECORDED BY THE MAINTAINER'S INSTRUCTION, so no future round misreads it:
+# A 240-STEP EVALUATION OF THE UNGATED CONFIGURATION REPORTS ABOUT 4x ITS TRUE
+# COST. On the same runs the loss is 8, 4, 3, 2 at steps 240, 270, 300, 330.
+# Any future comparison at 240 steps must account for that rather than read -8
+# as the cost.
+#   Also recorded verbatim in outputs/ungated_horizon_report.txt (banner),
+#   outputs/ungated_report.txt (banner and section 13), and in memory.
+################################################################################
+
+ENV
+  sys.version       3.10.11 (tags/v3.10.11:7d4cc5a, Apr  5 2023, 00:38:17)
+                    [MSC v.1929 64 bit (AMD64)]
+  mesa.__version__  1.2.1 (E:\Projects\SAS\.venv; the pool log's ENV line agrees)
+  At the start: branch ungated-firefighting at ac6e78d, 0 dirty tracked files,
+  no python process running.
+COMMITS
+  a538a6e  The census, probe, queue and pre-registration
+           (outputs/exitstall_prereg.txt), committed before the wave.
+  The results, this report, the analysis and the verification record are
+  committed together on top of it.
+  No simulation source changed: agents.py, wildfire_model.py,
+  common_fixed_variables.py and src_extension are identical to ac6e78d.
+WAVE
+  25 runs, 21:05-21:47, 25/25 valid, 0 failed.
+  Pool head a538a6e, 0 dirty tracked files.
+  HARNESS=outputs/_xs_probe.py, which runs _ffr_harness.py unchanged.
+  During the wave, two report files had text-only edits: the 240-step banner.
+VERIFIED
+  Six independent agents re-derived the first draft from the raw runs, traces
+  and code (outputs/_xs_report_verify.txt):
+    114 confirmed, 61 imprecise, 8 wrong, 1 unverifiable.
+  All are corrected here. Section 10 lists them.
+QUARANTINE
+  No contact. Every search by me used explicit file names or --exclude-dir at the
+  tool level. The 6 static agents and the 6 verification agents all report no
+  contact. Some listed outputs/ non-recursively and saw the directory's name
+  without entering it.
+
+================================================================================
+0. VERDICT
+================================================================================
+  THE HYPOTHESIS
+    State from the firefighting mode survives into the rescue and drives the
+    carrying leg.
+
+    (C) NOT AS DESCRIBED.
+    Refuted by code reading and by the probe on all 11 stalled legs:
+      - No firefighting or idle field is read on any carrying step.
+      - The engaged retreat range K is never read on a carrying step.
+      - Nothing but _move_toward moves a carrying unit.
+      - Clearing the fields on the carrying leg changes nothing, position for
+        position.
+      - The hypothesised state was simply ABSENT on 6 of the 7 ungated stalled
+        legs. Only south/half/1048395951 carried any firefighting field
+        (_firefight_suspended=True), and it was never read.
+
+  THE PREMISE: "zero in control, present only when firefighting is on"
+    The literal premise is FALSE.
+      - With the fire mechanic inactive, 32 of 909 distinct recorded legs stall.
+        The mechanic is inactive when a run has no firefight_log; 57 such runs
+        were configured with FF flags but never engaged. None of the 32 depends
+        on them.
+      - The CRN control (11c3661 code, mechanic off) stalls on the same victims
+        as the ungated arms.
+    The matched comparisons show no detectable net increase in the NUMBER of
+    stalled completed legs:
+      - pooled OFF 10/340 vs ON 11/333
+      - Mantel-Haenszel odds ratio 1.1
+      - 95% CI for the difference: -2.4 to +3.2 points
+    That cannot exclude an increase, and the strata disagree: on U30 stock it is
+    0/104 vs 5/102 (Fisher p=0.03).
+    With the mechanic on, stalls are LONGER and carries break MORE OFTEN:
+      - excess steps on stalled legs: 478 ON vs 308 OFF
+      - broken carrying legs: 7 ON vs 3 OFF, mostly round 2's 5 vs 1
+
+  THE STALL ITSELF
+    (A), provisionally. A defect with a scoped candidate fix whose effect is
+    ESTIMATED (offline replay, fire held fixed: stalled legs 56 -> 20), not
+    measured.
+
+    It is the carrying leg's movement rule. _move_toward is a memoryless greedy
+    step that prefers any fire-clear cell to progress. The exit cell is fixed at
+    pickup, blind to fire, and it is the only cell that completes the rescue.
+
+    Why (A) here, when a78f393 ruled the same tier-1/3 cycle (B) on the APPROACH
+    leg:
+      - On the approach, half of the cycles (31/62) were ended by the survival
+        retreat.
+      - On a carrying leg nothing can repair the cycle: no retreat, no path
+        search.
+      - The stall has a measured outcome cost:
+          - it pushes rescues past step 240;
+          - its broken tail ends in the victim's death (section 6).
+
+    Is it specific to the ungated configuration?
+      - The MECHANISM is not. The code is identical in the control and on this
+        branch, and dates from the initial import a4a01b4. The control stalls
+        too.
+      - The ungated configuration does EXPOSE MORE CARRIES to it: on U30 stock,
+        5 stalled legs vs 0 (248 vs 0 excess steps).
+      - For 2 of those 5, the cause is shown to be when the carry starts
+        (section 5, H3).
+      - For the other 3, the shipped arm's fire writes and unit allocation also
+        differ before the carry, and the cause is not isolated. No stored state
+        drives any of the 5.
+
+    The fix is scoped in section 8 and NOT implemented. Every candidate changes
+    the control and every baseline too, so it needs its own measured round.
+
+  BEFORE MERGING
+    - This diagnosis finds no defect introduced by the flip. The stall is
+      pre-existing and global, and it is not driven by any state the flip
+      introduced.
+    - The ungated configuration exposes more carries to it: on U30 stock, 5 vs 0
+      stalled legs, and 2 rescues past step 240.
+    - That cost is already inside the measured 360-step cost that the
+      maintainer's rule accepted.
+    - The merge remains the maintainer's decision.
+
+  THE MAINTAINER'S QUESTIONS, ANSWERED DIRECTLY
+
+    Q1  When rescue preempts firefighting, is every firefighting-mode field
+        cleared?
+          NO.
+          - The assign (wildfire_model.py:4621-4626) writes six fields: assigned,
+            target_pos, rescued_victim, status, exiting, exit_target.
+          - The pickup (agents.py:1783-1793) resets nothing.
+          - These fields survive the assign, the pickup, the recycle
+            (wildfire_model.py:2472-2479) and the off-grid absence (2556-2566):
+              _firefight_suspended
+              _idle_retreat_origin, _idle_retreat_steps, _idle_retreat_stalled,
+              _idle_retreat_last_cell
+              _last_move_tier, _last_move_risk
+          - In the probe they held non-default values on 151 carrying advances,
+            on 2 legs:
+              131 on south/half/1048395951's stalled leg (ff_unit_0, 133-263):
+                  _firefight_suspended=True, _idle_retreat_stalled=True
+              20 on east/def/1749069988 (origin and last_cell (24,7)), left by
+                  a retreat during the approach
+          - The other 9 legs held defaults throughout.
+
+        Does the engaged retreat range persist onto the carrying leg?
+          NO, and it cannot.
+          - K is never stored on the unit. It lives in the per-step ctx dict
+            that _firefight_prepare builds (agents.py:2549-2570). It is copied
+            only into the write-only model._firefight_log record (2927).
+          - Its accessor has one call site (2500), which a carrying unit never
+            reaches. _firefight_prepare returns at 2488 because exiting is True
+            (target_pos is also still set). In the control, with the mechanic
+            off, it returns one line earlier (2486-2487).
+          - Probe: 0 calls on 709 carrying advances.
+          - No retreat distance applies to a carrying unit at all, neither 1
+            nor 3: _needs_immediate_survival_retreat returns False when exiting
+            (1973).
+
+    Q2  Is the exit leg's movement affected by any firefighting-mode field?
+          NO.
+          - The carrying branch (agents.py:1819-1854) calls
+            _move_toward(exit_target) (2369-2464). That reads:
+              pos and the target
+              exiting
+              the fire and smoke board
+              status and assigned, only to relabel route_blocked
+          - Probe, 709 carrying advances in 11 runs:
+              - no mode field read;
+              - all 673 moves made by _move_toward;
+              - 0 moves of a carrying unit made outside its advance;
+              - 0 fields changed between two carrying advances.
+          - Counterfactual XS_RESET=exit (the fields cleared on every carrying
+            step): all 7 legs and the 7 replays (120-290 steps) are identical.
+            The test can only change something where a field was non-default:
+              south/half/1048395951  both kinds of field
+              east/def/1749069988    idle fields only
+            On the other 5 legs there was nothing to clear.
+
+    Q3  Why does the positioning-only arm stall (2/101)?
+          - Its fire is identical to the control's at every step of all 30
+            runs, and its 2 stalled legs are identical to 2 of the shipped 5.
+          - In both, victim_0 was queued unassigned from step 49.
+          - In the control, ff_unit_1 came free at 48 (294124329) or 46
+            (2070841104), just BEFORE victim_0 was queued, and took victim_2,
+            which had waited since step 21 or 18. The next free control unit
+            came at 89 or 87.
+          - In the ungated arms the same unit came free at 51 or 53, just AFTER
+            victim_0 was queued, and took victim_0.
+          - The ungated arms were therefore assigned 34-38 steps earlier and
+            picked up 37 and 157 steps earlier.
+          - Their carries met the fire:
+              294124329: fire lay on the route at pickup.
+              2070841104: the route was clean at pickup (88); the fire crossed
+                it at about 98, during the carry.
+          - The control's later carries met little fire:
+              294124329: a brief re-ignition, 3 extra steps.
+              2070841104: a 1-step exit after the victim had fled to the
+                corner (49,49).
+          - So the cause is the order of events around step 49, not state and
+            not the fire writes.
+
+    SAME DEFECT CLASS (state from one mode read by another)?
+      THE STALL: NO.
+        - The carrying step is a pure function of: position, the fixed exit
+          cell, fire, smoke.
+        - It belongs with the greedy-movement livelocks:
+            a78f393  the same tier-1/tier-3 barrier cycle near fire, on the
+                     approach leg (0 of 144 reversals were on carrying legs)
+            the dock-fix livelock  a UAV docking cycle, not fire-related
+        - Its only stored input is the exit cell, written once at pickup and
+          never re-evaluated. That is a fire-blind target, not a mode leak: in
+          5 of the 7 ungated legs the route was already blocked at pickup.
+      THE THREE NAMED INSTANCES, one by one:
+        route_blocked consumer latch
+          Not the stall. But see (i) below: the same route_blocked machinery
+          produces a live instance at the stall's tail.
+        idle-retreat stall latch
+          Not read on the carrying leg. It IS read on the approach leg: see
+          (ii) below.
+        last_cell guard
+          Not an instance. _idle_retreat_last_cell was stale on 151 carrying
+          advances but is never read there. On the approach it was not
+          separately implicated: XS_RESET=assign clears it together with the
+          stall latch.
+      Three live instances found NEXT TO the stall.
+      All predate the fire mechanic and are in every arm's code:
+        (i) A carrier with no fire-free neighbour is flagged route_blocked
+            (agents.py:2411-2413).
+            - The route_blocked replacement pathway then unassigns it with
+              reset_victim_pending and drops its victim
+              (wildfire_model.py:3660-3680), followed by the replacement pairing
+              (3682-3691).
+            - That pathway was built for approaching units and has no exiting
+              check. The comment at agents.py:2382-2386 calls it "the wrong
+              response" for a carrier, and removed only the path-search trigger.
+            - It ended 16 of the 17 broken carrying legs in the matched arms,
+              in 9 of 12 arms, the controls uhC, fmOFF and f2cOFF included. It
+              never fired in the CRN arms.
+            - _blocked_replacement_attempted (3667-3670, never cleared) lets
+              only the first route_blocked of a (unit, victim) pair unassign.
+        (ii) _idle_retreat_stalled, latched while idle, is read on the approach
+             leg after an assign (agents.py:2077-2080).
+             - That read dates from the initial import a4a01b4; 62b4fbe fixed
+               only the idle consumer.
+             - Seen in 1 run (section 7). The pickup came 4 steps earlier and
+               the completion was unchanged.
+        (iii) A carried victim's geographic-isolation timeout.
+              - wildfire_model.py:5005 drops exiting units from the
+                reachability starts and from the "served" test (5052-5066).
+              - So during a stalled carry the carried victim's isolation streak
+                runs. At 30 steps the victim is marked unreachable and the
+                carrier unassigned.
+              - Seen once: f2cDRY east/def/101, pickup at 148, unassigned at 177.
+      Possible fourth, unmeasured: _firefight_suspended survives the rescue and
+      is read at the unit's next idle advance (agents.py:2535). XS_RESET=exit
+      left the one run that carried it identical, which is weak evidence it is
+      inert there.
+
+================================================================================
+1. WHAT WAS RUN (all read-only on the source)
+================================================================================
+  - outputs/_xs_census.py -> _xs_census.txt
+      Every recorded _ffr_*.json in outputs/, EXCLUDING this round's own probe
+      outputs: completed legs, matched arms with excess steps, broken legs.
+      The first post-wave rerun counted the probe runs and .xstrace files. That
+      was the seed-selector self-reference defect again, caught by the
+      verification pass and fixed. The figures below equal the pre-wave census.
+  - outputs/_xs_probe.py
+      Wraps the checkout's classes read-only and runs the harness unchanged. The
+      CRN runs go through _fm2_probe_harness.py.
+      Per firefighter per advance it records:
+        - every instance field;
+        - the 7x7 fire/smoke window;
+        - _firefight_prepare's return;
+        - every grid move with its call chain;
+        - _move_toward's neighbour tests;
+        - on carrying advances: every attribute read and every ff_firefight_*
+          accessor call;
+        - model-side moves.
+      Two counterfactual resets: XS_RESET=exit and XS_RESET=assign.
+      Limits of the read hook:
+        - '__'-prefixed names (vars/__dict__) are not logged.
+        - Reads outside the unit's own advance are not logged.
+        - Model-side moves are hooked only through MultiGrid.move_agent.
+      Each gap is closed by the static reading (section 4).
+  - The queue, outputs/_xs_queue.txt (pre-registered):
+      xsTD           5 shipped legs
+      xsTY           2 positioning-only legs
+      xsTK           4 control legs (11c3661, CRN)
+      xsRED / xsREY  reset-at-exit
+      xsRAD / xsRAY  reset-at-assign
+  - outputs/_xs_analyze.py -> _xs_analysis.txt (tests) and _xs_legs.txt (every
+    leg, step by step).
+  - A static workflow of 6 read-only agents covering:
+      mode-field inventory, model-side paths, movement rule and history, defect
+      class, outcome cost, fix scope.
+    Recorded in outputs/_xs_static_findings.txt; cited below as "static".
+
+  DEVIATIONS FROM THE PRE-REGISTRATION, and additions made after it
+    - T0: the harness eval is a function of the LAST step, so a shorter replay's
+      eval cannot be compared with the recorded 240/360-step eval. The per-step
+      victim and firefighter status series carry the same facts and are
+      identical.
+    - The broken-leg census, the excess-step totals, the statistics on the
+      pooled comparison and the static workflow were added AFTER the
+      pre-registration. They are post hoc.
+    - The offline fix replay is an estimate, not a pre-registered test.
+    - XS_RESET=exit and XS_RESET=assign can only bite where a field was
+      non-default: 2 of 7 legs for the first, 1 of 7 runs for the second.
+
+================================================================================
+2. THE CENSUS
+================================================================================
+  Definition
+    A completed leg is STALLED when it takes more than its manhattan distance
+    from pickup to the fixed exit cell + 5 steps. Excess = leg - distance - 1.
+
+  Every recorded run with the feature-2 observers (42 early files lack them):
+      fire mechanic inactive   1682 runs   909 distinct legs   32 stalled (3.5%)
+      fire mechanic active      763 runs   689 distinct legs   29 stalled (4.2%)
+    - "Distinct" means distinct trajectories. The 909 come from 349 victim
+      situations, and the 32 stalls from 24.
+    - Inactive-mechanic stalls include legs of 127, 104, 88 and 82 steps.
+
+  MATCHED, same tuples: stalled / legs, excess steps
+      group                      OFF              shipped-like ON   positioning-only
+      U30 stock, 360 steps       0/104     0      5/102   248       2/101    52
+      U30 CRN                    4/96    118      3/96    176       3/97    176
+      round-1 canonical/fresh    2/68     20      1/66      8       2/66     16
+      round-2 canonical/fresh    4/72    170      2/69     46       1/66      8
+      pooled                    10/340   308     11/333   478
+    - The pooled total covers 53 distinct tuples, each in two groups (the rbgate
+      overlap lesson).
+    - The U30 240-step arms are a prefix of the 360-step ones and are not pooled.
+    - Not pooled: ugC vs ugD on the 27 non-U30 tuples, 4/88 vs 3/82.
+    - Statistics (verification pass, not pre-registered):
+        pooled difference +0.4 points, 95% CI -2.4 to +3.2
+        Fisher p=0.83; Mantel-Haenszel OR 1.13
+        U30 stock stratum alone: p=0.03
+    - The census is conditioned on completion. In round 2, all 3 OFF-only stalls
+      are victims whose ON-arm carry broke. With broken legs counted it is
+      OFF 13/343 vs ON 18/340, not significant.
+
+  The CRN control ugKC stalls on the same victims as the ungated arms:
+      east/half/294124329 v0
+      east/half/2070841104 v0
+      east/def/1420331661 v0
+  The legs differ: ugKC 50, 37 and 66 steps vs ugKD 64, 92 and 71.
+
+================================================================================
+3. T0 - THE PROBE DOES NOT PERTURB (PASS)
+================================================================================
+  All 11 trace runs are value-identical to their recorded runs over the steps
+  they ran:
+    - all 7 per-step series: fire_digests, victim_steps, ff_steps,
+      ff_bind_steps, uav_steps, uav_actions, partition_steps;
+    - 15 event lists, cut at that step;
+    - 0 probe errors.
+
+================================================================================
+4. H1 - STATE LEAK ONTO THE CARRYING LEG: REFUTED
+================================================================================
+  709 carrying advances in 11 runs: every carrying advance of each run, not only
+  the stalled legs.
+
+  (a) Attributes read on the unit during carrying advances, 22 names:
+        _cell_adjacent_to_fire, _cell_contains_active_fire,
+        _cell_has_active_smoke, _firefight_prepare, _firefighter_cell_risk,
+        _last_move_tier, _move_toward, _movement_last_notable_category,
+        _movement_last_transition_key, _needs_immediate_survival_retreat,
+        _neighbor_cells, _record_movement_reason, _refresh_target_from_victim,
+        dead, exit_target, exiting, model, pos, rescued_victim, status,
+        target_pos, unit_id
+      Notes on two of them:
+        _last_move_tier  written by _move_toward and read back at
+                         agents.py:1852, only to label the movement reason.
+        unit_id          read by the completion print at 1831.
+      Firefighting- or idle-mode fields among them: NONE, even on the 151
+      advances where they held stale values (Q1).
+  (b) ff_firefight_* accessor calls on carrying advances:
+        extinguish             709
+        firebreak              709
+        engaged_retreat_range    0
+      The first two are _firefight_prepare's first two lines.
+  (c) Every one of the 673 carrying moves was made by _move_toward.
+        moves of a carrying unit made outside its own advance   0
+        unit fields changed between two carrying advances        0
+  (d) XS_RESET=exit: all 7 ungated legs are the same leg (same unit, start, end
+      and exit cell), and all 7 replays are identical. The test bites on the 2
+      legs listed in Q2.
+
+  STATIC, independent of the probe
+    - The carrying path is agents.py:
+        1722
+        1726 -> 1703
+        1732 -> 2484-2488 (returns None)
+        1736 -> 1973 (False)
+        1819-1854
+        2369-2464
+      It reads no mode field.
+    - wildfire_model.py and src_extension never read an FF_FIREFIGHT_* or
+      _firefight_* field.
+    - Between 11c3661 and ac6e78d, agents.py changes only the ff_firefight_*
+      accessors (1106-1232).
+
+================================================================================
+5. H2 / H3 - THE MECHANISM, AND WHY THE ARMS DIFFER
+================================================================================
+  THE RULE (agents.py:2369-2464; static, and recomputed per step by the probe)
+    Candidates
+      The in-grid 4-neighbours, in the fixed order +x, -x, +y, -y (1958-1965).
+      Burning cells are dropped. Each remaining cell is flagged:
+        improving
+        fire-adjacent
+        smoky
+        preferred (the larger-axis step)
+    Tiers
+      tier 1  improving and clean (not fire-adjacent, not smoky)
+      tier 2  maintaining and clean. Always empty: one step always changes the
+              manhattan distance by 1.
+      tier 3  ANY clean cell. In practice this is a step AWAY from the exit,
+              chosen by neighbour order alone: the preferred cell is never in
+              tier 3.
+      tier 4  least risk over all non-burning cells, where risk is
+              100 x fire-adjacent + 10 x smoky, then distance.
+    - No memory. The unit always moves unless every in-grid neighbour burns. In
+      that case it holds and raises route_blocked (2411-2413): the gateway to
+      instance (i).
+    - On a carrying leg the survival retreat is off (1973) and the path search
+      is off (2388).
+    - Only a change in the fire or smoke lets a cycle continue to a
+      completion. It can end WITHOUT a rescue three ways:
+        the route_blocked drop
+        the 30-step isolation timeout
+        carrier death
+  THE CYCLE
+    - At p the improving cell is fire-adjacent or smoky, so tier 3 steps back
+      to q.
+    - At q, p is clean and improving again, so tier 1 steps forward.
+    - The tiers run 3,1,3,1... for as long as the board holds.
+    - The exit cell, the only improving cell from distance 1:
+        burning -> always refused.
+        fire-adjacent or smoky -> refused whenever a lower-risk non-burning
+          neighbour exists; otherwise entered in tier 4 (e.g. 2070841104,
+          step 111).
+    - Why barriers persist:
+        - Burning is re-drawn every fire tick, so cells re-ignite. The exit
+          cell of 1433805104 burned 4 times between 210 and 249.
+        - Smoke is one-shot per cell. After a cell stops burning, its smoke
+          lasts about 4 more steps if it burned to exhaustion. If it went out
+          with fuel left, it lasts up to about 30-39 steps.
+        - Observed post-fire smoke tails in the traces: 1-36 steps, median 3.
+    - Entering a non-burning exit cell cannot be fatal:
+        - The casualty check on the entering step passes, because fire changes
+          only in Fire.advance, which runs before every firefighter.
+        - On the next step the rescue completes (1820), and the removal runs
+          before the casualty check.
+        - So the refusal protects against nothing the model scores.
+  PROBE, the 11 stalled legs
+    Tiers: 1 -> 318, 3 -> 203, 4 -> 30, 2 -> 0.
+    The rule, recomputed from the recorded neighbour tests (all 4 tiers): 0
+    mismatches in 551 moves. Every step away from the exit was tier 3 or 4.
+                                  steps  tiers (1/3/4)  away  step-backs  first on ANY boundary cell
+      xsTD east/half/2070841104     24     10/5/8          6       8       112 (= completion)
+      xsTD east/half/294124329      53     32/20/0        20      38       143 (= completion)
+      xsTD east/half/1433805104     76     41/34/0        34      42       219 (completion 282)
+      xsTD south/half/1048395951   131     68/53/9        57      82       263 (= completion)
+      xsTD east/def/1749069988      20     12/7/0          7       8       199 (= completion)
+      xsTY east/half/2070841104     24     identical to xsTD
+      xsTY east/half/294124329      53     identical to xsTD
+      xsTK east/half/294124329      50     34/15/0        15      28       171 (= completion)
+      xsTK east/half/2070841104     37     24/10/2        10      13       118 (completion 119)
+      xsTK east/def/1420331661      66     38/26/1        26      44       150 (= completion)
+      xsTK south/half/903347495     28     17/8/2          8      10        74 (= completion)
+    "First on any boundary cell" = the step at whose start the unit stood on
+    the edge. 1433805104 arrived during step 218's advance.
+  SHAPES
+    - Mid-route barrier. Most legs are mid-route barriers: in 10 of 11 the unit
+      first reached any edge at or one step before completion.
+        - On 294124329 the exit cell was burnt out the whole leg.
+        - In 5 of the 7 ungated legs the straight route was already burning or
+          fire-adjacent at pickup (static).
+    - Refused exit. Two legs end in exit refusals:
+        south/half/1048395951  refused its smoky exit (49,27) from distance 1
+                               10 times over its last 21 steps (241-262),
+                               oscillating (48,27) <-> (47,27).
+        east/half/1433805104   the maintainer's example; see below.
+    - East/half/1433805104 in detail:
+        - The unit reached the edge at (49,16), one cell from its exit (49,17).
+        - It refused the exit cell itself only twice (219, 221).
+        - For most of the following 63 steps it was held 2-7 cells south of
+          the exit by fire and smoke re-igniting along the edge at
+          (48-49, 13-15).
+        - For the last 33 steps the exit itself was burnt and clear.
+        - Meanwhile it stood on 5 other edge cells, none of which completes a
+          rescue.
+  H3 - WHY THE ARMS DIFFER: see Q3. For the 3 shipped stalls that
+  positioning-only does NOT share, the cause is not isolated:
+      shipped fire first differs from the control's before the leg:
+        1433805104   step 109
+        1048395951   step 65
+        1749069988   step 27
+      pickups differ in cell and time. On 1433805104 the ungated arm was
+      assigned 6 steps LATER than the control (170 vs 164).
+      positioning-only, on the control's fire, does not stall on these three.
+      The fire writes are an unseparated factor there. Stored state is not.
+
+================================================================================
+6. WHAT THE STALL COSTS - (B) "INERT" IS EXCLUDED
+================================================================================
+  COMPLETED LEGS (static outcome-cost agent, checked by the verification pass)
+    Stall-excess steps, as a first-order count:
+      - Without them, the U30 loss at 240 would be about 6 rather than 8, and 3
+        rather than 4 at 270, with none from 300 on.
+      - Only the three uh arms run past 240.
+    The two stalls behind this:
+      east/half/1433805104 v0
+        control rescued it at 199; the ungated arm at 282.
+        About 214 with no stall at all; 219 if any boundary cell completed
+        (F1); 220 if only the at-exit refusals were removed. All three are
+        inside 240.
+        It is the only CONTROL-RESCUED victim a stall delayed.
+      south/half/1048395951 v0
+        the control never rescued it within 360.
+        The stall deferred an ungated-only rescue from about 149 to 263.
+        That is an upper bound: in xsRAD a pickup 4 steps earlier still
+        completed at 263.
+    Relative to the control, the 5 stalled ungated rescues cost nothing by step
+    360 except 1433805104 (282 vs 199).
+    Excess steps on stalled completed legs, all 12 matched arms: 1038.
+      81 of them come after the unit first stood on any boundary cell,
+      measured as completion - first boundary arrival - 1, which is the saving
+      F1 would give. The other 957 come before it. (A strict split gives
+      950/74.) 63 of the 81 are the one leg 1433805104.
+
+  BROKEN CARRYING LEGS - the tail the completed-leg census cannot see
+    An exit start that never completes, horizon cuts excluded (post hoc):
+      OFF arms              uhC 1   ugKC 0   fmOFF 1   f2cOFF 1
+      shipped-like ON       uhD 1   ugKD 0   fmEFS 1   f2cEFS 5
+      positioning-only      uhY 1   ugKY 0   fmDRY 1   f2cDRY 5
+    - 17 arm-occurrences of 12 distinct legs. 16 victims died. 1, f2cDRY
+      east/def/101, was marked unreachable while carried (instance iii).
+    - 16 of the 17 ended through the route_blocked unassign (instance i):
+        in 10 the carrier outlived that step and the victim died 2-3 steps
+          later;
+        in 6 the carrier and victim burned on that same step.
+    - After the 10 "drops":
+        - In 5 (the round-2 */202 family) the carrier died on the drop cell in
+          the same step.
+        - 4 of the other 5 carriers died 5-17 steps later. Only fmDRY
+          east/half/101's survived.
+    - U30 has one broken leg, east/half/1291443119 v0, in ALL THREE arms:
+        control  an 88-step carry; unit and victim burned at 168 through the
+                 same unassign
+        ungated  dropped at (47,42) at 148; the carrier stepped to (47,43) at
+                 150; the victim, left behind, died at 150
+      The carrier had stood on a boundary cell 20-41 steps before the break.
+
+================================================================================
+7. H4 - THE APPROACH LEG (reported; not part of the exit-stall verdict)
+================================================================================
+  XS_RESET=assign clears the same fields on the unit's first on-grid advance
+  with a target after an advance without one. Assignments made while a unit is
+  off grid are not reset; none of those carried a stale field here.
+  6 of the 7 runs were no-op resets: every field was already default.
+  The one that bit is south/half/1048395951.
+
+  The latch
+    - ff_unit_0 was enclosed at (18,0), all three neighbours burning.
+    - At step 70, _survival_move's no-candidate branch (agents.py:2094-2098)
+      latched _idle_retreat_stalled.
+    - The fire mechanic was engaged-and-suspended at the time (prepare T=3,
+      K=1, suspended=True; firefight_log 'retreat' rows 66-78), in a pocket its
+      extinguish at step 65 (T=1, dist 2) had left the unit in.
+    - In positioning-only the same unit went west at 66 and never entered the
+      pocket.
+    - So the code is pre-mechanic idle-retreat code, but the situation was
+      created by firefighting.
+
+  What the stale latch changed
+    - The unit was assigned at 78.
+    - Recorded run, step 79: the stale latch sent it down
+      _assigned_one_step_retreat (2077-2080). That failed, so _move_toward ran;
+      its path test flagged route_blocked and the replacement unassign
+      followed.
+    - With the latch cleared, a fresh retreat scan moved the unit to the same
+      cell (18,1). The route_blocked and unassign came one step later, at 80.
+    - Net: the pickup came 4 steps earlier (128 vs 132); the completion was
+      unchanged (263).
+    - The recorded run read the stale latch on the approach a second time, at
+      step 85, where _assigned_one_step_retreat succeeded.
+    - A genuine instance of the class. Nearly inert here; its frequency in the
+      wider record is unmeasured.
+
+================================================================================
+8. FIX SCOPE - NOT IMPLEMENTED; STOP FOR CONFIRMATION
+================================================================================
+  Every candidate is GLOBAL: it changes the control and every baseline wherever
+  it triggers. Gating on the fire mechanic would be wrong, because the defect
+  exists with it off. Each needs its own measured round, with the reference set
+  re-measured at that round's commit.
+
+  S1  THE CARRYING LEG
+    One switch, FF_EXIT_LEG_MODE, in common_fixed_variables. Accessor beside
+    agents.py:1160-1236, read through _exact_integer.
+    Mapping (pin all of it in the edge-value matrix):
+      exact 0                    today's behaviour and the kill switch
+      exact 1 or 2               that mode
+      missing                    the shipped value, 0 until flipped
+      junk, None, non-integral,  a named non-zero mode. The fix-scope agent
+      negative, unknown          proposed 2; mode 1, the non-worsening one, is
+                                 the conservative alternative. The implementing
+                                 round decides.
+    Mode 0 must be value-identical to ac6e78d.
+
+    mode 1 (F1): complete the rescue on ANY boundary cell (agents.py:1820).
+      - The smallest change.
+      - Completed legs: it fixes only the at-exit shape (1433805104 done at
+        about 219, not 282). It does nothing for the mid-route barriers.
+      - Broken legs, as a bound: it would have averted 6 of the 17 losses,
+        where the carrier stood on a boundary cell 20-41 steps before the
+        break. That includes U30's 1291443119 in all three arms.
+    mode 2 (F5 + F1): each carrying step takes the first step of a stateless
+      breadth-first search to the nearest boundary cell. The search runs over
+      clean cells: not burning, not fire-adjacent, not smoky, _move_toward's
+      own clean test. With no clean route it falls back to today's rule. Plus
+      F1. a78f393 already named this idea (take the first step of the path
+      search) as the direction to take.
+
+    Offline replay (fix-scope agent, recorded in _xs_static_findings.txt;
+    checked by the verification pass).
+    Setup:
+      - Fire and smoke rebuilt from the recorded burn intervals. Smoke on cells
+        that never burned out uses a guessed fuel of 7-10.
+      - Fire held FIXED, so this is an ESTIMATE.
+      - Coverage: 212 legs in 61 files, one representative file per distinct
+        census stall (215 recorded files hold one).
+      - The base replay reproduced 198/212 recorded leg lengths and 56/61
+        recorded stalls.
+    F5 + F1 results:
+      leg steps                                  3507 -> 1643
+      stalled legs                                 56 -> 20
+      legs shorter / longer                        59 / 0
+      carrier steps fire-adjacent / smoky      123/36 -> 12/3
+      replay deaths                                 0
+    Rejected in the same replay:
+      F2  re-pick the exit cell: 37 legs shorter, 4 longer, 2 replay deaths.
+      F3  retreat-style last-cell memory: 29 legs longer, 5 deaths, 1 timeout.
+          It would also add a new cross-mode field, which is exactly the class
+          under test.
+      F6  anti-reverse tie-break: 24 shorter, 5 longer, 2 deaths; fire-adjacent
+          / smoky steps 123/36 -> 215/94.
+    a78f393 also measured an anti-oscillation guard as never better.
+
+  S2  THE CARRIER DROP (instance i)
+    A carrying unit with no fire-free neighbour holds its cell and keeps
+    custody.
+    - Safe site: agents.py:2411-2413. Do not raise the route_blocked incident
+      for an exiting unit.
+    - The alternative, skipping the unassign at wildfire_model.py:3671-3680, is
+      UNSAFE as it stands. The branch falls through to the replacement pairing
+      (3682-3691), and a route_blocked carrier is invisible to
+      _find_active_firefighter_for_victim (3739-3741). A second unit could be
+      sent for a victim still in custody. It would have to return early.
+    - Bound: at most 5 of the 10 dropped victims (4 distinct legs), since in the
+      other 5 the carrier burned on the drop cell the same step. 4 of those 5
+      carriers died 5-17 steps later anyway, and 3 of the 5 are also covered by
+      F1.
+    - It needs its own mode-0 switch.
+  S2b THE ISOLATION TIMEOUT ON A CARRIED VICTIM (instance iii)
+    Count an exiting carrier as serving its victim (wildfire_model.py:5005 /
+    5052-5066). 1 case in the matched arms. It needs its own mode-0 switch.
+  S3  THE APPROACH LATCH (instance ii)
+    _reset_idle_retreat_state() at assign (wildfire_model.py:4621-4626).
+    - XS_RESET=assign approximates it. It also cleared _firefight_suspended,
+      which is not read while assigned, and it skipped off-grid assignments.
+      Neither difference mattered here.
+    - Measured effect: the one run where it bit, 4 steps on a pickup.
+    - It needs its own mode-0 switch. Lowest priority.
+    - Note: 62b4fbe deliberately declined a model-side idle-origin reset.
+
+  GATE for any of them, in its own round
+    1. Mode-0 value identity against ac6e78d, for every switch.
+    2. A structural invariant as the primary test:
+         - stalled and broken carrying legs and step-back counts must fall;
+         - carrier fire-adjacent/smoky steps and carrier deaths must not rise.
+       Measure the stall to the COMPLETION cell, not the fixed exit_target, or
+       F1's legs are misread.
+    3. Outcome arms for BOTH the control and the ungated configuration, stock
+       and CRN, at 360 steps, with the 240/270/300/330 cuts reported. A 240-step
+       cut alone overstates the ungated cost about 4x.
+    4. A second seed set before any claim.
+    5. The unit tests and the accessor edge-value matrix.
+
+================================================================================
+9. FOR THE MAINTAINER TO DECIDE
+================================================================================
+  D1  The merge.
+      - This diagnosis finds no defect introduced by the flip.
+      - The ungated configuration exposes more carries to a pre-existing stall
+        (U30 stock 5 vs 0; 2 rescues past 240).
+      - That cost sits inside the 360-step cost the rule accepted.
+  D2  Whether to open the carrying-leg round (S1), and with which mode as
+      primary. F1 is the small, non-worsening step. F5+F1 targets the mechanism
+      and is estimated, not measured.
+  D3  Whether S2 / S2b / S3 join that round or get their own.
+      - S2's recorded value is smaller than it first looked: at most 5 victims
+        (4 distinct), most carriers died anyway, and F1 covers 3 of them.
+      - Nothing here ranks it above S1.
+
+================================================================================
+10. CORRECTIONS FROM THE VERIFICATION PASS (all applied above)
+================================================================================
+  WRONG (8)
+    - The commit statement and the reference to _xs_report_verify.txt: both
+      are now true at commit.
+    - _last_move_tier was described as read by the harness; it is read at
+      1852, as a label.
+    - "The unreachable timeout skips the unit": the opposite is true
+      (instance iii).
+    - The smoke duration.
+    - Step-backs on xsTK 1420331661: 44, not 43 (an analyzer off-by-one, fixed).
+    - S2's bound, and D3's "costliest part".
+  IMPRECISE (61), the main ones:
+    - the premise and "not specific" wording
+    - H3 covers 2 of the 5
+    - Q3's mechanism: the order of events at step 49, not a "faster cycle"
+    - pickup gaps: 37 and 157
+    - the reset tests are vacuous on 5 of 7
+    - 151 stale advances on 2 legs
+    - the exit-refusal rule
+    - the two shapes, and 1433805104's detail
+    - the line citations 3660-3680
+    - "APPROACH-phase" -> no exiting check
+    - the dock-fix is a UAV livelock
+    - the latch dates from a4a01b4
+    - the drop's reach: 16 of 17, 9 of 12 arms
+    - the cost view relative to the control, and 1048395951 is not a loss
+    - the replay's fidelity caveats
+    - F1's effect on broken legs
+    - the accessor mapping
+    - the banner wording made verbatim
+    - the pooling overlap and its statistics
+    - the census self-reference, fixed
+    - the deviations section
+    - the last_cell guard answered
+    - the reconciliation with a78f393's (B)
+  UNVERIFIABLE (1): the agents' own "no contact" statements, which are
+  consistent with every record.
+
+  ARTIFACTS (outputs/)
+    exitstall_prereg.txt, exitstall_part1.txt
+    _xs_census.py/.txt, _xs_probe.py, _xs_queue.py/.txt, _xs_analyze.py
+    _xs_analysis.txt, _xs_legs.txt (every stalled leg step by step: position,
+      the 7x7 fire window, exit-cell state, nearest fire, the moving function,
+      each neighbour's tier tests, the tier chosen, every field at the leg start
+      and every change after)
+    _xs_wave.log, _xs_static_findings.txt, _xs_report_verify.txt
+    _ffr_xs{TD,TY,TK,RED,REY,RAD,RAY}_*.json (25 runs) + .stdout.txt
+      + .xstrace.json (11 traces)
