@@ -47,7 +47,11 @@ import _dcd4_seeds as D4  # noqa: E402  (pure: hashlib/os/random/re)
 LABEL = "SAS ungated-firefighting fresh independent seed set, declared 2026-09-21, candidate %d"
 N_EAST_HALF, N_SOUTH_HALF, N_EAST_DEFAULT = 13, 13, 4
 QUAR = "_firemech_rewound_20260914"
-OWN = ("_ug", "ungated", "_ffr_ug", "_rblatch_camp2_ug", "ug")
+# "_uh"/"uh" added in the horizon follow-up: the committed _uh_queue.txt and the _ffr_uh*
+# outputs carry the U30 seeds too, and without them in this guard a rerun rejected its own
+# seeds and printed a DIFFERENT set (caught before any analysis read it). The set is also
+# frozen in outputs/_ug_seeds.txt; analyzers read that file (frozen_u30) and cross-check.
+OWN = ("_ug", "ungated", "_ffr_ug", "_rblatch_camp2_ug", "ug", "_uh", "_ffr_uh", "uh")
 
 
 def _own(name):
@@ -128,6 +132,17 @@ def choose():
     combos = (["east|half"] * N_EAST_HALF + ["south|half"] * N_SOUTH_HALF
               + ["east|default"] * N_EAST_DEFAULT)
     return [(c, s, cell, idx) for c, (idx, s, cell) in zip(combos, accepted)], rejected, sources, len(used)
+
+
+def frozen_u30():
+    """The PRE-REGISTERED set, read from outputs/_ug_seeds.txt (committed before any run)."""
+    out = []
+    for line in open(os.path.join(HERE, "_ug_seeds.txt"), encoding="utf-8"):
+        m = re.match(r"^(east|south)\|(half|default)\s+seed (\d+)", line)
+        if m:
+            out.append((m.group(1) + "|" + m.group(2), int(m.group(3))))
+    assert len(out) == 30, len(out)
+    return out
 
 
 if __name__ == "__main__":

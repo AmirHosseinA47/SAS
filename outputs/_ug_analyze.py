@@ -70,12 +70,15 @@ RB18 = DFP.RB18
 
 
 def _u30():
+    """The pre-registered U30, from the FROZEN record (outputs/_ug_seeds.txt), cross-checked
+    against a fresh run of the selector - a mismatch stops the analysis rather than silently
+    analysing a different set (the self-reference defect found in the horizon follow-up)."""
+    frozen = _ug_seeds.frozen_u30()
     tuples, _r, _s, _n = _ug_seeds.choose()
-    out = []
-    for combo, seed, _c, _i in tuples:
-        w, r = combo.split("|")
-        out.append((w, r, seed))
-    return out
+    fresh = [(combo, seed) for combo, seed, _c, _i in tuples]
+    if fresh != frozen:
+        raise SystemExit("U30 MISMATCH: the selector no longer reproduces outputs/_ug_seeds.txt")
+    return [(combo.split("|")[0], combo.split("|")[1], seed) for combo, seed in frozen]
 
 
 U30 = _u30()
