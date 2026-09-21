@@ -1,0 +1,986 @@
+================================================================================
+SFX2 - PART 1: DIAGNOSIS
+Follow-up to searcherfix (629a321). What it left alone: the first node of the
+latch (_exploration_fallback's unvalidated return), every other unvalidated
+direction return in uav_executor.py, and _direction_in_bounds' fallback.
+DIAGNOSIS ONLY. NO SOURCE CHANGED. NO SIMULATION RUN.
+================================================================================
+
+BRANCH / HEAD AS FOUND
+  git branch --show-current  -> searcherfix
+  git log --oneline -1       -> 629a321 "searcherfix: the victim-searcher
+                                boundary livelock is FIXED ..."          MATCH
+  Tracked tree clean; no python process running; nothing else holding the
+  checkout. Branch for this round, cut from searcherfix (not main - the guard
+  under examination is unmerged):
+      git checkout -b sfx2 searcherfix      -> sfx2 @ 629a321
+
+ENVIRONMENT (as required)
+  sys.version     : 3.10.11 (tags/v3.10.11:7d4cc5a, Apr  5 2023, 00:38:17)
+                    [MSC v.1929 64 bit (AMD64)]
+  mesa.__version__: 1.2.1
+  interpreter     : E:\Projects\SAS\.venv\Scripts\python.exe
+
+SIMULATION COST
+  ZERO runs. No WildFireModel was constructed or stepped by anyone. Evidence is:
+  source reading; an AST data-flow enumeration of every direction producer;
+  in-memory STUB probes that call the real executor methods on a real
+  mesa.space.MultiGrid with injected fire/smoke state; a read-only pytest probe
+  plugin on named test files (real-model tests deselected); and offline
+  re-analysis of the committed corpus.
+
+FILES THIS ROUND WROTE (untracked, not committed)
+  outputs/sfx2_part1.txt     this report
+  outputs/_sfx2_corpus.py    item-2 corpus tool (read-only, non-recursive globs)
+  outputs/_sfx2_corpus.txt   its output (--broad)
+
+LINE NUMBERS
+  Every line below is AT 629a321. The brief's numbers are 737b6c7's. Mapping,
+  checked with git show 737b6c7:src_extension/execution/uav_executor.py:
+      _exploration_fallback starved return   :4450  ->  :4532   (+82)
+      _commit_execution_direction write      :144   ->  :144
+      hazard gate SITE A fall-through        :2321  ->  :2396   (+75)
+      hazard gate SITE B fall-through        :2402  ->  :2484   (+82)
+  (737b6c7:2396, a different return - the ranked retreat - is now :2471.)
+  All paths are src_extension/execution/uav_executor.py unless named.
+
+QUARANTINE - CONTACT REPORT, AS REQUIRED
+  outputs/_firemech_rewound_20260914/ was never read, opened, listed by name,
+  moved, committed or referenced in any finding. Every sub-agent prompt carried
+  the --exclude-dir rule as a hard rule, and every agent logged every recursive
+  command it ran. THERE WAS CONTACT, and it is reported rather than filtered:
+   1. THE ORCHESTRATOR (me). At round start I ran `git status --short` twice
+      without a pathspec (once filtered with grep -v '^??', once counted with
+      grep -c '^??'). git's untracked-file walk OPENS every untracked directory
+      to classify it - including this one - and reports it as a single entry.
+      No file inside it was read and no line from it was displayed, but by the
+      standing rule "traversal is contact" this is contact.
+   2. verify:corpus agent. `git status --short -- src_extension tests '*.py'
+      | grep -v '^?? outputs/'`. The QUOTED '*.py' is a git pathspec matching
+      at any depth, so the untracked walk may have entered the directory. It
+      was post-filtered, which does not count. The agent self-reported it as a
+      VIOLATION. Nothing from it was displayed or used.
+   3. verify:returns-2 agent, DISCLOSED, not traversal: a non-recursive
+      `ls outputs/ | grep ...` listed the directory's NAME as one entry of
+      outputs/ (hidden by the grep). It did not enter it.
+  All other recursive commands - about forty greps and two finds, across 13
+  agents - carried --exclude-dir=_firemech_rewound_20260914 or -prune AT THE
+  COMMAND. The Grep and Glob tools were never pointed at outputs/ or the repo
+  root (one Grep tool call targeted the single named file uav_executor.py).
+  PROCESS RECOMMENDATION: the rule should name `git status` explicitly. An
+  unrestricted git status, or any-depth pathspec such as '*.py', walks the
+  quarantine exactly as grep -r does. Safe forms:
+  `git status --porcelain -- <named paths>` or `git status -uno`.
+  Contacts 1 and 2 are the same mechanism and neither was caught by the
+  existing rule's wording.
+
+VERIFICATION POSTURE
+  Workflow of 13 agents, 0 errors: 7 read-only mappers (callers; three line-
+  range sweeps plus one cross-cut pattern sweep for unvalidated returns;
+  _direction_in_bounds; corpus), 5 adversarial checkers (each told to REFUTE,
+  one an independent re-implementation of the corpus numbers), 1 completeness
+  critic. The checkers returned 129 checks: 106 CONFIRMED, 20 CORRECTED,
+  1 REFUTED, 2 UNVERIFIABLE. Both UNVERIFIABLE are outside what that checker
+  could re-derive: a verdict letter whose scale it was not given, and code
+  claims outside a corpus recount. Every correction is folded in below. The critic ran an AST data-flow closure over class
+  UAVExecutor: 76 direction-producer functions, every non-None direction-valued
+  return in them examined by at least one agent.
+  THE ORCHESTRATOR RE-DERIVED, not merely accepted, the load-bearing claims
+  with its OWN stub probe using a DIFFERENT hazard mechanism (burning
+  Fire-named agents placed on a real MultiGrid, where the agents had used smoke
+  labels): the :4532 starvation, the execute() end-to-end at switch 1 / 0 / -1,
+  the 'hold'-arm leak, the corner case, every kill-switch parse case, the
+  non-square fallback disagreement count and the pos-None pass-through. It
+  also spot-checked the corpus headline with the committed _sf_analyze
+  refusals(). All agree. Results are in section 5.
+
+================================================================================
+0. VERDICTS AT A GLANCE
+================================================================================
+  ITEM 1  _exploration_fallback's starved return (:4532)
+          (D) ALREADY COVERED.
+          The hazard gate is the ONLY route by which the :4532 value can reach
+          move() without a bounds test. Every other route either runs
+          _apply_final_direction_safety, which cannot pass an off-grid
+          direction, or throws the value away. The gate's two fall-throughs are
+          now guarded. With the switch at 0 (or below) the leak is exactly
+          SITE A / SITE B again.
+
+  ITEM 2  Corpus: does another path deliver an off-grid direction?
+          NO. It genuinely never fires; nothing was hidden in the numbers.
+            sfREF 82/82 and WIDER167 657/657 off-grid refusals are searchers,
+            carrying the gate's label, on gate-arm steps.
+            1,929-run broad census: 6,156 off-grid refusals, ALL searchers;
+            5,981 carry the gate label and 175 are in dim* runs that recorded
+            no labels.
+            sfON and sfSCAN: 0 for every role.
+          Every UNFILTERED dispatch arm is traversed heavily (for example
+          200,190 tracker 'hold' steps) with 0 off-grid refusals.
+          The one unfiltered arm that CAN carry an off-grid direction in code
+          (searcher 'hold') was traversed 0 times.
+
+  ITEM 3  Every unvalidated direction return in uav_executor.py
+          NO (A). Two (B), the rest (C) or (D). Full table in section 3.
+          (B) :544  _execute_hold `return current_dir, "hold"`.
+                    The only unvalidated return that reaches move() with no
+                    guard at all. Proven unreachable for a tracker. Reachable
+                    for a searcher in a state the corpus never produced.
+          (B) :2162 _offgrid_guard_direction `level <= 0`.
+                    The kill switch also disarms on -1 and on bool False,
+                    contrary to its own documentation.
+
+  ITEM 4  _direction_in_bounds fallback (:4865-4869)
+          (C) UNREACHABLE on any real WildFireModel, with proof.
+          The fallback IS TRANSPOSED, confirmed by arithmetic and by count:
+          3,160 of 9,600 (cell, direction) pairs disagree on 60x40, 0 of 10,000
+          on 50x50.
+          IT HAS NEVER MATTERED PRIMARILY BECAUSE THE BRANCH CANNOT EXECUTE on a
+          real model. Squareness is a SECOND, independent shield - so this is
+          dead code carrying a latent transposition, not code that is correct
+          only because WIDTH == HEIGHT.
+          searcherfix's guard provably never reaches it on a real model. If it
+          ever did on a non-square grid, it would CREATE the defect: a legal N
+          at (45,0) on 60x40 becomes an off-grid S.
+          One sibling of the same class IS code-reachable: the _execute_search_mode
+          target clamp at :819-823, (B).
+
+  PART 2 CONSEQUENCE, PER THE BRIEF: NOTHING IS (A), SO NOTHING IS IMPLEMENTED.
+  searcherfix is sufficient for the path it covers AND for the first node of
+  the latch. The remaining sites are documented here rather than fixed.
+  Section 7 lists the decisions a maintainer may still want to take.
+
+================================================================================
+1. ITEM 1 - EVERY CALLER OF _exploration_fallback, AND WHERE ITS VALUE GOES
+================================================================================
+
+1.1 THE UNVALIDATED RETURN, QUOTED (:4448-4532, abridged to the filters)
+      def _exploration_fallback(self, agent, *, victim_search: bool = False) -> int:
+          candidates = [0, 1, 3, 2]
+          ...
+          for direction in candidates:
+              if not self._direction_in_bounds(agent, direction):          # :4470
+                  continue
+              nx = int(agent.pos[0]) + _MOVE_X[direction]
+              ny = int(agent.pos[1]) + _MOVE_Y[direction]
+              if victim_search and not self._victim_search_cell_is_safe((nx, ny)):   # :4474
+                  continue
+              ... scored.append((score, direction))
+          if scored:
+              ...
+              pool = self._filter_scored_by_hard_safety(agent, scored)       # :4530
+              return max(pool)[1]                                           # :4531
+          return int(getattr(agent, "selected_dir", 0))                     # :4532  <==
+
+    :4532 requires `scored` to be EMPTY.
+    _filter_scored_by_hard_safety (:1753-1770) can never empty a non-empty
+    list. It returns its input unchanged when empty, and otherwise keeps every
+    item at the minimum level, of which there is at least one. So :4531 always
+    returns a direction that passed :4470.
+
+1.2 victim_search=False CAN NEVER REACH :4532 - proof
+    With victim_search False the only filter is :4470. On MultiGrid(50,50,False)
+    every in-bounds cell has at least 2 in-bounds neighbours: for any x in
+    [0,49], one of x+1 and x-1 is in range, and likewise for y. That was checked
+    exhaustively: 0 of 2,500 cells have none. A UAV's pos is never off-grid or
+    None: placement is at wildfire_model.py:243, and the only move is
+    agents.py:852-853, which refuses out-of-bounds. Therefore `scored` is
+    non-empty.
+
+1.3 THE THREE DIRECT CALL SITES, QUOTED
+    :771   chosen_dir = self._exploration_fallback(agent)
+           _execute_search_mode, victim_search=False (default).
+           -> _apply_final_direction_safety :773 -> commit :776.
+           Reached only for role_kind 'general' under a search-mode fail-safe
+           (execute :324-336 sends victim and fire roles to
+           _execute_role_preserving_search instead).
+           VALIDATED twice: :4532 is unreachable (1.2), and final safety applies.
+
+    :1518  return self._exploration_fallback(
+               agent, victim_search=(role_kind == "victim")
+           ), "exploration_fallback"
+           victim_search is PROVABLY False at this line. The AST shows the
+           `if role_kind == "victim":` block (:923-1479) returns on every path,
+           so a victim role never reaches :1518. Only fire_tracker or 'general'
+           arrive, via execute :400 -> :432 final safety, or
+           _execute_role_preserving_search :495 -> :501 final safety.
+           VALIDATED, and :4532 is unreachable.
+
+    :4446  return self._exploration_fallback(agent, victim_search=victim_mode)
+           in _choose_best_direction, where victim_mode = (target_kind == "victim")
+           (:4326). THIS IS THE ONLY ENTRY TO :4532 THAT CAN STARVE.
+
+1.4 EVERY _choose_best_direction CALL SITE (13), BY target_kind
+    Non-victim - :4446 itself is unreachable. The 4 candidates at :4320-4325
+    are a permutation of all four directions and :4357 is the only filter, so
+    at least 2 survive:
+      :825   'general'      _execute_search_mode        -> final safety :827
+      :901   'base_return'  _base_return_direction       -> 'rtb_waypoint'
+      :1490  'general'      cardinal action              -> :432 / :501
+      :1499  'general'      'waypoint'                   -> :432 / :501
+      :1503  'general'      'path_segment'               -> :432 / :501
+      :1510  'general'      'computed_from_target'       -> :432 / :501
+      :1516  'general'      'computed_from_target'       -> :432 / :501
+    Victim mode - :4446 -> :4532 is REACHABLE:
+      :949   nearest-victim target, label 'computed_from_target'
+      :1274  escape-target branch, after pathfinding (:1266) returned None
+      :1299  planner wind target
+      :1349  executor wind target (not forced)
+      :1468  wind-aware sweep
+      :1969  _apply_retarget_with_pathfinding_fallback (callers :1344, :1369)
+    _choose_best_direction_fire (7 sites: :679, :2953, :2968, :2991, :3023,
+    :3120, :3127) NEVER calls _exploration_fallback. Its own starved fallback is
+    a separate return - :3596, section 3.
+    No caller of either function exists outside uav_executor.py in production.
+    Tests only: test_behavior_regression, test_uav_sector_assignment,
+    test_uav_executor and test_wind_aware_victim_search.
+
+1.5 WHERE EACH VICTIM-MODE VALUE ENDS UP - the path table
+    (G = the searcher hazard gate, carrying searcherfix's guard at SITE A :2393
+     and SITE B :2481)
+
+    :949  -> :1210 (chosen, 'computed_from_target') -> OUTER G at :425 -> :436
+          If the victim-block branches fire, it is DISCARDED instead:
+            escape memory :999 (committed_dir, tested at :990),
+            oscillation escape :1060 (candidates filtered at :1009),
+            stuck escape :1209 (escape_scored filtered at :1104, and it always
+              overwrites `chosen`).
+          Via _execute_role_preserving_search: :1210 -> final safety :501 -> :504.
+    :1274 -> INNER G :1277 -> :1282 -> OUTER G :425, UNLESS the label contains
+             'retarget_to_interior' and _last_escape_method is non-empty
+             (then there is no outer gate; the inner gate is the validator).
+    :1299 -> INNER G :1297 -> :1314 -> OUTER G :425 (never exempt).
+    :1349 -> INNER G :1347 -> :1354 -> OUTER G :425, or exempt as for :1274.
+    :1468 -> INNER G :1474 -> :1479 -> OUTER G :425 (never exempt).
+    :1969 -> INNER G :1967 -> :1972 -> :1344/:1369 -> OUTER G :425, or exempt.
+    Any of these via _execute_role_preserving_search -> inner G -> :501 -> :504.
+
+    WHY THE EXEMPTION CANNOT LEAK THE :4532 VALUE. Inside the gate the incoming
+    direction survives UNTESTED only at SITE A (:2396) and SITE B (:2484), and
+    both return the label EXACTLY 'victim_search_hazard_retreat'. The :420-424
+    exemption requires the token 'retarget_to_interior', so a SITE A/B output is
+    ALWAYS re-gated at :425. That holds even with the switch at 0.
+    Every direction that does carry 'retarget_to_interior' comes from a
+    validated return:
+      the routed step :1273 / :1950 (strict level at :1946; off-grid = 3, :1845);
+      a retreat :2402 / :2438 (edge-blocked AND strict-level filtered);
+      a lookahead pass-through :2442 / :2472 (first step _cell_in_bounds, :2213).
+    NO path returns a :4532 value under 'hold', 'rtb_waypoint', 'hold_escape*'
+    or 'victim_search_escape_bfs'.
+
+1.6 WHAT IT TAKES TO REACH :4532 - a conjunction (two agents had it too loose)
+    (a) victim-mode _choose_best_direction must starve: every in-bounds
+        candidate is edge-blocked (margin 3), fails the strict lookahead, or has
+        strict level > 0 (:4361-4367); AND
+    (b) every in-bounds neighbour must fail _victim_search_cell_is_safe
+        (:4080 -> _victim_sweep_cell_is_approachable :4083-4092: burning, fire
+        probability >= 0.3, active smoke, or a smoke-labelled status).
+    The two predicates differ in BOTH directions, checked by probe:
+      - fire-belief p >= 0.3 alone is non-approachable but strict-safe, so (a)
+        fails and the fallback is never called;
+      - membership in visibility smoke_obscured_cells alone is strict-hazardous
+        but approachable, so the fallback returns in-bounds.
+    Hazard-free starvation of (a) happens on EXACTLY 16 cells: the diagonals
+    (k,k), (k,49-k), (49-k,k), (49-k,49-k) for k = 0..3. Only the 4 exact
+    corners can yield an off-grid :4532 value that way. At the other 12, all 4
+    neighbours are in bounds, so the returned previous direction is in bounds
+    too.
+    The corpus has one real corner pin: south/half/101, uid 2502, at (0,0), dir
+    S, 20 steps, in dcD/dfD/drhD/flhD/fmOFF/f3OFF. It is HAZARD-driven: the
+    own cell had active smoke, so it is a SITE A exit, not a no-hazard corner
+    starvation. It is absent at 737b6c7 (sfREF), consistent with depot-fireproof.
+
+1.7 THE ANSWER
+    YES. Every path by which a :4532 value can reach agent.selected_dir runs
+    through at least one searcher hazard gate (outer :425 or inner :1277 /
+    :1297 / :1347 / :1474 / :1967), through _apply_final_direction_safety
+    (:501; also :432 for a hypothetical non-searcher victim role that
+    production never assigns), or discards the value.
+    _apply_final_direction_safety cannot pass an off-grid direction: an
+    off-grid direction scores danger 3 (:1732-1735), and on any real grid at
+    least 2 in-bounds options score <= 2.
+    So the gate WAS the only route by which :4532 reached move() unvalidated,
+    and searcherfix guards exactly that route.
+    VERDICT (D) ALREADY COVERED.
+    Probe (orchestrator's own, burning neighbours, east edge (49,20), previous
+    heading E):
+       _exploration_fallback(victim_search=True)  -> E  OFF-GRID
+       _exploration_fallback(victim_search=False) -> W  in-bounds
+       execute(), nearest-victim target, switch 1 -> W  in-bounds
+                                                     '..._oob_ranked'
+       execute(), same, switch 0 / -1             -> E  OFF-GRID
+                                                     'victim_search_hazard_retreat'
+
+1.8 REFINEMENTS RECORDED
+    - The gate running twice cannot re-introduce an off-grid value at switch
+      >= 1: given an in-bounds input, every gate return is in-bounds. Its only
+      effect is overwriting the label, which is the instrumentation defect
+      searcherfix already recorded.
+    - _last_escape_method persists across steps: executors are cached per UAV
+      (decision_dispatcher.py:139-146), and the value is reset only at :2037.
+      So the :420-424 "pathfinding_routed" exemption can read a STALE value on
+      the :1349 path. The exemption does not test what its comment says. It is
+      bounds-harmless (1.5) and cannot be measured from the corpus.
+    - SITE B also fires, with no hazard at all, on the 16 trap cells. Its
+      'victim_search_hazard_retreat' label then drives
+      _sync_wind_search_execution_state (:2540-2549): force_interior_retarget,
+      corridor reset and a neighbourhood blacklist. It is label inflation, not
+      a bounds issue; in sfON at most 10 such labels, from trap-cell starts.
+
+================================================================================
+2. ITEM 2 - MEASURED FROM THE EXISTING CORPUS
+================================================================================
+  TOOL. outputs/_sfx2_corpus.py (read-only, non-recursive _ffr_<TAG>_*.json
+  globs). Output is outputs/_sfx2_corpus.txt. INDEPENDENTLY RE-IMPLEMENTED by
+  the verify:corpus agent, which reproduced every number (all 80 dispatch-arm
+  rows, 0 differences). It also matches _sf_analyze.refusals() on sfREF, sfOFF,
+  sfON, sfSCAN and dcD. The orchestrator spot-checked sfREF and sfON with
+  _sf_analyze.refusals() itself.
+
+  ARMS: sfREF (pristine 737b6c7, second checkout, 23 tuples), sfOFF (switch
+  0), sfON (switch 1, shipped), sfSCAN (switch 2, canonical 13), and WIDER167 -
+  the searcherfire diagnosis's population, reproduced exactly: dcD 23 + d4D
+  30 + dfD 23 + drhD 18 + flhD 19 + fmOFF 27 + f3OFF 27 = 167 runs, 57
+  distinct tuples, 160,320 UAV-steps, 657 off-grid refusals.
+  CAVEAT: that report names no arm list. The identification rests on its own
+  arm naming (s.0.5 and s.2) plus the exact recount. On counts alone it is not
+  unique: 36 arm combinations hit 167/657.
+  uav_actions is present in every run of these arms.
+
+  SEMANTICS (from the earlier rounds, re-verified by the checker):
+    selected_dir at row i is the direction APPLIED in step i;
+    refused  = p[i] == p[i-1];
+    OFF_GRID = p[i] + MOVE[dir[i]] is outside the 50x50 grid (x on the HEIGHT
+               axis);
+    UAV_BLOCKED = in-bounds target occupied, reconstructed in schedule order
+               (SWEEP). The brief's p[i-1] approximation leaves 11-128
+               refusals unexplained per arm; SWEEP explains every one, with 0
+               UNEXPLAINED in 1,841,484 evaluable steps.
+    NO_ATTEMPT = base_state 'charging' (move() returns at agents.py:833-835).
+
+2.1 REFUSALS BY ARM AND ROLE (SWEEP rule)
+      arm       role             eval-steps  refused =  OFF_GRID + UAV_BLK + NO_ATT
+      sfREF     fire_tracker        11,711      784  =      0    +   147   +   637
+      sfREF     victim_searcher     10,277      735  =     82    +    94   +   559
+      sfOFF     (identical to sfREF in every cell - value identity)
+      sfON      fire_tracker        11,711      780  =      0    +   143   +   637
+      sfON      victim_searcher     10,277      651  =      0    +    92   +   559
+      sfSCAN    fire_tracker         6,931      470  =      0    +    93   +   377
+      sfSCAN    victim_searcher      5,497      369  =      0    +    70   +   299
+      WIDER167  fire_tracker        83,889    5,443  =      0    +   880   + 4,563
+      WIDER167  victim_searcher     75,763    5,435  =    657    +   657   + 4,121
+
+2.2 OFF-GRID REFUSALS - FULL LABEL HISTOGRAM, BY ROLE
+      sfREF / sfOFF   searcher 82   = victim_search_hazard_retreat 82 [all free-flying]
+                      tracker   0
+      sfON / sfSCAN   searcher  0,  tracker 0
+                      no '_oob_*' label appears; the outer gate erases it
+      WIDER167        searcher 657  = victim_search_hazard_retreat 657 [all free]
+                      tracker   0
+      BROAD CENSUS    every _ffr_*.json with uav_steps: 129 tags, 1,929 runs.
+                      Off-grid 6,156, ALL victim_searcher, 0 tracker.
+                      Labels: victim_search_hazard_retreat 5,981; no label
+                      data 175. The 175 are all in dim* runs, which recorded no
+                      uav_actions (124 runs).
+      No off-grid refusal occurs on a returning, charging or docked step
+      anywhere in the corpus.
+      The docked blind spot is closed: the critic checked the COMMITTED
+      direction's geometry on every charging step. There are 0 off-grid
+      committed directions (sfREF 637 tracker / 559 searcher; WIDER167
+      4,563 / 4,121).
+
+2.3 THE HIDDEN-PATH CHECK
+    Every off-grid refusal NOT carrying the gate label: NONE.
+      82 of 82 checked in sfREF, 82 of 82 in sfOFF, 657 of 657 in WIDER167.
+      In the broad census, 5,981 of 5,981 labelled refusals carry it.
+    THE NUMBERS HIDE NOTHING. The 657 are the 10 distinct pins of the
+    searcherfire table repeated across same-seed arms (42 pin events), cell for
+    cell. Every one is victim_search_hazard_retreat, on a SEARCHER_GATE step,
+    free-flying.
+
+2.4 THE KEY TABLE - EVERY DISPATCH ARM, HOW OFTEN IT IS TRAVERSED, WHAT IT
+    PRODUCED. Base-state-aware: a charging UAV never attempts a move, and on a
+    'returning' step under return mechanism 2 (the default) agents.py:817
+    OVERWRITES the executor's committed direction.
+      sfON                        role     steps  OFF_GRID  UAV_BLK
+      MOVE_LAYER_DOCKED           tracker    637      0        0   (637 no-attempt)
+      RETURN LEG (agents.py:817)  tracker  1,372      0       35   UNFILTERED
+      HOLD                        tracker  2,482      0        6   UNFILTERED
+      TRACKER_HOLD_ESCAPE         tracker    600      0       23   UNFILTERED
+      TRACKER_FINAL_SAFETY        tracker  6,620      0       79
+      MOVE_LAYER_DOCKED           searcher   559      0        0   (559 no-attempt)
+      RETURN LEG (agents.py:817)  searcher 1,379      0       11   UNFILTERED
+      SEARCHER_EXEMPT_BFS         searcher   899      0       45   UNFILTERED
+      SEARCHER_RETARGET           searcher 6,378      0       35
+      SEARCHER_GATE               searcher 1,062      0        1
+    (sfREF is identical except SEARCHER_GATE: 1,149 steps, 82 OFF_GRID.)
+      BROAD CENSUS, 1,929 runs    role        steps  OFF_GRID
+      HOLD                        tracker   200,190      0     UNFILTERED
+      TRACKER_HOLD_ESCAPE         tracker    47,500      0     UNFILTERED
+      RTB 'rtb_waypoint'          tracker     3,883      0     UNFILTERED  (mechanism-1 arms only)
+      RTB 'rtb_waypoint'          searcher    4,205      0     UNFILTERED  (bsfullp/bsretp/dfW0/dfW1)
+      RETURN LEG (agents.py:817)  tracker    86,160      0     UNFILTERED
+      RETURN LEG (agents.py:817)  searcher   82,658      0     UNFILTERED
+      SEARCHER_EXEMPT_BFS         searcher   65,057      0     UNFILTERED
+      SEARCHER_RETARGET           searcher  528,167      0
+      TRACKER_FINAL_SAFETY        tracker   539,776      0
+      SEARCHER_GATE               searcher   86,418  5,981
+      searcher 'hold'             searcher        0      -     UNFILTERED  <== never traversed
+    Across 249 runs of the eleven arms named above, the orchestrator counted
+    28,115 'hold' labels: every one a tracker, 0 searchers.
+    READING IT. Every unfiltered arm is traversed tens of thousands of times,
+    and none has ever produced an off-grid refusal. That matches the code: each
+    arm's PRODUCER is bounds-validated (section 3, group B). The only
+    unfiltered arm whose producer is NOT validated - a searcher on 'hold'
+    (:544) - has zero traversals in the entire corpus.
+
+2.5 "BLOCKED" - THE OCCUPANCY HALF OF THE QUESTION
+    UAV_BLOCKED refusals occur on EVERY arm, filtered or not, because NO
+    executor filter tests occupancy.
+      - not_UAV_adjacent (agents.py:393-399) tests only the target cell, at
+        move() time.
+      - Other UAVs enter the executor only as soft score terms (:642, :1163,
+        :1791, :4423).
+    So "unvalidated" is not what separates the paths for occupancy. The gate
+    itself delivers UAV-blocked directions (WIDER167 SEARCHER_GATE 142).
+    Nothing about the :4532 value is special here: it is scoped out by
+    searcherfix's D3 ("legal" means in bounds).
+    Occupancy latches (same UAV, same cell, same dir, >= 2 refused steps):
+      searcher  sfREF 7 runs / 67 steps / longest 21  ->  sfON 7 / 67 / 21  (IDENTICAL)
+      tracker   sfREF 23 / 91 / 14                    ->  sfON 22 / 89 / 14
+    The fix introduced no occupancy latch. The HEAD-ON livelocks are a separate,
+    pre-existing class and persist in sfON:
+      - east/half/202: two searchers at (3,46) and (4,46), each aiming at the
+        other's cell, 21 steps, both victim_search_escape_bfs;
+      - d4D south/half/423146201: a tracker on a mechanism-2 return leg against
+        a free searcher, 17 + 16 steps.
+    A positional gate cannot see these.
+
+2.6 LATCH SIGNATURES, OFF-GRID
+      sfREF/sfOFF  searcher 4 runs / 82 steps / longest 26 (the four known pins)
+      sfON/sfSCAN  0          trackers  0 in every arm
+      WIDER167     searcher 42 / 657 / 26 = the 10 distinct pins; trackers 0
+
+2.7 CORPUS LIMITS, STATED
+    - Only east and south winds exist in the corpus.
+    - Labels are post-filter, and the pathfinding_routed flag is not recorded,
+      so SEARCHER_RETARGET is a superset.
+    - The harness records neither the role_preserving_search flag
+      (uav_executor.py:536) nor the fail-safe action. Tracker traversals of
+      _execute_role_preserving_search, and how often a safe_hold override is
+      active, are therefore UNMEASURED. Both are bounds-covered in code
+      (final safety :501).
+    - The harness records only the local section's result. Any fail-safe-
+      section commit is overwritten by the later local commit: 0 empty labels
+      in 1,805 labelled runs.
+    - On 'returning' steps the recorded direction is agents.py:817's, not the
+      executor's. It reduces distance to the recorded target berth on 100% of
+      returning steps.
+
+================================================================================
+3. ITEM 3 - EVERY UNVALIDATED DIRECTION RETURN IN uav_executor.py
+================================================================================
+  METHOD. Three line-range sweeps and one pattern sweep produced 57 unique
+  findings, adversarially checked by 2 agents. The checkers also swept for
+  misses, and so did the critic's AST closure (76 producer functions). The only
+  returns nobody listed are early `return None` exits (:622, :662, :699, :749,
+  :896, :899, :1944, :1947, :1984, :2000, :2032, :2040, :2084, :2316, :3091),
+  all read and confirmed as non-directions.
+  "Unvalidated" = no bounds test on that return path at the return itself.
+
+  A. ON THE MOVEMENT PATH WITH NO DOWNSTREAM GUARD (the unfiltered arms)
+  line   function / return                              reached by         guard after          verdict
+  :544   _execute_hold                                  searcher on a      NONE: 'hold' skips    (B)
+         `return current_dir, "hold"` (escape None)     fail-safe hold;    :419 and :428
+                                                        'general'.         -> :436 commit
+                                                        TRACKER: PROVEN
+                                                        UNABLE
+  :541   _execute_hold                                  trackers (every    NONE, but :587-590    (C)
+         `return current_dir, "hold"` (no escape        tracker 'hold'     forces the escape
+         needed)                                        label)             branch whenever
+                                                                           current_dir is
+                                                                           off-grid, so :541
+                                                                           cannot carry one
+  :545   `return escape_dir, "hold_escape"`;            trackers           producer-validated:   (C)
+  :3002  same label                                                        :628, :686 disq.,
+                                                                           :715
+  :900   _base_return_direction -> 'rtb_waypoint'       all roles,         producer-validated:   (C)
+                                                        mechanism 1 only   :4357 pool; :4446
+                                                                           unreachable in
+                                                                           base_return mode
+  :1950  _attempt_pathfinding_toward_target ->          searchers          producer-validated:   (C)
+  :1951  'victim_search_escape_bfs' / routed retarget                      :1946 strict level,
+                                                                           off-grid = 3 (:1845)
+
+  B. UNVALIDATED AT THE RETURN, GUARDED DOWNSTREAM
+  :4532  _exploration_fallback starved `return int(selected_dir)`        see item 1              (D)
+  :4446  _choose_best_direction -> fallback (victim mode; non-victim     the gate / :501          (D)
+         unreachable)
+  :2396  SITE A `return chosen_dir, "victim_search_hazard_retreat"`      _offgrid_guard_direction (D)
+  :2484  SITE B `return best_dir, "victim_search_hazard_retreat"`        _offgrid_guard_direction (D)
+  :1210 :1282 :1314 :1344 :1354 :1369 :1479 :1972   pass-throughs of     the gate                 (D)
+         the gate outputs above
+  :3596-> _fire_tracker_hold_direction: best_dir = selected_dir % 4,     final safety :432/:501;  (D)
+  :3614  kept when EVERY in-bounds neighbour is burning. Via :3745        hold_escape consumer
+         and :1486 into fire labels :2952 :2967 :2990 :3029 :3119 :3126   tests :685-688
+         The same SHAPE as :4532, on the tracker side.
+  :2162  _offgrid_guard_direction `if level <= 0: return direction`      none - it IS the         (B)
+         THE KILL SWITCH. Disarms on 0, and ALSO on any negative         switch
+         integer and on bool False (--set ...=false). Section 6.1.
+
+  C. VALIDATED ON REFLECTION, UNREACHABLE, OR NEVER COMMITTED
+  :2166  guard, int() fails -> pass-through. Unreachable by type: every     (C)
+         producer returns an int.
+  :2168  guard, not _can_check_bounds -> pass-through. Never on a real       (C)
+         model (section 4).
+  :2172  rung 2 substitution. :2167 already required _can_check_bounds.     (C)
+  :2177  rung 1 reverse. Provably in bounds on the real grid.                (C)
+  :2395  SITE A guarded substitute. In bounds by the :2177 proof.            (C)
+  :2483  SITE B guarded substitute. Same.                                    (C)
+  :1830  _safe_direction_or_escape keeps proposed_dir. Needs all four        (C)
+         directions at danger 3; impossible for a placed UAV on a grid with
+         both sides >= 2.
+  :3595  _fire_tracker_hold_direction `return 0` on pos None. The caller      (C)
+         dereferences pos first (:3636).
+  :4781  _direction_toward `return current`. HINTS ONLY - `preferred`        (C)
+  :4785  only orders a permutation of all four candidates, each tested at
+  :4792  :3657 / :4357 / :1104.
+  :4798  :4785 IS reachable (target == own cell) but is never committed
+         itself. :4792 is dead for any float. :4798 needs a NaN target.
+  :4803  _first_boundary_safe_direction `return chosen`. Needs no             (C)
+  :4807  _can_check_bounds (never on a real model), or zero in-bounds
+         directions (impossible).
+  :912   `chosen_dir = int(selected_dir)` - a dead store. Every read follows  (C)
+         a reassignment.
+  :4855 :4860 :4868 :4869   _direction_in_bounds permissive exits and the     item 4
+         transposed fallback.
+
+  D. OTHER selected_dir WRITERS (outside the executor)
+  agents.py:817      _apply_return_to_base, mechanism 2 (the default). It      (C)
+                     steps toward an in-bounds berth or recovery cell, docks
+                     first when here == berth, and the recovery cell is never
+                     `here` (agents.py:622, :632). 0 off-grid on 168,818
+                     returning steps.
+  wildfire_model.py:215   spawn warm-up directions (0,1,3).                    (C)
+  wildfire_model.py:2373  set_drone_dirs. Skipped whenever the extension      (C)
+                     pipeline is active (:2421-2425), and
+                     execution_direction_applied is cleared each step (:5817).
+  No direction sentinel can wrap. The only -1 is uav_last_failed_dir (:1095 /
+  :1099), used only in != comparisons, and every producer emits 0..3.
+
+3.1 THE ONE THAT MATTERS: :544, QUOTED (:539-545)
+      def _execute_hold(self, agent: Any, current_dir: int) -> tuple[int, str]:
+          if not self._hold_needs_escape(agent, current_dir):
+              return current_dir, "hold"                          # :541
+          escape_dir = self._hold_escape_direction(agent)
+          if escape_dir is None:
+              return current_dir, "hold"                          # :544  <==
+          return escape_dir, "hold_escape"
+    current_dir is agent.selected_dir, read at :344 - the PREVIOUS direction,
+    exactly like :4532, but it does NOT pass through :4532.
+    _hold_needs_escape (:582-593) is True precisely when the UAV is stuck >= 3,
+    on the boundary, or current_dir is off-grid. _hold_escape_direction then
+    drops every in-bounds neighbour at _cell_danger_level > 0 (:632: burning,
+    fire probability >= 0.3, or smoke-obscured) and returns None if nothing is
+    left. The direction that the escape test itself judged unsafe or illegal is
+    then committed. 'hold' skips BOTH post-filters (:419 and :428 each require
+    action != 'hold'), and agents.py:829-832 confirms a 'hold' still moves
+    along selected_dir. It is the same closed-latch shape as the searcherfix
+    pin, one level up.
+
+    TRACKERS CANNOT REACH IT. For a tracker :616-619 returns
+    _fire_tracker_hold_escape_direction, whose one-step fallback (:714-749)
+    puts every in-bounds direction into safe_scored or fallback_scored. It
+    returns None only for pos None or zero in-bounds directions - both
+    impossible.
+
+    THE SEARCHER TRIGGER, traced end to end:
+     - PathDecision.next_action defaults to ''.
+     - The local planner rewrites any 'hold' to 'victim_search_wind_aware' for
+       a recognised searcher (local_uav_path_planner.py:200-213, :237-242). So
+       a searcher receives 'hold' only from the dispatcher's override rewrite:
+       _adjust_local_path_for_fail_safe (decision_dispatcher.py:495-503)
+       rewrites next_action to 'hold' when a fail-safe override with action
+       'safe_hold', '*_hold' or 'hold' is active. The searcher exemption does
+       not apply to safe_hold (:420-423), and fs_for_execute is None (:529-534).
+     - In execute(), a searcher on 'hold' is sent to the GATED path (:359)
+       UNLESS _is_fail_safe_hold_decision(decision, None) is True, which needs
+       an EMPTY selected_option_id (uav_executor.py:120-122). The planner emits
+       an empty id only for its no-feasible-option decision
+       (local_uav_path_planner.py:94-100).
+     - The fail-safe section cannot deliver it: no fail-safe params dict carries
+       next_action or action, so its action is always '' (checked across
+       failsafe_adaptation_generator, fallback_strategy and fail_safe_planner).
+    FULL TRIGGER:
+      [a safe_hold-family override is active]
+      AND [the searcher's planner found no feasible option]
+      AND [an escape is needed]
+      AND [every in-bounds neighbour has danger > 0].
+    For an OFF-GRID commit, add: on the rim with the previous heading outward.
+    MEASURED: 0 searcher 'hold' steps in the whole corpus (1,805 labelled runs).
+    Probe (orchestrator's own, switch at SHIPPED 1, (49,20), previous heading
+    E, three neighbours burning):
+      searcher, next_action 'hold', option_id ''            -> E  OFF-GRID   label 'hold'
+      searcher, next_action 'hold', option_id 'some_option' -> W  in-bounds  gated
+      tracker,  next_action 'hold', option_id ''            -> S  in-bounds  'hold_escape'
+      searcher, same, no hazard                             -> W  in-bounds  'hold_escape'
+    WHY (B) AND NOT (A). (A) requires "producing wrong behaviour now", and there
+    is no instance in the corpus. It is the closest thing to (A) in this report,
+    and unlike the other (B) items it needs NO configuration change - only a
+    state conjunction the corpus has never produced. What would expose it: any
+    scenario in which a safe_hold-family fail-safe override fires while a
+    searcher's planner has no feasible option near a burning rim.
+
+================================================================================
+4. ITEM 4 - _direction_in_bounds
+================================================================================
+
+4.1 QUOTED IN FULL (:4852-4869), with its two helpers
+      def _direction_in_bounds(self, agent: Any, direction: int) -> bool:
+          pos = getattr(agent, "pos", None)
+          if pos is None:
+              return True                                                # :4855
+          nx = int(pos[0]) + _MOVE_X[direction]
+          ny = int(pos[1]) + _MOVE_Y[direction]
+          model = self._resolve_model(agent)
+          if model is None:
+              return True                                                # :4860
+          grid = getattr(model, "grid", None)
+          out_of_bounds = getattr(grid, "out_of_bounds", None) if grid is not None else None
+          if callable(out_of_bounds):
+              return not out_of_bounds((nx, ny))                         # :4864
+          width = self._grid_dimension(model, ("grid_width", "WIDTH", "width"))
+          height = self._grid_dimension(model, ("grid_height", "HEIGHT", "height"))
+          if width is None or height is None:
+              return True                                                # :4868
+          return 0 <= nx < width and 0 <= ny < height                    # :4869  <==
+
+      def _can_check_bounds(self, agent: Any) -> bool:                   # :4812-4821
+          model = self._resolve_model(agent)
+          if model is None:
+              return False
+          grid = getattr(model, "grid", None)
+          if grid is not None and callable(getattr(grid, "out_of_bounds", None)):
+              return True
+          width = self._grid_dimension(model, ("grid_width", "WIDTH", "width"))
+          height = self._grid_dimension(model, ("grid_height", "HEIGHT", "height"))
+          return width is not None and height is not None
+
+      @staticmethod
+      def _grid_dimension(model, attribute_names) -> int | None:         # :4823-4829
+          for name in attribute_names:
+              value = getattr(model, name, None)
+              if value is not None:
+                  return int(value)
+          return None
+
+4.2 WHAT THE FALLBACK DOES AND WHAT TRIGGERS IT
+    TRIGGER: pos is not None, the resolved model is not None, and model.grid
+    is None or has no callable out_of_bounds.
+    WHAT IT DOES: reads width = the first non-None of grid_width, WIDTH, width,
+    and height = the first of grid_height, HEIGHT, height (each bare-int cast),
+    then tests `0 <= nx < width and 0 <= ny < height`. If either is None it
+    returns True - permissive.
+    On a WildFireModel-shaped object the lookups resolve to the instance
+    WIDTH/HEIGHT. There is no grid_width, grid_height, width or height on the
+    model; environment_bridge.py's "grid_width" is a snapshot dict key, not an
+    attribute.
+    ALSO PERMISSIVE: :4855 (pos None) and :4860 (model None) return True.
+    _can_check_bounds wraps the model-None and dims-None cases but NOT
+    pos-None. It never reads pos. Probe: with pos None and a real grid,
+    _can_check_bounds is True, _direction_in_bounds is True, and the guard
+    passes the direction through. So the searcherfix docstring (:2155-2158),
+    which says the wrap covers "pos or the model is None", is wrong about pos.
+    It is unreachable on a real model, where a placed UAV's pos is never None.
+
+4.3 IT IS TRANSPOSED - the arithmetic
+    wildfire_model.py:169   self.grid = mesa.space.MultiGrid(HEIGHT, WIDTH, False)
+    wildfire_model.py:178-179  self.HEIGHT = HEIGHT ; self.WIDTH = WIDTH
+    wildfire_model.py:106-108  "x is the HEIGHT axis and y is the WIDTH axis -
+        the grid is built MultiGrid(HEIGHT, WIDTH), so getting these the wrong
+        way round is silently inert only while the grid is square."
+    mesa 1.2.1 space.py:96  _Grid.__init__(self, width, height, torus) - so
+        grid.width = HEIGHT (the x extent), grid.height = WIDTH (the y extent).
+    mesa 1.2.1 space.py:394 out_of_bounds: x < 0 or x >= self.width
+        or y < 0 or y >= self.height.
+    MultiGrid defines no __init__ and inherits both.
+    REAL LEGALITY:  0 <= x < HEIGHT  and  0 <= y < WIDTH.
+    FALLBACK:       0 <= x < WIDTH   and  0 <= y < HEIGHT.   TRANSPOSED.
+    It also contradicts the executor's OWN sibling fallback, _cell_in_bounds
+    (:1713), which reads `0 <= cell[0] < height and 0 <= cell[1] < width` -
+    correct. Both were introduced together in a4a01b4 (the first code commit)
+    and have disagreed ever since.
+    COUNTED: 3,160 of 9,600 (cell, direction) pairs disagree on 60x40, and
+    0 of 10,000 on 50x50. The count was made by the bounds agent, its checker
+    and the orchestrator independently.
+
+4.4 REACHABLE AT THE SHIPPED CONFIGURATION? NO - proof, not assumption
+    (a) Production code assigns model.grid in exactly two places:
+        wildfire_model.py:142 `self.grid = None` (__init__), and :169 the
+        MultiGrid (reset()). __init__ calls reset() at :154, and reset() has
+        no other caller. The dashboard builds a NEW model
+        (serve_dashboard.py:456; mesa ModularServer at main.py:151), not a
+        second reset().
+    (b) Order inside reset(): grid :169 < UAV spawn :213-245 <
+        _init_runtime_knowledge :250 < DecisionDispatcher :345. No UAV,
+        dispatcher or executor exists while grid is None. In that window the
+        shipped class has no HEIGHT/WIDTH either (under _gs_probe --expose-dims
+        they exist as class attributes, but no executor exists then, so it is
+        moot).
+    (c) The only UAVExecutor construction is decision_dispatcher.py:141,
+        with model = the WildFireModel. agent.model is the same object. mesa
+        Model defines no __bool__ or __len__, so `agent.model or self._model`
+        never falls through.
+    (d) MultiGrid inherits a callable out_of_bounds (space.py:390).
+    (e) Independent corroboration: agents.py:852 move() calls
+        self.model.grid.out_of_bounds UNGUARDED. A model without it could not
+        move a single UAV.
+    => On a real WildFireModel, :4863 is always True and :4864 always returns.
+    :4865-4869 are DEAD, whatever the grid dimensions - including a non-square
+    grid set at runtime with `--set HEIGHT=60 --set WIDTH=40`
+    (apply_scenario_config writes the wildfire_model module globals, and
+    reset() reads them at call time). That still builds a MultiGrid.
+
+4.5 DOES searcherfix's GUARD EVER CALL IT WHERE THE FALLBACK COULD FIRE?
+    NO on any real model. The guard calls _can_check_bounds (:2167), then
+    _direction_in_bounds (:2169); rung 2 calls _first_boundary_safe_direction
+    (:4802 / :4805). All resolve the model identically. The guard reaches the
+    transposed line EXACTLY when the model has no callable grid.out_of_bounds
+    but exposes both dimensions - a state no WildFireModel ever has (4.4).
+    MEASURED IN TESTS: a read-only pytest probe plugin (return values
+    untouched) on 11 named test files, 203 tests (the 7 real-model tests
+    deselected), recorded ZERO executions of :4869.
+      - searcherfix's 88 guard tests took the callable path on every call:
+        86 _can_check_bounds calls, 105 _direction_in_bounds calls.
+      - Every grid-less test double (test_uav_executor _FakeModel; the
+        failsafe, sector-assignment and rescue-comm dispatcher models) also
+        lacks dimensions, so it exits permissively at :4868.
+      - Every double WITH dimensions has a callable grid.
+      - Every double's dimensions are square (10, 20, 30, 50).
+    WHAT IT WOULD DO IF REACHED ON A NON-SQUARE GRID (HEIGHT=60, WIDTH=40; run
+    on a stub, confirmed by the orchestrator):
+      - (30,39) N -> (30,40) is REALLY off-grid. The fallback says legal, so the
+        guard passes N through, move() refuses it, and the pin is back.
+      - (45,0)  N -> (45,1) is REALLY legal. The fallback says off (45 >= 40),
+        so rung 1 substitutes S -> (45,-1), which is REALLY off-grid. THE GUARD
+        WOULD CREATE THE DEFECT IT EXISTS TO REMOVE.
+      - The guard stops being idempotent (N -> S -> N), which
+        test_the_guard_is_idempotent pins.
+      - Rung 2 can return an off-grid direction: at (59,20) all four
+        directions are fallback-off, so it returns the off-grid chosen E.
+    So rung 1's "the reverse is always in bounds" proof holds ONLY under the
+    grid's own test. On the real model that is the test it always gets.
+    Established, not assumed.
+
+4.6 THE SQUARE-GRID STATEMENT, EXPLICITLY AS REQUIRED
+    On a square grid the swap is invisible: 0 of 10,000 pairs disagree at
+    50x50. BUT SQUARENESS IS NOT THE MAIN REASON IT HAS NEVER MATTERED.
+    The branch cannot execute on any real WildFireModel, square or not (4.4),
+    and no test double reaches it either. Squareness is a second, independent
+    shield. In tests the swap is inert for both reasons at once: no double
+    reaches the line, and every double is square.
+    Since the line runs nowhere, its correctness has never been tested by
+    anything. searcherfix's 88 tests could not detect a swap even if they
+    reached it: they use 50x50, and their own oracle (_in_bounds, test file
+    :56-58) is orientation-agnostic at that size.
+    It is the dimension round's defect class, sitting in dead code - latent in
+    the sense that any future non-mesa grid, or a grid-less executor host,
+    would inherit it.
+
+4.7 VERDICT: (C) UNREACHABLE on any real WildFireModel (proof in 4.4). The
+    transposition is recorded as a latent defect of dead code.
+    What would expose it: a non-square grid AND a model object reaching
+    UAVExecutor with no callable grid.out_of_bounds but with WIDTH/HEIGHT - a
+    test double or a non-mesa host. WildFireModel cannot supply the second.
+    Minimal reproduction (stub, grid=None, HEIGHT=60, WIDTH=40, switch 1): the
+    guard turns a legal N at (45,0) into an off-grid S.
+
+4.8 THE SAME CLASS ELSEWHERE IN uav_executor.py - every HEIGHT/WIDTH mapping
+      :4865-4869  _direction_in_bounds fallback          TRANSPOSED   dead (above)
+      :819-823    _execute_search_mode target clamp      TRANSPOSED   CODE-REACHABLE   (B)
+                  tx (x) clamped to WIDTH-1, ty (y) to HEIGHT-1.
+      :4819-4821  _can_check_bounds                      presence check only (n/a)
+      :562-566    _position_at_boundary                  CORRECT
+      :576-580    _distance_from_boundary                CORRECT
+      :1709-1713  _cell_in_bounds fallback               CORRECT      dead on the real model
+      :1228-1237  victim sweep H/W                       CORRECT
+      :1930-1932  _bfs_escape_max_depth                  symmetric sum (n/a)
+      :2184-2191  _victim_edge_blocked_direction         CORRECT
+      :2512-2533  _sync_wind_search_execution_state      CORRECT
+      :3966-3978  _wind_aware_victim_search_target_legacy CORRECT
+      :4040-4041  _init_wind_aware_sweep_state (callers :1385-1386, :1400-1401)   CORRECT
+      :4116-4159  _safe_victim_sweep_target (caller :1463-1464)                  CORRECT
+    Outside the executor (checker's sweep): local_adaptation_generator
+    _grid_bounds, local_uav_path_planner directional_edge / _uav_near_boundary,
+    and the agents.py victim exit targets are all CORRECT.
+    Naming traps with no consumer found:
+      - environment_bridge.py:84-86 / :138-139 exports mesa grid.width
+        (= HEIGHT, the x extent) under the key 'grid_width';
+      - main.py:149 CanvasGrid(..., WIDTH, HEIGHT, ...) is display-only; its
+        effect on a non-square render is UNVERIFIED.
+    THE :819-823 CLAMP, (B). Reached only for role_kind 'general' under a
+    search-mode fail-safe with sector filtering inactive. No 'general' role
+    exists at the shipped configuration: the only role producer
+    (global_mission_planner.py:108) always yields an empty map. A residual,
+    UNVERIFIED route is _read_uav_role returning None. The effect is a
+    mis-clamped TARGET, which is then safety-filtered through the real
+    out_of_bounds. Inert at 50x50. Exposed by a non-square --set HEIGHT/WIDTH
+    AND a general-role UAV in search mode.
+
+================================================================================
+5. THE ORCHESTRATOR'S OWN PROBE - verbatim result
+================================================================================
+  Scratch script (session scratchpad, not committed): orch_probe.py. It uses
+  burning Fire-named agents on a real MultiGrid(50,50,False) and no
+  WildFireModel. After the run,
+  `git status --porcelain -- src_extension tests agents.py wildfire_model.py
+  common_fixed_variables.py` was empty.
+  == 1. _exploration_fallback starved return (:4532), east edge (49,20), prev dir E, 3 nbrs burning
+     victim_search=True  -> E(0) OFF-GRID
+     victim_search=False -> W(2) in-bounds
+     _choose_best_direction(victim) -> E(0) OFF-GRID
+     _choose_best_direction(general) -> W(2) in-bounds
+  == 2. execute() searcher, nearest-victim target (:949 -> :4446 -> :4532 -> outer gate :425 -> :436)
+     switch=1   committed W(2) in-bounds       label=victim_search_hazard_retreat_oob_ranked
+     switch=0   committed E(0) OFF-GRID        label=victim_search_hazard_retreat
+     switch=-1  committed E(0) OFF-GRID        label=victim_search_hazard_retreat
+  == 3. the 'hold' arm (_execute_hold :539-545), switch at shipped 1
+     role=victim_searcher option_id=''           committed E(0) OFF-GRID        label=hold
+     role=victim_searcher option_id='some_option' committed W(2) in-bounds       label=victim_search_hazard_retreat
+     role=fire_tracker    option_id=''           committed S(1) in-bounds       label=hold_escape
+     searcher, no hazard       committed W(2) in-bounds       label=hold_escape
+  == 4. corner (0,0), prev dir W (off-grid)
+     burning=[]               choose(victim) -> N(3) in-bounds
+     burning=[(1, 0), (0, 1)] choose(victim) -> W(2) OFF-GRID
+  == 5. kill-switch accessor _offgrid_guard_level on raw values
+     raw=0 -> 0 OFF | 0.0 -> 0 OFF | 0.5 -> 1 ARMED | '0' -> 0 OFF | '1' -> 1 ARMED
+     raw=-1 -> -1 OFF | -1.0 -> -1 OFF | False -> 0 OFF | True -> 1 ARMED
+     raw=None -> 1 ARMED | 'off' -> 1 ARMED | nan -> 1 ARMED | 2 -> 2 | 2.0 -> 2
+     raw='2.0' -> 1 ARMED (not 2) | inf -> RAISES OverflowError
+  == 6. _direction_in_bounds fallback on a grid-less NON-square stub (HEIGHT=60 -> x, WIDTH=40 -> y)
+     pos=(30, 39) dir=N real=OFF fallback=legal  can_check=True  guard(1)->N real=OFF
+     pos=(45, 0) dir=N real=legal fallback=OFF  can_check=True  guard(1)->S real=OFF
+     pos=(39, 20) dir=E real=legal fallback=OFF  can_check=True  guard(1)->W real=legal
+     fallback vs real out_of_bounds on 60x40: 3160 of 9600 (cell,dir) pairs disagree
+     same comparison on 50x50: 0 of 10000 disagree
+  == 7. pos None with a real grid
+     _can_check_bounds=True  _direction_in_bounds=True  guard->0
+
+================================================================================
+6. OTHER FINDINGS, RECORDED - NOT FIXED
+================================================================================
+6.1 THE KILL SWITCH DISARMS ON MORE THAN ZERO - (B)
+    common_fixed_variables.py:210 reads "ONLY AN EXACT INTEGRAL ZERO DISABLES
+    IT". The code at :2161 is `if level <= 0: return direction`, and
+    _offgrid_guard_level returns int(raw) for any integral raw.
+    Measured:
+      -1, -1.0 and bool False DISARM.
+      `--set VICTIM_SEARCHER_HAZARD_GATE_BOUNDS_FIX=false` reaches the switch
+      as bool False through _ffr_harness._parse_value.
+      So does 'false' written in any config that parses it that way.
+    THIS DIVERGES FROM THE CANONICAL PATTERN IT CLAIMS TO COPY:
+      agents.base_station_fireproof (agents.py:1064-1086) returns
+      `value != 0`, so -1 ARMS there.
+    Two further edge cases, both inherited from that same pattern:
+      float('inf') raises an uncaught OverflowError (loud, not silent);
+      the string '2.0' falls back to 1, not 2 (never produced by
+      _parse_value).
+    Inert at the shipped value 1. It belongs to the bare-int-cast class round
+    the maintainer already scoped, not to a fold-in here.
+
+6.2 STALE CITATIONS
+    common_fixed_variables.py:169 still says SITE A/B are ":2321 and :2402".
+    uav_executor.py:2158 says _first_boundary_safe_direction is "at :4720" (it
+    is at :4801).
+    uav_executor.py:2155-2158 claims the _can_check_bounds wrap covers pos None
+    (4.2 - it does not).
+    common_fixed_variables.py:176-180 mixes denominators: "none is a tracker in
+    23,422 tracker-steps" is dcD + dcoff (11,711 each; searcherfire_part1.txt
+    :551-553, :591-592). The 57-tuple / 657-refusal population it sits beside
+    has 83,889 tracker-steps. Both statements are true; they describe
+    different samples.
+
+6.3 A TEST ORACLE WITH A DIRECTION-ENCODING MISTAKE
+    tests/test_uav_sector_assignment.py:586-594,
+    test_exploration_fallback_respects_boundary_safe_movement:
+    at pos (0,0) it asserts `direction in {0, 1}`.
+    Direction 1 is S, which goes to (0,-1) - OFF-GRID. The legal set is {0 E,
+    3 N}. The oracle accepts an illegal move and rejects a legal one.
+    It passes only because uav_id '0's exploration bias picks E
+    (:4513-4526). This is the same family as the N/S constant swap searcherfix
+    corrected in test_victim_searcher_hazard_retreat.py.
+
+6.4 HAZARD CONSEQUENCES OF THE UNFILTERED / FALLBACK ARMS (not bounds; for a
+    hazard round)
+    - :3596 tracker fallback, when every in-bounds neighbour is burning and
+      the previous heading is off-grid. Final safety correctly replaces the
+      off-grid direction, but with a BURNING neighbour. sfON has 7
+      reconstructed candidates; 4 are label-consistent
+      ('fire_smoke_escape_hazard_escape'), and 1 contradicts the code - so the
+      burn-record proxy is inexact. UNVERIFIED without a live hook.
+    - Tracker 'hold' walks along the previous heading with no hazard test. In
+      sfON, 2,663 of 2,679 'hold' steps moved; 1 landed on a burning cell and 6
+      on smoke. sfREF is the same.
+    - Gate retreats at :2403 and :2439 REPLACE the direction but keep the
+      upstream label (e.g. 'computed_from_target'). Labels therefore
+      understate how often the gate changed a direction.
+
+6.5 INSTRUMENTATION GAPS THAT LEFT ITEMS UNMEASURED (cheap to close)
+    The harness does not record:
+      - result['role_preserving_search'] (uav_executor.py:536),
+      - the active fail-safe action,
+      - whether _forced_progress_direction ran before the :422 read.
+    With them, the :544 trigger frequency (how often a safe_hold override
+    coincides with a searcher's no-feasible-option decision), the tracker
+    role-preserving traversals and the stale-exemption rate would all become
+    measurable from an ordinary wave.
+
+================================================================================
+7. DECISIONS FOR THE MAINTAINER BEFORE ANY PART 2
+================================================================================
+  D1  NOTHING IS (A), so per the brief Part 2 implements NOTHING, and Part 3
+      does not run. Confirm.
+
+  D2  :544 IS (B), BUT IT IS THE ONE LIVE-SHAPED PATH LEFT.
+      If you want it closed anyway, the scope would be small:
+        - pass current_dir through the existing _offgrid_guard_direction when
+          the escape is None (:544), searcher-only by construction - trackers
+          provably never reach :544 - behind its own exact-zero switch;
+        - value-identical on every step where current_dir is legal.
+      BE CLEAR WHAT IT COULD NOT SHOW: with 0 traversals in 1,929 runs, a
+      seed-matched wave would be value-identical on all 23 tuples, so its gate
+      would be a stub test plus identity - a defensive fix with no measurable
+      effect. The honest alternative is to record the instrumentation of 6.5
+      first and measure the trigger rate. Recommendation: do not fix blind;
+      measure first, or accept it as documented.
+
+  D3  ROUTE 6.1 (kill switch `<= 0`) and 4.8 (:819-823 clamp, plus the dead
+      :4869 transposition) into the ALREADY-SCOPED bare-int-cast /
+      dimension-class round, not a fold-in. The same goes for fixing the stale
+      citations in 6.2 and the test oracle in 6.3.
+
+  D4  QUARANTINE RULE: extend it to name `git status` explicitly - both
+      contacts this round came through git's untracked walk, not through grep.
+
+================================================================================
+8. MAINTAINER RULING (2026-09-21) - ROUND CLOSED, NOTHING IMPLEMENTED
+================================================================================
+  D1  CONFIRMED. searcherfix is sufficient and no item is (A). Parts 2 and 3
+      do not run.
+  D2  :544 stays (B) LATENT and DOCUMENTED. It is the one remaining
+      latch-shaped path, needs three conditions at once, and has zero
+      occurrences in the corpus. Not fixed.
+  D3  FORWARDED to the accessor/dimension round:
+        - the kill switch disarming on -1 and false (6.1);
+        - the transposed target clamp at uav_executor.py:819-823 (4.8);
+        - the test oracle at tests/test_uav_sector_assignment.py:586-594,
+          which accepts an off-grid corner move (6.3).
+  D4  DONE LOCALLY. outputs/_firemech_rewound_20260914/ is added to
+      .git/info/exclude (local, never committed), so git's untracked walk no
+      longer opens it.
+  searcherfix and sfx2 are fast-forwarded onto main together.
+
+================================================================================
+END OF PART 1. No source file was modified by this round: git status
+--porcelain over src_extension/, tests/, agents.py, wildfire_model.py and
+common_fixed_variables.py is empty.
+================================================================================
