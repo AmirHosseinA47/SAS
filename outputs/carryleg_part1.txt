@@ -1,0 +1,1950 @@
+================================================================================
+CARRYING-LEG ROUND - PART 1: DESIGN (no source edits, no simulation)
+The firefighter's trip home with a victim has three pre-existing defects:
+  D1 the exit-leg memoryless livelock
+  D2 the carrier drop
+  D3 the isolation timeout on a carried victim
+Branch carryleg, from 6160438 (main). NOT merged, NOT pushed.
+================================================================================
+
+################################################################################
+# PART 1 STOPS HERE.
+# This commit is outputs-only:
+#   carryleg_part1.txt, _cl_seeds.py/.txt, _cl_replay/, _cl_part1_verify.txt,
+#   _cl_part1_review.txt, _cl_part1_finalcheck.txt, _cl_part1_evidence/.
+# Everything else waits for your answers to D-1..D-10 (section 11):
+#   - every source edit;
+#   - the _ug_seeds.py guard fix and every other tooling edit;
+#   - the 6160438 worktree;
+#   - every run.
+################################################################################
+
+START STATE (checked before anything else)
+  git branch --show-current   main
+  git log --oneline -1        6160438 Merge searcherfire: ...
+  tracked tree                clean (git status --porcelain --untracked-files=no)
+  running processes           no python.exe, no pool
+  branch created              carryleg, at 6160438
+ENV
+  sys.version       3.10.11 (tags/v3.10.11:7d4cc5a, Apr  5 2023, 00:38:17)
+                    [MSC v.1929 64 bit (AMD64)]
+  mesa.__version__  1.2.1  (E:\Projects\SAS\.venv\lib\site-packages\mesa)
+SOURCE IDENTITY
+  The whole non-outputs tree is identical at ba58491 (the ungated flip), ac6e78d
+  (the commit outputs/exitstall_part1.txt was written against) and 6160438:
+      git diff ba58491 6160438 -- . ':(exclude)outputs'    empty
+  That covers agents.py, wildfire_model.py, common_fixed_variables.py,
+  src_extension/, serve_dashboard.py (which the harness imports for `eval`),
+  evaluate_scenarios.py and tests/.
+  outputs/_ffr_harness.py and outputs/_fm2_probe_harness.py are also unchanged
+  since ba58491.
+  Every line the diagnosis cites for the three defects still holds. Four
+  independent agents checked them; section 1 lists the imprecise citations.
+WHAT PART 1 WROTE (all under outputs/)
+  carryleg_part1.txt    this file
+  _cl_seeds.py/.txt     the new independent seed set N30: chosen by code,
+                        frozen, and never run (section 9.2)
+  _cl_replay/           a VERBATIM copy, with a sha256 manifest, of the offline
+                        replay behind the diagnosis's mode-2 estimate; until now
+                        it existed only in an earlier session's Temp dir
+  _cl_replay/ block 2   the extension scripts that give the "to the reached
+                        cell", reversal, fallback and burning-only figures, and
+                        their frozen outputs (listed separately in its manifest)
+  _cl_part1_verify.txt  the 7 verification agents' reports, verbatim
+  _cl_part1_review.txt  the adversarial review: 6 critics, and a verifier per
+                        material finding (45 findings: 28 confirmed, 17 partly,
+                        0 refuted), verbatim
+  _cl_part1_finalcheck.txt  the final check of this text (3 agents), verbatim
+  _cl_part1_evidence/   every scratch script behind a number in this report,
+                        with a sha256 manifest. It is kept because this
+                        session's Temp dir is disposable. Paths inside the two
+                        report files point at the scratchpad; the same files
+                        are here, under the same subpaths.
+  No simulation, harness, pool or pytest ran. The only programs run were
+  read-only analyses of recorded JSON and the seed selector.
+HOW IT WAS VERIFIED
+  Workflow 1: 7 read-only agents
+    - re-derived each defect from the code and from every recorded run
+      (2513-2524 _ffr_*.json);
+    - re-ran the census and the offline replay from copies;
+    - surveyed the Part 3 tooling.
+  Workflow 2: an adversarial review of the first draft
+    - 6 critics, one per lens: identity, modes 1/2, hold, served, measurement,
+      completeness against the brief;
+    - 45 independent verifiers, one per material finding, each told to REFUTE.
+    Section 12 records how each finding was resolved.
+  Workflow 3: a final check of this text by 3 agents (numbers against the
+    frozen sources, internal consistency, brief completeness): 23 corrections,
+    all applied. Verbatim in outputs/_cl_part1_finalcheck.txt.
+QUARANTINE (outputs/_firemech_rewound_20260914/)
+  No file inside it was opened by anyone. Contact, disclosed in full:
+  - ME, possible contact 1: one Grep-tool (ripgrep) search at the very start.
+    It ran from the repo root with glob *.py and no --exclude-dir. ripgrep
+    honours .git/info/exclude, which lists the quarantine, so it should not
+    have descended, and no result came from it.
+  - ME, possible contact 2: the seed selector's untracked walk (git ls-files
+    --others -- outputs). It ran twice (14:37 and 15:03) and relied on
+    .git/info/exclude alone; git prunes an excluded directory without opening
+    it. It now also passes ':(exclude)outputs/_firemech_rewound_20260914'
+    (the output is identical).
+  - Every other search of mine used named files, --exclude-dir, or a
+    non-recursive ls.
+  - AGENTS, TRAVERSAL CONTACT (one): the VERIFIER of served-lens finding D3-3
+    (not the critic) ran
+        find . -maxdepth 3 -name serve_dashboard.py -not -path './outputs/*'
+    from the repo root. -not -path does not prune, so find descended into the
+    quarantine to depth 3. It read directory entries only; no file was opened
+    and no path inside was printed.
+  - AGENTS, rule breaks without contact: several recursive greps over tests/
+    and src_extension/ lacked the flag. Neither tree contains the directory.
+  - AGENTS, other: one git grep over TRACKED files only (the quarantine is
+    untracked and excluded). Everything else was non-recursive ls or os.listdir,
+    which see the directory's name only.
+
+================================================================================
+0. SUMMARY
+================================================================================
+  Three independent switches, one per defect. Each is off only at an EXACT
+  zero, and each is measured in its own arm.
+    FF_EXIT_LEG_MODE (D1)
+      0  today's behaviour.
+      1  complete the rescue on ANY boundary cell.
+      2  mode 1, plus: on each carrying step, take the first step of a
+         breadth-first search over clean cells to the nearest boundary cell.
+         This is exactly the rule the diagnosis defined and replayed. With no
+         clean path, fall back to today's rule, unchanged.
+    FF_EXIT_LEG_HOLD (D2)
+      0  today's behaviour.
+      1  an enclosed carrier holds its cell and keeps its victim. It never
+         raises route_blocked, so it is never unassigned and never drops the
+         victim. While it holds, its cell counts as a reachability start, the
+         same start today's dropped ex-carrier provides.
+    FF_EXIT_LEG_SERVED (D3)
+      0  today's behaviour.
+      1  a victim in a live carrier's custody counts as served, so its
+         isolation streak cannot run.
+      2  (proposed, recommended NOT for this round, D-1) rung 1, plus a live
+         carrier's cell counts as a reachability start for other victims.
+  All three ship at 0 through Parts 2 and 3, so the default tree is
+  value-identical to 6160438 by construction. A fix that passes is flipped ON
+  in a separate final commit, with its own identity gate (section 7).
+
+  WHAT THE EVIDENCE SAYS, BEFORE ANY RUN
+  - The diagnosis holds at 6160438. Its material corrections are in section 1.
+  - MODE 2 is the only fix with a real target in the shipped configuration.
+    - On U30 stock (== uhD) the replay predicts:
+        steps                      812 -> 588
+        stalls, to the fixed exit  5 -> 2
+        stalls, to the reached cell 5 -> 0
+        carrier fire-adjacent steps 16 -> 0
+        legs longer                0
+    - This is an ESTIMATE on the recorded fire, not a measurement.
+  - MODE 1 is predicted to lower the gate count by AT MOST ONE LEG: U30 stock
+    5 -> 4 to the reached cell, from the showcase leg, which is itself +-2
+    steps. It is flat on C13 and on U30 CRN, and cannot be estimated on N30,
+    the only set that decides G2. The "at the edge" shape it fixes is rare.
+    It is kept as a fallback and runs only if MODE 2 fails a gate other than
+    the stall gate.
+  - HOLD has 1 convertible trigger in the recorded shipped-configuration runs
+    (U30 east/half/1291443119, which MODE 1 and MODE 2 also reach first) and 1
+    trigger it cannot convert (C13 east/half/101, where the carrier burns that
+    step). Across all recorded matched arms its ceiling is 4 arm-occurrences /
+    3 distinct legs (not the diagnosis's 5 / 4).
+  - SERVED has NOTHING to act on in the shipped configuration.
+    - The 371 recorded ug*/uh* runs of the ungated round contain 0 custody
+      write-offs. That covers all its arms: the gated control C, the shipped
+      D, DRY Y and anchors A/X; 90 are at 360 steps. The shipped subset alone
+      is ugD/ugKD/uhD/ugmD: 118 runs, 30 of them at 360 steps.
+    - The longest reconstructed custody streak in the 371 is 15 of the 30
+      needed.
+    - All 9 recorded D3 cases come from older or non-shipped configurations.
+    - So clSN is predicted value-identical to clC, and the planned sets cannot
+      credit SERVED. D-9 (section 11) covers the population probe that can;
+      9.4 has the credit rule and 9.5 the conditional runs.
+  - Replacements after a carrier drop never rescued anyone:
+    - 22 replacement assigns followed 24 distinct drops;
+    - 0 re-picked up the victim;
+    - 24 of 24 dropped victims died.
+    There is no dispatched help that could reach an enclosed carrier in time,
+    today or under this design (section 3.3, D-8).
+
+  DECISIONS FOR YOU (section 11 has the detail)
+    D-1   SERVED rung 2: recommended NOT in this round.
+    D-2   Junk mapping: 1 during the round, the shipped value after a flip.
+    D-3   "None gets longer" when the fire differs.
+    D-4   The fire-mechanic-OFF screen: optional harm check.
+    D-5   The budget: about 10-18 h of pool time, plus conditional work.
+    D-6   Anything else to change before Part 2.
+    D-7   How "stalled exit legs FALL" applies to HOLD and SERVED.
+    D-8   No dispatched help to a trapped carrier: accept (recommended).
+    D-9   Shipping a fix the planned sets cannot exercise (SERVED); the
+          population probe.
+    D-10  G3 has zero tolerance, so a rescue-neutral fix is expected to fail
+          at least one of the 3 stock comparisons about 60% of the time (about
+          80% across all 6); a tolerance, for stock and CRN, is your call.
+
+================================================================================
+1. THE DIAGNOSIS RE-VERIFIED AT 6160438
+================================================================================
+  CONFIRMED (independently, from code and data)
+    - THE CENSUS reproduces byte-for-byte on the 80ca7b3 file set:
+        mechanic OFF  1682 runs, 909 distinct legs, 32 stalled
+        mechanic ON    763 runs, 689 distinct legs, 29 stalled
+        pooled matched  OFF 10/340 vs ON 11/333; excess 308 vs 478
+      One untracked file was added since, outputs/_ffr_ugmD_east_half_101.json.
+      It adds no distinct leg.
+    - exit_target is written once, at pickup (agents.py:1793), and is always a
+      NEAREST boundary cell: 7296 of 7296 recorded legs. The proof holds for
+      every grid shape.
+      Every recorded completion (7387 of 7387) is at pos == exit_target.
+    - _move_toward stores no state that it reads back. The chosen cell is a
+      function of (pos, exit_target, burning board, smoke board).
+      - Tier 2 is always empty.
+      - Tier 3 is ALWAYS a step away from the exit (the diagnosis said "in
+        practice").
+      - `status` carries over between steps, but it only decides whether the
+        route_blocked incident is raised (agents.py:2356).
+    - ON A CARRYING STEP:
+      - no survival retreat (agents.py:1973);
+      - no firefighting plan (the return at 2489);
+      - no path search (2388).
+      The only route_blocked raise an exiting unit can reach is 2411-2413. Its
+      incident is handled SYNCHRONOUSLY inside the carrier's own advance
+      (5189 -> 3660-3691).
+    - A PICKUP only happens on a clean cell. On a burning, smoky or
+      fire-adjacent cell the survival retreat returns first, at 1775.
+    - A CARRIER DIES only when every in-grid neighbour AND its own cell burn:
+      32 of 32 recorded deaths of exiting units.
+    - ENTERING A NON-BURNING BOUNDARY CELL cannot cost the rescue: completion
+      happens at the start of the next advance, and the drain
+      (adaptation_manager.py:144) runs before the casualty sweep (:182). Two
+      edge cases:
+      (i)  If the unit is recycled in place (absence disabled, or a completion
+           that is not a hand-over) and the cell ignites at t+1, the unit dies
+           AFTER the rescue has counted. Recorded: 0 of 1082 deaths.
+      (ii) The isolation timeout runs between the entering step and the
+           completion advance.
+    - THE END OF A LIVE CARRY. Only two code paths can end one while the victim
+      is alive: the route_blocked drop and the isolation escape. Whole record,
+      every exiting -> not-exiting transition:
+        completions                7387
+        drops                        92   (21 distinct)
+        isolation releases           32   (9 distinct)
+        still exiting at horizon     38
+        anything else                 0
+      Carrier death is NOT an independent ending today: 32 of 32 carrier deaths
+      follow a drop raised in the same advance.
+    - No firefighting- or idle-mode field is read on the carrying leg.
+  CORRECTED
+    C1  D3 FREQUENCY
+        - "Seen once" held only inside the 12 matched arms.
+        - Whole record: 9 distinct carries, 32 records, 30 of them exactly at
+          pickup + 29.
+        - In ALL 9 the only other firefighter was DEAD, so the reachability
+          search had zero starts. That is why the streak ran, not fire.
+        - The same step wrote off 19 other victims. 18 of the 19 had already
+          been detected (UAV contact within radius 8 before the marking); only
+          dimfreshbase east/half/1010 victim_1 had not.
+          (victim_steps shows "candidate" for a detected victim no one was
+          sent to, because _sync_victim_agent_status re-syncs the marker to
+          managed status; that label does not mean undetected.)
+        - dcC/dfC south/half/606 @172 is the same shape: the only live unit
+          was off grid on its hand-over, right after a 29-step carry.
+        - ALL 9 CASES COME FROM OLDER OR NON-SHIPPED CONFIGURATIONS:
+          dim*, ih*, lat*, ph*, vmon3, dimfresh*, d4off, dfp*, f2cDRY, f2b404*.
+          The ungated round's 371 ug*/uh* runs (all arms; the shipped subset is
+          118 runs) have 0.
+    C2  D3 MECHANISM. The streak runs on every carrying step that no other
+        live, on-grid, non-carrying unit can reach, stalled or not. On 50x50
+        an unobstructed carry takes at most 25 steps, so only a stall or a hold
+        reaches 30.
+    C3  D2 SAME-STEP DEATHS. All 6 "unit DIED while carrying" legs in the
+        matched arms are also drops raised in the same advance: the carrier
+        stood on a burning cell with every neighbour burning.
+    C4  D2 CEILING. At most 4 arm-occurrences / 3 distinct legs:
+          uhD + uhY east/half/1291443119
+          fmDRY east/half/101
+          f2cEFS east/half/404
+        Not 5 / 4.
+        - fmOFF east/half/606 cannot be converted: a carrier that kept custody
+          takes the same single open cell and burns at 210.
+        - Beyond MODE 1 it is 2 / 2: fmDRY 101 and f2cEFS 404 never touched
+          the boundary.
+        - In the */202 family the carrier died with its VICTIM at 171, two
+          steps after the drop at 169. It did not die at the drop.
+        DROP CLASSES, used throughout (as in _cl_part1_verify.txt, defect2
+        table (b)):
+          A  carrier and victim die on the drop step itself;
+          B  the carrier holds on the drop cell and dies with the victim later;
+          C  the carrier moves off alive: convertible, unless its only open
+             cell then burns (fmOFF 606);
+          D  other (the one isolation release).
+    C5  D2 "HELP", with counts under a stated key (whole record)
+        24 distinct route_blocked carrier drops, 92 file-occurrences.
+          Key: (wind, scenario, seed, OFF/ON class, unit, victim, step, cell).
+          Under the key (wind, scenario, seed, unit, victim, step): 21.
+        24 of 24 victims died, 0-11 steps after the drop.
+        22 replacement assigns followed:
+          15 immediate replacement_after_blocked, 31-71 cells away. The target
+             cell was enclosed at dispatch, so each one's own path search
+             failed. 14 were themselves route_blocked-unassigned within 0-1
+             steps; 1 was released when the victim died.
+           5 later re-dispatches never closed on the victim:
+               4 "initial", at 2, 48, 52 and 55 cells
+               1 replacement_after_casualty, at 42
+           2 reached the cell. Both were the ex-carrier, re-sent "initial" at
+             distance 0:
+               fmES east/half/101 @132
+               dcC/dfC east/half/909 @135
+             With exiting False, the survival retreat (agents.py:1736) runs
+             before the pickup test (1781), so each stepped off. Both victims
+             died on that cell, 11 steps after the drop.
+        0 of 22 re-picked up or rescued the victim.
+        Dropped victims could not flee either: they were leash-pinned
+        (VICTIM_FLEE_MAX_DISPLACEMENT 6 from the pre-pickup anchor).
+        Recorded enclosures lasted 2-4 steps:
+          class C  132-134, 135-137, 147-149, 204-206
+          class B  168-171
+    C6  THE MODE-2 ESTIMATE
+        - The replay's "F5 + F1" row had no F1 test; it completed through a
+          local target reassignment. Re-run with a real F1+F5 rule
+          (_cl_replay/cf_f1f5.txt), every number is identical in all 7 sets.
+        - It covers 212 legs in 59 files, not 61: 2 vmon files have no
+          burn_intervals.
+        - "56/61 stalls" is 56 of 59 replayable.
+        - "20 still stalled" is measured to the FIXED exit cell. 18 of the 20
+          have no fallback step and no reversal: they are clean walks to a
+          farther boundary cell (_cl_replay/cf_stalled20.txt). Measured to the
+          cell actually reached it is 56 -> 2.
+        - Fuel guess 7/8/10: stalled to the fixed exit 19/20/20; to the
+          reached cell 2/2/4; always 59 shorter and 0 longer.
+    C7  MODE 1 ALONE WAS REPLAYED: steps 3507 -> 3324, stalled 56 -> 54,
+        16 shorter / 0 longer, adjacent/smoky 123/36 -> 118/31. (The diagnosis
+        said "exposure unchanged".)
+        - To the fixed exit, both un-stalls are one carry, east/half/909,
+          counted twice. To the reached cell it is 56 -> 52 (cf_metrics.txt).
+        - Seed 909 is in no G2 seed set (C13/U30/N30). It IS in RB7, the G5
+          gate instrument, where the recorded ugD run shows mode 1 un-stalling
+          it (17 -> 10, d = 8).
+    C8  "The drop never fired in the CRN arms": true of the U30 CRN arms only.
+        The round-2 f2c arms are CRN too, and hold 10 of the 16 drops.
+    C9  CITATIONS
+        - _firefight_prepare returns at 2489, not 2488.
+        - "1726 -> 1703" is the flee-on path; with flee off it returns at 1702.
+        - Several wildfire_model.py comments quote stale line numbers; do not
+          trust them: :2809, :2857, :4007, :4019, :4037, :4043.
+    C10 The 17 broken legs are 11 distinct trajectories once the end state is
+        left out of the key. fmEFS/fmDRY east/half/101 is one carry that ends
+        "died" in one arm and "dropped" in the other.
+
+================================================================================
+2. DEFECT 1 - THE EXIT-LEG MEMORYLESS LIVELOCK
+================================================================================
+2.1 THE CODE (agents.py at 6160438)
+  The pickup, 1781-1793. The exit cell is fixed once, and is fire-blind:
+      if self.target_pos and not self.exiting:
+          if self.pos == self.target_pos:
+              self.exiting = True
+              H = getattr(self.model, "HEIGHT", 50)
+              W = getattr(self.model, "WIDTH", 50)
+              x, y = self.pos
+              dists = {(0, y): x, (H - 1, y): H - 1 - x,
+                       (x, 0): y, (x, W - 1): W - 1 - y}
+              self.exit_target = min(dists, key=dists.get)
+  The carrying branch, 1819-1847. This is the ONLY completion test:
+      elif self.exiting and self.exit_target:
+          if self.pos == self.exit_target:
+              ... queue unit + victim for removal; rescue_completed = True
+          else:
+              self._move_toward(self.exit_target)
+              if self.rescued_victim is not None:
+                  self.model.grid.move_agent(self.rescued_victim, self.pos)
+  _move_toward, 2387-2455. No path search while exiting; then the tiers:
+      route_blocked_now = False
+      if not self.exiting:
+          route_blocked_now = not self._path_exists_avoiding_fire(...)
+      scored = every non-burning in-grid neighbour, flagged improving /
+               adjacent_fire / smoke / preferred / risk
+      if not scored:
+          self._mark_route_blocked()          # <- D2 starts here
+          return
+      tier 1  improving, not adjacent_fire, not smoke
+      tier 2  maintaining, clean               (always empty)
+      tier 3  any clean cell                   (always a step AWAY)
+      tier 4  min over all non-burning cells of (risk, dist_after, not preferred)
+  THE CYCLE
+    - At p, the improving cell is fire-adjacent or smoky, so tier 3 steps back
+      to q.
+    - At q, p is clean and improving, so tier 1 steps forward.
+    - This repeats for as long as the board holds.
+    Nothing on the carrying leg can break it: no retreat, no path search, no
+    memory, and only exit_target completes.
+
+2.2 MODE 1 - COMPLETE ON ANY BOUNDARY CELL
+  THE CHANGE, at the one completion test (agents.py:1820):
+      exit_mode = ff_exit_leg_mode()
+      if self.pos == self.exit_target or (
+          exit_mode != 0 and self._on_grid_boundary(self.pos)
+      ):
+  _on_grid_boundary(cell) is new and pure: True iff at least one 4-neighbour
+  of the cell is grid.out_of_bounds.
+  - It is exactly the set the pickup draws exit_target from. Checked on 50x50,
+    40x60, 60x40, 3x7, 2x2 and 1x5.
+  - It uses mesa's own bounds, so it cannot repeat the HEIGHT/WIDTH
+    transposition defect class.
+  WHAT DOES NOT CHANGE
+  - exit_target is still written once, at pickup; mode 1 adds no state.
+  - The movement rule is untouched.
+  - The completion bookkeeping is untouched.
+  - The harness records a completion from the rescue_completed transition,
+    not from position, so an off-exit completion is seen. Its cell is in
+    completions[].pos.
+  Label: when mode != 0 and pos != exit_target, the "exiting_complete" record
+  gains one factor, exit_cell=pos. The record is dashboard-only and is not
+  recorded by the harness. At mode 0 it is byte-identical.
+  SAFETY
+  - Completing on a non-exit boundary cell is as safe as completing on the exit
+    cell: completion happens at the next advance, and the drain runs before the
+    sweep.
+  - It is NOT strictly "never worse than today". Edge case (i) in section 1
+    (in-place recycle on a boundary cell that ignites) now applies to every
+    boundary cell, not just the exit cell. Recorded: 0 of 1082 deaths.
+  - Part 3 counts it per arm (section 9.3, M10).
+  PREDICTION FOR THE PART 3 SETS
+  (_cl_replay F1 rule on the recorded shipped-configuration runs; fire held as
+  recorded)
+    C13, stock (ugD, 240)     0 stalled of 37 legs. Nothing to lower.
+    U30, stock (uhD, 360)     stalled to the nearest boundary 5 -> 5;
+                              to the reached cell 5 -> 4.
+      - The showcase leg east/half/1433805104 goes 76 -> 13 steps with d = 7.
+        It stays stalled on the nearest-boundary metric (M1b), by one step;
+        on the reached-cell metric (M1a, the one the gate count uses) it
+        un-stalls. It is itself +-2 steps (a base-replay mismatch, 78 vs 76).
+      - The uhD/uhY drop east/half/1291443119 is on a boundary cell from step
+        107, so mode 1 completes it at 108: a 24-step leg, d = 8. That is a
+        conversion that lands as a STALLED leg. It is neutral in the gate
+        count M1c, which counts the broken clC leg too.
+    U30 CRN (ugKD, 240)       3 -> 3.
+    N30                       not estimable. Census rate: 2 un-stalls in 61
+                              stalled legs to the fixed exit (M1b); 4 in 56 to
+                              the reached cell (M1a, the M1c metric).
+  So MODE 1 is predicted to lower the gate count by at most one leg, on U30
+  stock only. G2 is decided on N30, where a strict fall is unlikely: an
+  EXPECTED G2 FAIL, not a certain one. It is a fallback, realistically only
+  for a MODE 2 that fails another gate (section 9.5).
+
+2.3 MODE 2 - MODE 1 + THE FIRST STEP OF A CLEAN-CELL SEARCH
+  This is the diagnosis's own mode-2 definition (outputs/exitstall_part1.txt:
+  628-633): "The search runs over clean cells: not burning, not fire-adjacent,
+  not smoky ... With no clean route it falls back to today's rule". The brief's
+  "fire-free search path" summarises it. It is also exactly the rule the
+  offline replay estimated (_cl_replay/fs_rules.py:82-101, bfs_first_step,
+  strict=True).
+  2.3.1 HOW THE PATH IS COMPUTED
+    On every carrying advance at mode 2, after the mode-1 completion test has
+    failed (so the carrier is NOT on a boundary cell):
+      - Breadth-first search from the carrier's cell over 4-neighbours.
+        - Order: a NEW constant, EXIT_LEG_SEARCH_ORDER = (+x, -x, +y, -y),
+          pinned by a test. It deliberately does NOT reuse
+          ORTHOGONAL_OFFSETS, which is documented as the victim-flee
+          tie-break; a future flee change must not move mode 2.
+      - The START cell is exempt from every test. That matters for a smoky or
+        fire-adjacent start. A burning start always falls back: every
+        neighbour of a burning cell is fire-adjacent, so the fallback is
+        bit-for-bit today's tier-4 step.
+      - A cell may be entered iff it is in bounds and CLEAN:
+            not burning        (_cell_contains_active_fire)
+            not fire-adjacent  (no in-bounds 4-neighbour burning)
+            not smoky          (_cell_has_active_smoke)
+        This is _move_toward's own tier-1/3 clean test, using the unit's own
+        helpers. A per-call memo of the burning test keeps it to one grid read
+        per cell.
+      - GOAL: any cell with an out-of-bounds 4-neighbour. The goal test runs
+        at discovery, AFTER the clean test, so a fire-adjacent or smoky
+        boundary cell is never a goal. The first goal discovered is at minimum
+        depth; ties go by discovery order.
+      - RESULT: the path's first cell, recovered through first-discovery
+        parents. Then:
+        - the carrier moves there;
+        - the victim follows (the existing lines 1841-1847);
+        - _last_move_tier = 5 (label only; nothing reads the tier as a
+          number), and _last_move_risk = 0;
+        - _move_toward's status tail is applied: a unit labelled route_blocked
+          that moves is relabelled "assigned", as at 2460-2463.
+    THE KERNEL is a module-level pure function,
+        exit_leg_first_step(start, passable, is_boundary, out_of_bounds, order)
+    so the replay can drive the implemented search itself (section 8.4).
+  2.3.2 HOW OFTEN
+    - Once per carrying advance, at most one search per unit per step.
+    - Recomputed from scratch against that step's fire and smoke.
+    - NOTHING is stored: no path, no target, no last cell. exit_target is not
+      rewritten.
+    - Cost: at most 2500 cells, measured at about 10 ms worst case on 50x50.
+    - No RNG draw.
+  2.3.3 WHAT HAPPENS WHEN NO CLEAN PATH EXISTS
+    The step falls back to today's rule, unchanged:
+        self._move_toward(self.exit_target)
+    That means the same fixed pickup exit, the same tiers 1-4, and - when every
+    neighbour burns - the same no-neighbour branch: today's drop at HOLD 0,
+    the hold at HOLD 1.
+    THE BRIEF'S CASE, NO FIRE-FREE PATH, is contained in this one: every clean
+    cell is non-burning, so no fire-free path implies no clean path, and the
+    step is today's rule.
+    So:
+      - A carrier with NO path makes exactly the decision today's rule makes
+        from the same cell.
+      - A carrier WITH a path steps onto a clean cell (risk 0). No cell today's
+        rule could pick from there is less risky: tiers 1-3 are risk 0, tier 4
+        is risk >= 10.
+      - No state crosses steps, so the F3/F6 failure (a stored or directional
+        preference walking the unit along the front) cannot arise.
+    What this does NOT prove: that the TRAJECTORY is never worse. Different
+    positions meet different fire later. The gate measures that: broken
+    carries, carrier deaths, matched-leg lengths and carrier exposure.
+    RESIDUAL (replay, fuel 8):
+      - The fallback ran on 4 of 212 legs (13 of 1643 advances; at fuel 10,
+        6 legs and 15 advances).
+      - Measured to the reached cell (M1a), only one leg, f2cES east/half/101,
+        stayed stalled with fallback steps: 10 fallback steps, 5 reversals.
+        Measured to the fixed exit (M1b), a second one also stayed stalled:
+        ugKD east/half/2070841104, with 1 fallback step and 0 reversals
+        (cf_stalled20.txt: "with any fallback step: 2").
+      - At every fallback advance a burning-only path existed.
+  2.3.4 ALTERNATIVES REPLAYED AND REJECTED
+    All on the 212-leg census set, fuel 8. Sources: F5, F5ns, F5L and F5E from
+    _cl_replay/cf_burnonly_gap.txt; F2, F3 and F6 from _cl_replay/cf_census.txt.
+      F5, the design                   steps 1643; stalled 20 (fixed exit)
+                                       / 2 (reached cell); adj/smoky 12/3;
+                                       0 deaths
+      F5ns, a literal burning-only     steps 1499; stalled 7 / 0;
+        search ("fire-free")           adj/smoky 222/70; 1 REPLAY DEATH
+                                       (d4A east/half/1465634084, step 108);
+                                       U30 adjacent 3-29 (uhC 3, uhY 6,
+                                       uhD 18, ugKC/ugKD/ugKY 29) vs 0-1
+      F5L / F5E, clean first, else     steps 1653; stalled 20 / 2;
+        burning-only / least exposure  adj/smoky 7/0 and 5/0. The only leg
+                                       they change, f2cES east/half/101,
+                                       gets LONGER, 27 -> 37 steps
+      F2  re-pick exit_target          4 longer, 2 replay deaths
+      F3  last-cell memory             29 longer, 5 deaths; REJECTED by the
+                                       brief; the fourth memory-near-fire
+                                       guard to backfire
+      F6  anti-reverse tie-break       5 longer, 2 deaths;
+                                       exposure 123/36 -> 215/94
+    Relaxing the goal test to "any non-burning boundary cell" was never
+    replayed as part of F5.
+  2.3.5 THE ESTIMATE, AND WHICH PART 3 COMPARISON EACH NUMBER PREDICTS
+    Caveats, first:
+    - The offline replay holds the fire at the recorded history. That is exact
+      for mechanic-OFF runs and approximate for ON runs.
+    - Smoke is re-simulated with a guessed fuel (F_GUESS 8). Validation:
+      20087/20202 window cells, 115 errors, all on guessed-fuel cells.
+    - The base rule reproduces the recorded length on 198 of 212 legs; 6 of the
+      14 misses are in mechanic-OFF files.
+    - It is therefore APPROXIMATE for every arm of this round (all mechanic ON).
+    Mapping:
+      uhD (U30 stock, 360 steps; == clC on U30 by 9.1) -> clE2 vs clC, U30 stock
+          steps                      812 -> 588
+          stalled, nearest boundary  5 -> 2
+          stalled, reached cell      5 -> 0
+          fire-adjacent carrier steps 16 -> 0
+          reversals                  177 -> 0
+          legs longer                0
+        The key leg 1433805104 is itself a base mismatch (78 replayed vs 76
+        recorded), so it carries +-2 steps.
+      ugKD (U30 CRN, 240 steps)                  context only
+          755 -> 597; stalled 3 -> 2 (nearest) / 3 -> 0 (reached).
+          It predicts clKE2 vs clKC only for legs that complete by step 240.
+      census, 212 legs                           no Part 3 run
+          3507 -> 1643; stalled 56 -> 20 (nearest) / 56 -> 2 (reached);
+          adj/smoky 123/36 -> 12/3; 59 shorter, 0 longer, 0 deaths.
+          This is the pre-wave kernel check's target (8.4), not a prediction
+          of any Part 3 count.
+    NOT estimated:
+      - broken legs, since the replay covers completed legs only;
+      - everything downstream of an earlier completion: next dispatch,
+        absence, recycle and, in the ungated configuration, the fire writes of
+        a unit that comes free earlier.
+
+================================================================================
+3. DEFECT 2 - THE CARRIER DROP
+================================================================================
+3.1 THE CODE
+  agents.py:2411-2413, reached when the carrier finds every in-grid neighbour
+  burning:
+      if not scored:
+          self._mark_route_blocked()
+          return
+  agents.py:2355-2360:
+      if status != "route_blocked":
+          self.status = "route_blocked"
+          handler = getattr(self.model, "_on_firefighter_route_blocked", None)
+          if callable(handler):
+              handler(self)
+  wildfire_model.py:5156-5189 records a route_blocked event, checks that the
+  victim still needs rescue (an "assigned" victim does), enqueues a
+  route_blocked incident and processes it AT ONCE. _handle_rescue_incident,
+  3660-3691:
+      if itype == "route_blocked":
+          ...
+          attempt_key = (ff_id, vid)
+          if attempt_key in self._blocked_replacement_attempted:
+              return
+          self._blocked_replacement_attempted.add(attempt_key)
+          executor.execute_physical_command(self, PhysicalRescueCommand(
+              action="unassign", victim_id=vid, firefighter_id=ff_id,
+              reason=reason, metadata={"reset_victim_pending": True}))
+      snapshot = self.get_rescue_operational_snapshot()
+      decision = select_rescue_assignment(snapshot, reason, victim_id=vid ...)
+      result = executor.apply_physical_pairing_decision(...)
+  WHAT THE UNASSIGN DOES
+  - It (4715-4719) clears assigned, target_pos, rescued_victim, exiting and
+    exit_target.
+  - reset_victim_pending relabels the victim "confirmed".
+  - Back in the carrier's advance, rescued_victim is None, so the victim is
+    left on the cell: out of custody, leash-pinned, and in every recorded case
+    dead 0-11 steps later.
+  HISTORY
+  - The pathway came with the initial import (a4a01b4). It was built for the
+    APPROACH: a unit that cannot reach its victim is replaced by one that might
+    reach it from another side.
+  - f2827ed added the comment at 2382-2386, which calls it "the wrong
+    response" for a carrier. That commit removed only the path-search trigger
+    and left this one live.
+
+3.2 WHAT AN EXITING UNIT DOES INSTEAD - FF_EXIT_LEG_HOLD
+  (a) THE HOLD, at the one site that can raise route_blocked for a carrier,
+      agents.py:2411:
+        if not scored:
+            if self._exit_leg_enclosed() and ff_exit_leg_hold():
+                self._exit_leg_hold()
+                return
+            self._mark_route_blocked()
+            return
+      _exit_leg_enclosed() is a tiny pure method that returns bool(self.exiting).
+      It is reached only here, where every in-grid neighbour burns, so it IS
+      the enclosure trigger. It exists as a method so the sidecar can count
+      triggers in every arm, clC included. At HOLD 0 it changes nothing: the
+      `and` then falls through to today's _mark_route_blocked().
+      _exit_leg_hold() does two things:
+      - if the unit's status is "route_blocked", it relabels it
+        "assigned" if self.assigned else "available", exactly as the tail at
+        2460-2463 does on a move;
+      - it sets _last_move_tier = 6 ("held"). This is a label, distinct from
+        the initial 0.
+      What the carrier keeps: assigned, target_pos, rescued_victim, exiting and
+      exit_target. Its status is never set to route_blocked.
+      What does not happen: no event, no incident, no unassign, no replacement
+      pairing.
+      The next advance re-evaluates from scratch (the rule is stateless). The
+      first step any neighbour stops burning, the carrier moves, and the victim
+      moves with it (1841-1847).
+      Approaching units are untouched: the branch is taken only when
+      self.exiting. The existing test
+      test_firefighter_holds_only_when_surrounded_by_active_fire pins the
+      approach behaviour.
+      The relabel covers one edge case. A carrier can begin its carry already
+      labelled route_blocked: a second-raise approaching unit that reached its
+      victim through _assigned_one_step_retreat, or a victim that moved onto
+      the unit's cell. Such a carrier holds custody while INVISIBLE to
+      _find_active_firefighter_for_victim, today at HOLD 0 as well (0 recorded
+      occurrences in 2513 runs). Under HOLD 1 it becomes visible on its first
+      hold, just as the tail makes it visible on its first move. Only the
+      pickup step itself can still end labelled route_blocked.
+  (b) THE HELD CARRIER IS A REACHABILITY START while it holds.
+      Today, after a drop, the ex-carrier is in `living`, and its own cell (the
+      victim's cell) is a start. So the drop RESETS the victim's isolation
+      streak: geo_reachable was 1 on the drop step in every drop checked.
+      A hold must not do worse than that. Under HOLD != 0,
+      _update_unreachable_victims adds to `starts` (NOT to `living`) the cell
+      of every unit that is:
+        - alive, not dead-status, on grid, exiting;
+        - with every in-grid 4-neighbour burning at that moment. That is the
+          hold condition, re-derived statelessly; no marker is stored.
+      From an enclosed cell the search reaches only that cell. So the held
+      victim's streak resets exactly as after today's drop, and no other
+      victim's flags change.
+      Caveat: if an idle unit extinguishes a neighbour after the hold, within
+      the same step, the test sees the carrier as not enclosed. That step then
+      counts toward the streak, and the carrier moves on its next advance.
+      This matters: 3 recorded drops had streaks of 19-23 at the drop
+      (east/def/101 @102, east/half/606 @115, f2cES east/half/404 @133).
+      Without (b), HOLD alone would let the last one's streak run on through
+      the hold and write the victim off at about step 143. Today's drop resets
+      it instead.
+  (c) THE ONE NEW STATE THE HOLD MAKES REACHABLE - death in custody - and its
+      guard.
+      A held carrier can now die in custody: its own cell ignites while every
+      neighbour burns. What happens then:
+        - The casualty sweep (5316-5331) unassigns it with
+          reset_victim_pending.
+        - That flag's marker write (4760-4767) is unguarded. The victim,
+          already marked dead in the same sweep (victims are swept first),
+          gets its marker relabelled "confirmed".
+        - _sync_victim_agent_status skips dead states and never repairs it.
+        - The corpse can then "flee" (the flee guard reads the marker) and be
+          killed again, producing a duplicate victim_dead event.
+      Eval counts come from managed state and would not move. The state is
+      still wrong.
+      THE GUARD, under HOLD != 0 only: in the casualty sweep, for a unit that
+      WAS exiting (captured before the unassign), pass reset_victim_pending
+      only if _victim_needs_rescue(victim) is True; for a dead victim pass
+      metadata={}. The precedent is _release_other_claimants, which omits the
+      flag for exactly this reason.
+      Today (HOLD 0) the state is unobserved: no carrier reaches that path
+      with a binding, because the drop in its advance clears it first. The
+      guard is inside the switch.
+  (d) BOUND AND ENDINGS
+      A hold needs every in-grid 4-neighbour burning. A cell burns at most
+      3 x fuel <= 30 consecutive steps:
+        - fuel is randint(7,10), minus 1 per fire tick;
+        - a tick comes every FIRE_SPREAD_SPEED = 3 steps;
+        - extinguish only shortens a burn;
+        - these constants are star-imported, so --set cannot change them.
+      So a hold lasts at most 30 advances. It ends one of four ways:
+        - moved on;
+        - died in custody;
+        - isolation release (SERVED 0 arms only, once the hold is over);
+        - horizon.
+  WHY THE AGENT SITE, AND NOT THE INCIDENT HANDLER. Both handler variants are
+  unsafe:
+    - Skip the unassign and fall through to the pairing: the status write at
+      2357 has already made the carrier invisible to
+      _find_active_firefighter_for_victim (3739-3741). The victim looks
+      unclaimed, and a SECOND unit is sent to a victim still in custody.
+    - Return early for exiting units: the carrier holds, but labelled
+      route_blocked for the whole hold. It is then invisible to the lookup,
+      the snapshot, the planner, the executor guard, _try_dispatch (run at
+      every recycle) and the status sync. The escape would then mark the victim
+      unreachable WITHOUT an unassign, and a carry-out would be refused at
+      finalize.
+    agents.py:2411 is the only site that never changes status.
+
+3.3 DOES A TRAPPED CARRIER STILL GET HELP?
+    NOT DISPATCHED HELP - and no dispatched help that could arrive in time
+    exists today either.
+  - Under HOLD 1 no unit is dispatched toward a held carrier. Its victim stays
+    claimed, so the planner's needy filter, the executor's already-assigned
+    guard, _try_dispatch and the status sync all skip it.
+  - THE REASON IS CO-LOCATION.
+    - The carried victim is moved onto the carrier's cell on every advance
+      (1841-1847).
+    - The casualty sweep tests both against ONE fire_cells snapshot
+      (wildfire_model.py:5210-5223).
+    - So a held carrier and its victim live or die together, and while the
+      carrier lives no other unit can reach, pick up and carry out the victim
+      sooner than the carrier itself.
+    - The one exception is a swallowed move_agent failure at 1846-1847: 0
+      recorded.
+  - Today's "help" is the replacement dispatch, and the record shows what it
+    does (C5): 0 of 22 re-picked up the victim; 24 of 24 dropped victims died.
+    - At dispatch, every neighbour of the target cell burns, so the
+      replacement's own path search fails at once.
+    - Recorded enclosures lasted 2-4 steps. The nearest other unit was 31-71
+      cells away, moving 1 cell per step with extinguish reach 2. It would
+      arrive about 30 steps after every recorded enclosure had resolved.
+  - What the drop does instead: it makes the carrier ABANDON the victim when
+    the fire opens. uhD 1291443119 stepped off to (47,43) at 150, and the
+    victim, left on (47,42), died at 150.
+  - If a held carrier dies, the casualty path fires as today: the unit is
+    unassigned and a replacement_after_casualty incident is enqueued. But the
+    co-located victim is always swept first on the same burning cell, so no
+    living victim is ever re-dispatched this way. The guard in 3.2(c) is about
+    STATE SAFETY, not help.
+  - Firefighting does not target enclosures. The idle firefighting planner has
+    no notion of a carrier: it heads for the front nearest the unit itself
+    (agents.py:2659-2668). An enclosure opens when its neighbours burn out, or
+    when an extinguish lands there by chance.
+  - THE POCKET CASE (neighbours not burning, but no route to any boundary).
+    An exiting unit never runs the path search (2388), so a pocketed carrier
+    raises nothing, today or under any switch. One pocket is recorded:
+    d4off east/half/1323590814, 129-131.
+    - Today its only ending is the isolation release at 30.
+    - With SERVED 1 it keeps custody.
+    - With MODE 2 it falls back per 2.3.3.
+  - The pathway's real purpose, replacing an APPROACHING unit that cannot reach
+    its victim, is untouched. The path-search raise (2415-2418), the incident
+    handler, _blocked_replacement_attempted and the pairing are unchanged.
+  - Considered and NOT proposed:
+    - A "support request" rung (HOLD 2) that sends a unit to extinguish the
+      held cell's burning neighbours. Predicted to do nothing on every
+      recorded enclosure, for the travel-time reason above, and it would cost
+      a full arm (~150 runs) (D-8).
+    - "Hold, and extinguish a burning neighbour toward the exit". This would
+      be new mechanic behaviour on the carrying leg, and it has its own
+      population (class B). Out of scope.
+  VALUE CEILING
+    Matched arms: 4 arm-occurrences / 3 distinct legs; 2 / 2 beyond MODE 1.
+    Hold-alone replays from the drop cell, with the fire held:
+      uhD/uhY 1291443119   completes at 163  (fire approximate from step 144)
+      fmDRY 101            completes at 150  (re-stepping reproduces 27/34 moves)
+      f2cEFS 404           completes at 146-152
+      fmOFF 606            still dies
+      */202 family         still dies
+    Every miss in the re-stepping is a step-back, which is consistent with
+    unrecorded smoke. The replay is optimistic.
+  IN THE SHIPPED CONFIGURATION (the Part 3 population)
+    stock C13 (ugD)    1 trigger, east/half/101 @135. Class A: the carrier
+                       burns that step, so no conversion is possible.
+    stock U30 (uhD)    1 trigger, east/half/1291443119 @148. Class C: the
+                       replay converts it at 163. MODE 1/2 reach it first
+                       (on the boundary from step 107).
+    CRN U30 (ugKD)     0 triggers, to step 240.
+
+================================================================================
+4. DEFECT 3 - THE ISOLATION TIMEOUT ON A CARRIED VICTIM
+================================================================================
+4.1 THE CODE
+  wildfire_model.py:4997-5015 - who can reach a victim:
+      for ff_id, ff_marker in ff_markers.items():
+          if dead or status == "dead": continue
+          if getattr(ff_marker, "exiting", False):   # 5005: the carrier
+              continue
+          if pos is None: continue                   # 5007: off grid too
+          living.append(...); starts.append(cell)
+      reachable_cells = self._safe_path_reachable_cells(starts, burning)
+  5052-5066: "approaching" is computed only for units in `living`, from a
+  strict decrease in manhattan distance since the previous step.
+  src_extension/planning/rescue_planner.py:443-448 and 499-510:
+      def _is_productively_served(flags):
+          if flags["assigned"] and flags["assigned_approaching"]: return True
+          if flags["approaching"]: return True
+          return False
+      if (not served) and (not geo_reachable): geo_streaks[vid] += 1
+      ...
+      if geo_streaks[vid] >= 30: marked.append((vid, "geographically_isolated"))
+  AT 30 (5106-5137)
+  - The unit that _find_active_firefighter_for_victim returns is unassigned.
+    That is the carrier, unless it is labelled route_blocked.
+  - The victim is marked unreachable AND cancelled.
+  - No unit can ever be dispatched to it again: the planner and
+    _victim_needs_rescue drop cancelled and unreachable victims, and only an
+    assign resets them.
+  A CARRIED VICTIM IS NEVER SERVED
+  - The carrier is not in `living`, so `approaching` is always False (and the
+    carrier's distance to its victim is 0 anyway).
+  - It is geo_reachable only if another live, on-grid, non-carrying unit can
+    reach the carrier's cell.
+  - When no such unit exists, the streak runs from the pickup step, and the
+    carry is written off at pickup + 29.
+
+4.2 WHAT COUNTS AS "SERVING" A VICTIM - THE FIXED DEFINITION
+  TODAY: a victim is served on a step iff its assigned unit, in `living`,
+  strictly closed its manhattan distance since the previous step.
+  FIXED (FF_EXIT_LEG_SERVED >= 1): a victim is ALSO served on any step on which
+  it is in the CUSTODY of a live carrier. That means there is a firefighter F
+  with:
+        F.rescued_victim bound to this victim (the marker, or its id)
+        F.exiting True
+        F not dead, and its status not "dead"
+        F.pos not None
+  That is the victim's own notion of being found and carried: the exiting
+  clause of Victim._in_firefighter_custody (agents.py:1512-1544).
+  Deliberately NOT required:
+    - PROGRESS. A held or oscillating carrier still serves. Writing the victim
+      off cannot get it RESCUED: it is cancelled, finalize refuses it, no unit
+      is ever dispatched to it again, and none could reach it sooner than the
+      co-located carrier.
+      It is not a SURVIVAL guarantee either way. Release restores the victim's
+      flee (agents.py:1325-1326) and the ex-carrier's retreat (1973) and
+      firefighting. Custody ties the victim's survival to the carrier's move
+      rule: only non-burning cells, no leash, death only on full enclosure with
+      its own cell burning.
+      Record, 9 distinct releases:
+        - 5 victims died after release, 4 of them while the released carrier
+          lived far longer;
+        - 4 survived as unreachable;
+        - dfpB west/half/505 (released mid-walk, 6 cells from its exit, on a
+          clean path) and f2cDRY east/def/101 (3 cells from its exit) are
+          predicted CONVERSIONS.
+    - A STATUS FILTER. A carrier labelled route_blocked still holds its victim.
+      That is why _find_active_firefighter_for_victim, which skips route_blocked
+      units, is not reused.
+  IMPLEMENTATION
+    - _update_unreachable_victims builds the set of victim ids in custody by
+      the predicate above, ONLY when the switch is on, and adds
+      flags[vid]["in_custody"] = True for them.
+    - rescue_planner._is_productively_served gains one first line:
+          if bool(flags.get("in_custody", False)): return True
+      With the switch off the key never exists, so the planner is unchanged.
+    - _update_unreachable_victims is the only builder of the flags dict, and
+      unreachable_escape_victims (called only at 5091) is its only reader. The
+      never-detected streak also reads `served`, but a carried victim is
+      confirmed and assigned, so that side cannot change.
+  SIDE EFFECTS TO EXPECT (reported, with no pass line of their own)
+    - A victim kept "assigned" instead of "unreachable" moves terminal_step,
+      the candidate and unreachable counts, and all_terminal. It does not move
+      rescued. It may move dead.
+    - The same victim stays counted by _count_unresolved_victims
+      (local_adaptation_generator.py:727-753 -> :1231). That count drives
+      searcher coverage: the y-commit (:1178), priority (:1263), wind weight
+      (:1288-1293), _coverage_mode_active (:776), local_uav_path_planner.py:
+      132-140, and post-rescue coverage (wildfire_model.py:3708).
+    - It also keeps _any_victim_needs_rescue True (:3922). That gates the stale
+      route-block clear (:2900) and the "Route Cleared" relabel (:3896).
+    - So SERVED can move searcher trajectories (M6), never_detected, and the
+      rbgate end-of-run latch line.
+    - For rung 1, the window runs from the prevented marking until the carry
+      ends. In the 2-firefighter D preset the route-block channel has no live
+      unit to act on in any recorded case.
+  IN THE SHIPPED CONFIGURATION: NOTHING TO ACT ON
+    - 0 custody markings in the ungated round's 371 ug*/uh* runs: all its arms
+      (gated control C, shipped D, DRY Y, anchors A/X), 90 of them at 360
+      steps. The shipped subset (ugD/ugKD/uhD/ugmD, 118 runs, 30 at 360 steps)
+      is included.
+    - The custody streak, reconstructed from ff_steps + burn_intervals, peaks
+      at 15 of 30 in those 371 runs. The method is validated on the known
+      cases, which reach 29 the step before they are marked.
+    - At the 10 recorded carrier drops in those 371 runs (3 file-occurrences /
+      2 tuples in the shipped arms) the streak was 0-6, and the hold replays
+      end about 15 steps later.
+    - So SERVED is predicted inert in clSN AND inside clA, and clSN
+      value-identical to clC. How it can still be credited: D-9 (section 11),
+      with the credit rule in 9.4 and the conditional runs in 9.5.
+
+4.3 RUNG 2 (D-1: recommended NOT for this round) - THE CARRIER AS A
+    REACHABILITY START FOR OTHER VICTIMS
+  Rung 1 saves only the carried victim. In the 9 recorded cases the same step
+  wrote off 19 other victims (18 already detected). Add dcC/dfC south/half/606
+  @172 and rung 2's population is 21.
+  - THE SPEC: after the `living` loop and before 5014-5015, append the cells
+    of exiting, alive, on-grid units to `starts` ONLY. `living`, new_dists and
+    `approaching` stay untouched; a burning start is already skipped.
+  - WHO RESCUES THEM: only the same carrier. It must finish its carry, come
+    back from its 3-5 step absence, and be dispatched by
+    _try_dispatch_unresolved_confirmed_victims at recycle. So rung 2 converts a
+    victim only where the carry completes: 5 of the 9 recorded carriers
+    survived.
+  - WHY NOT NOW:
+    - It changes OTHER victims' fates.
+    - Its population is also 0 in the shipped configuration.
+    - It would ship unmeasured.
+    Its design stays here for its own round.
+
+================================================================================
+5. THE SWITCHES
+================================================================================
+5.1 ACCESSORS (agents.py, beside ff_firefight_*, built on _exact_integer)
+  The rule:
+      exact 0 (0, 0.0, "0", False)  -> off. This is the kill switch.
+      missing attribute             -> the SHIPPED value, i.e. the cfv
+                                       default (0 until a fix is flipped).
+      junk, None, non-integral, "", -> ARMS: never the zero path.
+      inf, nan, Decimal("0.5"), ...
+      never raises
+  THE BRIEF-MANDATED EXCEPTION, written into the shared comment block:
+  common_fixed_variables' rule sends junk to the SHIPPED value. For a switch
+  that ships at 0 that would be the zero path, which "disables only on an exact
+  zero" forbids. So while a switch ships at 0, junk maps to a named non-zero
+  value. At the flip, junk maps back to the shipped value (D-2).
+    ff_exit_leg_mode() -> int     exact 0 / 1 / 2 -> that mode;
+                                  anything else (junk, None, 0.5, negative, an
+                                  integer >= 3) -> 1
+    ff_exit_leg_hold() -> bool    exact 0 -> False; any other exact integer,
+                                  negative included (as in
+                                  base_station_fireproof) -> True; junk -> True
+    ff_exit_leg_served() -> int   exact 0 / 1 -> that rung; anything else -> 1
+                                  (2 only if D-1 approves rung 2; until then the
+                                  queue generator and the analyzer REFUSE any
+                                  run that sets SERVED=2, so it cannot be
+                                  silently absorbed as 1)
+  common_fixed_variables.py gets
+      FF_EXIT_LEG_MODE = 0, FF_EXIT_LEG_HOLD = 0, FF_EXIT_LEG_SERVED = 0,
+  with a comment block in the file's own style.
+  - They are read at CALL time through `cfv`: never through agents.py's star
+    import, never at import time. So an apply_scenario_config / --set override
+    is visible; otherwise the switch would be decorative (the dead-input
+    class).
+  - wildfire_model reads them through agents.ff_exit_leg_*() at call time.
+  - Every call site goes through the accessor. A bare-name read at any site
+    would pass the default-0 identity and leak after the flip; the flip gate's
+    explicit-zero arm (section 7) is what catches that.
+
+5.2 EVERY SITE, AND WHY ALL-ZERO IS VALUE-IDENTICAL TO 6160438
+  What each site executes when its switch is 0:
+    agents.py:1820 completion test
+        One pure accessor call. `pos == exit_target` is evaluated first, and
+        the boundary test is short-circuited by `exit_mode != 0`.
+    agents.py:1840 carrying move
+        `if exit_mode == 2` is False, so the unchanged
+        _move_toward(self.exit_target) runs.
+    agents.py:2411 no-neighbour branch
+        `self._exit_leg_enclosed() and ff_exit_leg_hold()` is False (the first
+        is a pure read of self.exiting), so the unchanged _mark_route_blocked()
+        runs.
+    wildfire_model casualty sweep
+        The reset_victim_pending choice is guarded by the hold accessor, so
+        today's metadata is passed.
+    wildfire_model._update_unreachable_victims
+        `if hold:` and `if served:` are both False: no custody set, no flag
+        key, no extra start.
+    rescue_planner
+        flags.get("in_custody", False) is False for every flags dict (the key
+        is never written).
+  At zero there is:
+    - no RNG draw;
+    - no print;
+    - no new model or unit attribute;
+    - no new key in any dict the harness or the dashboard reads;
+    - no change to the movement-reason records or the transition log.
+  The accessor reads are getattr on a module.
+  THE EMPIRICAL PROOF is section 9.1: stock, CRN, the rbgate campaign path, and
+  the transition-log hash from the sidecar.
+
+5.3 OBSERVATION: the sidecar, outputs/_cl_obs.py (out-of-tree, pass-through)
+  The harness records nothing that shows a branch ran:
+    - no movement_reason, no tier, no transition log;
+    - SERVED changes only internal streak state.
+  So every run of the round goes through a thin wrapper, on the
+  _fm2_probe_harness pattern:
+    - it installs read-only hooks in the same process;
+    - it runs the queue line's harness via runpy (one launcher per
+      instrument: _cl_obs_stock.py, _cl_obs_crn.py);
+    - after the harness returns it writes ONLY <out>.clobs.json. The main JSON
+      is never touched.
+  It records:
+    (a) the values ff_exit_leg_mode/hold/served() return inside the run, or
+        "ABSENT" at 6160438;
+    (b) exact counters:
+          enclosure triggers at the hold site, in EVERY arm
+            (_exit_leg_enclosed() is a tiny method so it can be wrapped);
+          holds;
+          mode-2 path steps and fallback steps (from _exit_leg_step's return);
+          off-exit completions;
+          custody-served victim-steps, and the subset where serving changed
+            the streak;
+          HOLD enclosure starts;
+    (c) the sha256 of model._movement_transition_log and of each unit's final
+        movement_reason.
+  Non-perturbation is proven by the identity checks themselves: clC runs
+  through the sidecar and must equal the recorded uhD / ugKD, which ran without
+  it.
+
+================================================================================
+6. SEPARABLE ARMS - WHO GETS CREDIT FOR WHAT
+================================================================================
+  Each switch is read only at its own sites; no fix reads another's switch.
+  (HOLD's enclosure start in _update_unreachable_victims reads only HOLD's
+  switch.)
+  The arms, all in the shipped configuration (fire mechanic ON, ungated):
+      clC    all 0                              the control (== 6160438)
+      clE2   MODE 2
+      clE1   MODE 1                             CONDITIONAL (9.5)
+      clH    HOLD 1
+      clSN   SERVED 1                           stock-only identity check (9.5)
+      clSB   SERVED 2                           CONDITIONAL on D-1 = yes (9.5)
+      clA    MODE 2 + HOLD 1 + SERVED 1         the ship candidate
+             (SERVED 2 if D-1 = yes; fixed before any wave)
+      CRN counterparts: clKC clKE2 clKH clKA (+ clKE1 if clE1 runs). clSN has
+      no CRN arm: its G3/G4 are judged on stock (9.4).
+  CREDIT
+    - Each fix is judged on its SINGLE arm against clC.
+    - The combination must pass too before it ships as a combination.
+    - If two or more single arms pass and clA contains a fix that failed, the
+      passing subset is re-run as its own combination arm. If clA fails while
+      every fix in it passes singly, it is reported and goes to you.
+    - Leave-one-out arms are NOT planned: they would add 3 x ~150 runs. Any
+      SERVED effect inside clA is unattributable; SERVED is predicted inert
+      there anyway.
+  KNOWN INTERACTIONS, so a result is not misread
+    - D3 bites only on a solo carry of >= 30 steps, i.e. a stall or a hold.
+      MODE 2 shrinks that population. HOLD would enlarge it, except that 3.2(b)
+      resets the streak during a hold.
+    - MODE 2 falls back to _move_toward, so it reaches D2's site; HOLD decides
+      what happens there. clE2 runs at HOLD 0, which is today's drop.
+    - HOLD removes a pointless replacement dispatch even where it cannot save
+      the victim (class A). So it perturbs the rest of the run, with divergence
+      and no rescue effect. The same is true of SERVED's channels (4.2).
+    - A HOLD or SERVED success turns a broken carry into a LONG completed leg,
+      which the census's completed-only stall count would record as a new
+      stall. The gate count M1c (9.3) counts broken legs too, so a conversion
+      is neutral there.
+
+================================================================================
+7. KILL SWITCHES AND THE FLIP
+================================================================================
+  - Each fix has one switch: an exact zero kills it, a missing value takes the
+    shipped default, junk arms it.
+  - With all three at 0 the run equals 6160438 value for value: by
+    construction (5.2), and by measurement (9.1, G1).
+  - Through Parts 2 and 3 the defaults are 0.
+  THE FLIP COMMIT, for the passing fixes only, changes:
+    - the cfv default;
+    - the accessor's missing-value fallback;
+    - the junk mapping (D-2);
+    - only the tests that pin those defaults.
+  It may NOT edit any outcome test to make it pass.
+  THE FLIP GATE (G7), run on the flip commit itself. Nothing merges until it
+  passes, and any difference means STOP:
+    (0) a docstring-blanked AST behaviour diff (the _flip_behaviour_diff.py
+        method) of Part-2 HEAD vs the flip commit. It must show exactly the
+        intended literals and nothing else;
+    (1) clFZ: the flipped tree with explicit
+          --set FF_EXIT_LEG_MODE=0 --set FF_EXIT_LEG_HOLD=0
+          --set FF_EXIT_LEG_SERVED=0
+        on C13, stock, 360 steps. It must equal clB 13/13, every field except
+        {tag, repo, wall_s, params, extra_params}, stdout included. This is
+        the kill switch as it ships;
+    (2) clFD: the flipped tree with no --set, on C13 and U30, stock, 360 steps
+        (43 runs). It must equal the recorded runs of the exact configuration
+        that ships (the single arm, clA, or the re-run passing subset). Same
+        field rule, with extra_params {} on the flip side;
+    (3) clFJ: junk values on the flipped tree, on C13, if D-2 changes the junk
+        mapping;
+    (4) G6b: the full suite serially on the flipped tree. The failing name set
+        must equal the matching sim-variant set (8.5), minus only the pins the
+        flip updates. The passed count must equal the sim variant's, with 0
+        collection errors;
+    (5) a runner register, as in flip_runner_register.txt, of every queue or
+        shell line that relied on FF_EXIT_LEG_* defaults. Controls are pinned
+        with an explicit =0.
+
+================================================================================
+8. PART 2 - IMPLEMENTATION PLAN (NOT STARTED; after your confirmation)
+================================================================================
+8.1 SOURCE. One commit per fix, in this order, each with its own tests.
+  a. agents.py: the accessors (5.1). cfv: the defaults and the comment block.
+  b. D1:
+     - _on_grid_boundary;
+     - the completion test;
+     - EXIT_LEG_SEARCH_ORDER and the pure kernel exit_leg_first_step;
+     - Firefighter._exit_leg_step. It returns "path" or "fallback", and does
+       the memoised clean test, the kernel call, the fallback, the labels and
+       the status tail.
+  c. D2:
+     - _exit_leg_enclosed() and _exit_leg_hold() (the relabel and the label);
+     - the hold branch at 2411;
+     - the enclosure start in _update_unreachable_victims;
+     - the casualty-sweep guard.
+  d. D3: the custody set and flag in _update_unreachable_victims, and the one
+     line in rescue_planner._is_productively_served. Rung 2 only if D-1 says
+     yes.
+8.2 UNIT TESTS
+  Every new test module, or _SWITCHES in test_firefighter_fire_mechanic.py if
+  the tests go there, gets an autouse restore fixture copied from
+  test_firefighter_fire_mechanic.py:58-72:
+    - it covers FF_EXIT_LEG_MODE/HOLD/SERVED and SYSTEM_RANDOM, on both cfv
+      and wf, plus agents.random;
+    - it deletes names that were absent before the test;
+    - at teardown, after the restore, it asserts the three accessors return
+      exactly their setup values. That works in any test order, with no
+      conftest.
+  Accessor-only tests use monkeypatch on cfv.
+  Accessor edge-value matrix, for all three switches:
+      0, 0.0, "0", False, 1, True, 2, " 2 ", 0.5, "0.5", "2.0", -1, 3, None,
+      "", "off", inf, nan, Decimal("0.5"), Fraction(1, 2), missing
+  plus a read-at-call-time test through apply_scenario_config.
+  D1:
+    - mode 0 pins today: no completion off the exit cell, and a constructed
+      smoky barrier reproduces the tier-3 step-back;
+    - mode 1 completes on a non-exit boundary cell, and on the exit cell;
+    - mode 2 walks a constructed clean corridor, refuses a smoky or
+      fire-adjacent goal, and uses the start exemption (a smoky start and a
+      fire-adjacent start both search);
+    - a burning start falls back bit-for-bit to _move_toward;
+    - corner start; tied boundary neighbours resolved by EXIT_LEG_SEARCH_ORDER;
+    - it is deterministic and draws no RNG (random patched to raise);
+    - vars(unit) is unchanged apart from pos and the two labels;
+    - a route_blocked-labelled carrier is relabelled on a path step.
+  D2:
+    - at HOLD 1 an enclosed EXITING unit keeps assigned / rescued_victim /
+      exiting / exit_target / status, raises no event, no unassign and no
+      pairing, and moves with its victim when a neighbour clears;
+    - at HOLD 0 it is dropped exactly as today (pins the defect);
+    - an enclosed APPROACHING unit is route_blocked at both settings;
+    - a pre-labelled route_blocked carrier that holds becomes "assigned" and
+      is returned by _find_active_firefighter_for_victim; at HOLD 0 it stays
+      invisible (pins today);
+    - with HOLD 1, SERVED 0 and no other live unit, the held victim's streak
+      stays 0 during the hold;
+    - a held carrier that dies leaves its dead victim's marker "dead"; the
+      firefighter_casualty incident resolves to no dispatch; exactly one
+      victim_dead event.
+  D3:
+    - the carried victim's streak stays 0 at SERVED 1 with no other live unit,
+      and reaches 30 and is marked at SERVED 0 (pins the defect);
+    - a route_blocked carrier still serves;
+    - a dead-flagged or off-grid exiting unit does not serve;
+    - a double claim (the carrier not first in dict order) still serves;
+    - at SERVED 0 no flags dict has an "in_custody" key;
+    - _ff_victim_distances and every flags["approaching"] are identical between
+      SERVED 0 and 1 on the same board;
+    - a direct unreachable_escape_victims() call with in_custody set.
+    - Rung 2, if built: other victims reachable from the carrier are not
+      marked; a burning carrier cell is not a start; `living` is unchanged.
+8.3 TOOLING (outputs/, one commit, no source)
+  - Fix outputs/_ug_seeds.py:54 (the U30 guard is broken for the FOURTH time):
+      OWN = ("_ug","ungated","_ffr_ug","_rblatch_camp2_ug","ug","_uh","_ffr_uh",
+             "uh","_xs","_ffr_xs","xs","exitstall","_cl","_ffr_cl",
+             "_rblatch_camp2_cl","cl","carryleg")
+    Pool outputs are named _ffr_<tag>_*, so the _ffr_<prefix> forms are the
+    ones that carry U30 seeds. The commit PROVES:
+      - choose() == _ug_seeds.txt, 30/30 (the review verified this passes with
+        this tuple and fails with the first draft's);
+      - synthetic names such as _ffr_clC_east_half_2070841104.json are skipped.
+    This check, plus _cl_seeds.check_frozen() and the dcd4 set, runs before
+    the first wave and after EVERY wave. STOP on a mismatch.
+  - outputs/_cl_queue.py writes TWO queues, as the ungated round did:
+      _cl_queue.txt      stock ff lines + rb lines
+      _cl_crn_queue.txt  CRN ff lines only, each carrying --set FM2P_CRN=1
+    Nothing ever carries FM2P_CRN=0: the probe would then write an fm2p block
+    on a stock arm. The generator asserts both at write time, and refuses
+    SERVED=2 unless D-1 approves it.
+  - Two launches of one copy of _ug_pool.sh:
+      stock pool   HARNESS=_cl_obs_stock.py
+      CRN pool     HARNESS=_cl_obs_crn.py
+    Each has its own QUEUE, STEM, LOG, WAVE and TAGPFX. The copy:
+      - refuses to start if any line's FM2P_ keys disagree with its harness;
+      - logs harness=... on its POOL START line;
+      - prints the three new switches (through the accessors) on its SHIPPED
+        lines, and points its SHIPPED-CONTROL line at the new worktree;
+      - stamps every LAUNCH/DONE with HEAD, the dirty count and the sha256 of
+        the four source files, and STOPs if they change mid-wave.
+    No commit is made to the checkout until the last wave is validated.
+  - outputs/_cl_validate.py wraps _dcd4rb_validate (the shared file is left
+    unedited). An ff run is INVALID unless:
+      - its fm2p.config equals the line's FM2P_ keys (with the value types
+        equal), or 'fm2p' is absent when the line has none;
+      - no <json>.fm2p.tmp is left over;
+      - its .clobs.json sidecar exists.
+  - outputs/_cl_analyze.py:
+      - reads the FROZEN seed files (_cl_seeds.txt, _ug_seeds.txt) and STOPS on
+        any mismatch;
+      - refuses any run whose repo / extra_params / tuple / steps / fm2p state
+        is not its arm's (the pool validator never checks `repo`);
+      - asserts every extra_params key is declared in common_fixed_variables
+        at the arm's commit. A misspelt --set is otherwise absorbed silently
+        by setattr;
+      - computes every Part 3 metric and invariant (9.3), with the row
+        conventions stated in M4.
+  - The worktree: git worktree add --detach E:/Projects/SAS_wt/base6160438
+    6160438. It gets NO .venv junction: every line runs the parent .venv's
+    python with --repo.
+    Before any git worktree remove: check that no .venv exists in it. If one
+    does: cmd /c rmdir, confirm E:\Projects\SAS\.venv is intact, then remove.
+8.4 PRE-WAVE CHECK OF THE MODE-2 KERNEL (before any wave; STOP on failure)
+  (a) BINDING
+      - The driver builds on drive.replay2(rule="F1F5"), which is the
+        implemented mode 2. It does NOT build on fs_counterfactual's F5 branch,
+        which completes through a local reassignment.
+      - The adapter is bound IN THE CONSUMER MODULES (drive.bfs_first_step,
+        fs_counterfactual.bfs_first_step), and the driver asserts
+        `module.bfs_first_step is adapter` before any leg runs.
+      - Rebinding fs_rules.bfs_first_step after import does nothing, and the
+        check would pass while testing nothing. _cl_replay/check_binding.py
+        demonstrates this.
+  (b) PER-CALL DIFFERENTIAL (the primary check)
+      - On every call the adapter runs both the replay's own bfs_first_step and
+        the implemented agents.exit_leg_first_step, fed the replay's predicates
+        and EXIT_LEG_SEARCH_ORDER, and asserts the two cells are equal.
+      - PASS requires the pre-registered call counts with 0 mismatches:
+          1431 kernel calls on list_census.txt (1418 path steps + 13 that
+               return no path)
+           486 on list_uhD.txt (486 + 0)
+        (F_GUESS 8; cf_f1f5.txt: F5_bfs_steps, F5_fallback_steps), plus
+        per-leg (n, end) equality.
+      - Only then must the aggregate reproduce cf_f1f5.txt / cf_metrics.txt
+        exactly:
+          census  1643 steps / 20 stalled (fixed exit) / 2 (reached cell) /
+                  12 adjacent / 3 smoky / 59 shorter / 0 longer / 0 dead
+          uhD     588
+  (c) CANARY (secondary). The same driver, run with a mutated kernel (the goal
+      test before the clean filter), must report mismatches and a changed
+      census row (1608 / 14 stalled, adjacent 31). A reversed neighbour order
+      leaves uhD unchanged, so uhD alone is not a canary.
+  (d) MODEL-SIDE COMPOSITION. A seeded, randomised differential over at least
+      about 1000 boards: fake grids with Fire agents burning or smoky,
+      comparing Firefighter._exit_leg_step with the kernel fed replay-style
+      predicates. The boards include:
+        - burning, smoky and fire-adjacent starts;
+        - corners;
+        - all-smoky and all-fire-adjacent edges (the fallback must equal
+          _move_toward bit-for-bit);
+        - tied boundary cells;
+        - a start already on the boundary (completion must fire first).
+8.5 THE SUITE WITH SWITCHES ON, BEFORE ANY SHIP DECISION
+  - Add outputs/_cl_simplugin.py, copied from _ug_simplugin.py. It sets the
+    switches on cfv from an env var and prints the accessor values.
+  - Add a copy of _ug_pytest.sh with these variants:
+      base (G6a, all 0)
+      p0   (plugin loaded, nothing set)
+      sim  one per value that could ship: MODE=2, HOLD=1, SERVED=1, the clA
+           combination (+MODE=1 if clE1 runs, SERVED=2 if built)
+  - Each variant runs serially inside; the variants run in parallel,
+    alongside stage 3 (9.6 step 3).
+  - Part 2 pre-names, per sim variant, the new tests expected to fail because
+    they pin the 0 default. The precedent is ug1 sim's two pin tests.
+  - Named in advance: the slow seed-42 "all victims terminal by 300" tests
+    (test_firefighter_fire_avoidance.py:205-256;
+    test_unresolved_victim_coverage.py:282-318). They can move under ANY
+    flipped switch, since each one changes the trajectory. HOLD and SERVED also
+    have direct routes to a failure:
+      (a) a carry or hold still running at 300 leaves its victim "assigned";
+      (b) at rung 2, a confirmed victim kept reachable from a carrier is still
+          "confirmed" at 300;
+      (c) at SERVED 1 / HOLD 0, a carry kept past pickup+29 and then dropped
+          leaves its victim "confirmed".
+    A failure there is diagnosed from managed_victims at step 300. A victim
+    legitimately still in custody at 300 is a question about the test's
+    expectation, and goes to you; it is never an automatic pass.
+
+================================================================================
+9. PART 3 - VALIDATION PLAN (pre-registered here)
+================================================================================
+9.1 IDENTITY - G1. All of it runs in stage 1, before any feature arm; STOP on
+    any failure. The harness and the probe harness stay FROZEN at 6160438 for
+    the whole round.
+  (a) clB vs clC, C13, stock, 360 steps (--steps 360 --set BATCH_SIZE=360
+      --uav-actions):
+      - clB is the 6160438 worktree, clC is the branch at its defaults, both
+        through the sidecar;
+      - every key except {tag, repo, wall_s} is equal (params and extra_params
+        must be EQUAL, not excluded), including stdout_sha256 and stdout_lines;
+      - the sidecar's transition-log and movement_reason hashes are equal;
+      - required: 13/13.
+  (b) clC U30 vs uhD (U30, stock, 360; recorded at bf4a78c, same source and
+      harness):
+      - every key except {tag, wall_s}, including repo, params, extra_params,
+        eval, terminal_step, burn_intervals and stdout;
+      - precondition: the queue line is byte-identical to uhD's apart from tag
+        and out;
+      - required: 30/30. This also proves the sidecar is pass-through.
+  (c) HORIZON prefix checks: clC C13 steps 1-240 vs ugD (240, ba58491), and
+      clC U30 1-240 vs ugD U30. This is the _uh_analyze P2 method over every
+      per-step series, with events cut at step 240.
+  (d) CRN prefix: clKC U30 steps 1-240 vs ugKD, via P2 implemented in
+      _cl_analyze for CRN pairs: fm2p is excluded from the comparison, but
+      fm2p.config == {"FM2P_CRN": 1} is asserted on both sides. CRN identity is
+      thereby established as a 240-step prefix on U30. No 6160438 CRN reference
+      exists for C13 or for steps 241-360.
+  (e) The route_blocked campaign path: clGC == ugGD. ugGD was recorded at
+      ba58491 from the main checkout with no --set.
+      - Same shard partition and seed order: a = east 101-505, b = east
+        606-909, c = east 111-444, s = south 101-505;
+      - every top-level key except tag is equal, and evals are equal element
+        by element after dropping wall_s;
+      - required: 4/4 shards, 18/18 evals.
+      This pins the control's regression set against ihrest to ugGD's
+      {east/707, south/101, south/404}.
+  (f) In clC, the sidecar shows the accessors at 0/False/0, and every feature
+      counter at 0 except the enclosure-trigger count.
+9.2 SEED SETS AND PROVENANCE. The three sets are never pooled across sets.
+  C13  THE CANONICAL 13
+       east/half and south/half 101-505; east/default 101-303.
+       - Hand-picked in the early rounds, and run in nearly every round since.
+       - 13 runs from 5 seeds: east/default shares its whole fire with
+         east/half on the same seed, and east and south on one seed share
+         ignition and fuel.
+       - IN-SAMPLE: 21 of the replay's census files are C13 tuples.
+       - A screen for direction-of-effect claims; its G3 comparison is still a
+         gate item.
+  U30  outputs/_ug_seeds.txt
+       - Chosen by code (_ug_seeds.py, sha256 counter mode, declared
+         2026-09-21) before any run of the ungated round; 13 east/half,
+         13 south/half, 4 east/default, one seed per tuple.
+       - Run since in ug*/uh*, and 7 of them in xs*.
+       - FULLY IN-SAMPLE for MODE 1/2: all 30 tuples were replayed under every
+         candidate rule F1-F6 in six arms (_cl_replay/cf_uh*, cf_ugK*), and the
+         rule was chosen on census legs that include 12 U30 files.
+       - For HOLD, the ceiling legs include U30 1291443119.
+  N30  outputs/_cl_seeds.txt - THE ONLY OUT-OF-SAMPLE SET
+       - Chosen by code (_cl_seeds.py, same method, label "SAS carrying-leg
+         round fresh independent seed set, declared 2026-09-25, candidate %d")
+         BEFORE ANY RUN of this round, and committed with this report.
+       - Used-seed universe: 234 values (the dcd4 audit list, the dcd4 set and
+         U30 as frozen literals, every integer >= 100 in outputs/ and
+         outputs/_ffr_logs/ names, tracked queue files, tests/ literals).
+       - Ignition cells are distinct from C13, fresh, rbgate, dcd4, U30 and
+         each other. 0 candidates rejected. Same 13/13/4 composition. Never
+         run.
+       - Frozen twice with identical seeds. The second freeze came after the
+         selector's docstring, its frozen dcd4 literal and its pathspec
+         exclude were corrected.
+       - Its guard skips _cl / cl / carryleg / _ffr_cl / _rblatch_camp2_cl
+         names; it skipped 3 at the second freeze, none with a seed token.
+  RB7  the rbgate-only tuples east/half 111, 222, 333, 444, 606, 808, 909.
+       - A GATE instrument only (G5 re-roll status); never pooled into any set.
+       - The recorded ugD runs show MODE 1/2 will perturb east 111, 222 and 909.
+  Not used: the "fresh 10" (8 of 10 had run in earlier rounds) and "the 41"
+  (27 distinct tuples).
+9.3 WHAT IS MEASURED
+    Per arm, per set, per instrument. Every run: --steps 360 --set
+    BATCH_SIZE=360 --uav-actions, through the sidecar. CRN arms compare only
+    with CRN arms.
+  ROW CONVENTION: an event stamped s happens during model step s. ff_steps[s-1]
+  and ff_bind_steps[s-1] are the state AFTER step s; the state at the START of
+  step s is row s-2.
+  M1 EXIT LEGS. A leg is a (unit, victim) exit_start, paired with the
+     completion by that unit. (The census paired on victim only.)
+     M1a  STALLED iff n > d_c + 5, with d_c = manhattan(pickup, completion
+          cell completions[].pos). This is the diagnosis's gate definition
+          ("measure the stall to the COMPLETION cell").
+     M1b  STALLED iff n > d + 5, with d = manhattan(pickup, fixed exit_target)
+          = distance to the nearest boundary. Census-comparable.
+     M1c  STALLED-OR-BROKEN, per exit_start. Counted if any of:
+            - completed with M1a stalled;
+            - ended without completion (drop, died, isolation release);
+            - cut at the horizon with elapsed > d + 5.
+          THE G2 COUNT: a conversion moves a leg from broken to completed and
+          leaves M1c unchanged.
+     Also: excess steps and reversals. Conversions (broken in clC, completed
+     in the arm) are listed on their own line with their length and d.
+     MATCHED COVERAGE: legs matched on (tuple, instrument, unit, victim,
+     pickup step and cell), over all clC legs and all arm legs, split at each
+     tuple's first divergence step (ff_steps and fire_digests):
+       - a PRE-divergence leg that does not match is an analyzer defect: STOP;
+       - POST-divergence legs are reported side by side with clC's (count,
+         broken, total and max excess, stalled), and arm legs with no clC
+         counterpart are listed.
+     Expected coverage: the legs picked up after the first changeable leg are
+     1-8% of all legs (uhD 3/103, ugKD 2/96, f2cEFS 6/74).
+  M2 BROKEN CARRIES, by the unassign reason at the end step:
+       drop                replacement_after_blocked
+       died in custody     firefighter_fire_casualty of an exiting unit (the
+                           ff_steps death row has exiting False; key it on the
+                           previous row)
+       isolation release   geographically_isolated
+       horizon
+  M3 DROPS CONVERTED. Every clC drop, matched to the same carry in the arm,
+     ends as one of:
+       completed (CONVERTED) / died in custody / isolation release / horizon /
+       unmatched
+     Each HOLD trigger is classified A/B/C/D (the drop classes, section 1).
+  M-HOLD, exact from ff_steps + unassigns + burn_intervals, cross-checked
+     against the sidecar.
+     A held advance at t: row t-1 exiting and alive at p; row t exiting and
+     alive at p; no completion at t; every in-grid neighbour burning. A carrier
+     that dies at once also counts (row t-1 exiting at p, then a casualty
+     unassign at t).
+     Per hold: start, length, and ending (moved on / died in custody /
+     isolation / horizon). "Moved on" is split by whether the neighbour that
+     cleared was extinguished (firefight_log) or burnt out.
+     Pre-registered: every hold <= 30 advances. 0 holds at HOLD 0; any there
+     must come from the second-raise path, and is reported.
+  M4 ISOLATION MARKINGS. A CUSTODY MARKING is an unreachable_escape_log entry
+     {step s, victim v, geographically_isolated} for which some unit F:
+       - is exiting, alive and on grid in ff_steps[s-2], and bound to v in
+         ff_bind_steps[s-2];
+       - has no other unassign and no completion at s.
+     M4a  with an isolated unassign {s, F, v}: the normal release.
+     M4b  with no unassign: the carrier was labelled route_blocked, and the
+          escape found no pair.
+     Co-marked other victims are reported separately (rung 2's population).
+     Never read row s-1 for custody: the escape has already cleared it.
+     Before any wave the analyzer must reproduce the record: 31 custody
+     markings with ff_bind_steps (32 with vmon3), 9 distinct, f2cDRY
+     east/def/101 victim_0 @177 by ff_unit_1, 0 in M4b.
+  M5 OUTCOMES at 360, with cuts at 240/270/300/330:
+     rescued, dead, ff_deaths, never_detected, geographically_isolated /
+     unreachable, candidate (non-terminal), all_terminal, terminal_step.
+     - Taken from victim_steps at each cut, and from unreachable_escape_log
+       causes with step <= cut.
+     - Never read a victim_steps "candidate" as "undetected".
+  M6 DRONE STEPS IN FIRE, the interior-hazard definition: burning only, at the
+     after-step observation.
+       E1  searcher-only
+       E2  all UAVs
+     Computed as _sfx_analyze.sec_exposure does: the uav_actions burning bit,
+     with the role taken from uav_steps.
+  M7 FIREFIGHTER EXPOSURE ON THE CARRYING LEG
+     IN FIRE, at decision time: carrying step k, where row k-1 is exiting and
+       alive at c, and c burns on the step-k board. Split:
+         escaped  row k alive
+         died     row k dead
+       Recorded baseline: 197 such steps (179 escaped, 18 died) in the
+       fm/f2c/uh/ug files. This is exact for mechanic-OFF runs; ON runs miss
+       only an extinguish made later in the same step.
+       End-of-step "in fire" for a LIVE carrier is 0 by construction (the
+       sweep kills it first). It is an instrument assertion, not a column.
+     FIRE-ADJACENT: the end-of-step cell against end-of-step fire. This is the
+       same quantity the replay counts (recorded 123 = replay 123 on the census
+       files, 16/16 uhD, 9/9 ugKD).
+       - Reported over all carrying rows (the census files give 129).
+       - Also reported over the replay window (completed legs, steps
+         s0+1..s1-1), for the like-for-like prediction uhD 16 -> 0.
+     Smoke is not recorded per cell and is not claimed.
+  M8 ROUTE_BLOCKED GATE: rbgate 18 per arm (4 shards, 240 steps: the gate's
+     own horizon, and the only one its reference exists at).
+     _ffr_rbcompare.py --new clG<arm> --old ihrest, plus against clGC.
+  M9 TESTS: G6a, G6 per sim variant, G6b (8.5, section 7).
+  M10 MODE-1 EDGE, per arm:
+     - completions whose pos is burning at the completion step;
+     - firefighter deaths on their own completion step.
+     Both are exact from completions[].pos, burn_intervals and ff_steps, so
+     any G4 death from this path is pre-explained.
+  M11 MODE-2 RESIDUAL, per mode-2 arm, from the sidecar:
+     - path steps and fallback steps;
+     - fallback legs, their reversals, and their fate against the matched clC
+       carry.
+     Replay reference: census 13 advances / 4 legs / 5 reversals at fuel 8
+     (15/6/6 at fuel 10); U30 ugKD 1/1.
+     Plus an exact ONE-SIDED invariant from burn_intervals: every path step's
+     cell is neither burning nor 4-adjacent to a burning cell at that step.
+     This holds because Fire agents advance first and later writes only
+     extinguish. It is a necessary condition only: it checks neither smoke nor
+     shortest path.
+  INVARIANTS (STOP on any violation; each is an implementation leak)
+    - HOLD >= 1: 0 replacement_after_blocked unassigns of a unit that was
+      exiting at the previous row.
+    - SERVED >= 1: M4 = 0.
+    - FOOTPRINT: clSN is value-identical to clC on every run with no clC
+      custody marking. On the others, its first differing step is clC's first
+      custody-marking step. (Rung 2, if built: anchored at the first clC
+      marking made while a live carrier existed.)
+    - A victim's victim_steps "dead" never changes back; at most 1 victim_dead
+      per victim.
+    - Sidecar: each feature arm's own switch reads non-zero inside the run;
+      "0" or "ABSENT" in a feature arm is INVALID.
+9.4 THE GATES. Each fix is judged on its single arm vs clC, and the
+    combination is judged the same way.
+  G1  IDENTITY: 9.1 passes, all of it. Otherwise STOP everything.
+  G2  STALLS FALL (MODE arms and clA)
+      - EVIDENCE: M1c on N30 is strictly lower than clC, with N30 stock and
+        N30 CRN counted together; and it is not higher in either N30
+        instrument alone.
+      - VETOES: C13 and U30, in each instrument, not higher (in-sample).
+      - If clC's N30 M1c (stock + CRN) is 0, the fall is "not measurable out
+        of sample": report it, and it goes to you.
+      - The N30 "strictly lower" test is hard: missing it is a FAIL.
+      - The per-set, per-instrument "not higher" tests are split:
+          higher in BOTH instruments on a set -> FAIL;
+          higher in ONE instrument only -> its legs are listed, and it goes to
+          you rather than failing automatically.
+      - M1a and M1b are reported beside M1c.
+      NONE LONGER (every arm, including HOLD and SERVED): over matched legs,
+      no arm leg may be longer than its clC leg. A leg completed in clC and
+      broken in the arm counts as longer. Conversions are excluded.
+        - A longer matched leg whose fire digests are identical over the whole
+          clC leg is an AUTOMATIC FAIL.
+        - One on a diverged fire is reported with its first differing step and
+          cause, and goes to you (D-3).
+      HOLD and SERVED arms: M1c not higher, on N30 with stock and CRN counted
+      together, and per set per instrument (split as above); plus none-longer.
+      "Stalls fall" does not apply to them (D-7).
+  G3  RESCUED at step 360 not lower than clC on each of C13, U30 and N30.
+      Both instruments are measured and reported, never pooled.
+      - Any lower comparison triggers per-victim attribution in both
+        instruments: seed, victim, the two fates and steps, fire-digest match
+        up to the fate, the first differing step and what differed, and
+        whether the victim's own carry was changed (the M3 match).
+      - AUTOMATIC FAIL if: (a) CRN is lower on any set; or (b) any lost victim
+        is attributable to the fix's own mechanism, i.e. its matched carry is
+        longer or broken in the arm on a fire identical up to that point.
+      - A stock-only loss, with CRN not lower on that set and no attributable
+        victim, is HELD and goes to you with the attribution (D-10). It is not
+        an automatic pass.
+      - clSN has no CRN arm, so its G3 and G4 are judged on stock. Any stock
+        loss or extra death in clSN goes to you with the footprint attribution
+        (9.3). CRN evidence for SERVED comes only from clKA and the D-9 probe.
+  G4  FF_DEATHS not higher than clC on any set or instrument, unless every
+      extra death has a measured cause: CRN per-death attribution, plus M10.
+  G5  ROUTE_BLOCKED. Any regression against ihrest outside {east/707,
+      south/101, south/202, south/404} goes through the ungated round's rule:
+      - its re-roll status comes from the STOCK harness runs of the same tuple
+        (fire_digests first differ before clC's terminal_step, steps 1-240):
+        C13 tuples via C13, rbgate-only tuples via RB7;
+      - NOT re-rolled -> a NEW FAIL outright;
+      - re-rolled seeds are judged together, on pooled rescued over all
+        re-rolled rbgate seeds, clG<arm> vs clGC;
+      - a single-seed hinge is decided by its CRN pair (a conditional
+        follow-up).
+      The same tuple's 360-step outcome is reported, and labelled "delay" if
+      the loss vanishes there. That label never turns a FAIL into a PASS.
+      rbcompare's "unit left latched as route_blocked at end" line is gated
+      as before.
+  G6  TESTS
+      - G6a, on the all-0 branch: the failing NAME SET equals the baseline 8
+        (listed below).
+      - Each fix's sim variant: the baseline 8 plus its pre-named pins. The
+        combination likewise.
+      - Every new test passes.
+      - The passed count equals 783 plus the number of new tests Part 2 adds
+        (pre-declared in the Part 2 commit), with 0 collection errors. A
+        name-set-only gate cannot see a module that errors at collection, or a
+        deselected test.
+  G7  THE FLIP GATE (section 7).
+  CREDIT AND ENGAGEMENT (replaces "inert"; it holds by construction)
+    - Each fix arm reports the runs in which it first diverges from clC, each
+      with its first differing step and the site that fired there (sidecar
+      counts).
+    - An arm value-identical to clC on every run is "NOT ENGAGED".
+    - Credit comes from outcomes: M3 and M-HOLD for HOLD; M4 and the matched
+      custody table for SERVED. It never comes from a count the code change
+      forces.
+    - 0 engaging runs means "not demonstrated in Part 3", never PASS.
+  SHIPPING
+    - A fix ships iff:
+        - its single arm passes G1-G5;
+        - it is ENGAGED (or you say yes under D-9);
+        - the combination of passing fixes passes G1-G5;
+        - the flipped tree passes G6 and G7.
+    - If MODE 1 and MODE 2 both pass, MODE 2 ships.
+    - A failing fix is reported, not bundled.
+  THE BASELINE: 8 failed / 783 passed. Recorded in both logs: at 80ca7b3 in
+  _mg_pytest_post.log, and at ba58491 in the tracked _ug1_pytest_post.log.
+  Tests and source are identical at 6160438. The 8 names:
+    test_behavior_regression::test_descriptive_next_action_uses_target_position
+    test_dashboard_panel::test_dashboard_panel_render_returns_string
+    test_firefighter_dispatch_replacement::test_no_replacement_available_marks_victim_unreachable_once
+    test_rescue_planner_authority::test_no_firefighter_planner_delay_or_unreachable
+    test_uav_sector_assignment::test_fire_tracker_uavs_receive_different_target_sets
+    test_uav_sector_assignment::test_fire_tracker_still_overridden_by_search_mode_fail_safe
+    test_wind_aware_trajectory_regression::test_north_vs_south_trajectories_diverge_over_40_steps
+    test_wind_aware_trajectory_regression::test_east_vs_west_trajectories_diverge_over_40_steps
+  PRE-REGISTERED EXPECTATIONS (from the record; approximate)
+    MODE 2  U30 stock: 812 -> 588 steps; M1b 5 -> 2; M1a 5 -> 0; adjacent
+            16 -> 0; 0 longer.
+            ugKD (context, 240): 755 -> 597; 3 -> 2.
+            N30: not estimable.
+    MODE 1  C13 flat. U30 stock: M1b 5 -> 5, M1a/M1c 5 -> 4 (one leg, +-2
+            steps). U30 CRN 3 -> 3. N30 not estimable. An EXPECTED G2 FAIL,
+            decided on N30.
+    HOLD    triggers: stock C13 1 (class A, no conversion); stock U30 1
+            (class C, converts at ~163 in replay); CRN U30 (to 240) 0. Credit
+            is n <= 1 at best in the shipped configuration.
+    SERVED  0 custody markings in the 371 ug*/uh* runs (all arms; 118 of them
+            shipped), max custody streak 15: clSN value-identical to clC;
+            NOT ENGAGED.
+    G3      At the recorded flip rates (uhD->uhY 1/30, ugD->ugY 2/30,
+            ugKD->ugKY 1/30), a rescue-neutral fix fails at least one of the
+            3 stock comparisons with probability about 0.6, and one of all 6
+            with about 0.8. The CRN channel, an automatic FAIL under G3(a),
+            carries its own rate: P(lower) about 0.27 per 30-run set (D-10).
+9.5 ARMS, TAGS, RUNS AND TIME
+  TAGS, pre-registered. Checked unused before launch, across _ffr_<tag>_*,
+  _ffr_logs/<tag>_*, _rblatch_camp2_<shard>*_D_*, _ffr_rb_<shard>.log and
+  pytest logs (the mgD lesson):
+    stock  clB clC clE2 clH clSN clA   (conditional: clE1 clSB clFZ clFD clFJ
+                                        clOC clOA clP*)
+    CRN    clKC clKE2 clKH clKA        (conditional: clKE1 clKP*)
+    rb     clGC clGE2 clGH clGSN clGA  (conditional: clGE1 clGSB), each with
+                                        shards a/b/c/s
+    pytest cl1 (base, p0, sim variants)
+  No tag is a prefix of another inside its family.
+  RUNS
+    stage 1 (G1)  clB C13 13 + clC C13 13 + clC U30 30 + clKC U30 30 = 86
+                  + clGC 4 shards
+                  + the suite (G6a), alongside
+    stage 2 (the C13 screen, 9.6)
+                  stock clE2 clH clSN clA:  4 x 13 = 52
+                  CRN   clKC clKE2 clKH clKA: 13 + 3 x 13 = 52
+    stage 3       stock:
+                    clC      N30 + RB7 = 37
+                    clE2 clH clA      3 x (U30 + N30 + RB7) = 3 x 67 = 201
+                    clSN     U30 + N30 + RB7 = 67 (stock-only identity check;
+                             CRN not needed while predicted identical)
+                  CRN:
+                    clKC     N30 = 30
+                    clKE2 clKH clKA   3 x (U30 + N30) = 180
+                  rb shards: clGE2 clGH clGSN clGA = 16
+                  sim suite variants, alongside
+    TOTAL         about 705 simulation runs and 20 shard processes.
+    CONDITIONAL
+      clE1 + clKE1 (+4 shards)    only if clE2 fails a gate OTHER than G2:
+                                  ~153 runs
+      clSB (+4 shards)            only if D-1 = yes: ~80 runs
+      combination re-run          if >= 2 fixes pass and clA holds a failing
+                                  one: ~150 runs + 4 shards
+      flip gate                   clFZ 13 + clFD 43 (+ clFJ 13)
+      D-4                         clOC/clOA, C13 + U30 stock: 86 runs
+      D-9 SERVED probe            ~12-18 runs
+      G5 hinge CRN pairs          as needed
+  TIME (concurrency, not step count, drives the per-run cost, so this is a
+  range)
+    BEST, 12 at once:
+        (~413 stock x 516 s + ~292 CRN x 516 s x 1.22) / 12      ~9.2 h
+        + rbgate, 20 shards x ~2.45 k s / 12                      ~1.1 h
+        = about 10 h
+    MEASURED THROUGHPUT (the only recorded 360-step wave of this code:
+    _uh_wave.log, 72.8 s/run at 7.1 concurrent):
+        ~15.5 h + rbgate 20 x ~2.45 k s / 7.1 ~1.9 h = about 17.5 h
+    The suites overlap the waves. Stage 1 re-projects the budget from its
+    measured per-run wall, split by harness, before stage 2 starts.
+    The conditional work, if ALL of it runs (about 404 stock, 155 CRN, 12
+    shards), adds about 8 h at the best rate and about 13 h at the measured
+    throughput.
+9.6 ORDER AND STOP RULES
+  1. STAGE 1 (86 runs + clGC + suite G6a) -> evaluate ALL of G1 and G6a.
+     STOP on any failure. A G6a failure that needs a source fix is repaired,
+     and the suite re-run, before any wave.
+  2. STAGE 2, the C13 screen. Any AUTOMATIC FAIL halts that arm's U30/N30
+     lines and reports it as failing:
+       - a longer matched leg on an identical fire;
+       - an invariant breach;
+       - CRN rescued lower on C13 (G3 a), or a lost victim attributable to the
+         fix in either instrument (G3 b).
+     clA's lines are then replaced by the combination of the still-passing
+     fixes.
+  3. STAGE 3: U30 + N30 + RB7 for the surviving arms, with the rbgate shards
+     and the sim suites alongside. Re-check the seed freezes after every wave.
+  4. Analysis -> the combination re-run if needed -> the flip commit -> G7
+     (flip gate, G6b) -> merge only on a pass.
+  Hygiene for every wave:
+    - tags checked unused beforehand;
+    - git status --porcelain -uno after the wave;
+    - no commit to the checkout mid-wave.
+  QUARANTINE, for all of Part 2 and 3:
+    - Every new lister (_cl_queue, _cl_validate, _cl_analyze, the tag check,
+      the seed-guard checks) lists outputs/ and outputs/_ffr_logs/
+      NON-recursively, and skips '_firemech_rewound_20260914' by name before
+      opening anything.
+    - Any recursive search carries --exclude-dir=_firemech_rewound_20260914 (or
+      -prune); a post-filter does not count.
+    - git status runs only as --porcelain -uno.
+    - Every Part 2/3 agent prompt carries these as hard rules and names the
+      directory. The Grep and Glob tools are never pointed at outputs/ or the
+      repo root.
+9.7 WHAT MAKES ME STOP AND REPORT RATHER THAN SHIP
+  - any identity failure (G1, G7), or an invariant breach;
+  - the pre-wave kernel check failing;
+  - the seed freeze failing;
+  - a longer matched leg on an identical fire;
+  - rescued lower in CRN, or a lost victim attributable to a fix;
+  - a new test failure, at any variant or at the flipped defaults.
+  And every 9.4 item routed to you, reported as a STOP item rather than
+  resolved by me:
+  - a stock-only rescued loss (G3);
+  - a G2 rise in one instrument only;
+  - N30 clC M1c = 0 ("not measurable out of sample");
+  - a longer leg on a diverged fire (D-3);
+  - a fix that is NOT ENGAGED (D-9);
+  - any clSN stock loss or extra death;
+  - a clA failure while every fix in it passes singly.
+
+================================================================================
+10. OUT OF SCOPE, FOUND ON THE WAY (not implemented, not bundled)
+================================================================================
+  - The approach-leg idle-retreat latch (instance ii). Out of scope by the
+    brief; untouched.
+  - RETREAT BEFORE PICKUP. An assigned, non-exiting unit standing on its live
+    victim in a burning, smoky or fire-adjacent cell steps off instead of
+    picking it up (agents.py:1736 runs before 1781). Recorded twice after a
+    drop: fmES e/h/101 @132-133 and dcC/dfC e/h/909 @135-137. Both victims
+    later died on that cell. HOLD makes this unreachable for carriers; it
+    remains live on the approach leg.
+  - A CARRIED-OUT VICTIM SCORED UNREACHABLE: ugKC east/half/1252362635
+    victim_1 @71, recorded once.
+    - Its unit was route_blocked on the approach, so the escape found no pair
+      and marked the victim unreachable and cancelled without an unassign.
+    - The unit kept the binding and carried the victim out at 98.
+    - finalize refused the cancelled victim.
+    Same function as D3, different population.
+  - Off-grid hand-over units are not reachability starts either. Rung 2 would
+    cover the dcC/dfC 606 shape only because the carrier was a start during
+    the carry.
+  - _unassign_firefighter (wildfire_model.py:4902-4917) has no caller: dead
+    code.
+  - outputs/_ih_arms.py can no longer read current runs. It unpacks 4-field
+    uav_steps rows, which now have 6 fields.
+  - outputs/_ug_seeds.py's U30 guard is broken for the fourth time (8.3).
+    _ug_analyze, _uh_analyze, _ug_queue and _uh_queue all die at import with
+    "U30 MISMATCH" today.
+
+================================================================================
+11. DECISIONS FOR THE MAINTAINER
+================================================================================
+  D-1  SERVED rung 2 (the carrier as a reachability start for other victims).
+       - Recorded population: 21 victims, 18 of the 19 in the 9 cases already
+         detected.
+       - It has 0 in the shipped configuration, changes other victims' fates,
+         and would ship unmeasured.
+       Recommended: NOT in this round. Its design stays in 4.3.
+  D-2  Junk mapping while a switch ships at 0: 1 (MODE), True (HOLD), 1
+       (SERVED). At the flip: the shipped value. Recommended as stated.
+  D-3  "None gets longer" on a DIFFERENT fire. The proposal (9.4):
+       - identical fire -> automatic FAIL;
+       - diverged fire -> reported with its cause, and goes to you.
+       Unmatched and downstream legs are bounded by the M1c set counts, and
+       their coverage is reported. Or choose instead:
+       (b) a set-level rule: post-divergence max and total excess not higher
+           than clC's on any set/instrument; or
+       (c) strict: every longer leg fails.
+  D-4  Also screen the fire-mechanic-OFF configuration (clOC/clOA; C13 + U30
+       stock; 86 runs) as a HARM check. It cannot credit HOLD or SERVED: their
+       populations at this source are also near-empty with the mechanic off.
+       Optional.
+  D-5  The budget (9.5): about 10-18 h of pool time, plus up to about 8-13 h
+       if ALL the conditional work runs, with the staged order and stop rules
+       of 9.6.
+       Includes: MODE 1 runs only as a fallback (conditional), and SERVED runs
+       stock-only as an identity check.
+  D-6  Anything in the three designs to change before Part 2.
+  D-7  The brief's "stalled exit legs FALL" applies to MODE (D1) and to clA,
+       through the stalled-or-broken count on N30. HOLD and SERVED cannot meet
+       it when they work: a success turns a broken carry into a long completed
+       one. They are gated on:
+         - M1c not higher;
+         - none longer;
+         - G3-G6;
+         - their engagement and credit.
+       This narrows the brief's literal per-fix gate. Accept?
+  D-8  The brief asks to confirm that a trapped carrier still gets help.
+       Under HOLD 1, NO unit is dispatched to it. Recommended: accept.
+       - The co-located carrier is the best-placed rescuer.
+       - Dispatched help arrives about 30 steps after every recorded enclosure
+         resolved.
+       - Today's replacements never re-picked up a victim (0 of 22).
+       A default-off "support request" rung is possible but predicted inert
+       (~150 runs).
+  D-9  SERVED will almost surely be NOT ENGAGED in the planned sets. Options:
+       (a) it stays OFF, reported as correct by unit tests and identity but
+           unmeasured;
+       (b) RECOMMENDED: a small CRN "last unit standing" probe, frozen and
+           written down before any run:
+           - Take long recorded shipped-configuration carries: U30
+             south/half/1048395951 (ff_unit_0, 132 -> 263) and east/half/
+             1433805104 (206 -> 282), plus east/def/1420331661 under CRN.
+           - Kill the non-carrying firefighter at the carrier's pickup step,
+             through the model's own casualty path, in an out-of-tree probe.
+           - Pre-screen each tuple at SERVED 0 and keep it only if a custody
+             marking occurs.
+           - Then run SERVED 0 vs 1, stock and CRN: about 12-18 runs.
+           - Reported as mechanism evidence, never as an outcome result.
+       Same question for HOLD, if its only convertible trigger (U30
+       1291443119) does not engage in clH: an optional attribution wave on
+       fmDRY east/half/101 and f2cEFS east/half/404 at their recorded
+       configurations. It is run only where a control at this source first
+       reproduces the recorded run value for value (the r3* precedent).
+  D-10 G3 has zero tolerance, as the brief writes it. At the recorded flip
+       rates, a rescue-neutral fix fails at least one of the 3 stock
+       comparisons about 60% of the time, and one of all 6 about 80% of the
+       time.
+       - The design routes a stock-only, unattributable loss to you rather
+         than failing it automatically.
+       - The CRN channel, however, is an AUTOMATIC fail under G3(a), and it
+         has its own false-fail rate: P(lower) about 0.27 per 30-run set.
+       Do you want a tolerance (the ungated round used M = 3), for stock, for
+       CRN, or both? I have not added one.
+
+================================================================================
+12. THE ADVERSARIAL REVIEW, AND HOW EACH FINDING WAS RESOLVED
+================================================================================
+  6 critics, one per lens, and 45 verifiers, one per material finding. Result:
+  28 CONFIRMED, 17 PARTLY, 0 refuted, plus 22 low findings. Everything is
+  verbatim in outputs/_cl_part1_review.txt. Where a verifier corrected the
+  critic's fix, the VERIFIED fix was applied. Rejected parts are named below.
+  COMPLETENESS (brief)
+    F1   stalls FALL vs conversions   -> M1c, D-7, the corrected HOLD/SERVED
+                                         prediction (9.3, 9.4)
+    F2   "help" answered by           -> 3.3 rewritten, D-8. The HOLD=2 arm is
+         redefinition                    NOT added: predicted inert
+    F3   inert test unfailable        -> engagement and credit, D-9 (9.4)
+    F4   the flip unmeasured          -> G7 (section 7)
+    F5   "0 of 22 reached" wrong      -> C5 recounted with keys
+    F6   fire-free vs clean           -> REJECTED as a departure (it is the
+                                         diagnosis's definition); wording and
+                                         replayed numbers added (2.3)
+    F7   U30 guard misses _ffr_xs     -> 8.3
+    F8   replay extensions only in    -> _cl_replay block 2 + evidence dir;
+         Temp; binding trap              8.4(a)
+    F9   pre-labelled carrier         -> the relabel in the hold (3.2a)
+    F10  none-longer coverage         -> coverage + pre/post divergence split
+                                         (M1), D-3
+    F11  quarantine disclosure        -> header; selector pathspec
+    F12  stop line / placeholders     -> the banner; D-list fixed
+    F13  "exact for OFF" overstated   -> 2.3.5 caveats + mapping
+    low  F14-F19                      -> applied (edge case (i), fidelity,
+                                         guard skips, budget range, HOLD in
+                                         the slow tests, G3 routing / C13
+                                         wording / horizon STOP / tag hygiene
+                                         / every new lister skips the
+                                         quarantine by name, 9.6)
+  FINAL CHECK (3 more agents, on this text: numbers vs the frozen sources,
+  internal consistency, brief completeness): 23 small corrections, all
+  applied. They include:
+    - the 371 runs relabelled as all ungated-round arms (118 shipped);
+    - MODE 1's prediction restated per metric;
+    - the dangling "9.8" references removed;
+    - the 783-passed count added to G6;
+    - the quarantine rule extended to Part 2/3;
+    - the 9.6 / 9.7 routing aligned with G3;
+    - clSN's stock-only G3/G4;
+    - clA pinned to the D-1 answer;
+    - the drop classes defined;
+    - the time figures recomputed;
+    - the traversal attributed to the D3-3 verifier.
+  HOLD
+    D2-1 HOLD alone feeds D3          -> the enclosure start, mirroring today's
+                                         drop (3.2b). The critic's per-step
+                                         stamp was replaced by a stateless
+                                         test
+    D2-2 help evidence mis-stated     -> C5, 3.3
+    D2-3 hold unmeasured and unbounded -> M-HOLD, the <= 30 bound, the endings
+    D2-4 suite never runs HOLD ON     -> 8.5, G6 per variant, G6b
+    low  D2-5..D2-8                   -> the relabel; wording of the guard;
+                                         M2 keys; "hold + extinguish" named in
+                                         3.3 as out of scope
+  IDENTITY
+    KS-1 flip gate                    -> G7
+    KS-2 no record of branches        -> the sidecar (5.3); in-run switch
+                                         values; the extra_params key check
+    KS-3 rbgate path identity         -> 9.1(e), clGC == ugGD
+    KS-4 G1 needs U30 in stage 1;     -> stage 1 = 86 runs; field sets per
+         field sets                      check
+    KS-5 CRN via the wrong harness    -> two queues and pools; _cl_validate
+    KS-6 test switch leakage          -> the restore fixture with its canary
+    low  KS-7..KS-10                  -> junk exception documented; SERVED=2
+                                         refused; per-run source stamps; CRN
+                                         P2 in _cl_analyze; no .venv junction
+  MEASUREMENT
+    P3-01 MODE 1 cannot pass G2       -> MODE 1 prediction (2.2); clE1
+                                         conditional. The critic's "not higher"
+                                         pass line for MODE 1 is REJECTED:
+                                         it would weaken the brief's gate
+    P3-02 G5 has no re-roll rule      -> the ungated rule + RB7 runs + clGC
+    P3-03 flip commit                 -> G7. The critic's pre-flip clZ is
+                                         REJECTED: it duplicates clC
+    P3-04 inert rule                  -> engagement and credit, D-9
+    P3-05 conversions counted as      -> M1c, D-7
+          stalls
+    P3-06 G1 order                    -> stage 1
+    P3-07 in-fire is 0 by             -> M7 decision-time in-fire. The
+          construction                   critic's claim that M7 differs from
+                                         the replay's count is REJECTED: they
+                                         match, 123 = 123
+    P3-08 M4 row index                -> M4 definition + pre-wave census
+                                         reproduction
+    P3-09 U30 guard                   -> 8.3
+    P3-10 mixed queue                 -> two queues
+    P3-11 U30 in-sample, C13 in       -> N30 is the evidence set in G2;
+          G2 pool                        in-sample statuses in 9.2
+    P3-12 G3 has 6 comparisons, no    -> the two-channel G3 rule; D-10
+          disagreement rule
+    P3-13 budget                      -> a range, with the conditional work
+                                         listed
+    low  P3-14..P3-16                 -> the sidecar replaces the smoke-based
+                                         check; the selector provenance
+                                         corrected; the full tag table
+  MODE 1/2
+    D1-01 MODE 1 predicted to raise   -> 2.2 prediction, M1c
+          raw stalls
+    D1-02 kernel check vacuous        -> 8.4 (a)-(d)
+    D1-03 clean vs fire-free          -> REJECTED as a trade-off decision
+                                         (the gap rung lengthens the one leg
+                                         it touches); wording and numbers
+                                         added
+    D1-04 no path/fallback record     -> the sidecar + M11 + the one-sided
+                                         invariant
+    low  D1-05..D1-07                 -> edge case (i) + M10; the order
+                                         constant; the burning start. The
+                                         clE2-vs-clE1 credit is noted but not
+                                         run unless clE1 runs
+  SERVED
+    D3-1 inert in shipped config      -> the prediction, D-9 probe, clSN
+                                         stock-only
+    D3-2 "cannot help it"             -> reworded to "cannot get it rescued";
+                                         dead reported. The critic's d4off
+                                         "adverse shape" is REJECTED (the
+                                         replay reaches safety)
+    D3-3 side-effect channels         -> 4.2 + the footprint invariant; the
+                                         critic's per-step predicate check is
+                                         REJECTED (not recorded, cannot
+                                         discriminate)
+    D3-4 rung 2 value                 -> 18 of 19 were detected (the critic's
+                                         "15 undetected" REJECTED: a label
+                                         artefact); who rescues; clA pinned to
+                                         the D-1 answer
+    D3-5 suite never runs SERVED ON   -> 8.5
+    low  D3-6, D3-7                   -> 606 is covered by rung 2 (21
+                                         victims); rung-2 spec is starts-only;
+                                         the tests added
