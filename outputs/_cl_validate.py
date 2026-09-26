@@ -30,6 +30,12 @@ for kind ff only, adds these checks AFTER its check returns VALID
       otherwise zero its counters silently and pass H1(f)/H12 vacuously;
   (8) COUNTERS: model_steps == the line's steps, models_built == 1, observer_errors == 0
       (exact ints).
+  CL Part 3 (2026-09-26, before the D-9 probe wave):
+  (9) PROBE: outputs/_cl_probe.sidecar_problem(line sets, sidecar) is empty. A line
+      with CLP_ keys is VALID only with the sidecar evidence that _cl_probe.py ran and
+      resolved exactly its one kill (a CLP line run through _cl_obs_stock.py /
+      _cl_obs_crn.py kills nobody and exits 0 - it must never read VALID); a line
+      without them must carry no probe_ counter or event. Reason prefix "PROBE: ".
   Every queue tag must be a carrying-leg tag (^cl[A-Za-z0-9]+$), else SystemExit: a
   run of an earlier round has no sidecar and would read INVALID, and the pool moves
   INVALID runs aside - this validator must never be pointed at another round's queue.
@@ -66,6 +72,7 @@ import shutil  # noqa: E402
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import _dcd4rb_validate as rbv  # noqa: E402
+import _cl_probe  # noqa: E402  (check (9): sidecar_problem is pure; importing runs nothing)
 
 BASE_WORKTREE = os.path.abspath("E:/Projects/SAS_wt/base6160438")
 TAG_RE = re.compile(r"^cl[A-Za-z0-9]+$")
@@ -289,6 +296,11 @@ def cl_check(run):
         got = ct.get(key)
         if not _exact_int(got) or got != want:
             return "INVALID", "sidecar counters.%s=%r, expected %d" % (key, got, want)
+
+    # (9) CL Part 3: the D-9 probe's own evidence (and no probe trace on any other line)
+    why = _cl_probe.sidecar_problem(run["sets"], sc)
+    if why:
+        return "INVALID", "PROBE: " + why
     return "VALID", ""
 
 
