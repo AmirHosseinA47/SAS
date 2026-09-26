@@ -1308,6 +1308,44 @@ def ff_exit_leg_served() -> int:
     return EXIT_LEG_SERVED_JUNK
 
 
+# Mode 2's search order: +x, -x, +y, -y. Its OWN constant, deliberately not
+# ORTHOGONAL_OFFSETS below, which is documented as the victim-flee tie-break - a future
+# flee change must not move the carrier's path (pinned by a test).
+EXIT_LEG_SEARCH_ORDER = ((1, 0), (-1, 0), (0, 1), (0, -1))
+# _last_move_tier labels, read by nothing but the movement-reason record: 1-4 are
+# _move_toward's tiers, 5 a mode-2 path step, 6 a HOLD.
+EXIT_LEG_PATH_TIER = 5
+EXIT_LEG_HOLD_TIER = 6
+
+
+def exit_leg_first_step(start, passable, is_boundary, out_of_bounds, order=EXIT_LEG_SEARCH_ORDER):
+    """First cell of a shortest path from `start` to any boundary cell, or None.
+
+    Breadth-first over 4-neighbours in `order`. `start` itself is never tested. A
+    neighbour is entered only if it is in bounds and `passable`; the goal test runs at
+    DISCOVERY, after the passable test, so a goal must be passable too. The first goal
+    discovered is at minimum depth, ties going by discovery order; the answer is the
+    path's first cell, recovered through first-discovery parents. Pure: no state, no
+    RNG. It is the offline replay's bfs_first_step (outputs/_cl_replay/fs_rules.py,
+    strict=True) with the tests passed in, so that replay can drive this very kernel.
+    """
+    prev = {start: None}
+    queue = deque([start])
+    while queue:
+        cx, cy = queue.popleft()
+        for ox, oy in order:
+            cell = (cx + ox, cy + oy)
+            if cell in prev or out_of_bounds(cell) or not passable(cell):
+                continue
+            prev[cell] = (cx, cy)
+            if is_boundary(cell):
+                while prev[cell] != start:
+                    cell = prev[cell]
+                return cell
+            queue.append(cell)
+    return None
+
+
 # Orthogonal offsets in a FIXED order for the victim's flee scan. The same four
 # offsets in the same order are hardcoded in `Firefighter._neighbor_cells`; that
 # copy is deliberately left alone so the firefighter's approach path stays
@@ -1890,7 +1928,13 @@ class Firefighter(mesa.Agent):
                 )
                 recorded = True
         elif self.exiting and self.exit_target:
-            if self.pos == self.exit_target:
+            # Carrying-leg D1: at mode >= 1 any boundary cell completes the rescue, not
+            # only the exit cell fixed at pickup. The exit-cell test runs first and the
+            # boundary test only at a non-zero mode, so mode 0 is today's test.
+            exit_mode = ff_exit_leg_mode()
+            if self.pos == self.exit_target or (
+                exit_mode != 0 and self._on_grid_boundary(self.pos)
+            ):
                 if not hasattr(self.model, "_agents_pending_removal"):
                     self.model._agents_pending_removal = []
                 self.model._agents_pending_removal.append(self)
@@ -1903,14 +1947,20 @@ class Firefighter(mesa.Agent):
                 print(
                     f"[Rescue Complete] FF-{self.unit_id} exited with victim"
                 )
+                complete_factors = {"exit_target": self.exit_target}
+                if self.pos != self.exit_target:
+                    complete_factors["exit_cell"] = self.pos
                 self._record_movement_reason(
                     "exiting_complete",
                     "carrying rescued victim to boundary (exit complete)",
-                    exit_target=self.exit_target,
+                    **complete_factors,
                 )
                 recorded = True
             else:
-                self._move_toward(self.exit_target)
+                if exit_mode == 2:
+                    self._exit_leg_step()
+                else:
+                    self._move_toward(self.exit_target)
                 if self.rescued_victim is not None:
                     try:
                         self.model.grid.move_agent(
@@ -2438,6 +2488,65 @@ class Firefighter(mesa.Agent):
         if self.model.grid.out_of_bounds(cell):
             return True
         return self._cell_contains_active_fire(cell)
+
+    def _on_grid_boundary(self, cell) -> bool:
+        """True iff at least one 4-neighbour of `cell` is outside the grid.
+
+        mesa's own bounds, so exactly the set the pickup draws exit_target from on any
+        grid shape, with no HEIGHT/WIDTH arithmetic that could be transposed.
+        """
+        grid = self.model.grid
+        cx, cy = int(cell[0]), int(cell[1])
+        for ox, oy in EXIT_LEG_SEARCH_ORDER:
+            if grid.out_of_bounds((cx + ox, cy + oy)):
+                return True
+        return False
+
+    def _exit_leg_step(self) -> str:
+        """One carrying step at FF_EXIT_LEG_MODE 2. Returns "path" or "fallback".
+
+        Takes the first step of exit_leg_first_step over CLEAN cells - not burning, not
+        fire-adjacent, not smoky: _move_toward's own tier-1/3 test, through the unit's
+        own helpers - to the nearest boundary cell. With no clean path, today's rule
+        runs unchanged: _move_toward(exit_target), whose no-neighbour branch is the
+        drop (HOLD 0) or the hold (HOLD 1). Recomputed from scratch every step against
+        this step's fire and smoke; nothing is stored, exit_target is not rewritten,
+        and no RNG is drawn. A path step lands on a risk-0 cell, which no choice
+        today's tiers could make from the same cell beats.
+        """
+        grid = self.model.grid
+        burning: dict = {}
+
+        def is_burning(cell):
+            hit = burning.get(cell)
+            if hit is None:
+                hit = burning[cell] = self._cell_contains_active_fire(cell)
+            return hit
+
+        def passable(cell):
+            if is_burning(cell):
+                return False
+            cx, cy = cell
+            for ox, oy in EXIT_LEG_SEARCH_ORDER:
+                if is_burning((cx + ox, cy + oy)):
+                    return False
+            return not self._cell_has_active_smoke(cell)
+
+        start = (int(self.pos[0]), int(self.pos[1]))
+        first = exit_leg_first_step(
+            start, passable, self._on_grid_boundary, grid.out_of_bounds
+        )
+        if first is None:
+            self._move_toward(self.exit_target)
+            return "fallback"
+        self._last_move_tier = EXIT_LEG_PATH_TIER
+        self._last_move_risk = 0
+        # _move_toward's own tail: a unit still labelled route_blocked that moves is
+        # relabelled, so a carrier is never left invisible to the victim lookup.
+        if str(getattr(self, "status", "") or "").strip().lower() == "route_blocked":
+            self.status = "assigned" if self.assigned else "available"
+        grid.move_agent(self, first)
+        return "path"
 
     def _move_toward(self, target):
         tx, ty = target
