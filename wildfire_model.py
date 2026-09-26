@@ -4984,6 +4984,29 @@ class WildFireModel(mesa.Model):
                 queue.append(nxt)
         return reachable
 
+    def _exit_leg_held_cell(
+        self, ff_marker: Any, burning: set[tuple[int, int]]
+    ) -> tuple[int, int] | None:
+        """The cell of a live, on-grid CARRIER whose every in-grid neighbour burns - the
+        FF_EXIT_LEG_HOLD condition, re-derived from `burning` - else None."""
+        if getattr(ff_marker, "dead", False):
+            return None
+        if str(getattr(ff_marker, "status", "") or "").strip().lower() == "dead":
+            return None
+        if not getattr(ff_marker, "exiting", False):
+            return None
+        pos = getattr(ff_marker, "pos", None)
+        if pos is None:
+            return None
+        cx, cy = int(pos[0]), int(pos[1])
+        for ox, oy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+            cell = (cx + ox, cy + oy)
+            if self.grid.out_of_bounds(cell):
+                continue
+            if cell not in burning:
+                return None
+        return (cx, cy)
+
     def _update_unreachable_victims(self) -> None:
         """Periodic escape hatch: isolated victims become unreachable after N steps."""
         managed = getattr(self, "managed_victims", None)
@@ -5012,6 +5035,16 @@ class WildFireModel(mesa.Model):
             starts.append(cell)
 
         burning = self._active_burning_cells()
+        if agents.ff_exit_leg_hold():
+            # Carrying-leg D2: a carrier HOLDING an enclosed cell is a reachability
+            # start, as today's dropped ex-carrier is, so a hold resets its victim's
+            # isolation streak exactly as the drop it replaces does. From an enclosed
+            # cell the search reaches only that cell, so no other victim's flags move.
+            # Stateless (the hold condition is re-derived) and NOT added to `living`.
+            for ff_marker in ff_markers.values():
+                held = self._exit_leg_held_cell(ff_marker, burning)
+                if held is not None:
+                    starts.append(held)
         reachable_cells = self._safe_path_reachable_cells(starts, burning)
 
         prev_dists = getattr(self, "_ff_victim_distances", None)
@@ -5322,13 +5355,26 @@ class WildFireModel(mesa.Model):
                 self._victim_id_from_agent(victim_ref) if victim_ref is not None else ""
             )
             if had_active_rescue and casualty_vid:
+                casualty_meta = {"reset_victim_pending": True}
+                if (
+                    getattr(ff_marker, "exiting", False)
+                    and agents.ff_exit_leg_hold()
+                    and not self._victim_needs_rescue(casualty_vid, victim_ref)
+                ):
+                    # Carrying-leg D2: a HELD carrier can die in custody, which today
+                    # never happens (the drop clears the binding first). Its co-located
+                    # victim was swept dead just above, and reset_victim_pending would
+                    # relabel that corpse's marker "confirmed" - so, exactly as
+                    # _release_other_claimants does for a terminal victim, the flag is
+                    # omitted. A victim that still needs rescue keeps today's reset.
+                    casualty_meta = {}
                 self._execute_physical_rescue_via_executor(
                     PhysicalRescueCommand(
                         action="unassign",
                         victim_id=casualty_vid,
                         firefighter_id=str(ff_id),
                         reason="firefighter_fire_casualty",
-                        metadata={"reset_victim_pending": True},
+                        metadata=casualty_meta,
                     )
                 )
             ff_marker.dead = True

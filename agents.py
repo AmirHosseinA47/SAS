@@ -2548,6 +2548,29 @@ class Firefighter(mesa.Agent):
         grid.move_agent(self, first)
         return "path"
 
+    def _exit_leg_enclosed(self) -> bool:
+        """The HOLD trigger. Called only from _move_toward's no-neighbour branch, where
+        every in-grid neighbour burns, so True means an ENCLOSED CARRIER. A pure read,
+        and a method only so an out-of-tree observer can count enclosures in every arm,
+        the HOLD-0 control included.
+        """
+        return bool(self.exiting)
+
+    def _exit_leg_hold(self) -> None:
+        """HOLD (FF_EXIT_LEG_HOLD 1): keep the cell, the victim and the task.
+
+        Raises nothing: no route_blocked, no event, no incident, no unassign, no
+        replacement pairing - the victim stays claimed, so no second unit is sent to a
+        cell no unit can reach. The next advance re-evaluates from scratch; the first
+        step a neighbour stops burning the unit moves and its victim moves with it. A
+        carrier that began its carry already labelled route_blocked (a second-raise
+        approach unit) is relabelled exactly as _move_toward's tail relabels it on a
+        move, so it is not held invisible to the victim lookup.
+        """
+        if str(getattr(self, "status", "") or "").strip().lower() == "route_blocked":
+            self.status = "assigned" if self.assigned else "available"
+        self._last_move_tier = EXIT_LEG_HOLD_TIER
+
     def _move_toward(self, target):
         tx, ty = target
         cx, cy = self.pos
@@ -2591,6 +2614,13 @@ class Firefighter(mesa.Agent):
             )
 
         if not scored:
+            # Carrying-leg D2: a carrier here - every in-grid neighbour burning - holds
+            # its cell and keeps its victim at HOLD 1, instead of raising route_blocked,
+            # whose replacement pathway unassigns it and drops the victim. Approaching
+            # units, and HOLD 0, take today's branch.
+            if self._exit_leg_enclosed() and ff_exit_leg_hold():
+                self._exit_leg_hold()
+                return
             self._mark_route_blocked()
             return
 
