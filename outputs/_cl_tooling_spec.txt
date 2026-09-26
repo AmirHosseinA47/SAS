@@ -1,0 +1,401 @@
+CARRYING-LEG ROUND - PART 2 TOOLING SPEC (the contract every _cl_* tool implements)
+Design: outputs/carryleg_part1.txt (sections 5.3, 8, 9) + the maintainer's answers of
+2026-09-26 (below). Source is DONE and committed (branch carryleg):
+  5f575d5 accessors   7a05ff4 D1   1d47cc8 D2   2d5c292 D3
+
+================================================================================
+A. HARD RULES FOR EVERY TOOL AND EVERY AGENT
+================================================================================
+  A1 QUARANTINE outputs/_firemech_rewound_20260914/: never read, list, open or
+     traverse. Every lister of outputs/ or outputs/_ffr_logs/ is NON-recursive and
+     skips that name by string compare BEFORE doing anything with an entry. Any
+     recursive search carries --exclude-dir=_firemech_rewound_20260914 (grep) or
+     -prune (find; NEVER `-not -path`, it does not prune). The Grep/Glob TOOLS are
+     never pointed at outputs/ or the repo root. git status only as --porcelain -uno.
+     `git ls-files --others` must carry ':(exclude)outputs/_firemech_rewound_20260914'.
+  A2 Do not edit agents.py, wildfire_model.py, common_fixed_variables.py,
+     src_extension/, evaluate_scenarios.py, serve_dashboard.py, outputs/_ffr_harness.py,
+     outputs/_fm2_probe_harness.py, outputs/_rblatch_campaign2.py (all FROZEN for the
+     round). Only create/edit the files your task names.
+  A3 Python: E:\Projects\SAS\.venv\Scripts\python.exe (3.10.11, mesa 1.2.1), always -B
+     (no __pycache__ in the repo). New files: UTF-8, LF line endings (write with
+     newline="\n"). Scripts with prose/apostrophes are written with the Write tool,
+     never a bash heredoc.
+  A4 No simulation, pool or pytest run unless your task says so. Never write into a
+     path that already exists unless your task says so (tag-collision lesson).
+  A5 Every number a tool prints must come from recorded files or be a stated
+     constant from this spec. Tools fail LOUDLY (SystemExit with a message) on any
+     provenance mismatch; they never silently skip.
+
+================================================================================
+B. MAINTAINER ANSWERS (2026-09-26) THAT CHANGE THE PART 1 DESIGN
+================================================================================
+  D-1  SERVED rung 2 NOT built. FF_EXIT_LEG_SERVED is 0/1 only; any queue line or run
+       with FF_EXIT_LEG_SERVED=2 is REFUSED by _cl_queue.py and _cl_analyze.py.
+  D-3  A matched leg longer on an identical fire: AUTOMATIC FAIL. Longer on a changed
+       fire: reported with its first differing step, its cause AND THE CRN
+       COMPARISON FOR THAT SEED (the same tuple/unit/victim in the CRN arms).
+  D-4  YES: clOC / clOA, fire mechanic OFF (--set FF_FIREFIGHT_EXTINGUISH=0 --set
+       FF_FIREFIGHT_FIREBREAK=0), C13 + U30, stock, 360 steps.
+  D-7  HOLD and SERVED gate on M1c (stalled-or-broken) NOT HIGHER; report M1c and the
+       completed-only stall counts (M1a, M1b) SEPARATELY, side by side.
+  D-8  "No unit is sent" to a trapped carrier: accepted. Its evidence goes in the
+       report prominently.
+  D-9  Run the SERVED population probe and ship on it; SERVED is documented as
+       "UNTRIGGERED IN PART 3" wherever it is not engaged.
+  D-10 A DERIVED STOCK TOLERANCE, stated before any run (outputs/_cl_tolerance.txt):
+       a stock rescued loss on a set greater than T=2 FAILS (C13, U30, N30 each);
+       1..2 passes but is listed victim by victim.
+       CRN (REVISED 2026-09-26 on the maintainer's ruling; carryleg_prereg.txt section 0):
+       the PER-SET TOTAL with ZERO tolerance - a set whose total rescued falls FAILS.
+       Per-seed moves are not a failure on their own; the per-seed detail (seeds up,
+       seeds down, each flipped victim) is reported beside every total.
+
+================================================================================
+C. ARMS, SETS, TAGS, FLAGS
+================================================================================
+  COMMON FLAGS on every ff run: --steps 360 --set BATCH_SIZE=360 --uav-actions
+  SETS (never pooled across sets):
+    C13  east/half 101 202 303 404 505; south/half 101 202 303 404 505;
+         east/default 101 202 303
+    U30  outputs/_ug_seeds.txt (frozen; parse with _cl_seeds.frozen_u30-style regex:
+         "^(east|south)\|(half|default)\s+seed (\d+)")
+    N30  outputs/_cl_seeds.txt (frozen; _cl_seeds.frozen_n30(); _cl_seeds.check_frozen()
+         must pass)
+    RB7  east/half 111 222 333 444 606 808 909 (G5 re-roll instrument only; never
+         pooled into any set)
+  REPO for every arm: E:/Projects/SAS (the carryleg checkout), EXCEPT clB:
+         E:/Projects/SAS_wt/base6160438 (detached worktree at 6160438, no .venv junction)
+  STOCK ARMS (instrument stock; HARNESS outputs/_cl_obs_stock.py)
+    tag   switches (--set ...)                                     sets
+    clB   (none; the 6160438 worktree)                             C13
+    clC   (none)                                                   C13 U30 N30 RB7
+    clE2  FF_EXIT_LEG_MODE=2                                       C13 U30 N30 RB7
+    clH   FF_EXIT_LEG_HOLD=1                                       C13 U30 N30 RB7
+    clSN  FF_EXIT_LEG_SERVED=1                                     C13 U30 N30 RB7
+    clA   FF_EXIT_LEG_MODE=2 FF_EXIT_LEG_HOLD=1 FF_EXIT_LEG_SERVED=1  C13 U30 N30 RB7
+    clOC  FF_FIREFIGHT_EXTINGUISH=0 FF_FIREFIGHT_FIREBREAK=0       C13 U30
+    clOA  clOC's two + MODE=2 HOLD=1 SERVED=1                      C13 U30
+    clE1  FF_EXIT_LEG_MODE=1        CONDITIONAL                     C13 U30 N30 RB7
+  CRN ARMS (instrument CRN; HARNESS outputs/_cl_obs_crn.py; every line also
+            --set FM2P_CRN=1)
+    clKC  (none)                                                   C13 U30 N30
+    clKE2 MODE=2                                                   C13 U30 N30
+    clKH  HOLD=1                                                   C13 U30 N30
+    clKA  MODE=2 HOLD=1 SERVED=1                                   C13 U30 N30
+    clKE1 MODE=1                    CONDITIONAL                     C13 U30 N30
+  RBGATE SHARDS (kind rb; _rblatch_campaign2.py; 240 steps; shards a/b/c/s =
+    east 101,202,303,404,505 / east 606,707,808,909 / east 111,222,333,444 /
+    south 101,202,303,404,505; the arm's switches as --set in the extra field)
+    clGCa..s (none)  clGE2*  clGH*  clGSN*  clGA*   (conditional clGE1*)
+  LATER / CONDITIONAL: clFZ clFD clFJ (flip gate), clP* / clKP* (D-9 probe).
+  Tag uniqueness: before any queue is written, _cl_queue.py asserts that no file in
+  outputs/ (non-recursive) or outputs/_ffr_logs/ starts with _ffr_<tag>_ / <tag>_ /
+  _rblatch_camp2_<shard>_ / _ffr_rb_<shard>. and that none is tracked
+  (git ls-files). A hit is a STOP unless the file is from THIS round's own earlier
+  stage (it then must be a VALID run of the identical queue line).
+  Output names (the pool's): outputs/_ffr_<tag>_<wind>_<half|def>_<seed>.json
+  (+ .stdout.txt), outputs/_ffr_<tag>_<wind>_<half|def>_<seed>.clobs.json (sidecar),
+  outputs/_ffr_logs/<tag>_<wind>_<half|def>_<seed>.out/.err.
+
+================================================================================
+D. STAGES AND QUEUES (outputs/_cl_queue.py writes all of them, deterministic order)
+================================================================================
+  Queue line: kind|tag|repo|wind|roles|seeds|steps|extra     (roles: half|default)
+  ff extra: "--uav-actions --set BATCH_SIZE=360 [--set K=V ...]" ; steps 360
+  rb extra: "[--set K=V ...]" ; steps 240 ; seeds comma list ; roles half
+  Stage 1 (identity, G1):
+    _cl_s1_queue.txt      stock: clB C13, clC C13, clC U30; rb clGC a/b/c/s
+    _cl_s1_crn_queue.txt  CRN:   clKC U30
+  Stage 2 (the C13 screen):
+    _cl_s2_queue.txt      stock: clE2 clH clSN clA on C13
+    _cl_s2_crn_queue.txt  CRN:   clKC clKE2 clKH clKA on C13
+  Stage 3:
+    _cl_s3_queue.txt      stock: clC N30+RB7; clE2 clH clSN clA U30+N30+RB7;
+                                 clOC clOA C13+U30; rb clGE2/clGH/clGSN/clGA a/b/c/s
+    _cl_s3_crn_queue.txt  CRN:   clKC N30; clKE2 clKH clKA U30+N30
+  (An arm halted by the stage-2 screen is removed from its stage-3 lines with
+   `--drop <tag>` before the stage-3 queue is written; clA is then replaced by the
+   combination of the still-passing fixes, tag clA2.)
+  _cl_queue.py also: refuses SERVED=2 and any FM2P_ key on a stock line, requires
+  FM2P_CRN=1 on every CRN line, prints each queue's sha256, and runs the seed checks
+  (E below) first.
+
+================================================================================
+E. SEED FREEZE CHECKS (outputs/_cl_seedcheck.py; run before EVERY wave and analysis)
+================================================================================
+  (1) outputs/_ug_seeds.py choose() == frozen U30 (all 30, in order)  - after the
+      OWN fix: OWN = ("_ug","ungated","_ffr_ug","_rblatch_camp2_ug","ug","_uh",
+      "_ffr_uh","uh","_xs","_ffr_xs","xs","exitstall","_cl","_ffr_cl",
+      "_rblatch_camp2_cl","cl","carryleg")
+  (2) _cl_seeds.check_frozen() passes.
+  (3) _dcd4_seeds.choose() seeds == _cl_seeds.DCD4_FOURTH_SET.
+  (4) synthetic names are skipped by _ug_seeds._own: _ffr_clC_east_half_2070841104.json,
+      _ffr_clKC_south_half_903347495.json, clC_east_def_1749069988.out,
+      _cl_queue.txt, _ffr_xsTD_east_half_2070841104.json
+  Exit 0 and print "SEEDCHECK OK" only if all pass; otherwise SystemExit(1).
+
+================================================================================
+F. THE SIDECAR  outputs/_cl_obs.py  (+ _cl_obs_stock.py, _cl_obs_crn.py launchers)
+================================================================================
+  Pattern: outputs/_fm2_probe_harness.py. install(repo) puts --repo first on sys.path,
+  imports that checkout's agents / wildfire_model / common_fixed_variables /
+  src_extension.planning.rescue_planner, and wraps attributes with PASS-THROUGH
+  wrappers (call the original with the same arguments, return its result unchanged,
+  draw no RNG, create no attribute on any model/agent object). Then it runs the inner
+  harness via runpy in the same process:
+      _cl_obs_stock.py -> outputs/_ffr_harness.py
+      _cl_obs_crn.py   -> outputs/_fm2_probe_harness.py (which itself runs the harness)
+  After the inner harness returns 0, write <out-without-.json>.clobs.json (atomic
+  tmp + os.replace). NEVER modify the harness JSON or its .stdout.txt. If the inner
+  harness exits non-zero, write nothing and propagate the code.
+  A missing attribute (the 6160438 worktree has no ff_exit_leg_* / _exit_leg_*)
+  is recorded as "ABSENT" and not wrapped.
+  WRAPS (each wrapper increments counters and appends small events, capped at 5000):
+    agents.ff_exit_leg_mode / _hold / _served : not wrapped; instead the VALUES are
+        read once, at the first WildFireModel.step call (after apply_scenario_config),
+        via the module functions -> "switches": {"mode":..,"hold":..,"served":..} or
+        "ABSENT" per name.
+    WildFireModel.__init__ : capture the model instance (a module-level list in the
+        sidecar - NOT an attribute on the model).
+    WildFireModel.step : record the current step (evaluation_timesteps_counter AFTER
+        the call) for event stamping; first call reads the switches.
+    Firefighter._mark_route_blocked : if self.exiting before the call -> counter
+        "carrier_route_blocked" + event [step, unit_id, pos]. (Works at 6160438 too.)
+    Firefighter._exit_leg_enclosed : counter "enclosed_calls" and, when it returns
+        True, "enclosure_triggers" + event [step, unit, pos].
+    Firefighter._exit_leg_hold : counter "holds" + event [step, unit, pos, victim_id].
+    Firefighter._exit_leg_step : counters "path_steps" / "fallback_steps" from its
+        return value + event [step, unit, from, to, outcome].
+    WildFireModel._exit_leg_held_cell : counter "hold_starts" when it returns non-None.
+    WildFireModel._exit_leg_custody : per call, the set size; counter "custody_victim_steps".
+    rescue_planner._is_productively_served (the MODULE attribute; it is looked up as a
+        global at call time) : counter "served_by_custody_only" when
+        flags.get("in_custody") is True and the original logic WITHOUT that key would
+        return False; also "served_by_custody_only_not_geo" when additionally
+        flags["geo_reachable"] is False (that is a prevented streak increment). The
+        wrapper must compute "original without the key" by calling the original on a
+        shallow copy with "in_custody" removed - pure.
+    WildFireModel.apply_physical_rescue_command : for action "unassign" with reason
+        "firefighter_fire_casualty": event [step, ff, vid, sorted(metadata keys)].
+  At the end: "transition_log_sha256" = sha256(json.dumps(model._movement_transition_log
+  or [], sort_keys=True, default=repr)); "movement_reason_sha256" = sha256 of json of
+  {unit_id: movement_reason} over firefighter_marker_agents, sort_keys, default=repr.
+  Sidecar JSON keys: {"version":1, "harness": "stock"|"crn", "repo":..., "argv":[...],
+  "switches":{...}, "counters":{...}, "events":{name:[...]}, "transition_log_sha256",
+  "movement_reason_sha256", "absent":[names not found]}.
+  NON-PERTURBATION is proven by G1: clC (through the sidecar) must equal uhD (recorded
+  without it) on every key but tag and wall_s.
+
+================================================================================
+G. POOL + VALIDATOR  outputs/_cl_pool.sh, outputs/_cl_validate.py
+================================================================================
+  _cl_pool.sh = a copy of outputs/_ug_pool.sh with ONLY these changes, each marked CL:
+    - PREREG default outputs/carryleg_prereg.txt
+    - the SHIPPED line also prints FF_EXIT_LEG_MODE/HOLD/SERVED (cfv constants) AND the
+      accessor values (agents.ff_exit_leg_mode()/hold()/served())
+    - the SHIPPED-CONTROL line points at /e/Projects/SAS_wt/base6160438 and prints the
+      same keys (ABSENT expected for the new ones)
+    - POOL START logs harness=$HARNESS
+    - a start-up guard: exit 2 if any ff line's extra contains FM2P_ while
+      ${HARNESS##*/} != _cl_obs_crn.py, or lacks FM2P_CRN=1 while it is
+    - every LAUNCH and DONE line carries src=<sha256 of agents.py wildfire_model.py
+      common_fixed_variables.py src_extension/planning/rescue_planner.py, first 12
+      hex of the combined digest> and head=<git rev-parse --short HEAD>; if either
+      changes from the POOL START values the pool logs "SOURCE CHANGED" and stops
+      launching (running jobs finish)
+    - VAL points at outputs/_cl_validate.py
+  _cl_validate.py wraps outputs/_dcd4rb_validate.py (import it; do NOT edit it) and adds
+  for ff runs, after the existing check returns VALID:
+    - FM2P_ keys in the line's extra -> d["fm2p"]["config"] must equal them, value
+      types equal (True != 1); no FM2P_ key -> "fm2p" not in d
+    - no leftover <json>.fm2p.tmp
+    - the sidecar <stem>.clobs.json exists, parses, has version 1, and its "switches"
+      match the line's --set FF_EXIT_LEG_* values (0 where not set; "ABSENT" allowed
+      only when the line's repo is the base6160438 worktree)
+    - the JSON's "repo" equals the queue line's repo (normalised with os.path.abspath)
+  Everything else (CLI, VALID/INVALID/MISSING output, quarantine of bad files, rb
+  handling) behaves exactly as _dcd4rb_validate's.
+
+================================================================================
+H. THE ANALYZER  outputs/_cl_analyze.py  (+ helper modules outputs/_cl_*.py it imports)
+================================================================================
+  CLI: --stage 1|2|3|all  --out <txt>  (default outputs/_cl_analysis_s<stage>.txt).
+  Loads only files named by the queue files of the stages requested; for each run it
+  REFUSES (SystemExit) unless: tag/wind/roles/seed/steps(360)/extra_params match its
+  queue line; repo matches; fm2p state matches the instrument; the sidecar exists and
+  its switches match; every extra_params key is an attribute of common_fixed_variables
+  at the arm's repo (import-free check: parse the file text for "^KEY = "), except
+  FM2P_* keys (the probe's).
+  ROW CONVENTION (all metrics): an event stamped s happened during model step s;
+  ff_steps[s-1] / ff_bind_steps[s-1] / victim_steps[s-1] are the state AFTER step s;
+  the state at the START of step s is row s-2. Rows: ff_steps [ff, [x,y]|None, status,
+  assigned, exiting, dead]; ff_bind_steps [ff, bound vid|"", available, rescue_completed,
+  off_grid]; victim_steps [vid, [x,y]|None, status]; burn_intervals {"x,y": [[a, b|None],..]}
+  = burning in the post-step observation of steps a..b-1.
+  H1 IDENTITY (G1), all STOP on failure:
+    (a) clB vs clC on C13: every top-level key except {tag, repo, wall_s} equal
+        (params and extra_params EQUAL), incl. stdout_sha256/stdout_lines; sidecar
+        transition_log_sha256 and movement_reason_sha256 equal. 13/13.
+    (b) clC U30 vs recorded uhD (outputs/_ffr_uhD_*): every key except {tag, wall_s}.
+        30/30.
+    (c) prefix: clC C13 and clC U30 steps 1-240 vs recorded ugD (the _uh_analyze P2
+        method: every per-step series [:240] equal - fire_digests, victim_steps,
+        ff_steps, ff_bind_steps, uav_steps, uav_actions, partition_steps; every event
+        list cut at step <= 240 equal).
+    (d) CRN prefix: clKC U30 steps 1-240 vs recorded ugKD, same method, fm2p excluded,
+        fm2p.config == {"FM2P_CRN": 1} asserted on both.
+    (e) rb: clGC shard files vs _rblatch_camp2_ugGD{a,b,c,s}_D_{east|south}.json: every
+        top-level key except tag equal; evals equal elementwise after dropping wall_s.
+        4/4, 18/18.
+    (f) clC sidecars: switches 0/False/0; holds, path_steps, fallback_steps, hold_starts,
+        custody_victim_steps, served_by_custody_only all 0.
+    (g) info only: clOC U30 vs recorded uhC (every key except tag, repo, wall_s, params,
+        extra_params) - the mechanic-OFF control vs the recorded gated control.
+  H2 LEGS: per exit_start (unit, victim) paired with that unit's completion of that
+     victim before the victim's next exit_start. d = manhattan(pickup, recorded
+     exit_target) (nearest boundary); d_c = manhattan(pickup, completions[].pos).
+     M1a stalled iff n > d_c + 5; M1b iff n > d + 5 (n = completion step - exit step);
+     M1c per exit_start: completed & M1a-stalled, OR broken (no completion; end cause
+     from the unassign reason at the end step: replacement_after_blocked = drop,
+     firefighter_fire_casualty = died in custody, geographically_isolated = isolation
+     release; else "other"), OR horizon-cut with elapsed > d + 5.
+     Report per arm/set/instrument: legs, M1a, M1b, M1c, excess steps, reversals
+     (a step back to the cell of two rows earlier), conversions (clC broken ->
+     arm completed) listed with length and d.
+     MATCHED legs: same tuple, instrument, unit, victim, pickup step and pickup cell.
+     First divergence step of a tuple = first step where fire_digests or ff_steps
+     differ (arm vs clC). A PRE-divergence leg (pickup before it) that has no match is
+     an analyzer defect -> STOP. For every matched pair: arm n <= clC n, else LONGER;
+     completed in clC and broken in the arm = LONGER. For each LONGER leg: whether
+     fire_digests are identical over [pickup, clC end] (IDENTICAL-FIRE LONGER = AUTO
+     FAIL) or not (first differing step, plus the CRN comparison of the same
+     tuple/unit/victim: the matched CRN legs' lengths in clK<arm> vs clKC, D-3).
+     Coverage: matched / all legs, pre/post-divergence split; post-divergence legs of
+     the arm vs clC side by side (count, broken, total and max excess, M1c).
+  H3 M3 DROPS CONVERTED: every clC route_blocked carrier drop (unassign reason
+     replacement_after_blocked whose ff was exiting in row s-2) matched to the arm's
+     same carry -> completed / died in custody / isolation / horizon / unmatched; plus
+     the drop class A/B/C/D (A: carrier and victim dead at s; B: carrier stays on the
+     drop cell and dies with the victim; C: carrier moves off alive; D: other).
+  H4 M-HOLD: holds from the sidecar events, cross-checked with ff_steps (exiting,
+     alive, same pos as the previous row, all in-grid neighbours burning per
+     burn_intervals at that step); length (consecutive held steps) and ending (moved on
+     / died in custody / isolation / horizon); "moved on" split by whether a cleared
+     neighbour was in firefight_log with wrote=True at that step (extinguished) or
+     burnt out. Every hold <= 30 advances, else STOP.
+  H5 M4 CUSTODY MARKINGS: an unreachable_escape_log entry {step s, victim v,
+     geographically_isolated} for which some unit F is exiting, not dead, pos not None
+     in ff_steps[s-2] and bound to v in ff_bind_steps[s-2], with no other unassign and
+     no completion by F of v at s. M4a with an unassign {s, F, v, geographically_isolated};
+     M4b without one. Co-marked other victims listed separately. Before any wave: run
+     it over the recorded census tags and reproduce 31 custody markings with
+     ff_bind_steps, 9 distinct, f2cDRY east/def/101 victim_0 @177 by ff_unit_1, 0 M4b.
+  H6 M5 OUTCOMES at 360 and cuts 240/270/300/330: rescued, dead, ff_deaths, candidate
+     (non-terminal), unreachable/geographically_isolated, never_detected (from
+     unreachable_escape_log cause never_detected with step <= cut), terminal_step,
+     all_terminal. From victim_steps / ff_steps at the cut, never from eval except at
+     360 as a cross-check.
+     G3 (D-10): per set, per instrument, arm vs clC at 360:
+       STOCK: loss = clC rescued - arm rescued; FAIL if loss > 2 (T from
+       outputs/_cl_tolerance.txt, read and asserted); 1..2 listed per victim.
+       CRN: FAIL if the set TOTAL is lower (arm total < clC total), zero tolerance;
+       per-seed detail (up/down seeds, flipped victims) reported beside it (revised).
+       Every lower comparison: per-victim attribution (seed, victim, both fates and
+       steps, fire-digest match up to the fate, first differing step, whether the
+       victim's own carry changed - the M3 match).
+     G4: ff_deaths per set per instrument; every extra death attributed (CRN pair, and
+       the mode-1 edge counts M10) or it is UNEXPLAINED.
+  H7 M6 DRONE STEPS IN FIRE: E1 searcher-only, E2 all UAVs, exactly as
+     outputs/_sfx_analyze.py sec_exposure computes them (uav_actions burning bit, role
+     from uav_steps) - import or replicate it and assert equality on one recorded run.
+  H8 M7 CARRIER EXPOSURE: IN FIRE at decision time (row k-1 exiting & alive at c, c
+     burning at step k per burn_intervals; split escaped/died) and FIRE-ADJACENT at the
+     end of step (row k exiting & alive, an in-bounds 4-neighbour burning at k); the
+     latter also over the replay window (completed legs, steps s0+1..s1-1).
+  H9 M10 MODE-1 EDGE: completions whose pos burns at the completion step; firefighter
+     deaths on their own completion step.
+  H10 M11 MODE-2 RESIDUAL: path/fallback counts from the sidecar; fallback legs and
+     their fate vs the matched clC carry; one-sided invariant: every sidecar path-step
+     destination cell is neither burning nor 4-adjacent to a burning cell at that step
+     (burn_intervals) - any breach STOP.
+  H11 INVARIANTS (STOP): HOLD>=1 arms have 0 replacement_after_blocked unassigns of a
+     unit exiting in row s-2; SERVED>=1 arms have M4 = 0; clSN is value-identical to
+     clC on every run with no clC custody marking, and otherwise first differs at clC's
+     first custody-marking step; victim_steps "dead" never reverts and at most one
+     victim_dead per victim (unassign/event lists); sidecar switches non-zero in feature
+     arms.
+  H12 ENGAGEMENT: per fix arm, runs whose first differing step vs clC is not None, and
+     the sidecar counter that fired first; NOT ENGAGED if none. SERVED not engaged ->
+     "UNTRIGGERED IN PART 3".
+  H13 G5 RBGATE: run outputs/_ffr_rbcompare.py --new <arm prefix> --old ihrest and
+     --old clGC (capture stdout); parse the regression set; for any seed outside
+     {east/707, south/101, south/202, south/404}: re-roll status from the arm's and
+     clC's STOCK 360-step harness runs of that tuple (C13 or RB7): RE-ROLLED iff
+     fire_digests first differ before clC's terminal_step within steps 1-240; not
+     re-rolled -> NEW FAIL; re-rolled seeds judged on pooled rescued over all
+     re-rolled rbgate seeds (clG<arm> vs clGC); report the same tuple's 360 outcome.
+  Output: one text report per stage with a GATE block (per arm: G1..G5 PASS / FAIL /
+  TO-MAINTAINER / UNTESTED) and every table above. Deterministic; reruns print
+  byte-identical output.
+
+================================================================================
+I. PRE-WAVE KERNEL CHECK  outputs/_cl_kernelcheck.py  (design 8.4)
+================================================================================
+  (a) Build on outputs/_cl_replay/drive.py replay2(rule="F1F5"). Bind the adapter IN
+      THE CONSUMER MODULES (drive.bfs_first_step and fs_counterfactual.bfs_first_step)
+      and assert `drive.bfs_first_step is adapter` before any leg runs. Run from the
+      _cl_replay dir (sys.path insert), F_GUESS=8.
+  (b) The adapter calls the replay's ORIGINAL bfs_first_step and the implemented
+      agents.exit_leg_first_step(pos, passable=lambda n: not env.burning(n,k) and not
+      env.adj(n,k) and not env.smoky(n,k), is_boundary=fs_rules.on_boundary,
+      out_of_bounds=lambda c: not fs_env.inb(c), order=agents.EXIT_LEG_SEARCH_ORDER) on
+      every call, asserts equal results, counts calls. PASS: 1431 calls on
+      list_census.txt and 486 on list_uhD.txt with 0 mismatches, per-leg (n, end)
+      equal to the original, and the aggregate rows equal to cf_f1f5.txt (census F1F5:
+      212 legs 1643 steps 20 stalled adj 12 smoke 3 shorter 59 longer 0; uhD 588).
+  (c) CANARY: a mutated kernel (goal test before the passable test) must produce
+      mismatches and change the census row (expected 1608 steps / 14 stalled / adj 31).
+  (d) COMPOSITION: seeded randomized differential over >= 1000 boards: a tiny fake
+      model (grid = mesa MultiGrid(W,H,False) with agents.Fire agents placed and set
+      burning/smoky), a real agents.Firefighter placed and exiting with an
+      exit_target; compare the cell Firefighter._exit_leg_step moves to (path steps
+      only) with exit_leg_first_step fed predicates computed from the same board; and
+      for boards with no clean path, compare with a fresh _move_toward on a copy.
+      Include burning / smoky / fire-adjacent starts, corners, all-smoky edges, ties.
+  Prints "KERNELCHECK PASS" and writes outputs/_cl_kernelcheck.txt; any failure exits 1.
+
+================================================================================
+J. TESTS  tests/test_carry_leg.py   (design 8.2)
+================================================================================
+  Autouse restore fixture copied from tests/test_firefighter_fire_mechanic.py:58-72
+  over FF_EXIT_LEG_MODE/HOLD/SERVED + SYSTEM_RANDOM on cfv and wildfire_model, plus
+  agents.random; teardown asserts the three accessors return their setup values.
+  Accessor edge matrix; D1/D2/D3 behaviour tests per carryleg_part1.txt 8.2 (without
+  rung 2). Use constructed minimal models; never assert positions after a real
+  model.step() of an unseeded model (ignition is random in unit tests).
+
+================================================================================
+K. SUITE WITH SWITCHES ON  outputs/_cl_simplugin.py, outputs/_cl_pytest.sh
+================================================================================
+  Copies of _ug_simplugin.py / _ug_pytest.sh. CL_SIM env: "" or "0" = patch nothing;
+  otherwise a comma list of NAME=VALUE for FF_EXIT_LEG_* (e.g.
+  "FF_EXIT_LEG_MODE=2,FF_EXIT_LEG_HOLD=1,FF_EXIT_LEG_SERVED=1"), set on the cfv MODULE
+  at plugin import; terminal summary prints the three accessor values. _cl_pytest.sh:
+  VARIANT=base|p0|sim|post, CLTAG (default cl1), SIMNAME (a label for the sim log
+  name, e.g. E2 / H / SN / A); logs outputs/_<CLTAG>_pytest_<VARIANT>[_<SIMNAME>].log/.xml.
+
+================================================================================
+L. THE D-9 PROBE  outputs/_cl_probe.py  (last unit standing)
+================================================================================
+  An out-of-tree wrapper on the _cl_obs pattern (it may simply import _cl_obs and add
+  one wrap), keyed by --set CLP_KILL_AT=<step> CLP_KILL_UNIT=<unit_id>: at the end of
+  WildFireModel.step for evaluation_timesteps_counter == step, the named firefighter
+  is killed through the model's own path (set dead/status exactly as
+  _check_fire_casualties does, including the unassign with reset_victim_pending if it
+  is bound). Candidate tuples (frozen here): U30 south/half/1048395951 (carrier
+  ff_unit_0, pickup 132; kill ff_unit_1 at 132), U30 east/half/1433805104 (carrier
+  ff_unit_1, pickup 206; kill ff_unit_0 at 206), U30 east/def/1420331661 (CRN; carrier
+  ff_unit_1 pickup 86 in ugKD; kill ff_unit_0 at 86). Pre-screen at SERVED 0 (stock
+  and CRN): keep a tuple only if a custody marking happens. Then SERVED 1. Tags clPS0 /
+  clPS1 (stock) and clKPS0 / clKPS1 (CRN).

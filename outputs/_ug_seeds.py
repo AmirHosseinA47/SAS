@@ -51,7 +51,16 @@ QUAR = "_firemech_rewound_20260914"
 # outputs carry the U30 seeds too, and without them in this guard a rerun rejected its own
 # seeds and printed a DIFFERENT set (caught before any analysis read it). The set is also
 # frozen in outputs/_ug_seeds.txt; analyzers read that file (frozen_u30) and cross-check.
-OWN = ("_ug", "ungated", "_ffr_ug", "_rblatch_camp2_ug", "ug", "_uh", "_ffr_uh", "uh")
+# FOURTH RECURRENCE (carrying-leg round, 2026-09-26): the exit-stall round's xs* runs
+# (_ffr_xs*, _ffr_logs/xs*, _xs_queue.txt) carry U30 seeds, so choose() had shifted all 30
+# tuples and _ug_analyze/_uh_analyze/_ug_queue/_uh_queue died with "U30 MISMATCH"; the
+# carrying-leg round (_cl*, _ffr_cl*, cl*, _rblatch_camp2_cl*) runs U30 again. EVERY round
+# that runs U30 needs BOTH its bare prefix (queue files, _ffr_logs/<tag>_* logs) AND its
+# _ffr_ prefix (pool outputs are _ffr_<tag>_*), plus _rblatch_camp2_<prefix> if it runs
+# gate shards. outputs/_cl_seedcheck.py asserts choose() == _ug_seeds.txt before every wave.
+OWN = ("_ug", "ungated", "_ffr_ug", "_rblatch_camp2_ug", "ug", "_uh", "_ffr_uh", "uh",
+       "_xs", "_ffr_xs", "xs", "exitstall", "_cl", "_ffr_cl", "_rblatch_camp2_cl", "cl",
+       "carryleg")
 
 
 def _own(name):
