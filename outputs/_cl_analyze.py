@@ -49,7 +49,10 @@ SECTIONS
   G3  (D-10) per set per instrument, arm vs its control at 360. STOCK: loss = control
       rescued - arm rescued; FAIL if loss > T, T read from outputs/_cl_tolerance.txt and
       asserted == 2 for C13, U30 and N30; a loss of 1..T passes and is listed victim by
-      victim. CRN: FAIL if ANY tuple has arm rescued < control rescued (no tolerance).
+      victim. CRN (revised on the maintainer's ruling, carryleg_prereg.txt section 0): the
+      PER-SET TOTAL, zero tolerance - FAIL if the arm's set total rescued is lower than the
+      control's; per-seed moves are not a failure on their own and are reported beside the
+      total (seeds down / seeds up, and every flipped victim) so a one-sided pattern shows.
       Every victim rescued in the control and not in the arm, in every comparison, is
       attributed: both fates and steps, fire-digest match up to the earlier fate, first
       differing step and what differed, and the victim's own carry (the M3 match). A lost
@@ -660,7 +663,7 @@ def compare_set(ctx, ctrl, arm, set_name, instrument):
                      % (set_name, instrument, arm, ctrl, len(tl), len(full), len(ctx.tuples(ctrl, set_name)), len(full)))
         return dict(verdict="UNTESTED", lines=lines, loss=None, tested=False, attributable=[], lower_tuples=[])
     Rc = Ra = 0
-    lost, gained, lower = [], [], []
+    lost, gained, lower, higher = [], [], [], []
     by_cut = {cut: [0, 0] for cut in C.CUTS}
     for t in full:
         rc, ra = rescued_by_victim(ctx, ctrl, t), rescued_by_victim(ctx, arm, t)
@@ -668,6 +671,8 @@ def compare_set(ctx, ctrl, arm, set_name, instrument):
         Ra += len(ra)
         if len(ra) < len(rc):
             lower.append((t, len(rc), len(ra)))
+        elif len(ra) > len(rc):
+            higher.append((t, len(rc), len(ra)))
         lost += [(t, v) for v in sorted(rc - ra)]
         gained += [(t, v) for v in sorted(ra - rc)]
         for cut in C.CUTS:
@@ -685,17 +690,21 @@ def compare_set(ctx, ctrl, arm, set_name, instrument):
         else:
             rule = "not lower"
     else:
-        if lower:
+        # CRN: the set TOTAL, zero tolerance (maintainer's ruling, prereg section 0).
+        if loss > 0:
             verdict = "FAIL"
-            rule = "%d tuple(s) with CRN rescued lower -> FAIL (no tolerance)" % len(lower)
+            rule = "CRN set total lower -> FAIL (zero tolerance)"
         else:
-            rule = "no tuple lower"
+            rule = "CRN set total not lower"
+        rule += "; per seed: %d down, %d up" % (len(lower), len(higher))
     lines.append("    %s %-5s %s %d -> %s %d  loss %+d  %s" % (set_name, instrument, ctrl, Rc, arm, Ra, loss, rule))
     lines.append("        rescued by cut %s: %s" % ("/".join(str(c) for c in C.CUTS),
                  "  ".join("%d->%d" % (by_cut[c][0], by_cut[c][1]) for c in C.CUTS)))
     if instrument == "crn":
         for t, a, b in lower:
-            lines.append("        LOWER TUPLE %s: %d -> %d" % (C.label(t), a, b))
+            lines.append("        SEED DOWN %s: %d -> %d" % (C.label(t), a, b))
+        for t, a, b in higher:
+            lines.append("        SEED UP   %s: %d -> %d" % (C.label(t), a, b))
     att_list = []
     for t, v in lost:
         rows, att = attribute(ctx, ctrl, arm, t, v)
@@ -712,7 +721,7 @@ def compare_set(ctx, ctrl, arm, set_name, instrument):
         lines.append("        ATTRIBUTABLE LOST VICTIM(S) (G3 b, automatic FAIL): %s"
                      % ", ".join("%s %s" % (C.label(t), v) for t, v in att_list))
     return dict(verdict=verdict, lines=lines, loss=loss, tested=True, attributable=att_list,
-                lower_tuples=lower)
+                lower_tuples=lower, higher_tuples=higher)
 
 
 def required_sets(stage, arm):
@@ -761,7 +770,8 @@ def sec_g3(ctx):
     say("=" * 96)
     say("G3. RESCUED AT STEP %d (D-10): stock loss > T fails (T = %s, outputs/_cl_tolerance.txt);"
         % (C.H, ", ".join("%s %d" % kv for kv in sorted(ctx.T.items()))))
-    say("    CRN: any tuple lower fails; a lost victim attributable to the fix fails (9.4 G3 b);")
+    say("    CRN: the set TOTAL lower fails (zero tolerance; per-seed detail beside it, not gated);")
+    say("    a lost victim attributable to the fix fails in either instrument (9.4 G3 b);")
     say("    instruments are never pooled. Every lost victim is attributed in every comparison.")
     say(req_banner(ctx))
     say("=" * 96)
