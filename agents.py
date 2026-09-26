@@ -1235,6 +1235,79 @@ def ff_firefight_mission_gate() -> bool:
     return value != 0
 
 
+# --- Carrying-leg fixes (outputs/carryleg_part1.txt) ------------------------------
+# Three independent switches, one per pre-existing defect of the carrying leg (the
+# firefighter's trip home with a victim). Read through `cfv` at call time like the
+# ff_firefight_* accessors above and built on the same _exact_integer, sharing their
+# rule with ONE deliberate exception, mandated by the carrying-leg brief ("any new
+# switch disables only on an EXACT zero"): the file's rule sends junk to the SHIPPED
+# value, and for a switch that ships at 0 that would be the zero path. So while a
+# switch ships at 0, junk maps to a named non-zero value (the *_JUNK constants); once
+# it ships non-zero, junk takes the shipped value again.
+#   exact 0 (0, 0.0, "0", False)  -> off: the kill switch
+#   missing attribute             -> the SHIPPED value (the cfv default)
+#   anything else                 -> never the zero path (see each accessor); no raise
+# With all three at 0 every new line in this module and in wildfire_model.py is a pure
+# read, and the model is value-identical to 6160438.
+EXIT_LEG_MODE_JUNK = 1
+EXIT_LEG_SERVED_JUNK = 1
+
+
+def ff_exit_leg_mode() -> int:
+    """FF_EXIT_LEG_MODE - D1, the exit-leg livelock. Shipped 0.
+
+      0  today: a rescue completes only on the fixed exit cell, and every carrying
+         step is _move_toward(exit_target)
+      1  a rescue also completes on ANY boundary cell
+      2  mode 1, plus each carrying step takes the first step of a breadth-first
+         search over clean cells to the nearest boundary cell (exit_leg_first_step);
+         with no clean path, today's _move_toward(exit_target), unchanged
+
+    Exact 0 / 1 / 2 -> that mode; missing -> the cfv default; anything else (junk,
+    None, non-integral, negative, an integer >= 3) -> EXIT_LEG_MODE_JUNK.
+    """
+    value = _exact_integer(getattr(cfv, "FF_EXIT_LEG_MODE", 0))
+    if value in (0, 1, 2):
+        return value
+    return EXIT_LEG_MODE_JUNK
+
+
+def ff_exit_leg_hold() -> bool:
+    """FF_EXIT_LEG_HOLD - D2, the carrier drop. Shipped 0.
+
+    True: an EXITING unit whose every in-grid neighbour burns holds its cell and keeps
+    its victim, instead of raising route_blocked - whose replacement pathway unassigns
+    it and drops the victim (wildfire_model.py _handle_rescue_incident). While it
+    holds, its cell is a reachability start for the isolation timeout, the start
+    today's dropped ex-carrier provides. Exact 0 -> False; any other exact integer,
+    negative included (as base_station_fireproof) -> True; missing -> the cfv default;
+    junk -> True.
+    """
+    value = _exact_integer(getattr(cfv, "FF_EXIT_LEG_HOLD", 0))
+    if value is None:
+        return True
+    return value != 0
+
+
+def ff_exit_leg_served() -> int:
+    """FF_EXIT_LEG_SERVED - D3, the isolation timeout on a carried victim. Shipped 0.
+
+      0  today: a carried victim is never "served", so its geographic-isolation
+         streak runs whenever no other live, on-grid, non-carrying unit can reach it
+      1  a victim in the custody of a live carrier (exiting, bound to it, not dead,
+         on the grid) counts as served
+
+    Exact 0 / 1 -> that rung; missing -> the cfv default; anything else ->
+    EXIT_LEG_SERVED_JUNK. Rung 2 (a carrier's cell as a reachability start for OTHER
+    victims) is designed in outputs/carryleg_part1.txt 4.3 and deliberately NOT built
+    (maintainer D-1): an exact 2 is junk here, and the round's tooling refuses it.
+    """
+    value = _exact_integer(getattr(cfv, "FF_EXIT_LEG_SERVED", 0))
+    if value in (0, 1):
+        return value
+    return EXIT_LEG_SERVED_JUNK
+
+
 # Orthogonal offsets in a FIXED order for the victim's flee scan. The same four
 # offsets in the same order are hardcoded in `Firefighter._neighbor_cells`; that
 # copy is deliberately left alone so the firefighter's approach path stays

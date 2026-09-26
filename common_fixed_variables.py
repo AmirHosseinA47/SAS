@@ -283,6 +283,29 @@ FF_FIREFIGHT_ENGAGED_RETREAT_RANGE = 1
 FF_FIREFIGHT_DRY_RUN = 0
 FF_FIREFIGHT_MISSION_GATE = 0
 
+# The carrying leg (outputs/carryleg_part1.txt): three pre-existing defects of a
+# firefighter's trip home with a victim, one switch each, each measured in its own arm.
+#   FF_EXIT_LEG_MODE    D1, the memoryless exit-leg livelock. 1 = a rescue completes
+#                       on ANY boundary cell, not only the exit cell fixed at pickup;
+#                       2 = 1 plus each carrying step takes the first step of a
+#                       breadth-first search over clean cells (not burning, not
+#                       fire-adjacent, not smoky) to the nearest boundary cell, falling
+#                       back to today's rule when no clean path exists.
+#   FF_EXIT_LEG_HOLD    D2, the carrier drop. 1 = an enclosed carrier holds its cell
+#                       and keeps its victim instead of raising route_blocked, whose
+#                       replacement pathway unassigns it and drops the victim.
+#   FF_EXIT_LEG_SERVED  D3, the isolation timeout. 1 = a victim in a live carrier's
+#                       custody counts as served, so it cannot be written off as
+#                       geographically isolated while it is being carried out.
+# All three ship 0 until the round's gate is passed, and at 0 the model is
+# value-identical to 6160438. ONLY AN EXACT INTEGRAL ZERO DISABLES: a missing value
+# takes the shipped 0, and junk ARMS (agents.py ff_exit_leg_* documents the mapping).
+# Read at call time through agents.ff_exit_leg_*(), never through the star import, so
+# an apply_scenario_config override is visible. Deterministic: no RNG is drawn.
+FF_EXIT_LEG_MODE = 0
+FF_EXIT_LEG_HOLD = 0
+FF_EXIT_LEG_SERVED = 0
+
 # Base station (feature 3). A set of 5x5 depots - shipped as two, NW and SE (see
 # BASE_STATION_DEPOTS) - that the UAV team and the firefighters launch from, that a
 # UAV returns to (the nearest of its own berths) when its battery reaches the return
