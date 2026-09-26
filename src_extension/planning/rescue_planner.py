@@ -441,6 +441,11 @@ def _is_terminal_flags(flags: dict[str, Any]) -> bool:
 
 
 def _is_productively_served(flags: dict[str, Any]) -> bool:
+    # Carrying-leg D3: a victim in a live carrier's custody is being served. The key is
+    # written only at FF_EXIT_LEG_SERVED 1 (wildfire_model._update_unreachable_victims),
+    # so at 0 this line is a miss on every flags dict.
+    if bool(flags.get("in_custody", False)):
+        return True
     if bool(flags.get("assigned", False)) and bool(flags.get("assigned_approaching", False)):
         return True
     if bool(flags.get("approaching", False)):

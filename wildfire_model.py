@@ -4984,6 +4984,39 @@ class WildFireModel(mesa.Model):
                 queue.append(nxt)
         return reachable
 
+    def _exit_leg_custody(self) -> set[str]:
+        """Victim ids in the CUSTODY of a live carrier (FF_EXIT_LEG_SERVED 1).
+
+        A victim is in custody when some firefighter is not dead (flag or status), is
+        on the grid, is exiting, and has it as rescued_victim - the exiting clause of
+        Victim._in_firefighter_custody. No status filter: a carrier labelled
+        route_blocked still holds its victim, which is why
+        _find_active_firefighter_for_victim (it skips route_blocked units) is not used.
+        No progress requirement: writing a carried victim off cannot get it rescued -
+        it would be cancelled, finalize refuses it, and no unit is ever dispatched to
+        it again, while none could reach it sooner than the co-located carrier.
+        """
+        custody: set[str] = set()
+        ff_markers = getattr(self, "firefighter_marker_agents", None)
+        if not isinstance(ff_markers, dict):
+            return custody
+        for ff_marker in ff_markers.values():
+            if getattr(ff_marker, "dead", False):
+                continue
+            if str(getattr(ff_marker, "status", "") or "").strip().lower() == "dead":
+                continue
+            if not getattr(ff_marker, "exiting", False):
+                continue
+            if getattr(ff_marker, "pos", None) is None:
+                continue
+            victim = getattr(ff_marker, "rescued_victim", None)
+            if victim is None:
+                continue
+            vid = self._victim_id_from_agent(victim)
+            if vid:
+                custody.add(str(vid))
+        return custody
+
     def _exit_leg_held_cell(
         self, ff_marker: Any, burning: set[tuple[int, int]]
     ) -> tuple[int, int] | None:
@@ -5046,6 +5079,9 @@ class WildFireModel(mesa.Model):
                 if held is not None:
                     starts.append(held)
         reachable_cells = self._safe_path_reachable_cells(starts, burning)
+        # Carrying-leg D3: the victims in a live carrier's custody, which count as
+        # served (FF_EXIT_LEG_SERVED 1). Empty at 0, so no flag below gains a key.
+        custody = self._exit_leg_custody() if agents.ff_exit_leg_served() else set()
 
         prev_dists = getattr(self, "_ff_victim_distances", None)
         if not isinstance(prev_dists, dict):
@@ -5113,6 +5149,8 @@ class WildFireModel(mesa.Model):
                 "confirmed": confirmed,
                 "approaching": approaching,
             }
+            if vid_s in custody:
+                flags[vid_s]["in_custody"] = True
 
         self._ff_victim_distances = new_dists
         geo_streaks = getattr(self, "_unreachable_geo_streak", None)
