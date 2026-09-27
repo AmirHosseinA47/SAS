@@ -5080,7 +5080,8 @@ class WildFireModel(mesa.Model):
                     starts.append(held)
         reachable_cells = self._safe_path_reachable_cells(starts, burning)
         # Carrying-leg D3: the victims in a live carrier's custody, which count as
-        # served (FF_EXIT_LEG_SERVED 1). Empty at 0, so no flag below gains a key.
+        # served (agents.ff_exit_leg_served() 1: SERVED 1 AND MODE >= 1 - the accessor
+        # is 0 whenever MODE is 0, ruling S2). Empty at 0, so no flag below gains a key.
         custody = self._exit_leg_custody() if agents.ff_exit_leg_served() else set()
 
         prev_dists = getattr(self, "_ff_victim_distances", None)

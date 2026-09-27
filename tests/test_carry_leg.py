@@ -430,9 +430,15 @@ def test_switches_are_read_at_call_time_through_cfv_only(monkeypatch) -> None:
     for value, expected in ((1, True), (0, False)):
         apply_scenario_config(cfv, wf, FF_EXIT_LEG_HOLD=value)
         assert agents.ff_exit_leg_hold() is expected
+    # MODE is 0 here: SERVED is enforced off whatever it says (ruling S2)
+    for value in (1, 2, 0):
+        apply_scenario_config(cfv, wf, FF_EXIT_LEG_SERVED=value)
+        assert agents.ff_exit_leg_served() == 0
+    apply_scenario_config(cfv, wf, FF_EXIT_LEG_MODE=1)
     for value, expected in ((1, 1), (2, 1), (0, 0)):
         apply_scenario_config(cfv, wf, FF_EXIT_LEG_SERVED=value)
         assert agents.ff_exit_leg_served() == expected
+    apply_scenario_config(cfv, wf, FF_EXIT_LEG_MODE=0)
 
     # ...and the model built at 0 obeys an override written after its construction
     _carry_to(model, ff, marker, (0, 28))
@@ -454,6 +460,9 @@ def test_switches_are_read_at_call_time_through_cfv_only(monkeypatch) -> None:
     calls = _spy_flags(monkeypatch)
     apply_scenario_config(cfv, wf, FF_EXIT_LEG_SERVED=1)
     served._update_unreachable_victims()
+    assert "in_custody" not in calls[-1][V0]          # MODE 0: SERVED enforced off (ruling S2)
+    apply_scenario_config(cfv, wf, FF_EXIT_LEG_MODE=1)
+    served._update_unreachable_victims()
     assert calls[-1][V0].get("in_custody") is True
 
 
@@ -463,12 +472,16 @@ def test_the_model_side_reads_hold_and_served_through_cfv_only(monkeypatch, name
     """wildfire_model's HOLD start and SERVED custody gate read cfv (through the agents
     accessors), never wildfire_model's star-imported copies. One switch at a time, cfv and
     the copy DISAGREE (monkeypatch on one module each, never apply_scenario_config, which
-    writes both); the other two stay 0 in both. The board: an enclosed carrier, no other
+    writes both); the other two stay 0 in both - except MODE for the SERVED case, set 1 in
+    both, since SERVED is enforced off at MODE 0 (ruling S2). The board: an enclosed carrier, no other
     live unit, a streak of 19. The cfv value alone decides: 1 is the hold start (HOLD) or
     the custody key (SERVED) and the streak resets to 0; 0 is today's pass - the streak
     reaches 20 and no flags dict has an in_custody key."""
     model, _ff, _marker = _enclosed_carrier(hold=0)
     _kill(model, FF_B, FF_C)
+    if name == "FF_EXIT_LEG_SERVED":
+        monkeypatch.setattr(cfv, "FF_EXIT_LEG_MODE", 1)
+        monkeypatch.setattr(wf, "FF_EXIT_LEG_MODE", 1, raising=False)
     monkeypatch.setattr(cfv, name, cfv_value)
     monkeypatch.setattr(wf, name, wf_copy, raising=False)
     assert (agents.ff_exit_leg_hold(), agents.ff_exit_leg_served()) == (
@@ -1158,22 +1171,27 @@ def test_a_dying_carrier_whose_victim_still_lives_keeps_todays_reset() -> None:
 # D3 - FF_EXIT_LEG_SERVED: a victim in a live carrier's custody counts as served
 # ---------------------------------------------------------------------------
 
-def _lone_carrier(served, hold=0):
+def _lone_carrier(served, hold=0, mode=1):
     """A carrier with V0 on a fire-free map, every other unit dead, every other victim
-    terminal: nobody but the carrier can reach V0, and the carrier is not in `living`."""
-    model = _model(hold=hold, served=served)
+    terminal: nobody but the carrier can reach V0, and the carrier is not in `living`.
+    MODE 1 by default: SERVED is enforced off at MODE 0 (ruling S2), and MODE 1 changes only
+    rescue completion, which these tests never reach (no carrying step is taken)."""
+    model = _model(mode=mode, hold=hold, served=served)
     ff, marker = _pickup(model, (20, 25))
     _kill(model, FF_B, FF_C)
     _retire_victims(model, keep=(V0,))
     return model, ff, marker
 
 
-@pytest.mark.parametrize("served", (0, 1))
-def test_a_carried_victim_is_written_off_at_thirty_only_at_served_zero(served) -> None:
+@pytest.mark.parametrize("mode,served", ((0, 0), (1, 0), (0, 1), (1, 1)),
+                         ids=["mode0-served0", "mode1-served0", "mode0-served1", "mode1-served1"])
+def test_a_carried_victim_is_written_off_at_thirty_only_at_served_zero(mode, served) -> None:
     """SERVED 0 pins the defect: the streak runs from the pickup and the carry is written
     off at 30 - the carrier unassigned, the victim unreachable and cancelled. SERVED 1:
-    the streak never leaves 0 and the carry goes on."""
-    model, ff, marker = _lone_carrier(served)
+    the streak never leaves 0 and the carry goes on - but only at MODE >= 1: at MODE 0
+    SERVED is enforced off (ruling S2) and the MODE-0 / SERVED-0 write-off is kept in full.
+    (mode0-served0 is today's configuration, 6160438.)"""
+    model, ff, marker = _lone_carrier(served, mode=mode)
     streaks = []
     for _ in range(30):
         model._update_unreachable_victims()
@@ -1181,7 +1199,7 @@ def test_a_carried_victim_is_written_off_at_thirty_only_at_served_zero(served) -
     log = [e for e in getattr(model, "_unreachable_escape_log", []) or [] if e["victim_id"] == V0]
     state = model.managed_victims[V0]
 
-    if served:
+    if served and mode:
         assert streaks == [0] * 30
         assert log == []
         assert ff.exiting is True and ff.rescued_victim is marker and ff.assigned is True
@@ -1192,6 +1210,62 @@ def test_a_carried_victim_is_written_off_at_thirty_only_at_served_zero(served) -
         assert ff.assigned is False and ff.rescued_victim is None and ff.exiting is False
         assert state.unreachable is True and state.cancelled is True
         assert str(marker.status).lower() == "unreachable"
+
+
+# MODE's own accessor rule, read off _MATRIX: the rows whose MODE is 0 (every exact-zero form)
+# and the rows whose MODE is not (exact 1 / 2 and every junk form, missing included).
+_MODE_ZERO = tuple(row[0] for row in _MATRIX if row[1] == 0)
+_MODE_NONZERO = tuple(row[0] for row in _MATRIX if row[1] != 0)
+_SERVED_ON = (1, True, "1", 2, 0.5, "off", None, _MISSING)
+
+
+@pytest.mark.parametrize("mode_raw", _MODE_ZERO, ids=[_matrix_id(v) for v in _MODE_ZERO])
+@pytest.mark.parametrize("served_raw", _SERVED_ON, ids=[_matrix_id(v) for v in _SERVED_ON])
+def test_served_is_enforced_off_whenever_mode_is_zero(monkeypatch, mode_raw, served_raw) -> None:
+    """RULING S2 (carryleg_report.txt): SERVED behaves as 0 whenever MODE is 0 - an exact
+    integral zero, by MODE's own accessor rule - whatever SERVED says: set, junk or missing
+    (which would otherwise arm it). Never SERVED without MODE >= 1: at MODE 0 the isolation
+    write-off is a carrier's only way out of the D1 edge livelock (the D-9 probe)."""
+    monkeypatch.setattr(cfv, "FF_EXIT_LEG_MODE", mode_raw)
+    if served_raw is _MISSING:
+        monkeypatch.delattr(cfv, "FF_EXIT_LEG_SERVED", raising=False)
+    else:
+        monkeypatch.setattr(cfv, "FF_EXIT_LEG_SERVED", served_raw)
+    assert agents.ff_exit_leg_mode() == 0
+    got = agents.ff_exit_leg_served()
+    assert got == 0 and type(got) is int
+
+
+@pytest.mark.parametrize("mode_raw", _MODE_NONZERO, ids=[_matrix_id(v) for v in _MODE_NONZERO])
+def test_served_is_not_suppressed_when_mode_is_not_exactly_zero(monkeypatch, mode_raw) -> None:
+    """The other half of the exact-zero rule: every MODE form that is not an exact zero -
+    MODE 1, 2, junk or missing (-> the shipped 2), all of _MATRIX's - never suppresses SERVED."""
+    if mode_raw is _MISSING:
+        monkeypatch.delattr(cfv, "FF_EXIT_LEG_MODE", raising=False)
+    else:
+        monkeypatch.setattr(cfv, "FF_EXIT_LEG_MODE", mode_raw)
+    monkeypatch.setattr(cfv, "FF_EXIT_LEG_SERVED", 1)
+    assert agents.ff_exit_leg_mode() != 0
+    assert agents.ff_exit_leg_served() == 1
+
+
+def test_at_mode_zero_served_one_writes_the_carry_off_like_served_zero() -> None:
+    """The model level: at MODE 0 a lone carrier with SERVED 1 is written off at 30 exactly as
+    at SERVED 0 (streak 1..30, one geographically_isolated escape, the carrier released) -
+    the escape hatch from the D1 livelock is kept. At MODE 1 the same board serves."""
+    results = {}
+    for mode, served in ((0, 0), (0, 1), (1, 1)):
+        model, ff, marker = _lone_carrier(served, mode=mode)
+        streaks = []
+        for _ in range(30):
+            model._update_unreachable_victims()
+            streaks.append(model._unreachable_geo_streak.get(V0))
+        log = [(e["cause"], e["streak"]) for e in getattr(model, "_unreachable_escape_log", []) or []
+               if e["victim_id"] == V0]
+        results[(mode, served)] = (streaks, log, ff.exiting, ff.rescued_victim is marker)
+    assert results[(0, 1)] == results[(0, 0)]
+    assert results[(0, 1)] == (list(range(1, 31)), [("geographically_isolated", 30)], False, False)
+    assert results[(1, 1)] == ([0] * 30, [], True, True)
 
 
 def test_a_route_blocked_carrier_still_serves() -> None:
@@ -1233,7 +1307,7 @@ def test_a_double_claim_still_serves(first_claimant) -> None:
     that kept its binding. The custody set must look past it to ff_unit_1. SERVED 0 on
     the same board shows the streak does run there."""
     for served in (0, 1):
-        model = _model(served=served)
+        model = _model(mode=1, served=served)      # SERVED needs MODE >= 1 (ruling S2)
         carrier, marker = _pickup(model, (20, 25), ff_id=FF_B)
         _kill(model, FF_C)
         _retire_victims(model, keep=(V0,))
@@ -1262,7 +1336,7 @@ def test_a_double_claim_still_serves(first_claimant) -> None:
 
 def test_served_zero_writes_no_custody_key_and_served_one_only_the_carried_victim(monkeypatch) -> None:
     for served in (0, 1):
-        model = _model(served=served)
+        model = _model(mode=1, served=served)      # SERVED needs MODE >= 1 (ruling S2)
         _pickup(model, (20, 25))
         calls = _spy_flags(monkeypatch)
         model._update_unreachable_victims()
@@ -1283,7 +1357,7 @@ def test_served_leaves_distances_and_approaching_flags_untouched(monkeypatch) ->
     with a live unit really approaching a second victim."""
     seen = {}
     for served in (0, 1):
-        model = _model(served=served)
+        model = _model(mode=1, served=served)      # SERVED needs MODE >= 1 (ruling S2)
         _pickup(model, (20, 25))
         approacher = _assign(model, FF_B, V1, (35, 30), (35, 35))
         calls = _spy_flags(monkeypatch)
@@ -1293,6 +1367,10 @@ def test_served_leaves_distances_and_approaching_flags_untouched(monkeypatch) ->
         model.grid.move_agent(approacher, (35, 31))
         model._update_unreachable_victims()
         distances.append(dict(model._ff_victim_distances))
+        # positive control: SERVED is LIVE on this board at 1 (and absent at 0), so the
+        # equality below is not vacuous
+        custody_keys = [flags[V0].get("in_custody") for flags in calls]
+        assert custody_keys == ([True, True] if served else [None, None])
         stripped = [
             {vid: {k: v for k, v in entry.items() if k != "in_custody"} for vid, entry in flags.items()}
             for flags in calls

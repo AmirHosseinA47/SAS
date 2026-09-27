@@ -1302,10 +1302,18 @@ def ff_exit_leg_served() -> int:
          on the grid) counts as served
 
     Exact 0 / 1 -> that rung; missing -> the cfv default; anything else ->
-    EXIT_LEG_SERVED_JUNK. Rung 2 (a carrier's cell as a reachability start for OTHER
+    EXIT_LEG_SERVED_JUNK. ENFORCED: 0 whenever ff_exit_leg_mode() is 0, whatever
+    FF_EXIT_LEG_SERVED says (never SERVED without MODE >= 1). Rung 2 (a carrier's cell as a reachability start for OTHER
     victims) is designed in outputs/carryleg_part1.txt 4.3 and deliberately NOT built
     (maintainer D-1): an exact 2 is junk here, and the round's tooling refuses it.
     """
+    # ENFORCED DEPENDENCY (maintainer ruling S2, carryleg_report.txt): SERVED is OFF whenever
+    # MODE is 0. At MODE 0 the isolation write-off is a carrier's only way out of the D1
+    # edge livelock, and SERVED would remove it (the D-9 probe: the carrier dies with its
+    # victim). MODE is 0 only on an exact integral zero, so junk or missing MODE (-> 2)
+    # never suppresses SERVED.
+    if ff_exit_leg_mode() == 0:
+        return 0
     value = _exact_integer(getattr(cfv, "FF_EXIT_LEG_SERVED", 1))
     if value in (0, 1):
         return value
