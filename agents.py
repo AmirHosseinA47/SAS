@@ -1320,6 +1320,49 @@ def ff_exit_leg_served() -> int:
     return EXIT_LEG_SERVED_JUNK
 
 
+def global_planner_mode() -> int:
+    """GLOBAL_PLANNER_MODE - the planning strategy for UAV roles. Shipped 0.
+
+      0  the local strategy (today's behaviour)
+      1  the global planner for UAV roles (outputs/planner_part1.txt)
+
+    ON ONLY ON AN EXACT 1 (ruling D-1, the mirror of the exact-zero rule: the planner
+    ships OFF as an opt-in strategy): 1 iff _exact_integer(raw) == 1 - so 1, 1.0, "1",
+    True, " 1 ", "+1", "01", Decimal("1"), numpy 1 and an IntEnum 1 are ON - and 0 for
+    everything else: missing, None, zeros, the strings "0.0" / "1.0" (not integer
+    literals), 0.5, 2, -1, inf, nan, "on", "1_0" (int() reads it as 10) and any object
+    whose __int__ / __eq__ raises. There is no junk constant: junk and off are one value.
+    """
+    return 1 if _exact_integer(getattr(cfv, "GLOBAL_PLANNER_MODE", 0)) == 1 else 0
+
+
+def rtb_trigger_level_at(uav, cell) -> float:
+    """The return-to-base trigger UAV._rtb_trigger_level would give `uav` if it stood on
+    `cell`: max(reserve, 0.3 * Manhattan distance from `cell` to the nearest of the UAV's
+    own berths + margin) - the same formula, the same accessors. PURE: unlike
+    UAV._rtb_select_berth it writes nothing (no rtb_target_*). Used only by the global
+    planner (GLOBAL_PLANNER_MODE 1); pinned by a test to equal _rtb_trigger_level at the
+    UAV's own cell. Below BASE_STATION_MODE 2 no UAV returns, and without a berth there is
+    nothing to return to: both give BATTERY_CRITICAL_THRESHOLD (15)."""
+    critical = float(getattr(cfv, "BATTERY_CRITICAL_THRESHOLD", 15.0))
+    if base_station_mode() < 2 or cell is None:
+        return critical
+    rtb_berth = getattr(uav, "rtb_berth", None)
+    berths = getattr(uav, "rtb_berths", None) or ((rtb_berth,) if rtb_berth else ())
+    x, y = int(cell[0]), int(cell[1])
+    best = None
+    for b in berths:
+        if b is None:
+            continue
+        d = abs(x - int(b[0])) + abs(y - int(b[1]))
+        if best is None or d < best:
+            best = d
+    if best is None:
+        return critical
+    per_move = float(uav.battery_drain_per_step) + float(uav.battery_drain_per_move)
+    return max(uav_return_to_base_reserve(), per_move * best + base_station_return_margin())
+
+
 # Mode 2's search order: +x, -x, +y, -y. Its OWN constant, deliberately not
 # ORTHOGONAL_OFFSETS below, which is documented as the victim-flee tie-break - a future
 # flee change must not move the carrier's path (pinned by a test).

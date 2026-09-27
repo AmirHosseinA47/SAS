@@ -313,6 +313,23 @@ FF_EXIT_LEG_MODE = 2
 FF_EXIT_LEG_HOLD = 0
 FF_EXIT_LEG_SERVED = 1
 
+# The planning step's strategy for UAV ROLES (outputs/planner_part1.txt). A ladder:
+#   0  LOCAL STRATEGY (shipped): today's behaviour. The global planner's role options
+#      are generated as before and never win; roles change only at launch. With 0 the
+#      model is value-identical to dfbfbe7 (tag carrying-leg-fixed).
+#   1  GLOBAL PLANNER FOR UAV ROLES: every step the global role family offers, for each
+#      available UAV, "switch this UAV to the other live role" (fire_tracker <->
+#      victim_searcher), valued on nine stated world quantities
+#      (src_extension/adaptation/role_option_values.py) and ranked by the unchanged
+#      scorer against the unchanged do-nothing baseline; a winning switch reaches the
+#      UAV through the GlobalExecutor.
+# ON ONLY ON AN EXACT 1 (the maintainer's ruling D-1): the planner ships OFF as an
+# opt-in strategy, so the mirror of the exact-zero rule applies - missing, junk, "0.0",
+# 0.5, 2 and every other value are OFF; no typo can switch the system to an unmeasured
+# strategy. A later rung must be added explicitly. Read at call time through
+# agents.global_planner_mode(), never through the star import. Deterministic: no RNG.
+GLOBAL_PLANNER_MODE = 0
+
 # Base station (feature 3). A set of 5x5 depots - shipped as two, NW and SE (see
 # BASE_STATION_DEPOTS) - that the UAV team and the firefighters launch from, that a
 # UAV returns to (the nearest of its own berths) when its battery reaches the return
