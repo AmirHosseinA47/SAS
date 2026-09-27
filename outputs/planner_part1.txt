@@ -1,0 +1,1338 @@
+================================================================================
+GLOBAL PLANNER FOR UAV ROLES - PART 1: DESIGN (no source edits)
+Make the planning step of the MAPE-K loop genuinely decide, for UAV-ROLE options
+only, shipped behind a switch whose default is today's local strategy.
+================================================================================
+
+# PART 1 STOPS HERE. No file in src_extension/, agents.py, wildfire_model.py,
+# common_fixed_variables.py or tests/ was edited. Part 2 (implementation) waits for
+# your confirmation AND for explicit answers to D-1, D-2 and D-5 (section 11); the
+# other decisions have stated defaults.
+# Section 7 is the pre-registration: how "the planner decides" will be proved, with
+# numeric one-sided thresholds, fixed before any code exists.
+
+START STATE
+  BRANCH   claude/exciting-euler-24cn12 - the branch this session was told to work on; it
+           points at the same commit as main. HEAD dfbfbe7 = tag carrying-leg-fixed
+           (`git tag --points-at HEAD` after fetching tags). Tracked tree clean at start
+           (`git status --porcelain -uno` empty); no simulation or test process running.
+           The clone arrived SHALLOW (boundary fd743f5); I ran `git fetch --unshallow`
+           (object store only - no working-tree, index or branch change) so that the
+           history check of 1.1 covers the full history (109 commits on HEAD, 111 with --all).
+  ENV      THIS SESSION IS A LINUX CLOUD CONTAINER, NOT E:\Projects\SAS.
+             sys.version      3.10.20 (main, Mar  3 2026, 09:24:47) [GCC 13.3.0]
+             mesa.__version__ 1.2.1        numpy 2.2.6        pytest 9.1.1
+           The venv /home/user/SAS/.venv was created this session (the image had no mesa).
+           Your records are Windows / Python 3.10.11. EVERY identity in this round is
+           judged against runs made in THIS environment from a pinned dfbfbe7 worktree,
+           never against the Windows records (an investigator found a Linux harness run
+           equal to the recorded clF2D/clC runs for 10 steps; nothing longer was checked).
+           PAPER: Part 3 numbers are Linux numbers; they are not comparable value for
+           value with the Windows records, which is one more reason the control arm plC
+           re-measures the baseline.
+  TESTS    dfbfbe7, this environment: 8 failed / 947 passed / 0 errors (1:01:10); the
+           failing NAME SET is identical to the Windows log outputs/_cl2_pytest_post.log
+           (recorded at dd2bcd0, whose source is identical to dfbfbe7):
+             test_behavior_regression::test_descriptive_next_action_uses_target_position
+             test_dashboard_panel::test_dashboard_panel_render_returns_string
+             test_firefighter_dispatch_replacement::test_no_replacement_available_marks_victim_unreachable_once
+             test_rescue_planner_authority::test_no_firefighter_planner_delay_or_unreachable
+             test_uav_sector_assignment::test_fire_tracker_uavs_receive_different_target_sets
+             test_uav_sector_assignment::test_fire_tracker_still_overridden_by_search_mode_fail_safe
+             test_wind_aware_trajectory_regression::test_north_vs_south_trajectories_diverge_over_40_steps
+             test_wind_aware_trajectory_regression::test_east_vs_west_trajectories_diverge_over_40_steps
+           Log: outputs/_pl_pytest_base.log (+ .xml). The list in outputs/globalplanner_
+           scope.txt is stale (427 passed; ...downwind_exists instead of east_vs_west).
+  WHAT PART 1 WROTE (outputs/ only)
+           outputs/planner_part1.txt              this file
+           outputs/_pl_verify/_pl_shadow.py       observe probe + READ-ONLY ingredient recorder
+           outputs/_pl_verify/_pl_offline.py      open-loop scoring of the proposed values
+                                                  (--variant e1|e2|e3|e3x, see 0.1)
+           outputs/_pl_verify/_pl_analytic.py/.txt the section 4.2 worked examples
+           outputs/_pl_verify/_pl_examples.py/.txt the section 4.2 real winning states
+                                                  and the direction census (E3x)
+           outputs/_pl_verify/_pl_stats.py/.txt   confidence, RTB-window and belief checks
+           outputs/_pl_verify/_pl_v_aggregate.py  aggregation of the re-verification wave
+           outputs/_pl_verify/_pl_v_wave*.sh + _pl_v_wave.log, the runs _pl_v_*.json/.log
+           (recorder v1) and _pl_v2_observe_*.json/.log (recorder v2), _pl_v_aggregate.json,
+           _pl_offline_e1|e2|e3_<conf>_<battery>.json, _pl_offline_e3x_<conf>.json
+           outputs/_pl_pytest_base.log / .xml     the suite baseline
+           Pinned worktree /home/user/sas_dfbfbe7 (detached at dfbfbe7, outside the repo).
+           On Linux there is no .venv junction to unlink: the worktree has no .venv; runs use
+           the real /home/user/SAS/.venv by absolute path, which the worktree cannot touch.
+  HOW IT WAS VERIFIED
+           (a) 8 read-only code investigators, each followed by an adversarial re-check that
+               tried to refute its claims (41 of 112 claims corrected in detail, none
+               overturned a break); every claim below cites file:line at dfbfbe7.
+           (b) a probe wave at dfbfbe7 on the canonical 13 (C13: east/half 101-505,
+               south/half 101-505, east/default 101/202/303), 240 steps: the scoping round's
+               own probe outputs/_gp_probe.py (tracked, unchanged) from the pinned worktree:
+               nopatch x6, observe x13, arm_role_str x13, arm_role_dict x13, and (wave 4)
+               observe with the v2 recorder x13.
+           (c) the observe runs also carried a read-only recorder of the raw inputs the nine
+               values read (section 4.2); observer purity: observe+recorder == nopatch 6/6 on
+               eval, stdout, agent positions and fire map.
+           (d) a five-critic adversarial review of the first draft of this file (identity,
+               value semantics, pre-registration, completeness vs the brief, behavioural
+               safety); what it changed is in 0.1 and 13.
+  QUARANTINE  every recursive search, by me and every sub-agent, excluded
+           _firemech_rewound_20260914 (it does not exist in this checkout; excluded anyway).
+  TAGS     round prefix: files outputs/_pl_*, run tags pl*. Checked before any run: 0
+           files and 0 tracked paths start with _pl, _ffr_pl or _rblatch_camp2_pl. The
+           Part 3 tags of section 7 were chosen so that none is a prefix of another.
+
+================================================================================
+0. SUMMARY
+================================================================================
+
+RE-VERIFIED AT dfbfbe7 (section 1). All three breaks and all three mismatches hold, at
+code byte-identical to the scoping round's a78f393 (the scorer, planner, generator,
+filter and executor files; only that report's line numbers were off by 1-8).
+  BREAK 1  0 of 71,760 scorings carry any of the nine keys (C13, 240 steps, 23 options).
+           Full history (111 commits with --all): no source commit ever wrote one.
+  BREAK 2  the baseline scores 0.17 x stability_weight and wins 3,120 of 3,120 steps
+           (0.153 x26, 0.187 x2,170, 0.255 x924); the other 68,640 scorings are all 0.0.
+  BREAK 3  forcing the fire_tracking role option to win: selected on 3,025 of 3,120 steps,
+           MissionDecision non-empty 0 times, 0 roles written, outcomes identical to the
+           unarmed runs 13/13. With the dict hand-built (arm_role_dict): selected 3,070 of
+           3,120, a non-empty MissionDecision 3,070 times, 4 roles written each time, outcomes DIFFERENT in 13/13 (rescued 38 -> 30, never_detected
+           0 -> 8, firefighter deaths 3 -> 5) - the chain works once both breaks are bypassed.
+  MISMATCHES  role_assignment vs "role"+"change": ON the role path (fixed on the writer
+           side: switch options carry from_role/to_role, which the scorer already
+           reads); search_mode_required vs search_mode and target_regions vs
+           target_region: OFF it (not fixed; cleanup list).
+
+THE RE-VERIFICATION FOUND FIVE MORE THINGS THE DESIGN MUST HANDLE (1.5):
+  N1 A THIRD STRUCTURAL BIAS: role options are multiplied by the mean trigger confidence
+     (0.0 at step 1, 0.25-0.36 by step 30); the baseline is fixed at 1.0.
+  N2 A dict assigned_role would CRASH the constraint filter every step, switch or no
+     switch - the string/dict fix must be on the reader side.
+  N3 Role options name no UAV at all; the forced arm had to invent "all four UAVs".
+  N4 The managing system's fire belief is fed by the environment monitor (lagged, smoke
+     masked); there is no communication link model; drift is a refused-move flag.
+  N5 A mid-run role flip leaves stale per-UAV state and re-indexes the other UAVs'
+     flanks and lanes; OSCILLATION_RISK latches for the rest of a run after a UAV's 3rd
+     lifetime switch.
+
+THE DESIGN IN ONE PARAGRAPH (sections 2-6). With GLOBAL_PLANNER_MODE = 1 the role
+family is generated PER UAV: one option "switch this UAV to the other live role"
+(fire_tracker <-> victim_searcher) for every UAV that is available (not returning, not
+docked, more than 10 moving steps of battery above its return trigger when a base station
+returns UAVs), is not the last
+available UAV of its role, and is not flagged unstable by the analyzer. Each option
+carries the nine values, from_role/to_role, the UAV it targets and confidence 1.0 (D-2).
+The unchanged scorer ranks them against the unchanged do-nothing baseline; the planner
+reader is fixed to turn "role + named UAV" into a MissionDecision; the unchanged
+GlobalExecutor writes the role and, on a real change only, lets the model reset the
+switched UAV's stale per-UAV state. With GLOBAL_PLANNER_MODE = 0 (shipped) none of these
+paths is entered or can fire: value-identical to dfbfbe7 by construction, confirmed by
+measurement on C13 (7.1).
+
+THE NINE VALUES (section 3; one sentence each for the paper). Every contribution term
+uses ONE rule - "the share of a demand the UAV would carry in its new role, minus the
+share it carries now, each role's demand split evenly among the UAVs holding it" - which
+makes a switch and its immediate reversal exact opposites (3.0).
+  fire_contribution          demand = believed-burning area not stale, in UAV view areas (<=1)
+  victim_contribution        demand = share of the mission's victims not yet detected
+  communication_contribution EXPLICIT ZERO: no communication model exists (D-3)
+  uncertainty_reduction      demand = share of map cells never seen
+  information_recovery       demand = believed-burning area gone stale, in UAV view areas (<=1)
+  collision_risk             share of the other UAVs working in the joined role within 10 cells
+  battery_cost               share of the battery margin above the return trigger that
+                             reaching the new role's nearest work cell uses up
+  drift_risk                 1 if the UAV's last move was refused or redirected, else 0
+  switching_cost             0.15 + 0.85 x (1 - role-stability timer / 30)+, the timer being
+                             steps since the UAV's last role assignment (launch included) - 1
+
+THE BASELINE CONSTANTS STAY (section 4). They become the margin a switch must clear over
+"change nothing". Real options DO clear it: open loop, in the states the local strategy
+actually passes through on C13, the best switch beats the baseline on 8.24% of planner
+steps (257 of 3,120), in 11 of 13 runs (the final design, E3x, confidence 1.0). With the
+shipped trigger-mean confidence kept instead (D-2), 2.40% of steps (75), in 6 of 13 runs.
+
+WHAT THIS MEANS FOR THE PAPER. Today the planning step of the loop is a constant: it
+cannot select anything but "change nothing", and could not act if it did. After this
+round, with the switch on, it chooses each step between "change nothing" and moving one
+UAV between fire tracking and victim search on stated world quantities, and its choices
+reach the UAVs. Open loop its preferences are coherent: move a TRACKER TO SEARCH early,
+when victims are undetected and most of the map is unseen (first at step 3 in all 3
+default-roles runs, step 9 in four half-roles runs and step 14 in a fifth), and a
+SEARCHER TO TRACKING late, after every victim has been detected and the map is explored,
+when the fire is large and part of its picture has gone stale (first at step 88, 95, 98,
+124, 143 and 237 in six half-roles runs). The split is clean: all 136 would-win
+tracker-to-search steps had an undetected victim, all 121 searcher-to-tracking steps had
+none. The paper must also say that the confidence discount was switched off for role
+options (D-2), that the fire inputs read a monitor-fed belief (N4), and that
+communication plays no part. Rescuing FEWER than the local strategy remains possible and
+is not a gate failure.
+
+--------------------------------------------------------------------------------
+0.1 CHANGE LOG OF THIS FILE (all before any Part 2 code, 2026-09-27)
+--------------------------------------------------------------------------------
+  The open-loop evaluator was run on three successive definitions of the values, and the
+  last one was then evaluated exactly (E3x). None was changed for its effect on the win
+  share; every change is a correctness fix with a code citation, and every result is
+  reported (outputs/_pl_verify/_pl_offline_<variant>_*.json).
+  E0 -> E1 (before the first draft; investigator findings): exclude returning/docked UAVs
+     (they cannot take up a role, N5); battery margin against the real return trigger, not
+     15 (the 15% gate never bites, N4); victims from the monotone detection flag (N4).
+  E1 = the first draft of section 3.  C13: 9.71% of steps, 12/13 runs (confidence 1.0);
+     2.24%, 6/13 (trigger confidence).
+  E1 -> E2 (first review round): availability also requires the battery to be above the
+     return trigger (the same predicate _apply_return_to_base applies later in the same
+     step); the believed-burning set is PARTITIONED into its stale and non-stale parts, both
+     on the one-view-area unit (the draft counted stale cells in both fire terms); N_v =
+     len(managed_victims) (the draft divided by NUM_VICTIMS, which is 0 in a repo edge case
+     and a module global the managed victims need not match); drift None -> 0 at step 1 (the
+     evaluator already did this in every variant - a fix to the TEXT); collision counts only
+     members not returning or docked; battery_cost counts the trigger change at the
+     target cell (open loop can only bracket it: flight-only "lo" / flight + rising trigger
+     "hi"). C13: 7.63-10.06%, 11/13 (1.0); 2.08-4.04%, 7/13 (trigger).
+  E2 -> E3 (safety review): demands split among ALL holders of a role, not the available
+     ones - every UAV returns to base in one short synchronized window (first/last trigger
+     steps 156-188 / 177-196 per run on C13), so an available-only split would let
+     the battery schedule, not demand, drive switches and reversals; availability needs more
+     than 10 moving steps (3.0 battery) above the trigger; I5 (never re-task a UAV the analyzer
+     flags unstable). C13: 7.44-9.87%, 11/13 (1.0); 2.05-3.97%, 7/13 (trigger).
+  E3 -> E3x (my own final check; an EVALUATOR fix, the design of section 3 is unchanged):
+     the E2/E3 "lo/hi" pair was NOT a valid bracket of the section-3 formula. The v1
+     recorder measured the tracker distance to the nearest believed-burning cell INCLUDING
+     stale ones (3.7 says non-stale) and did not record the target cell, so the trigger
+     there could only be bounded. Recorder v2 (_pl_shadow.py, "recorder": 2, wave 4, same
+     pinned dfbfbe7 worktree) records the target cells themselves (nearest non-stale
+     believed-burning cell, nearest never-seen cell; Manhattan, ties to the lowest (x, y))
+     and the analyzer's OSCILLATION_RISK / INSTABILITY_DETECTED triggers; --variant e3x then
+     computes battery_cost exactly as 3.7, with the trigger evaluated AT the target cell by
+     the same formula, and applies I5. Observer purity: the 13 v2 runs equal the 13 v1 runs
+     on every recorded field except the recorder itself (13/13). I5 excluded 0 UAV-steps
+     open loop: the local strategy never changes a role after launch, so neither trigger
+     fires. No exact tie with the baseline occurred (a tie would win, 4.4). C13: 8.24%,
+     11/13 (1.0); 2.40%, 6/13 (trigger) - inside the E3 ranges; one run fewer has a win
+     under the trigger confidence (7 -> 6).
+  The draft's claim "every constant was fixed before the open-loop run and none changed
+  after" was therefore WRONG and is withdrawn; what holds is that no change was chosen for
+  the win share, and the share barely moved. E3 is the design and E3x its exact open-loop
+  evaluation: the formulas are in section 3 and in _pl_offline.py --variant e3x (the
+  default; sha256 8cfa3d8b3be3fcb3a874b49731e6e391fb1d9e4b8c362f05ea95444176b3d4dd). The
+  E1/E2/E3 result files are kept as the record; six unprefixed copies of the E1/E2
+  results written before the --variant flag existed were deleted (identical on every key).
+
+================================================================================
+1. RE-VERIFICATION AT dfbfbe7
+================================================================================
+
+1.1 BREAK 1 - THE NINE SCORING INPUTS ARE NOT DEFINED - HOLDS
+  CODE  src_extension/planning/utility_evaluation.py:812-820 reads the nine with pfloat()
+        from option.parameters ONLY (:788-790; runtime_models is discarded at :786). pfloat
+        gives 0.0 for an absent key and for None or an unparseable string; NaN/inf pass
+        through (safe_float :1589-1601) - so any writer must emit finite floats.
+  WRITERS  none outside tests/ (quoted-key, kwarg and setitem greps over the tree excluding
+        tests/, outputs/, .git, .venv and the quarantine). Test writers: tests/test_global_
+        utility.py:31-39, test_global_local_planners.py:15-23/:64-68, test_horizon_utility.py
+        :9-17, test_utility_constraints.py:95-103, test_planner_core.py:208-213/:229-231.
+  HISTORY  over the full history (109 commits on HEAD, 111 reachable with --all), `git log
+        -S'"<key>"' --all` finds exactly two
+        commits for fire_contribution, victim_contribution, communication_contribution,
+        uncertainty_reduction, drift_risk and switching_cost: a4a01b4 (the bulk import) and
+        1511ada (outputs/ only). collision_risk, battery_cost and information_recovery hit
+        more commits because the same words are fail-safe reason names, mode names and
+        local-scorer keys; none of those commits writes one as a global option parameter
+        (checked diff by diff). Never wired, not un-wired. (The first draft said "3 commits,
+        fd743f5 a parentless root": that was the shallow-clone boundary, now corrected.)
+  MEASURED (observe, C13, 240 steps; outputs/_pl_verify/_pl_v_aggregate.json): 71,760
+        scorings (13 x 240 x 23 options); each of the nine present 0 times; the 23 options
+        carry the same 37-key vocabulary the scoping round listed.
+  PAPER: the planning step's utility function has never received a single input value in
+        any run of this simulator; every global score it produced was a constant.
+
+1.2 BREAK 2 - DO-NOTHING WINS BY CONSTRUCTION - HOLDS, EXACT FORMULA
+  The baseline global_stability_maintain_current_config (generator :13-39, appended LAST
+  at :84, confidence 1.0 at :32) scores 0.12 x sw (S_hysteresis_bonus, utility_evaluation.py
+  :364-366 - its role_stability_timer term never contributes, the baseline has no such key)
+  + 0.05 x sw (S_stability_idle_floor, :907-909), sw = the mode's stability_weight (0.9 /
+  0.75 / 1.05 / 1.5 / 1.1). Baseline score = 0.17 x sw: normal 0.153, victim_support
+  0.1275, battery_constrained 0.1785, safety_first 0.255, information_recovery 0.187
+  (communication_degraded, 0.17, is never returned). The 0.22 cap never binds (max 0.21).
+  The mode is MissionGoalModel.utility_weight_mode() via runtime_models['mission_goals']
+  (mission_goal_integration.py:81-84; the analysis_snapshot fallback is dead), fail-safe
+  mode first. MEASURED on C13, 240 steps: normal 26 steps (all within steps 1-5), then
+  information_recovery 2,170 and safety_first 924; baseline selected 3,120/3,120. (At the
+  scoping round's a78f393 it was 2,370 / 722 / 26 / 2 - wildfire_model.py has changed.)
+  PAPER: "the planner always chose to keep the configuration" was a property of two
+        constants, not a judgment about the mission.
+
+1.3 BREAK 3 - A WINNING OPTION IS DROPPED - HOLDS
+  CODE  global_mission_planner.py:233-241; :238 is exactly `assigned = params.get(
+        "assigned_role")` (line unchanged). It accepts a dict only (:239-240); the generator
+        writes a bare string (global_adaptation_generator.py:147, list at :134-140);
+        _string_dict returns {} for a non-dict (:227-230).
+  MEASURED (C13, 240 steps):
+    arm_role_str (fire_contribution 0.9 on global_role_assignment_fire_tracking, string
+    left as generated): selected 3,025 / 3,120 (the 95 others: steps where 0.9 x w x c -
+    w the mode's fire weight, 1.0 normal / 0.9 information_recovery - fell under the
+    baseline; N1 at work); MissionDecision non-empty 0 times; GlobalExecutor role writes 0; outcomes vs the unarmed observe runs 13/13
+    IDENTICAL on eval, stdout, agent positions, fire map and role signature (38 rescued /
+    8 dead / 3 firefighter deaths in both).
+    arm_role_dict (the same + uav_assignments hand-built as a dict in the live words, all
+    four UAVs "fire_tracker"): selected 3,070 / 3,120 (50 baseline steps,
+    again the confidence discount); MissionDecision.uav_assignments non-empty 3,070 times; the
+    executor wrote 4 roles on each of them; outcomes vs the unarmed runs DIFFER in 13/13 on
+    eval, stdout, positions, fire map and roles. C13 totals: rescued 38 -> 30, dead 8 -> 9,
+    firefighter deaths 3 -> 5, never_detected 0 -> 8, unreachable 0 -> 8, burnt cells
+    14,651 -> 13,793. Unlike at a78f393 the FIRE MAP now changes too (13/13): ungated
+    firefighting links rescue dispatch to the fire, so the scoping round's "the fire is
+    untouchable from this layer" no longer holds at dfbfbe7.
+  PAPER (positive control): the all-trackers allocation the forced arm imposes costs 8 rescues
+    on C13 (38 -> 30 of 52 victims) and leaves 8 never detected - the degenerate state that
+    invariant I2 excludes.
+  Also: an investigator injected {'2502': 'fire_tracker'} through the real GlobalExecutor
+  at step 3; the role changed in all four views (managed_uav_states, uav_resource_model,
+  the agent's current_role property, wildfire_model._uav_assignment_role) and persisted
+  through step 10. Nothing reverts an executor-written role.
+  PAPER: the chain "decide -> decision -> actuation" was broken at two serial points
+        (scoring and the reader); the actuation half works.
+
+1.4 THE THREE NAME MISMATCHES, AND THE VOCABULARY - ALL HOLD
+  (a) option_type "role_assignment" (generator :145/:163/:182) vs the scorer's
+      `("role" in ot and "change" in ot)` (utility_evaluation.py:855): role_changed False on
+      every scoring (predicted_effects.role_reassignment False), so Cost_switch is never
+      charged. ON THE ROLE PATH (role options route to _evaluate_global_mission_option at
+      :224). PAPER: role changes were free in the utility even in principle.
+  (b) search_mode_required - written only by the COVERAGE family's base parameters
+      (generator :478-487) and as explicit_search_mode (:530) - vs search_mode, read at
+      utility_evaluation.py:552 (gated on uncertainty_level, never written), :843, :1389 and
+      fail_safe_planner.py:338/:447. NOT on the role path. PAPER: none for this round.
+  (c) target_regions (a list; coverage/belief_gap_reduction_strategy :516, resource :626 and
+      :648 - the task family writes none) vs target_region, read only at global_mission_
+      planner.py:251 into task_assignments. NOT on the role path; its live value is [] on
+      every step. PAPER: none for this round.
+  (d) ROLE VOCABULARY (generator fire_tracking / victim_search / victim_confirmation /
+      victim_tracking / communication_relay vs live fire_tracker / victim_searcher,
+      wildfire_model.py:1015-1020). victim_search is already a live alias (local_adaptation_
+      generator.py:262, uav_executor.py:52; pinned by tests/test_uav_sector_assignment.py
+      :415). fire_tracking fails every exact "fire_tracker" gate (wildfire_model.py:447/:518/
+      :1390; local_adaptation_generator.py:2169/:2190/:2215/:2450/:2539/:2549/:2600;
+      uav_executor.py:430/:591/:616/:2649/:4225) while _role_kind's substring test calls it
+      "fire": a hybrid. The other three have no behaviour. ON the role path - it is the
+      payload. PAPER: the planner can only express the two roles the simulator implements.
+
+1.5 FIVE FURTHER FINDINGS
+  N1 THE CONFIDENCE DISCOUNT. _apply_confidence_and_uncertainty_adjustment multiplies the
+     total by clamp01(option.confidence) whenever the profile enables it (utility_evaluation.
+     py:537-540; all modes but safety_first, :143). Role options get the mean of the
+     filtered trigger confidences (trigger_input.py:70-73; 0.5 with no triggers); the
+     baseline is hard-coded 1.0 (generator :32; four conditional stability options also are,
+     :391/:408/:699/:716, never generated in these runs). Measured on C13 (outputs/_pl_verify/
+     _pl_stats.txt): 0.0 at step 1 in all 13 runs, 1.0 at step 2 (0.81 in 3 runs), 0.42-0.62
+     at step 10, 0.26-0.58 at 20, 0.25-0.36 at 30. Break-even raw utility = baseline / c:
+     infinite at step 1, ~0.52-0.76 by step 30. The multiplier also
+     shrinks negative totals toward 0. PAPER: even a connected utility would have been
+     weighted against change by the analyzer's trigger confidence.
+  N2 A DICT assigned_role CRASHES THE FILTER. ConstraintFilter._option_action returns
+     parameters["assigned_role"] for role options (constraint_filter.py:211-231) and tests
+     `action in forbidden_actions` (:80) / `in unavailable_actions` (:202), both sets; a dict
+     raises TypeError (checked: `{} in set()`); filter_options has no try, and it runs on
+     every option every step (wildfire_model.py:2132-2136). PAPER: none; design constraint.
+  N3 ROLE OPTIONS NAME NO UAV: target_entity "mission" (generator :125; wildfire_model.py
+     :2083); current_role / role_stability_timer / role_switch_count are read as top-level
+     runtime_models keys that do not exist, so all are None (generator :112-133). The
+     per-UAV facts exist in uav_resource_model.by_uav_id[uid] (role, position, battery,
+     drift_level, role_stability_timer, role_switch_count; refreshed post-move each step,
+     so one step old at generation - but position and battery equal the agent's own at that
+     moment, since the agent has not yet moved). PAPER: the global role options as imported
+     could not express WHICH UAV should change.
+  N4 WHAT THE MANAGING SYSTEM "KNOWS".
+     - Fire: the environment monitor writes every burning Fire agent NOT under active smoke
+       and not already declared by a UAV into the fire and visibility knowledge each step
+       (environment_monitor.py:24-32; wildfire_model.py:1262-1276, :1298-1324), one step
+       late; smoke-covered burning cells are written as SMOKE_OBSCURED. The belief is close
+       to, not equal to, ground truth: after step 30 of east/half/101 (the planner's view at
+       step 31), 31 of 112 burning cells
+       were missing from estimated_burning_cells and 49 believed cells were not burning
+       (cells that went out; their probability decays slowly). A believed-burning cell
+       nobody re-reports goes STALE after 10 steps (visibility_model.py:195-197).
+     - Communication: no per-UAV links (communication_model.links is never written), no
+       range, no base-station radio. Per-UAV telemetry status is a refused-move proxy
+       (wildfire_model.py:1501-1512). Fleet delivery_confidence falls as an ARTIFACT (the
+       executor counts any action containing "fail", e.g. fail_safe_priority, as a failed
+       delivery, communication_executor.py:189-197); critical_link_reliability is always
+       0.0. No movement code reads communication state.
+     - Drift: Euclidean distance between the intended and the reached cell after a move
+       (local_uav_monitor.py:358-373): 0 moved as intended, 1 refused/held, sqrt(2) or 2 when
+       redirected; None before the first move.
+     - Battery: the return trigger is 0.3 x (Manhattan distance to the nearest own berth) +
+       39.23 (agents.py:418-437), so the scorer's own battery gate (battery_level <= 15,
+       utility_evaluation.py:257/:265) never bites at BASE_STATION_MODE >= 2.
+     - Victims: victim_runtime_model.victims is NOT monotone (rescued/dead victims drop out;
+       one stayed 'candidate' after its rescue). The monotone record is managed_victims[v].
+       confirmed, set True by detection (wildfire_model.py:1372) or a rescue "confirm"
+       (rescue_executor.py:566-568), never cleared (checked on 3 runs).
+     PAPER: the analyzer's collision, drift and communication trigger statistics are
+     artifacts of these mechanisms and must not be reported as world signals.
+  N5 ROLE-CHANGE HYGIENE AND FEEDBACK (a real mid-run flip, measured by an investigator):
+     - an ex-tracker keeps its flank sector (wildfire_model.py:511-605 rewrites trackers
+       only). For a searcher the PRIMARY target path (the wind-aware target) does not read
+       the sector - _resolve_direction_intent returns inside the victim branch (uav_executor
+       .py:1210/:1479) - but the lawnmower sweep cursor initialises from the sector bounds
+       (uav_executor.py:4023-4078) and the sector-filter sites apply from step 20 with a
+       fall-back to all targets (:4225-4228, :4268): a bias on the fallback paths, not a trap;
+     - per-UAV stores keyed by uid are never reset: _wind_search_target_state (commit target,
+       corridor, lane axis; local_adaptation_generator.py:471-478), _victim_sweep_state (the
+       lawnmower cursor; uav_executor.py:1216-1227, :1374-1404), _victim_escape_memory;
+     - flanks and searcher lanes are indexed by sorted uid, so one flip re-indexes the
+       incumbents (measured: tracker 2501 moved from flank x34-49 to x18-33); an
+       incumbent's held commit target is released only on arrival, unsafe cell, stall or
+       timeout (2x the initial distance), never on a lane change (local_adaptation_
+       generator.py:990-1032);
+     - on the flip step the local PathDecision was built for the OLD role but is executed
+       by a UAVExecutor reading the NEW role (adaptation_manager.py:111/:114/:120; the
+       dispatcher runs the global executor before local paths, decision_dispatcher.py:113-
+       114) - one step of mixed state;
+     - re-asserting a role every step freezes role_stability_timer at 0; a uav_assignments
+       key that is not a live id creates a phantom by_uav_id entry and crashes the next step
+       (local_adaptation_generator.py:2551) - both measured;
+     - role_switch_count is a LIFETIME counter (only ever incremented, uav_resource_model.py
+       :161-165). OSCILLATION_RISK fires on EVERY later step once a UAV has 3 lifetime
+       switches; INSTABILITY_DETECTED for 10 steps after each switch once it has 2
+       (global_analyzer.py:1409-1435). Both name the UAV (affected_entities), both put
+       "oscillation"/"role_switch" in the trigger context, which makes the generator emit
+       global_role_assignment_delay_change every step (:177-178). SafetyChecker maps them to
+       INSTABILITY -> DEGRADED only when no higher-priority reason is present
+       (safety_checker.py:73-97); on C13 the information-recovery and safety-first reasons
+       are present on every step after step 5, so INSTABILITY cannot change the mode there,
+       and it never yields EMERGENCY - the dispatcher's global-execution skip (EMERGENCY +
+       suspend_non_critical_tasks, decision_dispatcher.py:106-113) is unreachable from it.
+     PAPER: an "oscillation" alarm after 3 switches in a whole mission is a counter
+     artifact, not evidence of oscillation.
+
+================================================================================
+2. THE DESIGN
+================================================================================
+
+2.1 WHAT THE PLANNER DECIDES
+  Every step: "change nothing", or "move ONE UAV to the other live role" (fire_tracker,
+  victim_searcher - the only roles the model writes and fully implements). At most one role
+  change per step. Invariants, enforced by what the generator emits (never by a scorer
+  rule):
+    I1 AVAILABLE UAVs only: rtb_active False, rtb_docked False, and - when a base station
+       returns UAVs (base_station_mode() >= 2) - battery_level above its return trigger at
+       the nearest own berth by more than 10 moving steps (3.0 battery). A UAV about to turn
+       home cannot take up a new role, and the trigger is tested later in the same step
+       (agents.py:687-691), so the plain flags alone would be one step stale.
+    I2 never switch a UAV out of a role unless ANOTHER AVAILABLE UAV remains in it: no live
+       role is ever emptied (resolve_victim_searcher_uav_ids silently falls back to "the last
+       UAV by index" when no searcher exists, local_adaptation_generator.py:306-316), and a
+       role never loses its last working member to a switch.
+    I3 REAL changes only: an option exists only for from_role != to_role, so the executor
+       never re-asserts a role (N5: re-assertion freezes the timers).
+    I4 LIVE ids only, read from uav_resource_model.by_uav_id (a wrong key crashes, N5).
+    I5 never re-task a UAV that a current OSCILLATION_RISK or INSTABILITY_DETECTED trigger
+       names (read from the generator's own first argument, global_analysis_result
+       ['trigger_list'] / trigger_batch). The analyzer's instability signal thus reaches the
+       planner: a UAV is not switched within 10 steps of its 2nd+ switch, and at most 3
+       times per mission. Without I5 the delay_change option the analyzer causes to be
+       generated is a no-op that can never win - nothing would slow further switching.
+
+2.2 THE ROLE FAMILY WITH THE SWITCH ON (GLOBAL_PLANNER_MODE = 1)
+  For each UAV u (by_uav_id keys sorted by int) passing I1, I2, I5; a = its role (managed
+  store first, resource model second - the order of wildfire_model._uav_assignment_role -
+  with "victim_search" read as victim_searcher); b = the other live role:
+      option_id       global_role_assignment_<b>_<u>   e.g. global_role_assignment_fire_tracker_2503
+      option_type     "role_assignment"               unchanged: keeps evaluator routing
+                                                      and every type test
+      target_entity   <u>
+      parameters      the five base parameters exactly as today (all None, see 3.10)
+                      assigned_role <b>   - a STRING (hashable: N2)
+                      target_uav_id <u>   - NEW: the UAV the option moves
+                      from_role <a>, to_role <b>   - the scorer's own change reader (5.2)
+                      battery_level <u's battery>  - feeds the scorer's existing gate (inert
+                                           at base-station mode >= 2, see N4)
+                      the nine values, finite floats (section 3)
+      cost_estimate 1.0, risk_estimate 0.2     unchanged (cost_estimate is never consulted,
+                      3.9; risk_estimate is checked by the filter against >= 0.35, never binds)
+      confidence      1.0                      D-2 (4.3)
+  Kept as today, plus the nine values as EXPLICIT 0.0: global_role_assignment_maintain_
+  current (its id is pinned by tests/test_global_adaptation.py:43) and, when the triggers
+  of N5 fire, global_role_assignment_delay_change. Both change nothing, still score 0.0 and
+  cannot beat the baseline.
+  NOT generated with the switch on: the five generator-vocabulary options (fire_tracking and
+  victim_search are replaced by the per-UAV options in the live words; victim_confirmation,
+  victim_tracking, communication_relay have no behaviour, 1.4 d). Every other family and
+  the baseline are generated exactly as today.
+
+2.3 WHY PER-UAV SINGLE SWITCHES
+  A role option must say WHICH UAV (N3). Battery, position, drift, recency and crowding are
+  per-UAV facts. One change per step keeps every decision attributable to one UAV, one step
+  and nine numbers - what section 7 must prove. The forced arm's "all four become X" is not
+  in the action space (I2).
+
+2.4 WHAT DOES NOT CHANGE
+  The scorer (not one line), the weight profiles, the baseline and both constants, the
+  GlobalExecutor's role writes (it stays role-agnostic, as tests/test_execution_core.py
+  :96-110 and test_global_executor_role_signature.py require), MissionDecision (frozen, 12
+  fields pinned by tests/test_planner_core.py:51), OptionEvaluation (pinned by
+  tests/test_utility_core.py:46), the dispatcher and its result keys, the pipeline stages
+  (pinned by tests/test_adaptation_manager_cycle.py:205), the other four option families.
+
+================================================================================
+3. THE NINE VALUES (design E3)
+================================================================================
+
+3.0 NOTATION, THE SHARE RULE, AND WHY A SWITCH CANNOT BE UNDONE ON UNCHANGED DEMANDS
+  An option moves UAV u from role a to role b. Read at generation time (pre-move of step t):
+  knowledge models as of the end of step t-1; managed_victims[*].confirmed possibly updated
+  by this step's pre-move detection (adaptation_manager.py:101 runs before :111); agent rtb
+  flags, berths and trigger level live. FT/VS = fire_tracker / victim_searcher.
+    n_r  = number of UAVs holding role r (ALL of them, returning and docked included - the
+           way the simulator itself divides lanes and flanks; availability decides only who
+           may be switched, I1-I2).
+  Four demands, each in [0, 1], none depending on who holds which role:
+    B        = fire_runtime_model.belief.estimated_burning_cells (probability >= 0.7)
+    S        = {c in B : observation status STALE_INFORMATION}       (visibility model)
+    D_fire   = min(1, |B \ S| / 289)      289 = one UAV's observation area, (2 x 8 + 1)^2
+    D_stale  = min(1, |S| / 289)          the same unit; each believed cell counted once
+    D_vict   = (N_v - N_det) / N_v, 0 if N_v = 0, clamped to [0, 1];
+               N_v = len(managed_victims) - the mission's victim count, not their positions;
+               N_det = number with confirmed True (the flag only)
+    D_unc    = |{cells with status NEVER_SEEN}| / |cells|   (observation_status_map, 2500)
+  THE SHARE RULE, for a demand D belonging to role r:
+      share(D, r) = [b = r] x D / (n_r + 1)  -  [a = r] x D / n_r
+  (the part of r's demand u would carry after joining r, minus the part it carries now).
+  PROPERTY. Let F be an option's value and R the value of the reverse move evaluated right
+  after it (n_a -> n_a - 1, n_b -> n_b + 1): R = D_a/((n_a - 1) + 1) - D_b/(n_b + 1) = -F.
+  A move and its reversal are exact opposites WHEN THE DEMANDS AND THE MODE ARE UNCHANGED
+  (the weights come from the mode); n_r no longer changes with returns and releases (E3),
+  so the battery schedule cannot break it. Only a change in demands or mode can make the
+  planner want to undo a move - which is then a decision, not an oscillation. (With D/n_b
+  instead of D/(n_b + 1), the reverse of a +0.5 move is again +0.5.) It does not prevent a
+  cascade in one direction; I2 and the share rule's diminishing gains bound that.
+  RANGE. I2 gives n_a >= 2 (u plus another available holder), so a loss is at most D/2.
+  Both live roles are held at launch in every configuration this round runs (half 2+2,
+  default 3+1), and I2 applied to every switch keeps each role held, so n_b >= 1 and a gain
+  is at most D/2. Each contribution term lies in [-0.5, 0.5]. (A configuration that
+  launched with a role unheld would allow a gain up to D; none is run.)
+
+3.1 fire_contribution
+  MEASURES  the fire-tracking demand the switch moves onto (+) or off (-) the UAV.
+  READS     fire belief B and the stale set S; roles.
+  FORMULA   share(D_fire, FT).          RANGE [-0.5, 0.5]; 0 when no fresh belief of fire.
+  WHY       the tracker's work is the fire; its demand grows with the (non-stale) believed
+            fire, and one UAV's view area is the natural unit - a fire that fills one area
+            can occupy one tracker. The belief is monitor-fed (N4): stated, not changed.
+  PAPER     "The share of the believed-burning area (in UAV view areas, at most one) that
+            the UAV would carry as a fire tracker after the switch, minus the share it
+            carries now, each role's demand split evenly among the UAVs holding it."
+
+3.2 victim_contribution
+  MEASURES  the part of the outstanding victim search the switch moves onto/off the UAV.
+  READS     len(managed_victims) and their confirmed flags; roles.
+  FORMULA   share(D_vict, VS).          RANGE [-0.5, 0.5]; 0 once every victim is detected.
+  WHY       searchers exist to find victims. Using the COUNT of victims is a mission-
+            briefing prior (the local generator's _count_unresolved_victims and mission_goals
+            .alive_victims_remaining already use it). A DELIBERATE CHOICE: the planner reads
+            only the detection flag, so a victim that died undetected keeps counting as
+            outstanding - the managed side knows it is dead (mission_goals and
+            _count_unresolved_victims read that), the planner does not look. Detection is
+            role-agnostic (any UAV within radius 8, wildfire_model.py:1355) but only
+            searchers sweep the far field, which is why losing searchers cost rescues in the
+            forced arm. It moves together with uncertainty_reduction until all victims are
+            found (both favour search); they diverge after that.
+  PAPER     "The share of the mission's victims not yet detected that the UAV would carry as
+            a victim searcher after the switch, minus the share it carries now." Also: the
+            planner may keep valuing search after every undetected victim has died.
+
+3.3 communication_contribution - EXPLICIT, DOCUMENTED ZERO
+  MEASURES  nothing: no role switch has a communication effect in this simulator.
+  READS     nothing. Written as 0.0 on every switch option (present, not absent).
+  WHY       no link model exists (N4). The only per-UAV "communication" signal is a refused-
+            move proxy, which drift_risk already carries; fleet delivery_confidence is an
+            artifact. A proxy invented here (e.g. distance to a depot) would put a number on
+            something the simulator does not model. (D-3.)
+  PAPER     "Zero for every role switch: the simulator has no communication model in which
+            a UAV's role or position changes message delivery."
+
+3.4 uncertainty_reduction
+  MEASURES  the part of the unexplored map the switch moves onto/off the UAV.
+  READS     visibility_model.state.observation_status_map (NEVER_SEEN); roles.
+  FORMULA   share(D_unc, VS).           RANGE [-0.5, 0.5]; 0 once every cell has been seen.
+  WHY       the demand is the unexplored map; the searcher is the role that sweeps the far
+            field (cross-wind lanes), while trackers stay on the fire perimeter and never
+            search (uav_executor.py:3115-3124). NOT "searchers alone clear it": NEVER_SEEN is
+            also cleared by any UAV's 17x17 view and by the monitor's feed of fire and smoke
+            cells (wildfire_model.py:1290-1324), so D_unc falls with fire spread and tracker
+            motion too. It is monotone non-increasing.
+  PAPER     "The share of the never-seen map cells that the UAV would carry as a victim
+            searcher after the switch, minus the share it carries now." Also: the map
+            knowledge it reads is partly fed by the environment monitor.
+
+3.5 information_recovery
+  MEASURES  the stale fire belief the switch moves onto/off the UAV.
+  READS     B and S (as 3.0).
+  FORMULA   share(D_stale, FT).         RANGE [-0.5, 0.5]; 0 when nothing believed is stale.
+  WHY       because truly burning cells are re-reported every step (unless under smoke),
+            a stale believed-burning cell is almost always one that went out while the
+            belief still says it burns. Re-observing it recovers information that was known
+            and went bad - the literal meaning of the term - and the tracker, patrolling the
+            fire area, is the role that does it. Disjoint from fire_contribution: a believed
+            cell is counted in exactly one of D_fire and D_stale.
+  PAPER     "The share of the believed-burning area not re-observed for more than 10 steps
+            (in UAV view areas, at most one) that the UAV would carry as a fire tracker after
+            the switch, minus the share it carries now."
+
+3.6 collision_risk
+  MEASURES  crowding in the role the UAV would join.
+  READS     positions from uav_resource_model (equal to the agents' at generation); roles;
+            rtb flags; SECURITY_DISTANCE = 10 (cfv:739).
+  FORMULA   |{w != u : role(w) = b, w not returning/docked, euclid(u, w) <= 10}| / (N - 1).
+  RANGE     [0, (N - 2)/(N - 1)] = [0, 2/3] for 4 UAVs (I2 leaves another member of a, which
+            is not in b). It cannot reach the scorer's hard-collision threshold 0.95
+            (utility_evaluation.py:258/:273-275) for N <= 20 UAVs: no switch is ever made
+            infeasible by it here.
+  WHY       joining a role whose working members are already close means working the same
+            area (trackers converge on the fire's flanks). Existing collision signals cannot
+            be used: local congestion is always 1.0 (no distance filter, wildfire_model.py
+            :1799-1802) and the global COLLISION_RISK fires only below distance 1.0
+            (global_analyzer.py:860). Docked/returning UAVs are excluded: at a depot they
+            are parked, not working.
+  PAPER     "The share of the other UAVs that are working in the role this UAV would join
+            and within the security distance of it."
+
+3.7 battery_cost
+  MEASURES  how much of the UAV's usable battery the switch commits before it can work.
+  READS     u's position and battery (uav_resource_model); its own berths (agent.rtb_berths,
+            else (rtb_berth,)); drain per moving step 0.3 (agents.py:284-285); the return
+            trigger at a position via the same formula as agent._rtb_trigger_level (agents.py
+            :418-437: max(reserve, 0.3 x Manhattan distance to the nearest own berth +
+            margin)) - Part 2 adds a PURE helper rtb_trigger_level_at(uav, cell) used only
+            by the planner, pinned by a test to equal _rtb_trigger_level at the UAV's own
+            cell, so there is no second copy that can drift; NOT _rtb_select_berth (it
+            writes rtb_target_*, agents.py:557-558).
+  FORMULA   c   = the nearest work cell of b (FT: nearest non-stale believed-burning cell;
+                  VS: nearest never-seen cell; Manhattan; ties to the lowest (x, y));
+            d   = Manhattan distance u -> c (0 if no such cell exists);
+            tau_u, tau_c = the trigger level at u's cell and at c (at base_station_mode() < 2:
+                  BATTERY_CRITICAL_THRESHOLD 15 at both);
+            m   = battery - tau_u;
+            battery_cost = 1 if m <= 0, else min(1, (0.3 x d + max(0, tau_c - tau_u)) / m).
+  RANGE     [0, 1]. The numerator lies between 0.3 d (flight only) and 0.6 d (flight plus
+            a trigger that rises 0.3 per cell away from the berth).
+  WHY       what a UAV can spend on work is its battery above its own return trigger;
+            flying d cells both costs 0.3 d and, away from the berth, raises the trigger.
+            It prices distance to the role's NEAREST work cell, not to the lane or flank the
+            local strategy will then assign - an approximation, stated (see 10).
+  PAPER     "The share of the UAV's battery margin above its return-to-base trigger that
+            flying to the nearest work cell of the new role would use up, counting both the
+            flight and the higher trigger there."
+
+3.8 drift_risk
+  MEASURES  whether the UAV is currently failing to execute its moves.
+  READS     uav_resource_model.by_uav_id[u].drift_level (the monitor's last-move drift).
+  FORMULA   0 if drift_level is None (before the first move), else min(1, drift_level).
+  RANGE     {0, 1} in practice (raw values 0, 1, sqrt(2), 2; clamped).
+  WHY       a UAV whose last move was refused or redirected (hazard gate, occupied cell) is a
+            poor moment to re-task: its new path starts from a blocked state. It delays
+            rather than vetoes: the planner re-decides next step. NOT local_risk_status,
+            which sticks at high_drift after one refusal (uav_resource_model.py:217-222; a
+            defect, cleanup list). Open loop it was non-zero on 1.0% of scorings and never
+            decided anything - it is pre-registered as expected NOT to move a decision.
+  PAPER     "1 if the UAV's last move was refused or redirected, else 0: the risk of
+            re-tasking a UAV that is not currently executing its moves."
+
+3.9 switching_cost
+  MEASURES  the cost of changing a role, higher right after this UAV's last assignment.
+  READS     uav_resource_model.by_uav_id[u].role_stability_timer: steps since u's last role
+            ASSIGNMENT - including the launch assignment (scenario_init sets it to 0 at step
+            0) - minus one, because it is refreshed post-move (uav_resource_model.py:97-100,
+            :161-165).
+  FORMULA   0.15 + 0.85 x max(0, 1 - timer / 30).
+  RANGE     [0.15, 1.0] - never 0.0, so the scorer's fallbacks (cost_estimate 1.0, then 0.15,
+            utility_evaluation.py:862-865) never fire, and Cost_switch equals this value (the
+            policy term stays 0 because role_change / task_change / recent_switch_count are
+            absent and the base role_switch_count stays None, 3.10).
+  WHY       0.15 is the scorer's own default cost of a role change (:865). The recency term
+            is the second anti-oscillation device, for the case the share rule cannot cover
+            (demands changed). It also brakes the start: at launch every UAV pays 1.0,
+            still 0.72 at step 11 - a partial early blackout (open loop the first wins came
+            at step 3 with 3+1 roles and step 9 with 2+2, where demand outweighed it).
+            30 steps is a design constant (D-6), not tuned; the analyzer's own instability
+            window is 10 steps after a 2nd+ switch (N5), which I5 honours separately.
+  PAPER     "0.15 for any role change, plus up to 0.85 more that decays linearly to zero over
+            the 31 steps after the UAV's previous role assignment (launch included)."
+
+3.10 WHERE A VALUE HAS NO MEANING, AND WHAT STAYS None
+  - communication_contribution: 0.0 on every switch option (3.3).
+  - maintain_current and delay_change: all nine written as 0.0 - they change nothing.
+  - The five legacy base parameters stay None as today. Filling role_switch_count would add
+    0.15 x 0.2 x count (x a timer damp) through _compute_switching_cost (:311-316) - a
+    second, hidden switching cost no sentence above states; the 0.3 policy term keys on
+    role_change / task_change (:310), which are never written.
+  - The do-nothing baseline is not a role option and is not touched: its nine values are
+    zero by definition (it changes nothing) and absent in code, exactly as today.
+
+3.11 PURITY
+  Reads only: knowledge models (fire belief, visibility status map, uav_resource_model
+  via by_uav_id.get - never _get_or_create or update_*), managed_victims[*].confirmed and
+  its length, cfv constants at call time, the analyzer's trigger list, and from the agents
+  only rtb_active, rtb_docked, rtb_berths / rtb_berth and the pure trigger formula (the
+  only sources of those facts - PAPER: the planner reads these managed-entity fields
+  directly, as the local generator already does). Never calls the helpers that look like
+  reads but write: _wind_search_state, UAV._rtb_select_berth,
+  VisibilityModel.get_uncertain_regions. Draws no RNG, prints nothing. Nothing at all is
+  computed with the switch off.
+
+================================================================================
+4. THE BASELINE CONSTANTS
+================================================================================
+
+4.1 DECISION: BOTH CONSTANTS STAY EXACTLY AS THEY ARE
+  S_hysteresis_bonus (0.12 x sw) and S_stability_idle_floor (0.05 x sw) are not changed and
+  not made world-dependent:
+  (1) once the options carry real values, "the baseline wins because every alternative is
+      0.0" is gone; what remains is a fixed margin 0.17 x sw a switch must clear over
+      "change nothing" - a hysteresis threshold, which is a legitimate role for a constant;
+      the world-dependence belongs to the options, where it now is;
+  (2) the baseline is shared by all five families, three of them out of scope;
+  (3) switch-off identity then needs no baseline argument.
+  Your condition - show that real options can beat them - is 4.2.
+
+4.2 REAL OPTIONS CAN BEAT THEM
+  WORKED EXAMPLES, scored by the REAL scorer against the baseline's real score in every
+  profile, confidence 1.0 (outputs/_pl_verify/_pl_analytic.py/.txt; the draft's hand sums
+  were wrong - 0.44/0.33 should have read 0.473/0.345 - and are replaced):
+    A tracker to search, 2+2 roles, step >= 31, all 4 victims undetected, half the map
+    unseen, D_fire 0.1: normal 0.283 WIN, information_recovery 0.431 WIN, victim_support
+    0.616 WIN, safety_first 0.238 no (baseline 0.255), battery_constrained 0.108 no.
+    The same world with 3+1 roles: WINS in all five profiles (0.353-1.022).
+    A searcher to tracking with D_fire 0.5, D_stale 0.3, all victims detected: loses in
+    every profile (the fire must be large and the belief stale before trackers win).
+  REAL STATES THAT WIN (from the recorded C13 runs, E3x, the real scorer;
+  outputs/_pl_verify/_pl_examples.txt):
+    step 3,  east/default/202: 2500 tracker->search: D_vict 1.0, D_unc 0.92, D_fire 0.003;
+             0.287 vs 0.187 (information_recovery) - despite switching_cost 0.943.
+    step 9,  east/half/303: 2500 tracker->search (2+2 roles): D_vict 1.0, D_unc 0.75;
+             0.201 vs 0.187, switching_cost 0.773.
+    step 88, east/half/303: 2502 search->tracker: D_vict 0, D_unc 0.0, D_fire 1.0 (1,090
+             fresh believed cells), D_stale 0.12; 0.202 vs 0.187.
+    step 95, south/half/404, safety_first: 2502 search->tracker: D_fire 1.0, D_stale 0.13;
+             0.262 vs 0.255 - the thinnest win shown, the safety profile's larger baseline.
+    step 124, south/half/101: 2503 search->tracker: D_vict 0, D_unc 0.007, D_fire 1.0,
+             D_stale 0.42; 0.329 vs 0.187.  step 137 same run, safety_first: 0.291 vs 0.255.
+    step 143, east/half/101: 2502 search->tracker: D_fire 0.88, D_stale 0.14; 0.193 vs
+             0.187 - this run's only two would-win steps.
+  MEASURED, OPEN LOOP, ALL OF C13 (outputs/_pl_verify/_pl_offline.py over the recorder's
+  data): for every planner step of the 13 observe runs (dfbfbe7, 240 steps; roles never
+  change), the section-2.2 options were built from the recorded ingredients and scored by
+  the REAL, unmodified _evaluate_global_mission_option in the mode that step used, against
+  the baseline score that step got. Modes over the 3,120 steps: normal 26,
+  information_recovery 2,170, safety_first 924.
+                               confidence 1.0 (D-2)          trigger mean (shipped)
+      E3x (exact)              8.24% of steps (257)            2.40% of steps (75)
+                               11 of 13 runs >= 1 win          6 of 13 runs
+      (E3, the invalid lo/hi pair, for the record: 9.87%/7.44%, 11/13; 3.97%/2.05%, 7/13)
+    Per run, confidence 1.0 (would-win steps; first would-win step and direction):
+      east/default/101   23   to search from step 3 (all 23 UAV 2500)
+      east/default/202   52   to search from step 3
+      east/default/303   32   to search from step 3
+      east/half/101       2   to tracking from step 143
+      east/half/202       0   -
+      east/half/303      36   to search from step 9 (7), to tracking from step 88 (29)
+      east/half/404       0   -
+      east/half/505       7   to search from step 9
+      south/half/101     13   to tracking from step 124
+      south/half/202     24   to tracking from step 98
+      south/half/303     11   to search from step 9 (7), to tracking from step 237 (4)
+      south/half/404     50   to search at step 14 (1), to tracking from step 95 (49)
+      south/half/505      7   to search from step 9
+    Under the trigger confidence the wins survive only in the three default-roles runs
+    (from step 3) and in east/half/303, south/half/101 and south/half/404 (from steps 94,
+    137 and 95, all to tracking).
+    DIRECTION CENSUS (all 257 would-win steps): tracker->search 136, every one with at
+    least one victim undetected; searcher->tracking 121, every one with all victims
+    detected. Not one would-win step goes against that split.
+    Decisive terms (steps at which removing the term flips the comparison with the
+    baseline): switching_cost 480, battery_cost 326, fire_contribution 251,
+    uncertainty_reduction 178, victim_contribution 145, collision_risk 125,
+    information_recovery 115, drift_risk 0, communication_contribution 0.
+    Non-zero share over 8,871 switch-option scorings: fire 99.0%, victim 60.4%,
+    uncertainty 83.4%, information 59.4%, collision 35.3%, battery 88.9%, drift 1.0%,
+    switching 100%, communication 0%.
+    Best-switch margin over the baseline: median -0.288, 90th percentile +0.014, max +0.496.
+    UAV-steps not available (I1): 2,792 of 12,480 (22%); last-member exclusions (I2): 817;
+    I5 exclusions: 0.
+  WHAT THIS DOES AND DOES NOT SHOW. The margin is clearable in states the system really
+  passes through, in most runs, often but not always, and seven of the nine terms carry
+  decisions. It predicts nothing about outcomes (no outcome is read), and it is open loop:
+  after a real switch the state changes, and on unchanged demands the reverse is
+  unattractive (3.0). I EXPECT the closed-loop switch share to be lower than the open-loop
+  would-win share; that is an expectation, reported in Part 3, not a claim. It was not used
+  to tune anything (0.1).
+
+4.3 THE CONFIDENCE DISCOUNT (D-2) - NEEDS YOUR EXPLICIT ANSWER
+  PROPOSED: switch options carry confidence 1.0, the baseline's value. The multiplier (N1)
+  weighs a switch by how sure the analyzer is of its TRIGGERS while the baseline is weighed
+  as certain; the options' own evidence is the nine values, read directly from the
+  knowledge models. Weighting one side only is a bias, not a judgment, and it makes step 1
+  unselectable by construction. Other families keep their confidence (untouched).
+  THIS IS A CHANGE TO THE SCORING COMPARISON THAT THE BRIEF DID NOT ASK FOR. It touches
+  only the new options, but "the constants stay" rests on it in part. If you keep the
+  shipped discount, the design is otherwise unchanged; open loop it still wins on 2.40%
+  of steps in 6 of 13 runs, so P1 (>= 15 of 43 runs) might or might not pass - I no longer
+  "expect it to fail P1" as the draft said. PAPER: with 1.0, the paper must say the
+  confidence discount was switched off for role options; "the constants were left
+  unchanged" alone would mislead.
+
+4.4 TIES
+  The sort is stable with reverse=True and the baseline is generated last (:84), so an
+  option that EXACTLY ties the baseline wins (verified with a 0.153 tie). Exact-tie
+  selections are reported separately in Part 3 (7.2 schema).
+
+================================================================================
+5. THE MISMATCHES
+================================================================================
+
+5.1 FIXED - THE STRING/DICT MISMATCH AT global_mission_planner.py:238
+  The reader learns the writer's form: when assigned_role is a string and the option names
+  its UAV (target_uav_id present and non-empty), _uav_assignments_from_params returns
+  {str(target_uav_id): assigned_role}. Every existing form keeps its meaning: the
+  uav_assignments / role_assignments dicts first (:234-237), an assigned_role dict next
+  (:239-240), and a bare string WITHOUT a target still gives {}.
+  WHY NOT THE WRITER: a dict assigned_role crashes the filter on every step (N2); a dict
+  under uav_assignments would duplicate the role in two keys of one option.
+  NOT behind the switch, and inert with it off BY CONSTRUCTION: target_uav_id has zero
+  occurrences in any .py of the source or tests at dfbfbe7, and the only assigned_role
+  writer is generator :147 (a string, no target). Measured in 7.1(b).
+
+5.2 FIXED ON THE WRITER SIDE - "role_assignment" vs THE "role"+"change" TEST (:855)
+  CONFIRMED ON THE ROLE PATH (1.4 a). THE FIX: switch options carry from_role and
+  to_role, which the scorer already reads (:850-851, :856-860): role_changed is True exactly for options that
+  change a role, False for the two no-change role options. The scorer is not edited; the
+  substring test at :855 stays dead (cleanup list). If you want the scorer's own test
+  edited instead, that is D-12. PAPER: role switches are now charged Cost_switch (through
+  from_role/to_role); before this round no role option could ever be charged one.
+  WHY NOT THE SCORER OR A RENAME: an option_type containing "change" (or adding
+  "role_assignment" to the test) marks the WHOLE family as a change, maintain_current and
+  delay_change included; with switching_cost absent or 0.0 it charges cost_estimate 1.0 to
+  each (-0.51 in information_recovery at confidence 0.85, scaling with confidence;
+  maintain -0.077), and it changes switch-OFF scores.
+
+5.3 NOT FIXED - search_mode_required vs search_mode   (cleanup list)
+  WHERE  written only by the COVERAGE family (generator :478-487, :530); read by the global
+         scorer's is_search (utility_evaluation.py:840-848), the recovery boost (:547-557,
+         itself gated on uncertainty_level, never written), the fail-safe evaluator (:1389),
+         and fail_safe_planner.py:338/:447, which only ever receive the fail-safe space
+         (wildfire_model.py:2104; fail_safe_planner.py:107).
+  WHY NOT  not on the role path. A rename wakes only the global is_search, which sets
+         g_ir = max(g_ir, recovery_value) - recovery_value is never written, so the score
+         stays 0.0 (measured) and only predicted_effects.mission_search_or_recovery flips
+         (no reader). It cannot reach the fail-safe search logic (FailSafeDecision.
+         search_mode_active has other sources, fail_safe_planner.py:450-453/:630). Pinned by
+         tests/test_mission_goal_model.py:124. COUPLING TO REMEMBER: if a later round writes
+         information_recovery / recovery_value / uncertainty_level onto COVERAGE options,
+         these dormant branches become live multipliers.
+  PAPER  none now; for the other families it is one more dead input to connect.
+
+5.4 NOT FIXED - target_regions vs target_region   (cleanup list)
+  WHERE  written by coverage/belief_gap_reduction_strategy (:516), resource/move_uavs_toward_
+         critical_regions (:626) and resource/prioritize_strong_uavs_for_uncertainty_regions
+         (:648); read only at global_mission_planner.py:251 into task_assignments.
+  WHY NOT  not on the role path. Live value [] on every step; a naive rename emits
+         task_assignments {"target_region": "[]"} (str([]) is truthy). task_assignments is
+         dict[str,str] keyed as if by UAV id (global_executor.py:62) and UAVResourceModel has
+         none of the three task methods the executor looks for. The belief-gap family is dead
+         at three independent points, as you said. Pinned by tests/test_global_adaptation.py
+         :62.  PAPER  none now; the task/coverage/resource families cannot act at all today.
+
+5.5 THE VOCABULARY
+  Fixed ON THE SWITCH PATH ONLY: switch options carry only fire_tracker / victim_searcher.
+  With the switch off, the generator's five words are generated as today (they never reach
+  role state, because no role option is ever selected there). Not translated in the
+  GlobalExecutor, which must pass any string through (tests pin "relay", "scout", "mapper").
+
+================================================================================
+6. THE SWITCH
+================================================================================
+
+6.1 GLOBAL_PLANNER_MODE
+  cfv, column 0, with the house comment block:   GLOBAL_PLANNER_MODE = 0
+    0 = LOCAL STRATEGY (shipped): today's behaviour, value-identical to dfbfbe7.
+    1 = GLOBAL PLANNER FOR UAV ROLES: this design.
+  (a ladder, as the house prefers: later rungs could add task options.)
+  ACCESSOR agents.global_planner_mode(), on agents._exact_integer (agents.py:1132), read at
+  CALL TIME through the cfv module (apply_scenario_config writes only cfv and wf,
+  local_adaptation_generator.py:270-273):
+    exact integral 0 (0, 0.0, "0", " 0 ", False, Decimal("0"))    -> 0  the kill switch
+    exact integral 1 (1, 1.0, "1", True)                          -> 1
+    missing attribute                                             -> 0  (the shipped value)
+    anything else (0.5, "0.5", "0.0", "1.0", Decimal("0.5"), -1, 2, None, "off", inf, nan,
+    "1_0")                                                        -> GLOBAL_PLANNER_MODE_JUNK
+  YOUR RULE "disable only on an exact zero": junk may NOT disable, so
+  GLOBAL_PLANNER_MODE_JUNK = 1. Two consequences you should rule on (D-1): junk ARMS an
+  unmeasured planner (the precedent the other way is FF_FIREFIGHT_MISSION_GATE, whose junk
+  goes to the conservative side); and the STRING "0.0" is junk -> 1 (_exact_integer('0.0')
+  is None), although `--set GLOBAL_PLANNER_MODE=0.0` through the harness arrives as the float
+  0.0 -> 0. "missing -> 0" follows the house pattern "missing = shipped", which here is the
+  off value. All pinned in the accessor matrix (8.2).
+  NOT copied: base_station_mode / ROUTE_BLOCK_STALE_CLEAR / dock_fix / waypoint_fix still
+  truncate 0.5 -> 0 and raise on inf. Read via a lazy `import agents` inside the generator
+  (precedent local_adaptation_generator.py:283/:1984/:2544; at runtime a sys.modules lookup).
+
+6.2 EVERY SITE, AND WHY MODE 0 IS VALUE-IDENTICAL TO dfbfbe7
+  S1 GlobalAdaptationSpaceGenerator._generate_role_assignment_options: `if mode == 0:` the
+     existing body, line for line; else the section-2.2 builder. At 0 the only new work is
+     one accessor call (a cfv getattr) - no RNG, no print, no state.
+  S2 global_mission_planner._uav_assignments_from_params: the new branch needs a string
+     assigned_role AND target_uav_id; no mode-0 option carries target_uav_id (5.1).
+  S3 GlobalExecutor.execute: `hook = getattr(model, "on_uav_role_changed", None)`; only if a
+     hook exists, read the old role with the model's pure _uav_assignment_role(uid) BEFORE
+     the two writes, and after them call hook(uid, old, new) if old is not None and old !=
+     new (lower-cased). BY CONSTRUCTION at mode 0: no option carries uav_assignments,
+     role_assignments, an assigned_role dict or target_uav_id, so _uav_assignments_from_
+     params returns {} every step, so the loop body at global_executor.py:45 never runs;
+     scenario init writes roles directly (wildfire_model.py:1022-1046), never through the
+     executor. Fake models in the executor tests have no hook, so nothing new runs there.
+  S4 WildFireModel.on_uav_role_changed(uid, old, new): returns at once unless
+     agents.global_planner_mode() != 0 (defence in depth); otherwise 6.3.
+  S5 the cfv constant and the accessor: new names only (no module __getattr__, and nothing
+     enumerates the cfv/agents namespaces).
+  At mode 0: no RNG draw; no print; no new model attribute set; no new key in any dict the
+  harness, the dashboard or a knowledge model holds; no change to option ids, parameters,
+  scores, selection, MissionDecision, executor writes or per-step records. Identity holds
+  BY CONSTRUCTION in every mode-0 state; it is CONFIRMED BY MEASUREMENT on C13 (7.1) - which
+  cannot visit every state, and is not claimed for the N30 control runs.
+
+6.3 ROLE-CHANGE HYGIENE (the model hook; fires only on a real change, only at mode 1)
+  For the SWITCHED UAV only:
+    - its _uav_sector_assignments entry -> the full-grid bounds every UAV gets at init
+      (wildfire_model.py:435-448): a new searcher then starts exactly like a UAV that held
+      the role from launch (its sweep cursor and sector-filter fallbacks read these bounds);
+      a new tracker's flank is assigned by the next step's _update_fire_tracker_sector_
+      assignments (:5903), as today;
+    - its _wind_search_target_state entry removed: the next read through
+      _wind_search_state creates a default entry (every reader re-fetches that way,
+      local_adaptation_generator.py:468-478) - note the switch-step executor then writes it
+      once more from the OLD-role PathDecision (the mixed step);
+    - its _victim_sweep_state entry removed: a searcher -> tracker -> searcher UAV must not
+      resume a stale lawnmower cursor (uav_executor.py:1374-1404 re-initialises a missing
+      entry).
+  DELIBERATELY NOT RESET, with the reason:
+    - _victim_escape_memory: a short per-UAV memory of hazard escapes, still valid for the
+      same airframe;  _wind_aware_last_targets: write-only;
+    - the depot home: return picks the nearest own berth per trip; the home only fixed the
+      spawn cell;
+    - the INCUMBENTS' held targets after a lane/flank re-index (N5): releasing them would
+      change local-strategy state of UAVs whose role did not change, so it is left out and
+      MEASURED (7.5 g). (D-8.)
+  NOT DEFERRED: the one-step mixed state is accepted and measured. Deferring the role write
+  to the next step boundary would take the store writes out of the GlobalExecutor, which the
+  executor tests pin (tests/test_execution_core.py:96-110). The hook runs inside
+  GlobalExecutor.execute, i.e. after _dispatch_fail_safe and before _dispatch_local_paths
+  (decision_dispatcher.py:104-120) - pinned by a test.
+
+6.4 OBSERVATION SIDECAR (outputs/_pl_obs.py, the _cl_obs.py pattern)
+  The harness records roles per step (uav_steps field 2) but no mission decision, and its
+  'planner' key is the RESCUE planner. A pass-through sidecar runs outputs/_ffr_harness.py
+  UNCHANGED in-process and writes <out>.plobs.json (schema pinned in 7.2). It also records:
+  the accessor value on EVERY generator call ("ABSENT" on the dfbfbe7 worktree); call
+  counts of the mode-1 builder and of every role_option_values function; sha256 and
+  __file__ (asserted under --repo) of agents, cfv, wildfire_model, global_adaptation_
+  generator, global_mission_planner, global_executor, utility_evaluation and
+  role_option_values. The counterfactuals of P5 run on deep copies
+  (dataclasses.replace(option, parameters=dict(option.parameters))) and never touch the
+  live options; role-store reads use by_uav_id.get(). Its purity is gated at BOTH modes
+  (7.1 e, 7.2 purity item).
+
+================================================================================
+7. PRE-REGISTRATION (Part 3 item 2, and the rest of Part 3)
+================================================================================
+Fixed now, before any code. Any later change goes in a dated change log with the reason,
+before the runs it governs (outputs/carryleg_prereg.txt style).
+
+ARMS. Common flags on every harness run: --steps 360 --set BATCH_SIZE=360 --uav-actions
+(BATCH_SIZE is required: the model exits at step BATCH_SIZE + 2, wildfire_model.py
+:5893-5898). "No --set" below means no --set beyond those.
+  plB   pinned dfbfbe7 worktree, no --set, sidecar                      C13          identity base
+  plD   = plB, fresh process (determinism control)                      east/half/101, south/half/101
+  plC   Part 2 branch, no --set (mode 0), sidecar                        C13 + N30 + RB7   CONTROL
+  plP   = plC WITHOUT the sidecar (mode-0 observer purity)               east/half/101
+  plZ   branch, --set GLOBAL_PLANNER_MODE=0 (explicit kill switch)       east/half/101, south/half/101, east/default/101
+  plG   branch, --set GLOBAL_PLANNER_MODE=1, sidecar                     C13 + N30 + RB7   THE PLANNER
+  plQ   = plG WITHOUT the sidecar (mode-1 observer purity)               the first plJ tuple where plG
+                                                                         applied >= 1 switch (else the
+                                                                         first C13 tuple with one)
+  plJ   branch, --set GLOBAL_PLANNER_MODE=0.5 (junk)                     the three plZ tuples
+  plF   = plC + --set FF_FIREFIGHT_EXTINGUISH=0 --set FF_FIREFIGHT_FIREBREAK=0     N30 (LAST)
+  plS   = plC + --set BASE_STATION_MODE=0                                          N30 (LAST)
+  rbgate (outputs/_rblatch_campaign2.py, 4 shards, 18 seeds, 240 steps; a Linux launcher):
+  plRB  pinned dfbfbe7 worktree, no --set;  plRC  branch, mode 0;  plRG  branch, --set
+  GLOBAL_PLANNER_MODE=1.   OPTIONAL (D-10): plKC / plKG, the CRN pair on N30.
+  No tag is a prefix of another (rbcompare globs by prefix).
+  SEEDS. C13 as above. RB7 = east/half 111, 222, 333, 444, 606, 808, 909 (the rb seeds outside
+  C13 and the known four; _cl_common.py:110). N30 = _cl_seeds.frozen_n30(), with
+  sha256(outputs/_cl_seeds.txt) required to equal
+  e6fe0698f794549729e4fdd40ef6d41722a171c1bcd9289b3a17ce794f01b81f. check_frozen() is NOT
+  called after the first pl wave: it re-runs choose(), whose used-seed screen does not own
+  the pl prefix and would STOP on this round's own file names (checked in-process).
+SIDECAR SCHEMA (.plobs.json), per planner step: step (harness numbering: planner
+step_index = evaluation_timesteps_counter = harness step t = uav_steps[t-1]); utility mode;
+trigger types with affected entities; every scored option id with score and feasible flag;
+the selected id and its CATEGORY - SWITCH iff option_type == "role_assignment" and
+"target_uav_id" in parameters, BASELINE iff id == global_stability_maintain_current_config,
+else OTHER; baseline score; margin selected - baseline; exact-tie flag; the MissionDecision
+uav_assignments; the dispatcher's global-execution skip flag; for every UAV both role
+stores before execution, after execution and at the end of the step; hook calls; the nine
+values of every SWITCH option scored; the counterfactual re-selections of P5.
+
+7.1 SWITCH OFF IS VALUE-IDENTICAL (Part 3 item 1)                             GATE, FIRST
+  Comparator: identical top-level KEY SETS and equal values.
+  (a) plB vs plC on C13: every key except {tag, repo, wall_s} (params and extra_params
+      EQUAL), incl. stdout_sha256, stdout_lines, fire_digests: required 13/13.
+  (b) sidecar at mode 0 (plC): accessor 0 on every generator call; 0 calls of the mode-1
+      builder and of every role_option_values function; 0 options of any family carry any of
+      the nine keys or target_uav_id; the per-step census of option ids and parameter-key
+      sets equals plB's; 0 GlobalExecutor role writes; 0 hook calls. plB: accessor "ABSENT".
+  (c) plZ == plB on its tuples (all keys but {tag, repo, wall_s, params, extra_params}).
+  (d) plD == plB on its tuples, all keys but {tag, repo, wall_s} (same-code determinism; a
+      mismatch makes (a) uninterpretable).
+  (e) plP == plC on its tuple, all keys but {tag, repo, wall_s} (the mode-0 sidecar is
+      pass-through).
+  (f) the sidecar's planner records of plC equal plB's on C13 (scored ids, parameter-key
+      sets, scores, selected id, uav_assignments, executor applied roles).
+  Any miss in (a)-(f) is a FAIL and stops the round.
+  (g) AFTER plG C13: plJ == plG on its tuples if D-1 = junk -> 1, plJ == plB if junk -> 0;
+      all keys but {tag, repo, wall_s, params, extra_params}. plJ runs through the sidecar
+      like plG. A miss is a FAIL of the accessor (it stops the round like a 7.1 FAIL).
+
+7.2 THE PLANNER DECIDES (Part 3 item 2) - THE PRIMARY GATE
+  Measured on plG, C13 + N30 (43 runs; RB7 reported separately), from the sidecar.
+  PURITY (validity of everything below): plQ == plG on its tuple, all keys but {tag, repo,
+     wall_s}. A miss makes 7.2 void (FAIL).
+  P1 SELECTS - share of planner steps whose selected option is not the baseline, split into
+     SWITCH and OTHER.   required (one-sided): SWITCH selected on >= 1 step in >= 15 of the
+     43 runs, AND the aggregate SWITCH share > 0. OTHER is reported; expected 0 (every other
+     option is 0.0 against a positive baseline); OTHER > 0 is a STOP item.
+  P2 REACHES - of SWITCH selections, the share whose MissionDecision.uav_assignments equals
+     {target_uav_id: to_role} exactly.   required: 100%.
+  P3 ACTS - of ALL SWITCH selections, the share after which both role stores went from
+     from_role (before execution) to to_role (after execution) in the same step and still
+     equal to_role at the end of the step.   required: 100%. The dispatcher's skip is
+     unreachable (N5): expected 0 skipped; a skipped selection is reported with its flag, and
+     any shortfall NOT explained by a recorded skip is a FAIL.
+  P4 THE DIFFERENCE IS THE PLANNER'S - seed-matched plG vs plC (all keys but {tag, repo,
+     wall_s, params, extra_params}). BEHAVIOURAL divergence = the first step at which
+     uav_steps with field 2 (the role) EXCLUDED, fire_digests, ff_steps or victim_steps
+     differ.
+     (a) every plG run with 0 applied role changes is value-identical to its plC twin (the
+         mode-1 option set reaches no recorded field: its consumers - the filter's rejected
+         list, comparison_summary, explanation text, dashboard state - are not in the
+         harness JSON and are never printed with debug_log off);
+     (b) in every plG run that differs, the first behavioural divergence is >= the step of
+         its first applied role change;
+     (c) >= 1 NAMED seed and step, reported as the chain: the decision (option id, its nine
+         values, its margin over the baseline) -> the first behavioural divergence (step,
+         series) -> where eval differs, the first differing victim or firefighter fate.
+     required: (a) all, (b) all, (c) >= 1. A behavioural difference with no preceding role
+     change is a FAIL (the ON path would be perturbing the run by another channel).
+  P5 EVERY VALUE IS LIVE OR REPORTED DEAD - over all SWITCH-option scorings:
+     (i)  non-zero share; required > 0 for all eight values other than communication;
+     (ii) decisions moved = planner steps at which re-running score_options +
+          _select_feasible_option over the IDENTICAL option tuple, mode and context, on deep
+          copies, with that value removed, selects a different option. Removed = 0.0; for
+          switching_cost two variants: 1e-12 (the whole term; 0.0 would trigger the scorer's
+          fallback) and the constant 0.15 (the recency part only). Non-switch options' scores
+          are unchanged by construction (the nine are read only by _evaluate_global_mission_
+          option and the inert collision gate).
+     NULL CONTROL: the same re-selection with nothing removed must reproduce the actual
+          selected id on 100% of planner steps, or P5 is void (FAIL).
+     PRE-REGISTERED EXPECTATION (from the open loop, 4.2): fire, victim, uncertainty,
+          information, collision, battery and switching each move >= 1 decision; drift is
+          expected to move none; communication is structurally zero. An expected mover that
+          moves none is a STOP item; drift moving decisions is reported (a surprise, no stop).
+     A value that moves no decision is reported with an OPERATIONAL reason: "structurally
+          zero" (0 on every scoring by definition), or "never binding" (at every step where
+          it is non-zero on some option, its largest |weight x value| is below the margin
+          between the selected option and the runner-up - both numbers reported).
+  THE PRIMARY GATE PASSES iff PURITY, P1, P2, P3, P4, P5(i) and P5's null control hold and
+  P5(ii) is reported as specified. PAPER: a value with a 0% non-zero share cannot be claimed
+  live, whatever else holds.
+  CHURN - a STOP item, not a pass/fail: aggregate SWITCH share > 25%; or any run whose
+     baseline is selected on < 50% of its planner steps; or any UAV switched >= 3 times
+     within 30 steps.
+
+7.3 THE COMPARISON THE PAPER NEEDS (Part 3 item 3)                             REPORT
+  plC vs plG on C13 and N30 (per set and pooled): rescued, dead, ff_deaths, never_detected
+  (eval's - it undercounts a victim that dies while a candidate - stated), terminal_step
+  (mean over terminal runs + the non-terminal count), role-change count (diffs of uav_steps
+  field 2, cross-checked with the sidecar's applied writes), drone steps in fire E1
+  (searcher-only) and E2 (all-UAV) from _sfx_analyze.sec_exposure, which already attributes
+  the searcher per frame. Also: first-detection step per victim; utility-mode distribution
+  plG vs plC (planner-caused mode shifts); per UAV the first step it reaches 3 lifetime
+  switches (the OSCILLATION_RISK latch - reported as a latch, not a count of oscillations)
+  and INSTABILITY_DETECTED onsets; delay_change emission; closed-loop SWITCH share vs the
+  open-loop would-win share (4.2). ATTRIBUTION: per-seed outcome differences are attributed
+  to the planner only where fire_digests are equal up to the victim's fate; elsewhere they
+  are reported as "fire re-rolled". The tradeoff is stated plainly whichever way it goes;
+  rescued falling under the planner is NOT a gate failure.
+
+7.4 THE CONTROL IS THE PAPER'S BASELINE; REFERENCE ARMS (Part 3 item 4)       REPORT
+  plC (C13 + N30, 360) is reported as the current baseline; every headline number measured
+  before dfbfbe7 predates MODE 2 and is stale. plF and plS, N30 at 360, each against plC's
+  N30, re-measure what firefighting during search and the base station cost under MODE 2.
+  They run LAST and are the first thing dropped if quota runs short; any drop is reported.
+
+7.5 SAFETY (Part 3 item 5)                                                        GATE
+  (a) NO UAV STRANDED - absolute zero in plG: frames at battery <= 0 outside the depot
+      (uav_steps field 4 <= 0, field 5 not charging/docked; _bs_identity.py:183-191); D3
+      ZERO-BATT; D1 STUCK (returning at the last frame, >= 10 trailing frames on one cell;
+      _dcd4_analyze.py:78-100). If plC is itself non-zero on one, that item goes to the
+      maintainer instead.
+  (b) NO LIVELOCK - flying UAVs stationary >= 10 frames (_dcd4_freezes.run_stationary),
+      counted before the terminal step (after it, reported separately), and return legs
+      L2-L6: per set and pooled; plG above plC pooled by > 10% AND by >= 2 events -> TO THE
+      MAINTAINER (stock counts, no CRN: not an automatic fail).
+  (c) BATTERY RETURN COMPLETES - every rtb_log trip arrived, or is D2 HORIZON-TRUNCATED
+      ("En route at the horizon is NOT stranding", basestation_report.txt:343); NOT-TRUNCATED
+      unarrived trips = 0.
+  (d) SEARCHER GUARD REFUSALS STAY AT ZERO - off-grid refusals (_sfx_analyze.oob_refusals)
+      = 0 in plG, counted with the searcher attributed per step AND by the step-1 role that
+      oob_refusals/pins_of use (both reported; both must be 0).
+  (e) NO NEW route_blocked FAILURES - (i) plRC == plRB per shard (value identity); (ii) plRG
+      vs plRC: a seed whose rescued falls, outside the known four (east/707, south/101,
+      south/202, south/404), is classified by the carrying-leg rule (_cl_legs.py:2018-2075)
+      using the harness pairs plC/plG of the same tuple (C13 for shards a and s, RB7 for b
+      and c): fire not re-rolled -> NEW FAIL; no pair -> FAIL; re-rolled -> pooled rescued
+      plRG vs plRC, a loss -> TO THE MAINTAINER. plRB/plRC vs the Windows ihrest record is
+      reported as information only; the latched line is reported. Comparator for (i):
+      every key but tag; the evals element by element without wall_s (the carrying-leg
+      rule, _cl_analyze.py:470-471). If plRB is dropped, (i) is reported NOT RUN (identity
+      then rests on 7.1(a) and on construction), not PASS.
+  (f) SEARCH COVERAGE - per run, steps with 0 available searchers and with 0 available
+      trackers (uav_steps fields 2 and 5): plG above plC pooled -> TO THE MAINTAINER.
+  (g) SWITCH TRANSITIONS (reported): for each switch, incumbents re-indexed (partition_steps),
+      held targets outside the new lane; for a switch to search, the new searcher's distance
+      to the nearest burning cell, its action labels and stationary frames over the next 10
+      steps; switches within +/-10 steps of any return trigger or release.
+
+7.6 THE SUITE (Part 3 item 6)                                                     GATE
+  On the final committed tree: the failed NAME SET equals the 8 baseline names (header);
+  passed = 947 + the number of new tests, declared in the Part 2 commit before the run;
+  0 errors.
+
+ORDER. 7.1 (a)-(f) [plB, plD, plC C13, plP, plZ] -> plG C13 -> 7.1 (g) [plJ] and plQ purity
+-> P2, P3, P4 on C13 (no P1/P5 verdict on 13 runs) -> plC/plG N30 -> 7.2 in full -> plC/plG
+RB7 -> rbgate (plRC, plRG, then plRB) -> 7.5 evaluated -> the suite (7.6) -> plF, plS.
+STOP RULES. A FAIL of 7.1 (a)-(g), of 7.2 (PURITY void, P1, P2, P3, P4, P5(i), P5 null
+control - P2/P3/P4 already FAIL on C13 if any case misses 100%), or of 7.5 (a), (c), (d),
+(e) stops the round: no further wave, report to the maintainer. A STOP item (7.2 OTHER > 0,
+an expected P5 mover that moves nothing, CHURN) and a TO-THE-MAINTAINER outcome (7.5 (a)
+when plC is itself non-zero, (b), (e) re-rolled loss, (f)) halt the next wave until the
+maintainer answers. A 7.6 FAIL blocks the final report.
+
+================================================================================
+8. PART 2 - IMPLEMENTATION PLAN (not started; after your confirmation)
+================================================================================
+8.1 SOURCE COMMITS (each small, each followed by its unit tests)
+  C1 cfv GLOBAL_PLANNER_MODE = 0 + comment block; agents.GLOBAL_PLANNER_MODE_JUNK,
+     agents.global_planner_mode() on _exact_integer; agents.rtb_trigger_level_at(uav, cell),
+     pure, used only by the planner.
+  C2 src_extension/adaptation/role_option_values.py (NEW): the demands, the share rule and
+     the nine value functions as pure functions of plain inputs (the generator gathers the
+     inputs; no model access inside).
+  C3 global_adaptation_generator.py: the mode-1 per-UAV builder behind `if mode == 0`; the
+     invariants I1-I5; explicit zeros on maintain_current / delay_change at mode 1.
+  C4 global_mission_planner.py:233-241: the reader fix (5.1).
+  C5 global_executor.py: the hook call (6.2 S3); wildfire_model.py: on_uav_role_changed
+     (6.2 S4, 6.3).
+  C6 tests/test_global_role_planner.py (8.2).  C7 outputs/ tooling (8.3).
+8.2 UNIT TESTS (switch set through the test_carry_leg.py restore-fixture pattern, with a
+  teardown canary; mode pinned; no mission_goal_model in runtime_models unless the test is
+  about modes)
+  - ACCESSOR MATRIX: exact zeros -> 0; 1, 1.0, "1", True -> 1; missing -> 0; junk (incl. the
+    string "0.0") -> GLOBAL_PLANNER_MODE_JUNK; read at call time via apply_scenario_config.
+  - OFF IDENTITY: at mode 0 the role family's ids and parameters equal today's (a frozen
+    literal from dfbfbe7); no option has target_uav_id; a selected string role option still
+    gives {}; the mode-1 builder and value functions are never called.
+  - ONE SCORE TEST PER VALUE (nine): two runtime states differing only in that value's input,
+    built so that the OTHER EIGHT values are bit-equal across them (asserted; e.g. no stale
+    cells in the fire test, the UAV standing on its target cell where d must not change,
+    battery kept > 15 so the scorer's gate cannot fire); assert the value moves as stated,
+    the matching UtilityTerm (C_fire, C_victim, C_comm, G_uncertainty_reduction,
+    G_information_recovery, R_collision, Cost_battery, R_drift, Cost_switch) moves, and the
+    score moves UP for the five contribution terms and DOWN for the four cost terms.
+    communication_contribution has no input by design: its test asserts it is PRESENT and
+    exactly 0.0 on every switch option, and that the scorer reads it (a non-zero value on the
+    same option changes the score) - it can never become a silently dead key.
+  - ONE SELECTION TEST PER VALUE WITH AN INPUT (eight): a marginal state where changing that
+    input alone flips the selected option between the baseline and a named switch (or between
+    two switches), asserting both selected ids and a score margin (ties go to generation
+    order, 4.4). Required by you: at least one; planned: eight, so that a P5 "moved no
+    decision" can be told apart from "cannot move one".
+  - ANTISYMMETRY: for the four share terms, F + R = 0 after applying the move (3.0).
+  - READER FIX: string + target -> {target: role}; string alone -> {}; dict forms unchanged.
+  - INVARIANTS I1-I5: returning, docked and low-margin UAVs get no option; the last available
+    member gets none; only real changes; ids from by_uav_id; a UAV named by OSCILLATION_RISK
+    or INSTABILITY_DETECTED gets none; values finite; drift None -> 0; N_v = 0 -> D_vict 0.
+  - HYGIENE: the hook resets exactly the switched UAV's sector, wind-search and sweep entries;
+    GlobalExecutor calls it only on a real change, never on a re-assertion, never on a model
+    without the hook; the hook is inert at mode 0; it runs after _dispatch_fail_safe and
+    before _dispatch_local_paths.
+  - PURITY: generating at mode 1 leaves SYSTEM_RANDOM / agents.random state, every knowledge
+    model, every agent attribute, and the model's __dict__ (incl. _wind_search_target_state,
+    _uav_sector_assignments, _victim_sweep_state) unchanged.
+  - INTEGRATION: one generate -> ConstraintFilter -> GlobalMissionPlanner.plan run on a real
+    model state where a switch wins, ending in MissionDecision.uav_assignments {uid: to_role}.
+  - TRIGGER-LEVEL HELPER: rtb_trigger_level_at(uav, uav.pos) == uav._rtb_trigger_level(nearest
+    own berth) on a matrix of positions.
+  The exact count is declared in the Part 2 commit, before the suite runs (7.6).
+8.3 TOOLING (outputs/, Linux). The carrying-leg pool, rbgate launcher and analyzer hard-code
+  E:/ paths, .venv/Scripts and PowerShell, and _cl_common.norm_repo mangles a Windows repo
+  path on POSIX, so this round writes Linux equivalents with the same checks: _pl_obs.py
+  (sidecar), _pl_pool.sh (queue runner; head= and a src digest over the files of 6.4 on every
+  line; SOURCE CHANGED stops launches; skip-if-valid), _pl_rbgate.sh, _pl_analyze.py (7.1-7.5,
+  reusing _sfx_analyze, _dcd4_analyze/_dcd4_freezes definitions and _cl_legs' re-roll rule),
+  and an undeclared-key check (every --set key must be declared at column 0 in cfv at the
+  arm's commit). _ffr_harness.py, _rblatch_campaign2.py and _ffr_rbcompare.py run unchanged.
+
+================================================================================
+9. PART 3 - WHAT IT COSTS HERE
+================================================================================
+  Measured this session at 3-way parallelism under load: the 240-step probe runs took
+  5-19 min each (median ~8 for observe + recorder, ~7 for the arm modes); a 360-step run
+  should take ~11-20 min plus sidecar overhead (the P5 counterfactuals add ~10 scorer passes over ~20 options per
+  step, cheap next to a step). Harness runs: plB 13, plD 2, plC 50, plP 1, plZ 3, plG 50,
+  plQ 1, plJ 3, plF 30, plS 30 = 183 at 360 steps (+60 if D-10's CRN pair is run); rbgate:
+  3 arms x 18 seeds (4 shards) = 54 runs at 240 steps.
+  Estimate on this 4-core box: ~14-18 h for everything up to the RB7 arms, ~3 h for the
+  three rbgate arms, ~1 h for the suite, ~4-5 h for plF + plS. In the order of section 7;
+  plF and plS are dropped first if quota runs short (as you asked), then plRB (7.5 e (i)
+  then reads NOT RUN), and every drop is reported.
+
+================================================================================
+10. RISKS, AND WHAT THEY MEAN FOR THE PAPER
+================================================================================
+  - FEWER RESCUES IS POSSIBLE AND ACCEPTED. In the recorded states, all 121 would-win
+    searcher-to-tracking steps came after every victim was detected (4.2), but nothing in
+    the formulas prevents one when a victim is still undetected and the fire picture is
+    stale and large - and closed loop the states differ from the recorded ones. If rescues fall, the paper can
+    show the decisions behind it (P4 c) and whether the fire re-rolled (7.3); a CRN pair
+    (D-10) would be needed to attribute pooled differences.
+  - MONITOR-FED FIRE BELIEF (N4): fire_contribution and information_recovery describe the
+    managing system as built; the paper must not present them as UAV-sensed estimates.
+  - COMMUNICATION IS ZERO: the paper cannot claim the planner trades off communication.
+  - THE CONFIDENCE DISCOUNT IS OFF for role options (if D-2 = 1.0): stated in the paper.
+  - THE PLANNER READS MANAGED-ENTITY FIELDS DIRECTLY for return-to-base state and berths
+    (3.11): a MAPE-K boundary shortcut, stated, with the local generator as precedent.
+  - OSCILLATION_RISK LATCH: with I5, a UAV switches at most 3 times per mission; after that
+    the analyzer flags it for the rest of the run. Reported as a latch.
+  - ONE-STEP MIXED STATE on every switch step, and EVERY FLIP RE-INDEXES the incumbents'
+    flanks/lanes (a switch moves more than one UAV's work area; their held targets are not
+    released): priced only partly (battery_cost uses the nearest work cell, not the lane),
+    measured by 7.5 g.
+  - SYNCHRONIZED RETURNS leave 29-50 steps per run with no available searcher even today
+    (35-57 counting I1's margin; C13, outputs/_pl_verify/_pl_stats.txt);
+    the planner can make one-searcher states more frequent: measured by 7.5 f.
+  - LINUX NUMBERS: not value-comparable with the Windows records.
+
+================================================================================
+11. DECISIONS FOR THE MAINTAINER
+================================================================================
+  EXPLICIT ANSWER NEEDED BEFORE PART 2:
+  D-1 JUNK DIRECTION: junk -> 1 (your rule taken literally; arms an unmeasured planner, and
+      the string "0.0" arms it) or junk -> 0 (the conservative side). Missing -> 0 either way.
+  D-2 SWITCH-OPTION CONFIDENCE: 1.0 (proposed) or the shipped trigger mean (4.3).
+  D-5 THE HYGIENE HOOK (6.3): reset the switched UAV's sector, wind-search and sweep state on
+      a real change - a change to local-strategy state, confined to the switched UAV, behind
+      the switch by construction and by an explicit mode check. IF DECLINED: C5 ships the
+      executor call site with no model hook; a switched UAV keeps its stale per-UAV state
+      (N5); the 8.2 HYGIENE tests are dropped; 7.5 (g) also reports resumed sweep cursors and
+      commit targets of switched UAVs.
+  DEFAULTS YOU CAN OVERRULE:
+  D-3 communication_contribution an explicit zero (3.3). Default: yes.
+  D-4 invariants I1-I5 (2.1), incl. I5, which makes the analyzer's instability triggers a
+      guard (at most 3 switches per UAV per mission). Default: yes.
+  D-6 constants fixed here, not tuned: 289 (one view area) for D_fire and D_stale; 30 steps,
+      0.15 and 0.85 in switching_cost; 10 moving steps of margin in I1; SECURITY_DISTANCE
+      reused in collision_risk. Default: as written.
+  D-7 victims: N_v = len(managed_victims) as a mission-briefing prior, detection from the
+      confirmed flag only (a victim dead undetected still counts). Default: as written.
+  D-8 incumbents' held targets are NOT released on a re-index (measured instead). Default: as
+      written.
+  D-9 the gate thresholds of 7.2 (>= 15 of 43 runs with a switch; CHURN at > 25% / < 50%
+      baseline / 3 switches in 30 steps) and the TO-THE-MAINTAINER rules of 7.5. Default: as
+      written.
+  D-10 an optional CRN pair plKC / plKG (plC/plG through outputs/_cl_obs_crn.py) on N30 for
+      attribution. Default: not run.
+  D-11 Part 3 on this Linux box with the section-9 budget and drop order. Default: yes.
+  D-12 the role_assignment mismatch fixed on the WRITER side (from_role/to_role on switch
+      options) rather than by editing the scorer's substring test or the option_type (5.2).
+      Default: writer side.
+
+================================================================================
+12. OUT OF SCOPE, AND THE CLEANUP LIST (found, not fixed; each off the UAV-role path)
+================================================================================
+  OUT OF SCOPE (untouched): the firefighter channel; the task, coverage, resource and
+  fail-safe option families; planner tuning (weights, profiles, section-3 constants once
+  fixed); the scorer.
+  CLEANUP LIST, each with what it means for the paper:
+  - search_mode_required vs search_mode (5.3); target_regions vs target_region (5.4).
+    PAPER: the other three families cannot act today.
+  - the scorer's substring test ("role" in ot and "change" in ot, :855) stays dead; the
+    mismatch is fixed on the writer side (5.2). PAPER: none.
+  - five more region-shaped keys with no reader (critical_regions, priority_regions,
+    candidate_regions, uncertainty_regions, candidate_zones). PAPER: as above.
+  - utility inputs unproduced in other scopes: rescue 0/6, fail-safe 0/4, local 6/10 with every
+    penalty unproduced (scoping report B8). PAPER: those planners' scores are not decisions.
+  - communication_executor.py:189-197 counts "fail" in any action as a failed delivery;
+    critical_link_reliability always 0.0. PAPER: communication statistics are artifacts.
+  - uav_resource_model.py:217-222: local_risk_status sticks at high_drift after one refusal ->
+    DRIFT_TOO_HIGH every step. PAPER: drift alarms are artifacts.
+  - local congestion = min(1, len(nearby_uavs)/3) with no distance filter -> local
+    COLLISION_RISK every step from step 2 (all_triggers strips it until step 20;
+    wildfire_model.py:1799-1802, :2011-2018). PAPER: collision alarms are artifacts.
+  - role_switch_count is lifetime, so OSCILLATION_RISK latches (N5). PAPER: see N5.
+  - global_role_assignment_maintain_current earns no stability marker and is not found by
+    find_maintain_option. PAPER: none.
+  - VisibilityModel.update_staleness is dead in production (only a test calls it). PAPER: none.
+  - older switch accessors truncate 0.5 -> 0 and raise on inf (base_station_mode,
+    ROUTE_BLOCK_STALE_CLEAR, dock_fix, waypoint_fix, FIREPROOF, GATE_BOUNDS_FIX,
+    RETREAT_RANGE, DRY_RUN); _offgrid_guard_level disarms on -1; _hazard_retreat_range falls
+    back to 0 while cfv ships 99. PAPER: none, but kill-switch claims rest on them.
+  - _sfx_analyze.oob_refusals / pins_of key the searcher on the step-1 role. PAPER: refusal
+    counts after role changes need per-step attribution.
+  - _cl_seeds.choose() does not own new prefixes (the check_frozen self-reference hazard).
+    PAPER: none (tooling); N30's identity rests on the frozen file's hash.
+  - the carrying-leg analyzers cannot run on Linux as-is (norm_repo, E:/ paths).
+    PAPER: none (tooling).
+
+================================================================================
+13. ADVERSARIAL REVIEW OF THIS FILE
+================================================================================
+  Five independent critics reviewed the first draft against the code. What they found and
+  what changed:
+  BLOCKERS (all fixed): P1 contradicted itself (the 25% cap was both a requirement and "not
+  a pass or fail") -> P1 is one-sided, CHURN a separate STOP item; check_frozen() would STOP
+  every wave after the first -> N30 pinned by frozen_n30() + the file hash; the open-loop
+  evaluator had been revised after its first result while the draft said nothing changed ->
+  change log 0.1, every variant reported, the claim withdrawn. (After the review I found
+  the E2/E3 battery bracket itself invalid and re-measured exactly - E3x, 0.1.)
+  MAJOR (all fixed): observer purity only at mode 0 -> purity at both modes, counterfactuals
+  on deep copies with a null control; P4(c) was true by construction (the role field itself
+  differs) -> behavioural divergence excludes it and (c) must reach a fate; P5 could not
+  fail -> non-zero requirement, pre-registered expectations, an operational "reason"; the
+  sidecar schema was missing what the gates need -> pinned; route_blocked judged against a
+  Windows record with an exemption that swallowed re-rolls -> a Linux control, RB7 harness
+  pairs and the full carrying-leg rule; livelock counts had no pooling or tolerance ->
+  per set / pooled, TO THE MAINTAINER; availability read one step stale -> the RTB predicate
+  plus a 10-step margin; the stale fire cells were counted twice -> partitioned; NUM_VICTIMS
+  = 0 and drift None at step 1 would crash -> guarded; uncertainty_reduction's "only
+  searchers clear it" was false -> reworded; the worked examples were mis-added -> recomputed
+  with the real scorer; OSCILLATION_RISK's lifetime latch was misdescribed -> corrected, and
+  I5 added; the share split over available UAVs let battery cycles drive switches -> split
+  over all holders; the hygiene list missed _victim_sweep_state -> added; rbgate tags plG /
+  plGC were prefixes -> renamed plRB/plRC/plRG; paper implications missing from findings ->
+  added; the confidence change was under-flagged -> D-2 needs an explicit answer.
+  NOT ADOPTED, with the reason: releasing incumbents' held targets on a re-index (changes
+  local-strategy state of UAVs whose role did not change; measured instead, D-8); pricing the
+  distance to the post-switch LANE rather than the nearest work cell (needs a pure extraction
+  of the lane and flank arithmetic; the approximation is stated); a CRN pair by default
+  (offered, D-10); a stronger I2 ("keep an available searcher with a horizon margin while
+  victims are undetected") beyond I1's margin (measured by 7.5 f instead).
