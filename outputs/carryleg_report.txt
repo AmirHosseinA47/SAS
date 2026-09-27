@@ -1,0 +1,241 @@
+================================================================================
+CARRYING-LEG ROUND - REPORT (Parts 2 and 3)
+Branch carryleg (not pushed, not merged; the maintainer merges).
+ENVIRONMENT: sys.version 3.10.11 (tags/v3.10.11:7d4cc5a, MSC v.1929 64 bit), mesa 1.2.1
+(E:\Projects\SAS\.venv; every pool log's ENV line and every suite log say so).
+Design: outputs/carryleg_part1.txt. Pre-registration: outputs/carryleg_prereg.txt
+(sections 0-10, every change logged in section 0, each before the runs it governs).
+================================================================================
+
+0. VERDICT
+  SHIPPED by the flip commit 5e3e542 (defaults on the branch):
+    FF_EXIT_LEG_MODE   = 2   D1 exit-leg livelock: complete on any boundary cell, and
+                             step along a fire-free search path to the nearest edge
+    FF_EXIT_LEG_SERVED = 1   D3 isolation timeout: a victim in a live carrier's custody
+                             is "served" (UNTRIGGERED IN PART 3; shipped on the D-9 probe)
+  NOT SHIPPED:
+    FF_EXIT_LEG_HOLD   = 0   D2 carrier drop: G2 is TO-MAINTAINER (3 LONGER-UNFINISHED
+                             legs, section 4). Reported, not bundled.
+  THE FLIP GATE G7, on 5e3e542: PASS on all of (0)-(5) (section 7). The flipped defaults
+  reproduce the measured combination value for value; the kill switch reproduces 6160438.
+  STOP ITEMS FOR THE MAINTAINER (not resolved by me; section 8):
+    S1  HOLD's 3 LONGER-UNFINISHED legs, and its missed pre-registered conversion
+    S2  SERVED depends on MODE >= 1 (the D-9 probe's one carrier death)
+    S3  the first custody write-off in the shipped configuration (N30 CRN), removed by
+        MODE 2, not by SERVED
+  Kill switch as it ships: --set FF_EXIT_LEG_MODE=0 --set FF_EXIT_LEG_SERVED=0 (HOLD is
+  already 0) restores 6160438 value for value (G1 at 0/0/0; G7 (1) on the flipped tree).
+
+1. THREE FACTS THAT CHANGE WHAT THIS ROUND CAN CLAIM (the maintainer asked for these
+   prominently)
+
+  1. REPLACEMENTS NEVER HELPED A TRAPPED CARRIER (D-8; the case for HOLD)
+     Whole record (carryleg_part1.txt C5): 24 distinct route_blocked carrier drops.
+       - 24 of 24 dropped victims DIED, 0-11 steps after the drop.
+       - 22 replacement assigns followed; 0 of 22 re-picked up or rescued the victim:
+           15 immediate replacement_after_blocked, 31-71 cells away, sent to an enclosed
+              cell; 14 of them were route_blocked-unassigned within 0-1 steps;
+            5 later re-dispatches never closed on the victim;
+            2 reached the cell: both were the ex-carrier. Its survival retreat runs before
+              the pickup test, so it stepped off; both victims died there.
+       - Recorded enclosures lasted 2-4 steps. The nearest other unit was 31-71 cells away,
+         moving 1 cell per step. Help would arrive ABOUT 30 STEPS AFTER EVERY RECORDED
+         ENCLOSURE HAD ALREADY ENDED.
+     "No unit is sent" to a held carrier is therefore what already happens in effect.
+     PART 3 AGREES (outputs/_cl_analysis_s3.txt H3):
+       - The controls had 7 carrier drops: stock C13 east/half/101 and U30
+         east/half/1291443119; CRN C13 east/half/202, east/half/404, east/def/202 and N30
+         east/half/53258209; the D-4 control U30 east/half/1291443119.
+       - 6 replacement assigns followed 5 of them. 0 picked the victim up again, and 7
+         of 7 dropped victims died. The nearest other unit was 30-69 cells away at the
+         drop.
+       - MODE 2 converted all 7 into completed carries.
+       - HOLD converted 1: 1 of 4 in CRN, 0 of 2 in stock. The other 5 carriers died
+         in custody with their victims.
+
+  2. SERVED (D3) HAD NOTHING TO ACT ON IN PART 3
+     - Before this round: 9 distinct custody write-offs in the record (31 file-
+       occurrences), in ALL 9 the other firefighter was already dead; NONE in the ungated
+       round's 371 runs (custody streak peak 15 of 30).
+     - Part 3: clSN == clC on 80/80 runs -> SERVED UNTRIGGERED IN PART 3.
+     - The first custody write-off ever seen in the shipped configuration appeared in the
+       out-of-sample CRN control: N30 south/half/2128361047, victim_0 written off at 167
+       after a carry from 138. In clKA it is gone - but because MODE 2 completed that carry
+       at 154, not because of SERVED (clKA == clKE2 on 80/80). SERVED alone was never
+       measured on that tuple: clSN is stock-only (no CRN twin, by design).
+     - Its only evidence of doing anything is the D-9 probe (section 5).
+
+  3. MODE 1 BARELY MOVES THE STALLS; MODE 2 IS THE REAL FIX
+     - MODE 1 was predicted flat on C13 and at most one leg lower on U30; clE1 was NOT run:
+       the prereg runs it only if clE2 fails a gate other than G2, and clE2 passed every
+       gate.
+     - MODE 2 took stalled-or-broken exit legs (M1c) to ZERO on U30 and N30 in both
+       instruments, including the out-of-sample N30:
+             C13 stock 1->0   C13 CRN 5->2   U30 stock 6->0   U30 CRN 4->0
+             N30 stock 5->0   N30 CRN 4->0   (N30 pooled 9->0)
+       The 2 C13 CRN legs left are CONVERSIONS, not the old stall. They are CRN
+       east/half/202 and east/def/202, which share one fire:
+         - no clean path existed at first, so the carrier fell back for 11 steps (4
+           reversals);
+         - both legs completed @102, n=30, where the control dropped them @169 and the
+           victims died;
+         - C13 CRN reversals fell 172 -> 8.
+       Carrying-leg excess steps (over d_c+1, completed legs): U30 stock 248 -> 0,
+       N30 stock 344 -> 0, U30 CRN 192 -> 2, N30 CRN 92 -> 2.
+       It lost no victim in any set or instrument and gained 7. Every control carrier
+       drop became a completed carry.
+
+2. WHAT RAN
+  Stage 1 (identity): 60 stock + 30 CRN at 827c525, VALID 90/90.
+  Stage 2 (C13 screen): 52 + 52 at e58953f, VALID 104/104; no automatic fail.
+  Stage 3: 407 stock (incl. 16 rbgate shards) + 238 CRN at 108a0ad, VALID 645/645.
+  D-9 probe: 6 + 6 at 108a0ad, VALID 12/12.
+  Flip gate: 69 stock at 5e3e542 (section 7).
+  Suites: base, p0, sim E2/H/SN/A, post (section 6).
+  No pool logged SOURCE CHANGED; every wave's head= / src= / ext= is in its log.
+  Seed sets: C13 (in-sample screen), U30 (outputs/_ug_seeds.txt), N30 (outputs/_cl_seeds.txt,
+  code-chosen, frozen before Part 2, the only out-of-sample set), RB7 (G5 re-roll
+  instrument, never pooled). Seed freeze re-checked before every wave: SEEDCHECK OK.
+  Horizon 360 (--steps 360 --set BATCH_SIZE=360 --uav-actions); steps 1-240 equal the
+  240-step records (G1 c, d).
+
+3. GATES, ARM BY ARM (outputs/_cl_analysis_s3.txt)
+  G1 IDENTITY PASS (stage 1; outputs/_cl_analysis_s1.txt)
+    (a) clB (6160438 worktree) == clC, C13, every key but tag/repo/wall_s + sidecar
+        transition / movement hashes: 13/13
+    (b) clC U30 == recorded uhD, every key but tag/wall_s: 30/30
+    (c) clC C13+U30 steps 1-240 == recorded ugD: 43/43
+    (d) clKC U30 steps 1-240 == recorded ugKD: 30/30
+    (e) clGC == recorded ugGD: 4/4 shards, 18/18 evals
+    (f) every feature counter 0 at defaults: 43/43
+  per arm (stock + its CRN twin; C13/U30/N30):
+                G1    G2              G3    G4    G5    ENGAGED
+    clE2        PASS  PASS            PASS  PASS  PASS  31/160
+    clH         PASS  TO-MAINTAINER   PASS  PASS  PASS   6/160
+    clSN        PASS  PASS            PASS  PASS  PASS   0/80   UNTRIGGERED IN PART 3
+    clA         PASS  PASS            PASS  PASS  PASS  31/160  (== clE2 on 160/160)
+    clOA (D-4)  PASS  PASS            PASS  PASS  n/a    4/43
+  G3 RESCUED AT 360 (stock tolerance T=2 per set; CRN per-set total, zero tolerance):
+    clE2 / clA   C13 stock 41->42  CRN 40->43 | U30 stock 102->103  CRN 101->101 |
+                 N30 stock 106->106  CRN 94->96
+                 CRN per seed: 0 down, 5 up (C13 east/half/202, east/half/404,
+                 east/def/202; N30 east/half/53258209, south/half/2128361047)
+                 no victim lost in any comparison; 7 gained
+    clH          C13 stock 41->41  CRN 40->41 | U30 102->102 / 101->101 | N30 106->106 / 94->94
+                 CRN per seed: 0 down, 1 up (C13 east/half/404)
+    clSN         identical to clC everywhere
+    clOA vs clOC C13 40->40 | U30 104->105
+  G4 FF DEATHS never higher: clE2/clA C13 4->3 / 5->2, U30 6->5 / 5->5, N30 8->8 / 8->7;
+    clH C13 4->4 / 5->4, others equal; clOA equal.
+  G5 ROUTE_BLOCKED (_ffr_rbcompare.py --new clG<arm> --old ihrest): every arm regresses
+    only east/707, south/101, south/404 - all in the known four; vs clGC: no regression
+    for any arm; latched line PASS for all. clGE2's 4 re-rolled seeds pool 15 -> 16.
+
+4. HOLD (D2) - NOT SHIPPED, TO THE MAINTAINER (STOP ITEM S1)
+  - HOLD engaged in 6 of 160 runs. It converted 1 of 4 CRN control drops (C13) and 0 of 2
+    stock drops.
+  - G2 none-longer: 3 LONGER-UNFINISHED legs (neither side completes; the held carrier
+    keeps custody longer). Routed to the maintainer by the pre-registered rule R5:
+      U30 stock east/half/1291443119: clC drops at 148, victim dead @150, carrier dead
+        @165 | clH holds, victim and carrier dead @162 (victim +12 steps, carrier -3).
+        Fire identical over [84,148]. THE PRE-REGISTERED EXPECTATION MISSED: the replay
+        predicted HOLD converts this carry at ~163; it did not.
+      C13 CRN east/half/202 and east/def/202 (same fire): the control drops at 169; the
+        held carrier keeps custody; carrier and victim die @171 in both arms.
+  - HOLD is inert whenever MODE 2 is on: 0 holds, 0 hold starts, 0 enclosures, 0 casualty-
+    guard firings in clA/clKA/clOA; clA == clE2 on 160/160 runs; clGA == clGE2 on 18/18
+    rbgate evals. With MODE 2 shipped, HOLD's measured effect in Part 3 is zero.
+
+5. SERVED (D3) - SHIPPED ON THE D-9 PROBE (STOP ITEM S2)
+  Rule (prereg sections 5, 9, 10): ships iff clSN passes G1-G5 (PASS), the probe ACTS
+  CORRECTLY on every kept tuple, and the combination and flip gates pass.
+  PROBE (outputs/_cl_probe_report.txt; mechanism evidence only, never an outcome result):
+    kill the non-carrying unit at the carrier's pickup step, SERVED 0 vs 1, both
+    instruments. Kept 3 of 6 - exactly the 3 whose premise the records predicted.
+    ACTED CORRECTLY on 3/3 (every write-off removed, SERVED's own site fired, nothing
+    differed before it did). Fates (reported, not gated):
+      stock south/half/1048395951  write-off @162 removed -> victim RESCUED @253
+      CRN   east/def/1420331661    write-off @116 removed -> victim RESCUED @157
+      stock east/half/1433805104   write-off @236 removed -> victim dead either way, and
+                                   the CARRIER DIES @288 (ff deaths 1 -> 2)
+  THE CARRIER DEATH IS A D1 x SERVED INTERACTION (the probe runs MODE 0 by design). The
+    carry from 206 reaches the grid edge at (49,16) @218, one cell from its exit target
+    (49,17); at MODE 0 it wanders the edge until 285 (the D1 livelock), is route_blocked
+    @286 and dies @288. At SERVED 0 the isolation write-off @236 RELEASED it: today the D3
+    timeout is an accidental escape hatch from the D1 livelock, and SERVED removes it.
+    MODE 1 or 2 completes that carry @218. => SERVED MUST NEVER BE ENABLED WITHOUT
+    MODE >= 1. Written into common_fixed_variables.py beside the switch.
+  Under MODE 2, SERVED changed nothing measured (clA == clE2 160/160). Reverting it is one
+  literal (FF_EXIT_LEG_SERVED = 0) at no measured cost - the maintainer's call (S2).
+
+6. TESTS (G6)
+  G6a (all switches 0): base and p0: 8 failed (the baseline names) / 875 passed / 0 errors
+  sim variants (full suite, switches set by the plugin): E2, H, SN, A: 9 failed = the
+    baseline 8 + the one pre-named pin / 874 passed / 0 errors; CLSIM END CHECK OK. The
+    named-in-advance seed-42 slow tests did not move.
+  G6b (flipped tree, VARIANT=post): 8 failed (exactly the baseline names) / 875 passed /
+    0 errors - as pre-declared (the pin rewritten to the shipped values, nothing else).
+
+7. THE FLIP GATE G7 (on 5e3e542)
+  Record: outputs/_cl_flipgate.txt. Pool outputs/_cl_flip_wave.log: 69/69 VALID, head=5e3e542,
+  no SOURCE CHANGED. Queue outputs/_cl_flip_queue.txt (69 lines, sha256 ed06a78cb04e...).
+  (0) AST behaviour diff 108a0ad -> 5e3e542, docstrings blanked: changed paths exactly
+      agents.py, common_fixed_variables.py, tests/test_carry_leg.py; literals exactly
+      cfv 0->2, 0->1 and agents.py 1->2, 0->2, 0->1; 88 files, nothing else differs  PASS
+  (1) clFZ (flipped tree, --set MODE=0 HOLD=0 SERVED=0), C13 == clB (6160438) 13/13, every
+      field but tag/repo/wall_s/params/extra_params, stdout and sidecar hashes included:
+      the kill switch as it ships                                                     PASS
+  (2) clFD (flipped tree, no --set), C13+U30 == clA 43/43 (and == clE2 43/43)           PASS
+  (3) clFJ (flipped tree, --set MODE=0.5 SERVED=0.5), C13 == clA 13/13 (== clE2): junk
+      takes the shipped value (HOLD not junked: it ships 0 and junk arms it, D-2)      PASS
+  (4) G6b: 8 failed = the baseline 8 / 875 passed / 0 errors                            PASS
+  (5) Runner register outputs/carryleg_flip_register.txt (outputs/_cl_flip_register.py):
+      every queue file, runner and model-running script in outputs/ (non-recursive) and
+      the entry points, FLIP-SAFE iff they set FF_EXIT_LEG_MODE and _SERVED explicitly.
+      Re-running any SILENT-CHANGE line after the flip measures MODE 2 + SERVED 1; this
+      round's own _cl_ pools FAIL LOUDLY instead (sidecar source sha256 + switches).
+      Recorded runs are files and do not change.
+
+8. STOP ITEMS FOR THE MAINTAINER
+  S1  HOLD: rule on the 3 LONGER-UNFINISHED legs (section 4) and on shipping a fix that is
+      inert under the shipped MODE 2. It stays 0 until then.
+  S2  SERVED: shipped per the pre-registered D-9 rule; the probe's carrier death is the
+      D1 x SERVED interaction (section 5). Keep it (inert under MODE 2) or revert it.
+  S3  The first shipped-configuration custody write-off (N30 CRN south/half/2128361047
+      @167) - removed by MODE 2's completed carry, so it credits MODE 2, never SERVED.
+
+9. OTHER MEASUREMENTS (reported, not gated)
+  M6 DRONE STEPS IN FIRE (searcher-only E1 / all UAVs E2), clC -> clE2:
+    C13 stock 2.089% -> 2.150% / 1.426% -> 1.480%   (+5 / +10 drone-steps)
+    U30 stock 1.860% -> 1.751% / 1.215% -> 1.144%
+    N30 stock 1.726% -> 1.592% / 0.995% -> 0.926%
+    C13 CRN   1.800% -> 1.751% / 1.474% -> 1.448%
+    U30 CRN   1.488% -> 1.453% / 1.028% -> 1.009%
+    N30 CRN   1.820% -> 1.801% / 1.083% -> 1.079%
+    RB7 stock 0.952% -> 1.012% / 0.764% -> 0.863%   (RB7 is a G5 instrument; information)
+  M7 CARRIER EXPOSURE (carrying rows in fire at decision time), clC -> clE2:
+    C13 stock 2 -> 0 (1 died -> 0), U30 stock 8 -> 1, N30 stock 11 -> 0,
+    C13 CRN 12 -> 5, U30 CRN 4 -> 1, N30 CRN 3 -> 1 (1 died -> 0);
+    fire-adjacent carrying rows N30 stock 36 -> 0, U30 stock 22 -> 1.
+    HOLD raises it (C13 CRN 12 -> 17, 2 died; U30 stock 8 -> 12, 1 died).
+  MODE-2 RESIDUAL (M11): every fallback leg (no clean path) completed; the one-sided
+    invariant (a path step never enters a burning or fire-adjacent cell) held on every
+    step; 0 misaligned events.
+  D-4 (fire mechanic OFF, clOA vs clOC, C13+U30): G1-G4 PASS; rescued 40->40 / 104->105,
+    ff deaths equal, M1c 1->0 / 1->0; carrier in-fire rows U30 8 -> 0. The harm check
+    finds no harm with the fire mechanic off.
+
+10. TOOLING NOTES
+  - Both D-9 probe pools ended DCD4RB_POOL_INCOMPLETE with 6/6 VALID. The pool's live-
+    process snapshot matches every job with the round's tag prefix "cl", so stage 3's live
+    rbgate shards counted as "live this wave". Bookkeeping only; every probe run was
+    validated (FINAL 6/6, 0 invalid/missing) and is read through provenance checks.
+  - The validator gained check (9) (a probe line is VALID only with _cl_probe.py's own
+    evidence) and (3') (the flip gate's shipped switches), each between waves, each with
+    negative and positive controls (prereg sections 9, 10).
+  - Runner register: outputs/carryleg_flip_register.txt (G7 (5)).
+
+11. FILES
+  outputs/carryleg_prereg.txt, outputs/_cl_analysis_s1.txt / _s2.txt / _s3.txt,
+  outputs/_cl_probe_report.txt, outputs/carryleg_flip_register.txt, the flip gate's
+  outputs (section 7), wave logs outputs/_cl_*_wave.log, suites outputs/_cl1_pytest_*.log/.xml.
