@@ -1,10 +1,11 @@
 ================================================================================
 CARRYING-LEG ROUND - REPORT (Parts 2 and 3)
-Branch carryleg (not pushed, not merged; the maintainer merges).
+UPDATED 2026-09-27 with the maintainer's rulings S1-S3 and the S2 enforcement (sections 12
+and 13). Merged into main --ff-only and tagged carrying-leg-fixed.
 ENVIRONMENT: sys.version 3.10.11 (tags/v3.10.11:7d4cc5a, MSC v.1929 64 bit), mesa 1.2.1
 (E:\Projects\SAS\.venv; every pool log's ENV line and every suite log say so).
 Design: outputs/carryleg_part1.txt. Pre-registration: outputs/carryleg_prereg.txt
-(sections 0-10, every change logged in section 0, each before the runs it governs).
+(sections 0-11, every change logged in section 0, each before the runs it governs).
 ================================================================================
 
 0. VERDICT
@@ -12,19 +13,24 @@ Design: outputs/carryleg_part1.txt. Pre-registration: outputs/carryleg_prereg.tx
     FF_EXIT_LEG_MODE   = 2   D1 exit-leg livelock: complete on any boundary cell, and
                              step along a fire-free search path to the nearest edge
     FF_EXIT_LEG_SERVED = 1   D3 isolation timeout: a victim in a live carrier's custody
-                             is "served" (UNTRIGGERED IN PART 3; shipped on the D-9 probe)
+                             is "served" (UNTRIGGERED IN PART 3; shipped on the D-9 probe).
+                             ENFORCED OFF WHENEVER MODE IS 0 (ruling S2, commit dd2bcd0)
   NOT SHIPPED:
-    FF_EXIT_LEG_HOLD   = 0   D2 carrier drop: G2 is TO-MAINTAINER (3 LONGER-UNFINISHED
-                             legs, section 4). Reported, not bundled.
+    FF_EXIT_LEG_HOLD   = 0   D2 carrier drop. Ruling S1: INERT UNDER THE SHIPPED
+                             CONFIGURATION (identical on all 160 runs with MODE 2 on).
   THE FLIP GATE G7, on 5e3e542: PASS on all of (0)-(5) (section 7). The flipped defaults
   reproduce the measured combination value for value; the kill switch reproduces 6160438.
-  STOP ITEMS FOR THE MAINTAINER (not resolved by me; section 8):
-    S1  HOLD's 3 LONGER-UNFINISHED legs, and its missed pre-registered conversion
-    S2  SERVED depends on MODE >= 1 (the D-9 probe's one carrier death)
-    S3  the first custody write-off in the shipped configuration (N30 CRN), removed by
-        MODE 2, not by SERVED
-  Kill switch as it ships: --set FF_EXIT_LEG_MODE=0 --set FF_EXIT_LEG_SERVED=0 (HOLD is
-  already 0) restores 6160438 value for value (G1 at 0/0/0; G7 (1) on the flipped tree).
+  THE MAINTAINER'S RULINGS (section 12):
+    S1  HOLD stays 0 - inert under the shipped configuration; its longer legs are moot
+    S2  SERVED 1 kept, its dependency on MODE ENFORCED IN CODE (SERVED is 0 whenever MODE
+        is 0), re-gated on the enforcement commit dd2bcd0: PASS on every item (82/82 VALID;
+        G6b 8 failed = baseline / 947 passed)
+    S3  the first shipped-configuration custody write-off counts for MODE 2
+  Kill switch as it ships: --set FF_EXIT_LEG_MODE=0 ALONE restores 6160438 value for value
+  (SERVED is enforced off there; round-2 gate item (1m)). The pair MODE=0 SERVED=0 still
+  works (G1 at 0/0/0; G7 (1) and round-2 (1)).
+  FOR LATER ROUNDS (section 13): every headline number measured before this merge predates
+  MODE 2 and is no longer current behaviour.
 
 1. THREE FACTS THAT CHANGE WHAT THIS ROUND CAN CLAIM (the maintainer asked for these
    prominently)
@@ -164,9 +170,12 @@ Design: outputs/carryleg_part1.txt. Pre-registration: outputs/carryleg_prereg.tx
     @286 and dies @288. At SERVED 0 the isolation write-off @236 RELEASED it: today the D3
     timeout is an accidental escape hatch from the D1 livelock, and SERVED removes it.
     MODE 1 or 2 completes that carry @218. => SERVED MUST NEVER BE ENABLED WITHOUT
-    MODE >= 1. Written into common_fixed_variables.py beside the switch.
-  Under MODE 2, SERVED changed nothing measured (clA == clE2 160/160). Reverting it is one
-  literal (FF_EXIT_LEG_SERVED = 0) at no measured cost - the maintainer's call (S2).
+    MODE >= 1. Ruling S2: now ENFORCED in agents.ff_exit_leg_served (section 12), with
+    the comment in common_fixed_variables.py kept as the reason.
+  Under MODE 2, SERVED changed nothing measured (clA == clE2 160/160). After the
+  enforcement the probe's MODE-0 behaviour - both its rescues and its carrier death - can no
+  longer happen: SERVED has NO demonstrated effect in the shipped configuration and ships as
+  a guard, not as a measured improvement.
 
 6. TESTS (G6)
   G6a (all switches 0): base and p0: 8 failed (the baseline names) / 875 passed / 0 errors
@@ -196,13 +205,12 @@ Design: outputs/carryleg_part1.txt. Pre-registration: outputs/carryleg_prereg.tx
       round's own _cl_ pools FAIL LOUDLY instead (sidecar source sha256 + switches).
       Recorded runs are files and do not change.
 
-8. STOP ITEMS FOR THE MAINTAINER
-  S1  HOLD: rule on the 3 LONGER-UNFINISHED legs (section 4) and on shipping a fix that is
-      inert under the shipped MODE 2. It stays 0 until then.
-  S2  SERVED: shipped per the pre-registered D-9 rule; the probe's carrier death is the
-      D1 x SERVED interaction (section 5). Keep it (inert under MODE 2) or revert it.
+8. STOP ITEMS FOR THE MAINTAINER - ALL RULED (section 12)
+  S1  HOLD: RULED - stays 0, inert under the shipped configuration; the 3 LONGER-UNFINISHED
+      legs are moot.
+  S2  SERVED: RULED - kept at 1, ENFORCED OFF WHENEVER MODE IS 0 (dd2bcd0), re-gated.
   S3  The first shipped-configuration custody write-off (N30 CRN south/half/2128361047
-      @167) - removed by MODE 2's completed carry, so it credits MODE 2, never SERVED.
+      @167): RULED - it counts for MODE 2.
 
 9. OTHER MEASUREMENTS (reported, not gated)
   M6 DRONE STEPS IN FIRE (searcher-only E1 / all UAVs E2), clC -> clE2:
@@ -226,16 +234,101 @@ Design: outputs/carryleg_part1.txt. Pre-registration: outputs/carryleg_prereg.tx
     finds no harm with the fire mechanic off.
 
 10. TOOLING NOTES
-  - Both D-9 probe pools ended DCD4RB_POOL_INCOMPLETE with 6/6 VALID. The pool's live-
-    process snapshot matches every job with the round's tag prefix "cl", so stage 3's live
-    rbgate shards counted as "live this wave". Bookkeeping only; every probe run was
-    validated (FINAL 6/6, 0 invalid/missing) and is read through provenance checks.
+  - TOOLING DEFECT, recorded for the CLEANUP ROUND (maintainer's ruling): both D-9 probe
+    pools ended DCD4RB_POOL_INCOMPLETE with 6/6 VALID. The pool's live-process check
+    counts other pools' jobs as its own: outputs/_cl_pool.sh snapshot() passes
+    -TagPrefix "$TAGPFX" (cl, shared by every pool of the round) and -RbLike to
+    outputs/_dcd4rb_live.ps1, so stage 3's live rbgate shards counted as "live this wave".
+    Fix both files together. No result depends on it: every probe run was validated
+    (FINAL 6/6, 0 invalid/missing) and is read through provenance checks.
   - The validator gained check (9) (a probe line is VALID only with _cl_probe.py's own
     evidence) and (3') (the flip gate's shipped switches), each between waves, each with
     negative and positive controls (prereg sections 9, 10).
   - Runner register: outputs/carryleg_flip_register.txt (G7 (5)).
 
 11. FILES
-  outputs/carryleg_prereg.txt, outputs/_cl_analysis_s1.txt / _s2.txt / _s3.txt,
-  outputs/_cl_probe_report.txt, outputs/carryleg_flip_register.txt, the flip gate's
-  outputs (section 7), wave logs outputs/_cl_*_wave.log, suites outputs/_cl1_pytest_*.log/.xml.
+  outputs/carryleg_prereg.txt (sections 0-11), outputs/_cl_analysis_s1.txt / _s2.txt /
+  _s3.txt, outputs/_cl_probe_report.txt, outputs/carryleg_flip_register.txt, the flip
+  gate (outputs/_cl_flipgate.txt) and its round 2 (outputs/_cl_flipgate2.txt), wave logs
+  outputs/_cl_*_wave.log, suites outputs/_cl1_pytest_*.log/.xml and _cl2_pytest_post.*,
+  outputs/carryleg_merge_notes.txt.
+
+12. THE MAINTAINER'S RULINGS (2026-09-27) AND WHAT THEY CHANGED
+  S1  HOLD stays 0.
+      - Recorded as INERT UNDER THE SHIPPED CONFIGURATION: identical on all 160 runs
+        with MODE 2 on, and its one predicted conversion (U30 east/half/1291443119) did
+        not happen.
+      - The three LONGER-UNFINISHED legs are moot, since HOLD does not ship.
+  S2  SERVED 1 stays shipped, and its dependency on MODE is ENFORCED IN CODE
+      (commit dd2bcd0):
+      - agents.ff_exit_leg_served() returns 0 whenever ff_exit_leg_mode() is 0. MODE is 0
+        only on an exact integral zero; junk or missing MODE (-> the shipped 2) never
+        suppresses SERVED.
+      - The comment in common_fixed_variables.py stays, as the reason.
+      - Tests: 72 new, 164 in tests/test_carry_leg.py:
+          - SERVED is 0 for every exact-zero MODE form x 8 SERVED forms (48);
+          - SERVED is not suppressed for every non-zero MODE form of _MATRIX (21);
+          - at the model level, a lone carrier at MODE 0 with SERVED 1 is written off at
+            30 exactly as at SERVED 0, and at MODE 1 it serves (1);
+          - the write-off pin covers MODE 0 / 1 x SERVED 0 / 1 (+2).
+      - The 7 SERVED tests that failed at MODE 0, and 2 that would have passed
+        vacuously there, now exercise SERVED at MODE 1. MODE 1 changes only rescue
+        completion, and none of them completes a rescue. One of the vacuous two gained
+        a positive control.
+      - Four mutations were all killed: enforcement removed, over-broad, custody
+        counting the dead, custody always empty.
+      - Review: workflow wf_8814dca1-ad9 (4 lenses + skeptics) found no defect in the
+        enforcement. Every verified gap was fixed before the enforcement commit
+        (prereg section 11).
+      - Runs that measured SERVED at MODE 0 (clSN, clGSN*, clPS1, clKPS1, the D-9
+        probe) can be reproduced only on a checkout <= 52da783
+        (outputs/carryleg_flip_register.txt section E).
+      - CONSEQUENCE: the D-9 probe's MODE-0 behaviour can no longer happen. That covers
+        both of its rescues and its carrier death. SERVED can act only with MODE >= 1, and
+        under the shipped MODE 2 it changed nothing measured in Part 3 (clA == clE2 on
+        160/160). SERVED therefore has NO demonstrated effect in the shipped
+        configuration. It ships as a guard, not as a measured improvement.
+      - THE ROUND-2 GATE on the enforcement commit (prereg section 11;
+        outputs/_cl_flipgate2.txt):
+          PASS on every item, at the enforcement commit dd2bcd0 (pool 82/82 VALID)
+          (0') scope: the model change is ONLY the guard `if ff_exit_leg_mode() == 0: return 0`,
+               prepended to ff_exit_leg_served. The rest of its body and its signature are
+               unchanged. agents.py is otherwise AST-identical, and cfv / wildfire_model.py /
+               rescue_planner.py change comments only. 88 files compared.
+          (1)  clF2Z (explicit MODE=0 HOLD=0 SERVED=0) == clB (6160438): 13/13
+          (1m) clF2M (MODE=0 ONLY; SERVED left at its shipped 1) == clB: 13/13. Behaviourally, every
+               SERVED counter is 0 on all 13 runs (custody_calls 0, in_custody_calls 0, ...). The
+               unenforced MODE-0 / SERVED-1 arm clSN made 4,680 custody calls on the same 13 tuples,
+               while its values were identical to clB, so value identity alone could not have shown
+               the enforcement.
+          (2)  clF2D (shipped defaults) == clA 43/43 (== clE2). SERVED's site runs there
+               (custody_calls 15,480; not-geo serves 90) and changes nothing.
+          (3)  clF2J (junk MODE / SERVED) == clA 13/13 (== clE2)
+          (4)  G6b (cl2): 8 failed = the baseline names / 947 passed / 0 errors, on the clean tree
+               at dd2bcd0
+  S3  Agreed: the first shipped-configuration custody write-off (N30 CRN
+      south/half/2128361047 @167) counts for MODE 2.
+  TOOLING DEFECT, for the cleanup round: the probe pools' DCD4RB_POOL_INCOMPLETE
+      (section 10: outputs/_cl_pool.sh + outputs/_dcd4rb_live.ps1). No result depends
+      on it.
+
+13. FOR LATER ROUNDS: EVERY HEADLINE NUMBER MEASURED BEFORE THIS MERGE IS PRE-MODE-2
+  Every run before this merge, 6160438 and every earlier commit, carried victims with
+  the MODE-0 carrying leg: the exit-leg livelock, the drop-on-enclosure, and the
+  isolation write-off. This round shows that those legs changed outcomes: 7 of 7
+  control carrier drops became completed carries, 7 victims were gained, and
+  firefighter deaths never rose and fell in 4 of 6 set-instrument comparisons (C13
+  stock 4->3, C13 CRN 5->2, U30 stock 6->5, N30 CRN 8->7).
+  So EVERY headline number measured before this merge predates MODE 2 and is NO
+  LONGER CURRENT BEHAVIOUR. That includes:
+    - the ungated firefighting cost (the ungated round's measurements, its H=360
+      horizon run included);
+    - firefighter deaths, every round's counts;
+    - the base-station tradeoff (the dcD flip: victim deaths traded for firefighter
+      survival at neutral rescue);
+    - and every stored control baseline built on them (dfD, d4D, drhD, flhD, ugD / uhD /
+      ugKD, the fm* arms, and this round's own clC / clKC).
+  A later round that compares against any of them must re-measure the reference at
+  the merged commit first (memory: baseline-moved-under-comparison), or pin the old
+  behaviour explicitly with --set FF_EXIT_LEG_MODE=0. At MODE 0, SERVED is now off by
+  itself.
