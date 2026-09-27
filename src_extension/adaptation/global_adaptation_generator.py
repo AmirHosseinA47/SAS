@@ -1,5 +1,6 @@
 """Global adaptation space generator skeleton."""
 
+import math
 from typing import Any
 
 from .adaptation_option_objects import AdaptationOption, MissionAdaptationOption, Scope
@@ -96,6 +97,18 @@ class GlobalAdaptationSpaceGenerator:
         runtime_models: Any,
         timestamp: float,
     ) -> list[AdaptationOption]:
+        # GLOBAL_PLANNER_MODE (outputs/planner_part1.txt 6.1), read at call time through a
+        # lazy import (a sys.modules lookup at runtime). At 0 the rest of this method is
+        # today's body, line for line.
+        import agents as _agents
+
+        if _agents.global_planner_mode() != 0:
+            return self._generate_role_switch_options(
+                global_analysis_result,
+                runtime_models,
+                timestamp,
+            )
+
         def read_value(source: Any, name: str, default: Any = None) -> Any:
             if isinstance(source, dict):
                 return source.get(name, default)
@@ -196,6 +209,317 @@ class GlobalAdaptationSpaceGenerator:
             )
 
         return options
+
+    # ---- GLOBAL_PLANNER_MODE 1: the global planner for UAV roles -----------------------
+    # Design outputs/planner_part1.txt sections 2-3. Reached only when
+    # agents.global_planner_mode() != 0. READS ONLY: knowledge models (fire belief,
+    # visibility status map, uav_resource_model.by_uav_id via .get), managed_victims'
+    # length and confirmed flags, cfv constants at call time, the analyzer's triggers,
+    # and from the UAV agents rtb_active / rtb_docked / berths / drain rates and the pure
+    # trigger formula agents.rtb_trigger_level_at. No RNG, no print, no write.
+
+    def _generate_role_switch_options(
+        self,
+        global_analysis_result: Any,
+        runtime_models: Any,
+        timestamp: float,
+    ) -> list[AdaptationOption]:
+        from . import role_option_values as rov
+
+        def read_value(source: Any, name: str, default: Any = None) -> Any:
+            if isinstance(source, dict):
+                return source.get(name, default)
+            return getattr(source, name, default)
+
+        originating_trigger, trigger_context, confidence, _signals = adaptation_trigger_metadata(
+            global_analysis_result,
+            default_label="global_analysis",
+        )
+        trigger_context = trigger_context.lower()
+
+        base_parameters = {
+            "current_role": read_value(runtime_models, "current_role", None),
+            "role_stability_timer": read_value(runtime_models, "role_stability_timer", None),
+            "role_switch_count": read_value(runtime_models, "role_switch_count", None),
+            "battery_state": read_value(
+                runtime_models,
+                "battery_state",
+                read_value(runtime_models, "battery", read_value(runtime_models, "battery_level")),
+            ),
+            "resource_state": read_value(
+                runtime_models,
+                "resource_state",
+                read_value(runtime_models, "resources", None),
+            ),
+        }
+        target_entity = read_value(global_analysis_result, "target_entity", "mission")
+
+        options: list[AdaptationOption] = []
+        for spec in self._role_switch_specs(global_analysis_result, runtime_models):
+            uid, from_role, to_role, battery, values = spec
+            options.append(
+                MissionAdaptationOption(
+                    option_id=f"global_role_assignment_{to_role}_{uid}",
+                    option_type="role_assignment",
+                    target_entity=uid,
+                    parameters={
+                        **base_parameters,
+                        # a STRING (hashable: the constraint filter tests it against sets)
+                        "assigned_role": to_role,
+                        "target_uav_id": uid,
+                        # the scorer's own change reader: Cost_switch is charged on a change
+                        "from_role": from_role,
+                        "to_role": to_role,
+                        "battery_level": battery,
+                        **values,
+                    },
+                    expected_effect=f"Switch UAV {uid} from {from_role} to {to_role}",
+                    cost_estimate=1.0,
+                    risk_estimate=0.2,
+                    # D-2 (ruled): the baseline's confidence; the options' evidence is
+                    # the nine values, not the analyzer's trigger confidence.
+                    confidence=1.0,
+                    scope=Scope["global"],
+                    timestamp=timestamp,
+                    originating_trigger=originating_trigger,
+                    explanation_hint=(
+                        f"Global planner: move UAV {uid} from {from_role} to {to_role}."
+                    ),
+                )
+            )
+
+        zeros = rov.zero_values()
+        options.append(
+            MissionAdaptationOption(
+                option_id="global_role_assignment_maintain_current",
+                option_type="role_assignment",
+                target_entity=target_entity,
+                parameters={**base_parameters, "action": "maintain_current_role", **zeros},
+                expected_effect="Maintain current mission role assignments",
+                cost_estimate=0.0,
+                risk_estimate=0.0,
+                confidence=confidence,
+                scope=Scope["global"],
+                timestamp=timestamp,
+                originating_trigger=originating_trigger,
+                explanation_hint="Always available baseline option for role stability.",
+            )
+        )
+
+        instability_terms = ("instability", "oscillation", "unstable", "role_switch")
+        if any(term in trigger_context for term in instability_terms):
+            options.append(
+                MissionAdaptationOption(
+                    option_id="global_role_assignment_delay_change",
+                    option_type="role_assignment",
+                    target_entity=target_entity,
+                    parameters={**base_parameters, "action": "delay_role_change", **zeros},
+                    expected_effect="Delay mission role changes during instability",
+                    cost_estimate=0.1,
+                    risk_estimate=0.1,
+                    confidence=confidence,
+                    scope=Scope["global"],
+                    timestamp=timestamp,
+                    originating_trigger=originating_trigger,
+                    explanation_hint=(
+                        "Instability or oscillation trigger suggests delaying role changes."
+                    ),
+                )
+            )
+        return options
+
+    @staticmethod
+    def _unstable_uav_ids(global_analysis_result: Any) -> set[str]:
+        """I5: the UAVs a current OSCILLATION_RISK or INSTABILITY_DETECTED trigger names."""
+        flagged: set[str] = set()
+        sources: list[Any] = []
+        for key in ("all_triggers", "triggers", "trigger_list"):
+            value = (
+                global_analysis_result.get(key)
+                if isinstance(global_analysis_result, dict)
+                else getattr(global_analysis_result, key, None)
+            )
+            if isinstance(value, (list, tuple)):
+                sources.extend(value)
+        for trig in sources:
+            if isinstance(trig, dict):
+                ttype = trig.get("trigger_type")
+                entities = trig.get("affected_entities")
+            else:
+                ttype = getattr(trig, "trigger_type", None)
+                entities = getattr(trig, "affected_entities", None)
+            if str(ttype or "") not in ("OSCILLATION_RISK", "INSTABILITY_DETECTED"):
+                continue
+            for entity in entities or ():
+                flagged.add(str(entity))
+        return flagged
+
+    def _role_switch_specs(
+        self,
+        global_analysis_result: Any,
+        runtime_models: Any,
+    ) -> list[tuple[str, str, str, float, dict[str, float]]]:
+        """(uid, from_role, to_role, battery, nine values) for every UAV that may switch:
+        I1 available, I2 not the last available member of its role, I3 a real change,
+        I4 a live id from uav_resource_model.by_uav_id, I5 not flagged unstable."""
+        import agents as _agents
+        import common_fixed_variables as _cfv
+        from . import role_option_values as rov
+
+        if not isinstance(runtime_models, dict):
+            return []
+        model = runtime_models.get("simulation_model")
+        resource_model = runtime_models.get("uav_resource_model")
+        by_uav_id = getattr(resource_model, "by_uav_id", None)
+        if model is None or not isinstance(by_uav_id, dict) or not by_uav_id:
+            return []
+
+        uav_agents = {
+            str(a.unique_id): a for a in model.schedule.agents if type(a) is _agents.UAV
+        }
+        uids = [str(k) for k in by_uav_id.keys()]
+        try:
+            uids.sort(key=int)
+        except ValueError:
+            uids.sort()
+
+        role_of: dict[str, str | None] = {
+            uid: rov.live_role(model._uav_assignment_role(uid)) for uid in uids
+        }
+        holders = {
+            role: sum(1 for uid in uids if role_of[uid] == role) for role in rov.LIVE_ROLES
+        }
+
+        def position(uid: str) -> tuple[int, int] | None:
+            state = by_uav_id.get(uid)
+            pos = getattr(state, "current_position", None) if state is not None else None
+            if pos is None:
+                agent = uav_agents.get(uid)
+                pos = getattr(agent, "pos", None) if agent is not None else None
+            if pos is None:
+                return None
+            return (int(round(float(pos[0]))), int(round(float(pos[1]))))
+
+        def battery_of(uid: str) -> float | None:
+            state = by_uav_id.get(uid)
+            level = getattr(state, "battery_level", None) if state is not None else None
+            if level is None:
+                agent = uav_agents.get(uid)
+                level = getattr(agent, "battery_level", None) if agent is not None else None
+            return None if level is None else float(level)
+
+        def working(uid: str) -> bool:
+            agent = uav_agents.get(uid)
+            return (
+                agent is not None
+                and not bool(getattr(agent, "rtb_active", False))
+                and not bool(getattr(agent, "rtb_docked", False))
+            )
+
+        returns_home = _agents.base_station_mode() >= 2
+        flagged = self._unstable_uav_ids(global_analysis_result)
+        available: dict[str, tuple[tuple[int, int], float, float, float]] = {}
+        for uid in uids:
+            agent = uav_agents.get(uid)
+            pos = position(uid)
+            battery = battery_of(uid)
+            if (
+                agent is None
+                or pos is None
+                or battery is None
+                or role_of[uid] is None
+                or not working(uid)
+                or uid in flagged
+            ):
+                continue
+            per_move = float(agent.battery_drain_per_step) + float(agent.battery_drain_per_move)
+            trigger_here = float(_agents.rtb_trigger_level_at(agent, pos))
+            if returns_home and battery - trigger_here <= rov.AVAILABILITY_MARGIN_STEPS * per_move:
+                continue
+            available[uid] = (pos, battery, trigger_here, per_move)
+        if not available:
+            return []
+        n_available = {
+            role: sum(1 for uid in available if role_of[uid] == role) for role in rov.LIVE_ROLES
+        }
+
+        # the four demands (section 3.0)
+        vis_state = getattr(runtime_models.get("visibility_model"), "state", None)
+        status_map = getattr(vis_state, "observation_status_map", None) or {}
+
+        def status_text(value: Any) -> str:
+            return str(getattr(value, "value", value))
+
+        never_seen = [
+            (int(c[0]), int(c[1])) for c, s in status_map.items() if status_text(s) == "never_seen"
+        ]
+        belief = getattr(runtime_models.get("fire_runtime_model"), "belief", None)
+        believed = [
+            (int(c[0]), int(c[1])) for c in list(getattr(belief, "estimated_burning_cells", ()) or ())
+        ]
+        stale = {c for c in believed if status_text(status_map.get(c)) == "stale_information"}
+        fresh = [c for c in believed if c not in stale]
+        managed_victims = getattr(model, "managed_victims", None) or {}
+        n_detected = sum(
+            1 for v in managed_victims.values() if bool(getattr(v, "confirmed", False))
+        )
+        demands = {
+            "fire": rov.fire_demand(len(fresh)),
+            "stale": rov.stale_demand(len(stale)),
+            "victim": rov.victim_demand(len(managed_victims), n_detected),
+            "uncertainty": rov.uncertainty_demand(len(never_seen), len(status_map)),
+        }
+
+        def nearest(pos: tuple[int, int], cells: list[tuple[int, int]]):
+            best = None
+            for c in cells:
+                key = (abs(pos[0] - c[0]) + abs(pos[1] - c[1]), c[0], c[1])
+                if best is None or key < best:
+                    best = key
+            return (None, None) if best is None else ((best[1], best[2]), best[0])
+
+        security_distance = float(getattr(_cfv, "SECURITY_DISTANCE", 10))
+        n_uavs = len(uids)
+        specs: list[tuple[str, str, str, float, dict[str, float]]] = []
+        for uid in uids:
+            if uid not in available:
+                continue
+            from_role = role_of[uid]
+            if n_available[from_role] < 2:
+                continue
+            to_role = rov.other_role(from_role)
+            pos, battery, trigger_here, per_move = available[uid]
+            near = 0
+            for other in uids:
+                if other == uid or role_of[other] != to_role or not working(other):
+                    continue
+                opos = position(other)
+                if opos is None:
+                    continue
+                if math.hypot(pos[0] - opos[0], pos[1] - opos[1]) <= security_distance:
+                    near += 1
+            target, distance = nearest(pos, fresh if to_role == rov.FIRE_TRACKER else never_seen)
+            trigger_at_target = (
+                None if target is None else float(_agents.rtb_trigger_level_at(uav_agents[uid], target))
+            )
+            state = by_uav_id.get(uid)
+            values = rov.switch_option_values(
+                from_role=from_role,
+                to_role=to_role,
+                holders=holders,
+                demands=demands,
+                n_near_working_in_new_role=near,
+                n_uavs=n_uavs,
+                battery=battery,
+                trigger_here=trigger_here,
+                trigger_at_target=trigger_at_target,
+                target_distance=distance,
+                per_move=per_move,
+                drift_level=getattr(state, "drift_level", None),
+                role_stability_timer=getattr(state, "role_stability_timer", None),
+            )
+            specs.append((uid, from_role, to_role, battery, values))
+        return specs
 
     def _generate_task_allocation_options(
         self,
