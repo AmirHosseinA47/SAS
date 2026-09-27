@@ -1249,12 +1249,15 @@ def ff_firefight_mission_gate() -> bool:
 #   anything else                 -> never the zero path (see each accessor); no raise
 # With all three at 0 every new line in this module and in wildfire_model.py is a pure
 # read, and the model is value-identical to 6160438.
-EXIT_LEG_MODE_JUNK = 1
+# SHIPPED (carryleg flip, carryleg_prereg.txt section 10): MODE 2, HOLD 0, SERVED 1. MODE and
+# SERVED now ship non-zero, so their junk takes the shipped value (2 / 1); HOLD still ships 0,
+# so its junk still arms it (True).
+EXIT_LEG_MODE_JUNK = 2
 EXIT_LEG_SERVED_JUNK = 1
 
 
 def ff_exit_leg_mode() -> int:
-    """FF_EXIT_LEG_MODE - D1, the exit-leg livelock. Shipped 0.
+    """FF_EXIT_LEG_MODE - D1, the exit-leg livelock. Shipped 2.
 
       0  today: a rescue completes only on the fixed exit cell, and every carrying
          step is _move_toward(exit_target)
@@ -1266,7 +1269,7 @@ def ff_exit_leg_mode() -> int:
     Exact 0 / 1 / 2 -> that mode; missing -> the cfv default; anything else (junk,
     None, non-integral, negative, an integer >= 3) -> EXIT_LEG_MODE_JUNK.
     """
-    value = _exact_integer(getattr(cfv, "FF_EXIT_LEG_MODE", 0))
+    value = _exact_integer(getattr(cfv, "FF_EXIT_LEG_MODE", 2))
     if value in (0, 1, 2):
         return value
     return EXIT_LEG_MODE_JUNK
@@ -1290,7 +1293,8 @@ def ff_exit_leg_hold() -> bool:
 
 
 def ff_exit_leg_served() -> int:
-    """FF_EXIT_LEG_SERVED - D3, the isolation timeout on a carried victim. Shipped 0.
+    """FF_EXIT_LEG_SERVED - D3, the isolation timeout on a carried victim. Shipped 1
+    (never without MODE >= 1: see common_fixed_variables.py).
 
       0  today: a carried victim is never "served", so its geographic-isolation
          streak runs whenever no other live, on-grid, non-carrying unit can reach it
@@ -1302,7 +1306,7 @@ def ff_exit_leg_served() -> int:
     victims) is designed in outputs/carryleg_part1.txt 4.3 and deliberately NOT built
     (maintainer D-1): an exact 2 is junk here, and the round's tooling refuses it.
     """
-    value = _exact_integer(getattr(cfv, "FF_EXIT_LEG_SERVED", 0))
+    value = _exact_integer(getattr(cfv, "FF_EXIT_LEG_SERVED", 1))
     if value in (0, 1):
         return value
     return EXIT_LEG_SERVED_JUNK

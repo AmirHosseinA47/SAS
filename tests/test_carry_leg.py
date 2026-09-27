@@ -320,15 +320,17 @@ class _NoRNG:
 # getattr default in the agents.py accessor (it IS the shipped value, so a missing
 # attribute agrees with the file), the junk mapping (while a switch ships 0, junk arms
 # a named non-zero value; after the flip it takes the shipped value), and the pins in
-# test_every_switch_ships_zero_and_a_missing_attribute_is_the_shipped_zero below.
+# test_every_switch_ships_its_gated_value_and_a_missing_attribute_is_the_shipped_value below.
+# FLIPPED (carryleg_prereg.txt section 10): MODE 2, HOLD 0, SERVED 1.
 
 _INF = float("inf")
 _NAN = float("nan")
 _MISSING = object()
 
 # (raw value, mode, hold, served). Only an exact integral zero disables; anything that is
-# not an exact 0/1/2 arms MODE at 1, anything but an exact 0 arms HOLD, and anything but
-# an exact 0/1 arms SERVED at 1 - including an exact 2 (rung 2 is not built, D-1).
+# not an exact 0/1/2 takes MODE's shipped 2, anything but an exact 0 arms HOLD, and anything
+# but an exact 0/1 takes SERVED's shipped 1 - including an exact 2 (rung 2 is not built,
+# D-1). A missing attribute is the shipped value: MODE 2, HOLD False, SERVED 1.
 _MATRIX = [
     (0, 0, False, 0),
     (0.0, 0, False, 0),
@@ -342,21 +344,21 @@ _MATRIX = [
     (" 2 ", 2, True, 1),
     (Decimal("2"), 2, True, 1),
     (Fraction(4, 2), 2, True, 1),
-    (0.5, 1, True, 1),
-    ("0.5", 1, True, 1),
-    ("2.0", 1, True, 1),
-    (-1, 1, True, 1),
-    (3, 1, True, 1),
-    (None, 1, True, 1),
-    ("", 1, True, 1),
-    ("off", 1, True, 1),
-    (_INF, 1, True, 1),
-    (-_INF, 1, True, 1),
-    (_NAN, 1, True, 1),
-    (Decimal("0.5"), 1, True, 1),
-    (Fraction(1, 2), 1, True, 1),
-    ([], 1, True, 1),
-    (_MISSING, 0, False, 0),
+    (0.5, 2, True, 1),
+    ("0.5", 2, True, 1),
+    ("2.0", 2, True, 1),
+    (-1, 2, True, 1),
+    (3, 2, True, 1),
+    (None, 2, True, 1),
+    ("", 2, True, 1),
+    ("off", 2, True, 1),
+    (_INF, 2, True, 1),
+    (-_INF, 2, True, 1),
+    (_NAN, 2, True, 1),
+    (Decimal("0.5"), 2, True, 1),
+    (Fraction(1, 2), 2, True, 1),
+    ([], 2, True, 1),
+    (_MISSING, 2, False, 1),
 ]
 
 
@@ -386,18 +388,19 @@ def test_accessor_edge_matrix(monkeypatch, raw, mode, hold, served) -> None:
         monkeypatch.undo()
 
 
-def test_every_switch_ships_zero_and_a_missing_attribute_is_the_shipped_zero(monkeypatch) -> None:
-    """SHIPPED: all three 0 until the round's gate is passed. See the flip note above."""
-    assert cfv.FF_EXIT_LEG_MODE == 0
+def test_every_switch_ships_its_gated_value_and_a_missing_attribute_is_the_shipped_value(monkeypatch) -> None:
+    """SHIPPED after the round's gate (carryleg_prereg.txt section 10): MODE 2, HOLD 0,
+    SERVED 1; junk MODE / SERVED take the shipped value. See the flip note above."""
+    assert cfv.FF_EXIT_LEG_MODE == 2
     assert cfv.FF_EXIT_LEG_HOLD == 0
-    assert cfv.FF_EXIT_LEG_SERVED == 0
-    assert agents.EXIT_LEG_MODE_JUNK == 1
+    assert cfv.FF_EXIT_LEG_SERVED == 1
+    assert agents.EXIT_LEG_MODE_JUNK == 2
     assert agents.EXIT_LEG_SERVED_JUNK == 1
     for name in _SWITCHES:
         monkeypatch.delattr(cfv, name, raising=False)
-    assert agents.ff_exit_leg_mode() == 0
+    assert agents.ff_exit_leg_mode() == 2
     assert agents.ff_exit_leg_hold() is False
-    assert agents.ff_exit_leg_served() == 0
+    assert agents.ff_exit_leg_served() == 1
 
 
 def test_switches_are_read_at_call_time_through_cfv_only(monkeypatch) -> None:

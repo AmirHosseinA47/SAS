@@ -297,14 +297,19 @@ FF_FIREFIGHT_MISSION_GATE = 0
 #   FF_EXIT_LEG_SERVED  D3, the isolation timeout. 1 = a victim in a live carrier's
 #                       custody counts as served, so it cannot be written off as
 #                       geographically isolated while it is being carried out.
-# All three ship 0 until the round's gate is passed, and at 0 the model is
-# value-identical to 6160438. ONLY AN EXACT INTEGRAL ZERO DISABLES: a missing value
-# takes the shipped 0, and junk ARMS (agents.py ff_exit_leg_* documents the mapping).
+# SHIPPED after the round's gate (outputs/carryleg_report.txt; carryleg_prereg.txt
+# section 10): MODE 2 and SERVED 1; HOLD stays 0 (routed to the maintainer). With all three
+# at an exact 0 the model is value-identical to 6160438 - the kill switch (flip gate clFZ).
+# ONLY AN EXACT INTEGRAL ZERO DISABLES: a missing value takes the shipped value, and junk
+# arms (MODE and SERVED: their shipped value; HOLD: True) - agents.py ff_exit_leg_*.
+# NEVER ENABLE FF_EXIT_LEG_SERVED WITHOUT FF_EXIT_LEG_MODE >= 1: at MODE 0 the isolation
+# write-off is a carrier's only way out of the D1 edge livelock, and SERVED removes it
+# (the D-9 probe, stock east/half/1433805104: the carrier dies with its victim at 288).
 # Read at call time through agents.ff_exit_leg_*(), never through the star import, so
 # an apply_scenario_config override is visible. Deterministic: no RNG is drawn.
-FF_EXIT_LEG_MODE = 0
+FF_EXIT_LEG_MODE = 2
 FF_EXIT_LEG_HOLD = 0
-FF_EXIT_LEG_SERVED = 0
+FF_EXIT_LEG_SERVED = 1
 
 # Base station (feature 3). A set of 5x5 depots - shipped as two, NW and SE (see
 # BASE_STATION_DEPOTS) - that the UAV team and the firefighters launch from, that a
