@@ -70,8 +70,17 @@ def fate(d, vid):
 def totals(d):
     ev = d.get("eval") or {}
     return "rescued %s dead %s ff_deaths %s never_detected %s terminal %s" % (
-        ev.get("rescued"), ev.get("dead"), ev.get("ff_deaths"), ev.get("never_detected"),
+        ev.get("rescued"), ev.get("dead"), ev.get("firefighter_deaths"), ev.get("never_detected"),
         d.get("terminal_step"))
+
+
+def carrier_fate(d, ff):
+    """(first step the unit's row shows dead, or None) - the last unit standing's own fate."""
+    for i, row in enumerate(d.get("ff_steps") or []):
+        for r in row:
+            if r[0] == ff and r[5]:
+                return i + 1
+    return None
 
 
 def kill_of(sc):
@@ -151,6 +160,8 @@ def main():
                 f0, f1 = fate(d0, m["victim"]), fate(d1, m["victim"])
                 say("  marked victim %s: S0 final %s completion %s | S1 final %s completion %s" % (
                     m["victim"], f0[0], f0[1], f1[0], f1[1]))
+                say("  its carrier %s (the last unit standing): dead at S0 %s | S1 %s" % (
+                    m["ff"], carrier_fate(d0, m["ff"]), carrier_fate(d1, m["ff"])))
             say("  totals S0: %s" % totals(d0))
             say("  totals S1: %s" % totals(d1))
             if not marks0:
