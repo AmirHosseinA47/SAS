@@ -238,6 +238,13 @@ def _uav_assignments_from_params(params: dict[str, Any]) -> dict[str, str]:
     assigned = params.get("assigned_role")
     if isinstance(assigned, dict):
         return _string_dict(assigned)
+    # A role option that names its UAV (the global planner's switch options,
+    # outputs/planner_part1.txt 5.1): the role is a STRING - a dict would crash the
+    # constraint filter's set tests - and target_uav_id says whose. A bare string with no
+    # target still gives {} as before.
+    target = params.get("target_uav_id")
+    if isinstance(assigned, str) and assigned.strip() and target is not None and str(target).strip():
+        return {str(target).strip(): assigned.strip()}
     return {}
 
 
