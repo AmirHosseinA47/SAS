@@ -42,7 +42,16 @@ class GlobalExecutor:
             managed_states = getattr(model, "managed_uav_states", None)
 
             confidence = float(decision.confidence_score or 0.8)
+            # Role-change hygiene (outputs/planner_part1.txt 6.2 S3 / 6.3): a model that
+            # offers on_uav_role_changed is told of every REAL change, after both role
+            # writes. The old role is read with the model's own pure reader BEFORE them.
+            # A model without the hook (every test fake) runs exactly as before.
+            role_hook = getattr(model, "on_uav_role_changed", None)
+            role_reader = getattr(model, "_uav_assignment_role", None)
             for uav_id, role in decision.uav_assignments.items():
+                old_role = None
+                if callable(role_hook) and callable(role_reader):
+                    old_role = role_reader(uav_id)
                 if resource_model is not None:
                     update_role = getattr(resource_model, "update_role", None)
                     if callable(update_role):
@@ -58,6 +67,12 @@ class GlobalExecutor:
                     if hasattr(state, "role"):
                         state.role = role
                 applied_roles[uav_id] = role
+                if (
+                    callable(role_hook)
+                    and old_role is not None
+                    and str(old_role).strip().lower() != str(role).strip().lower()
+                ):
+                    role_hook(uav_id, old_role, role)
 
             for uav_id, task in decision.task_assignments.items():
                 if isinstance(managed_states, dict) and uav_id in managed_states:

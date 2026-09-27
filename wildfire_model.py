@@ -420,6 +420,37 @@ class WildFireModel(mesa.Model):
                     return str(role).strip().lower()
         return None
 
+    def on_uav_role_changed(self, uav_id: str, old_role: str, new_role: str) -> None:
+        """Role-change hygiene for the global planner (outputs/planner_part1.txt 6.3; D-5).
+
+        Called by the GlobalExecutor after it wrote a REAL role change for `uav_id`. Inert
+        unless GLOBAL_PLANNER_MODE is 1 (defence in depth: at 0 no option can reach the
+        executor with a role). Resets the SWITCHED UAV's per-UAV state only, so it starts
+        its new role like a UAV that held it from launch:
+          - its sector -> the full-grid bounds every UAV gets at init (a new tracker's
+            flank is assigned by the next _update_fire_tracker_sector_assignments);
+          - its wind-aware search target state and its lawnmower sweep cursor -> removed
+            (their readers re-create a default entry).
+        Deliberately NOT reset: _victim_escape_memory (still valid for the airframe), the
+        depot home, and the incumbents' held targets (D-8; measured instead).
+        """
+        _ = old_role, new_role
+        if agents.global_planner_mode() == 0:
+            return
+        uid = str(uav_id)
+        sectors = getattr(self, "_uav_sector_assignments", None)
+        if isinstance(sectors, dict):
+            sectors[uid] = {
+                "x_min": 0,
+                "x_max": HEIGHT - 1,
+                "y_min": 0,
+                "y_max": WIDTH - 1,
+            }
+        for name in ("_wind_search_target_state", "_victim_sweep_state"):
+            store = getattr(self, name, None)
+            if isinstance(store, dict):
+                store.pop(uid, None)
+
     def _init_uav_sector_assignments(self) -> None:
         """Assign each UAV a deterministic exploration sector on the grid."""
         self._uav_sector_assignments = {}
