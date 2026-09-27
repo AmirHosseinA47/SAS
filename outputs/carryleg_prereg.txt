@@ -40,6 +40,9 @@ outputs/_cl_tooling_spec.txt.
       - the verdict and ship rule;
       - the validator check (9) and the owed follow-on check.
     Nothing in sections 1-8 changed.
+  2026-09-27  SECTION 10 ADDED (the ship decision and the flip gate), after stage 3
+              and the probe, and before the flip commit and any flip-gate run.
+              It applies sections 5 and 9 as written.
 
 1. THE MAINTAINER'S ANSWERS (2026-09-26), AND HOW EACH IS APPLIED
   D-1  SERVED rung 2 NOT built. FF_EXIT_LEG_SERVED is 0/1; an exact 2 maps to 1 in
@@ -391,3 +394,66 @@ outputs/_cl_tooling_spec.txt.
         DISCLOSED: with zero differences, these runs follow the SERVED-0 probe
         trajectories, and their one-line outcome summaries were seen before the
         probe wave. This section's rules were written before them.
+
+10. THE SHIP DECISION AND THE FLIP GATE (added 2026-09-27 after stage 3 and the
+    probe, BEFORE the flip commit and before any flip-gate run)
+  The decision applies section 5 SHIPPING and section 9 as written. Nothing in them
+  is re-decided here.
+  MODE 2 SHIPS.
+    - clE2 + clKE2 pass G1-G5 on every set, and are ENGAGED in 31/160 runs.
+  SERVED 1 SHIPS, on the D-9 probe.
+    - The probe ACTED CORRECTLY on 3/3 kept tuples.
+    - It is inert elsewhere: clSN == clC on 80/80 (UNTRIGGERED IN PART 3), and
+      clA == clE2 on 80/80, clKA == clKE2 on 80/80.
+    - Reported, not gated (section 9): the probe's fates are +2 rescued and +1
+      firefighter death. The death is a D1 x SERVED interaction at MODE 0: the
+      isolation write-off was that carrier's only way out of the edge livelock.
+      SERVED MUST NEVER BE ENABLED WITHOUT MODE >= 1. This goes to the maintainer.
+      Under MODE 2 SERVED changed nothing measured, so reverting it is its one
+      literal.
+  HOLD DOES NOT SHIP; it stays 0.
+    - G2 is TO-MAINTAINER (3 LONGER-UNFINISHED legs).
+    - Its pre-registered U30 1291443119 conversion did not happen.
+  THE COMBINATION that ships is MODE 2 + SERVED 1. It is measured by clA / clKA /
+  clGA, where HOLD is provably inert:
+    - 0 holds, 0 hold starts, 0 enclosures, 0 casualty-guard firings;
+    - clA == clE2 on 80/80, clKA == clKE2 on 80/80, clGA == clGE2 on 18/18
+      rbgate evals.
+    So no clA2 re-run is needed. clFD tests the combination directly on the
+    flipped tree.
+  THE FLIP COMMIT changes exactly:
+    common_fixed_variables.py
+      FF_EXIT_LEG_MODE 0 -> 2
+      FF_EXIT_LEG_SERVED 0 -> 1
+    agents.py
+      EXIT_LEG_MODE_JUNK 1 -> 2 (D-2: junk takes the shipped value)
+      ff_exit_leg_mode missing-value default 0 -> 2
+      ff_exit_leg_served missing-value default 0 -> 1
+      EXIT_LEG_SERVED_JUNK stays 1 (it is already the shipped value)
+      HOLD is untouched
+    tests/test_carry_leg.py, the pins only
+      _MATRIX: the junk MODE column 1 -> 2, and the missing row -> (2, False, 1)
+      the ships-zero pin rewritten to the shipped values
+    Comments and docstrings as needed. No outcome test is edited.
+  G7, run on the flip commit; ANY difference -> STOP:
+    (0) AST behaviour diff, 108a0ad vs the flip commit, docstrings blanked:
+          common_fixed_variables.py  exactly (0, 2), (0, 1)
+          agents.py                  exactly (1, 2), (0, 2), (0, 1)
+          every other source file    nothing
+    (1) clFZ: C13, stock, 360, with --set FF_EXIT_LEG_MODE=0
+        --set FF_EXIT_LEG_HOLD=0 --set FF_EXIT_LEG_SERVED=0.
+          Must == clB 13/13 on every field except {tag, repo, wall_s, params,
+          extra_params}, stdout and the sidecar hashes included.
+    (2) clFD: C13 + U30, stock, 360, no --set.
+          Must == the recorded clA runs 43/43 on the same fields (clA == clE2
+          there).
+    (3) clFJ: C13, stock, 360, with --set FF_EXIT_LEG_MODE=0.5
+        --set FF_EXIT_LEG_SERVED=0.5.
+          Junk takes the shipped value, so it must == clA 13/13 on the same
+          fields.
+          HOLD is not junked: it ships 0, and junk arms it by design (D-2).
+    (4) G6b, _cl_pytest.sh VARIANT=post: failed == the baseline 8, passed 875,
+        0 errors.
+    (5) The runner register: every queue or shell line in the repo that relies
+        on the FF_EXIT_LEG_* defaults.
+  Flip-gate tags clFZ / clFD / clFJ checked unused, 2026-09-27.

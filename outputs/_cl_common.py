@@ -131,6 +131,9 @@ DETAIL_SERIES = ("fire_digests", "ff_steps", "ff_bind_steps", "victim_steps", "u
 # every line of the arm; "probe" arms (spec L) carry CLP_KILL_AT + CLP_KILL_UNIT and
 # SERVED 0 or 1 (value per tag).
 _OFF = {"FF_FIREFIGHT_EXTINGUISH": 0, "FF_FIREFIGHT_FIREBREAK": 0}
+# the values the flip commit ships (carryleg_prereg.txt section 10): MODE 2, HOLD 0, SERVED 1,
+# as the sidecar records the accessors (mode int, hold bool, served int)
+SHIPPED_SWITCHES = {"mode": 2, "hold": False, "served": 1}
 ALL3 = {MODE: 2, HOLD: 1, SERVED: 1}
 ARMS = {
     "clB":   dict(instrument="stock", repo=BASE_REPO, switches={}, kind="control"),
@@ -153,6 +156,15 @@ ARMS = {
     "clPS1": dict(instrument="stock", repo=MAIN_REPO, switches={SERVED: 1}, kind="probe"),
     "clKPS0": dict(instrument="crn", repo=MAIN_REPO, switches={}, kind="probe"),
     "clKPS1": dict(instrument="crn", repo=MAIN_REPO, switches={SERVED: 1}, kind="probe"),
+    # THE FLIP GATE (carryleg_prereg.txt section 10, G7), run on the flipped tree only.
+    # "switches" is the exact --set dict of the line (clFJ: junk floats), "expect" the
+    # sidecar switches the run must report (the shipped values where not explicitly 0).
+    "clFZ": dict(instrument="stock", repo=MAIN_REPO, switches={MODE: 0, HOLD: 0, SERVED: 0},
+                 kind="flip", expect={"mode": 0, "hold": False, "served": 0}),
+    "clFD": dict(instrument="stock", repo=MAIN_REPO, switches={}, kind="flip",
+                 expect=dict(SHIPPED_SWITCHES)),
+    "clFJ": dict(instrument="stock", repo=MAIN_REPO, switches={MODE: 0.5, SERVED: 0.5},
+                 kind="flip", expect=dict(SHIPPED_SWITCHES)),
 }
 # rb shard tag prefixes -> the switches of the arm they gate (tag = prefix + a|b|c|s)
 RB_ARMS = {"clGC": {}, "clGE2": {MODE: 2}, "clGH": {HOLD: 1}, "clGSN": {SERVED: 1},
@@ -468,6 +480,8 @@ def check_arm_line(line, combos=None):
     on the first line of a combo arm (filled in; every later line must repeat them)."""
     why = []
     s = dict(line["sets"])
+    if line["kind"] == "ff" and ARMS.get(line["tag"], {}).get("kind") == "flip":
+        return _flip_check(line)
     if s.get(SERVED) == 2:
         why.append("FF_EXIT_LEG_SERVED=2 (rung 2 not built, maintainer D-1)")
     for k in SWITCH_KEYS:
@@ -537,6 +551,26 @@ def check_arm_line(line, combos=None):
     return why
 
 
+def _flip_check(line):
+    """A flip-gate line (clFZ / clFD / clFJ): the common flags, stock, the main repo, and
+    EXACTLY the arm's --set switch dict (typed: clFJ carries junk floats by design)."""
+    why, s = [], dict(line["sets"])
+    arm = ARMS[line["tag"]]
+    if line["steps"] != H:
+        why.append("steps %d != %d" % (line["steps"], H))
+    if not line["uav_actions"]:
+        why.append("--uav-actions missing")
+    if s.pop("BATCH_SIZE", None) != 360 or type(line["sets"].get("BATCH_SIZE")) is not int:
+        why.append("--set BATCH_SIZE=360 missing")
+    if any(k.startswith(EXEMPT_PREFIXES) for k in s):
+        why.append("FM2P_/CLP_ key on a flip-gate line: %s" % sorted(k for k in s if k.startswith(EXEMPT_PREFIXES)))
+    if norm_repo(line["repo"]) != norm_repo(arm["repo"]):
+        why.append("repo %r != the arm's %s" % (line["repo"], arm["repo"]))
+    if not typed_equal(s, arm["switches"]):
+        why.append("switch sets %r != the flip arm's %r" % (s, arm["switches"]))
+    return why
+
+
 def _combo_check(tag, s, combos, why):
     if not s or any(k not in ALL3 or s[k] != ALL3[k] for k in s) or len(s) < 2:
         why.append("combination arm %s sets %r: must be >= 2 of %r" % (tag, s, ALL3))
@@ -551,6 +585,9 @@ def _combo_check(tag, s, combos, why):
 def expected_switches(line):
     """The sidecar 'switches' a line must produce: mode int, hold bool, served int
     (the accessors' return types), 0 where not set."""
+    arm = ARMS.get(line.get("tag"), {})
+    if "expect" in arm:            # the flip gate: the shipped values, not "0 where not set"
+        return dict(arm["expect"])
     s = line["sets"]
     return {"mode": s.get(MODE, 0), "hold": s.get(HOLD, 0) != 0, "served": s.get(SERVED, 0)}
 

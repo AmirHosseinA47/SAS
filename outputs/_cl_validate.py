@@ -36,6 +36,12 @@ for kind ff only, adds these checks AFTER its check returns VALID
       resolved exactly its one kill (a CLP line run through _cl_obs_stock.py /
       _cl_obs_crn.py kills nobody and exits 0 - it must never read VALID); a line
       without them must carry no probe_ counter or event. Reason prefix "PROBE: ".
+  CL flip gate (2026-09-27, carryleg_prereg.txt section 10, before the flip commit):
+  (3') FLIP_EXPECT: on the flipped tree a switch the line does not set takes the SHIPPED
+      value, and clFJ sets junk on purpose, so for clFD / clFJ check (3) compares the
+      sidecar switches with FLIP_EXPECT (MODE 2, HOLD False, SERVED 1; exact types) and
+      skips the line-value test (the lines' exact --set dicts are _cl_common.ARMS', checked
+      by the flip-gate queue generator and the analyzer). clFZ keeps the plain rule.
   Every queue tag must be a carrying-leg tag (^cl[A-Za-z0-9]+$), else SystemExit: a
   run of an earlier round has no sidecar and would read INVALID, and the pool moves
   INVALID runs aside - this validator must never be pointed at another round's queue.
@@ -75,6 +81,9 @@ import _dcd4rb_validate as rbv  # noqa: E402
 import _cl_probe  # noqa: E402  (check (9): sidecar_problem is pure; importing runs nothing)
 
 BASE_WORKTREE = os.path.abspath("E:/Projects/SAS_wt/base6160438")
+# check (3'): flip-gate tags whose sidecar must report the SHIPPED switches (prereg section 10)
+FLIP_EXPECT = {"clFD": {"mode": 2, "hold": False, "served": 1},
+               "clFJ": {"mode": 2, "hold": False, "served": 1}}
 TAG_RE = re.compile(r"^cl[A-Za-z0-9]+$")
 # sidecar name -> (cfv key, allowed exact-int values on a queue line)
 SWITCHES = (("mode", "FF_EXIT_LEG_MODE", (0, 1, 2)),
@@ -256,7 +265,16 @@ def cl_check(run):
     if not isinstance(sw, dict) or set(sw) != {name for name, _k, _a in SWITCHES}:
         return "INVALID", "sidecar switches %r is not {mode, hold, served}" % (sw,)
     on_base = want_repo == BASE_WORKTREE
-    for name, key, allowed in SWITCHES:
+    flip = FLIP_EXPECT.get(run["tag"])
+    if flip is not None:   # (3') the flip gate
+        if on_base:
+            return "INVALID", "flip-gate tag %s on the 6160438 worktree" % run["tag"]
+        for name, _key, _allowed in SWITCHES:
+            got, want = sw[name], flip[name]
+            if type(got) is not type(want) or got != want:
+                return "INVALID", "sidecar switch %s=%r, the flipped tree ships %r (%s)" % (
+                    name, got, want, run["tag"])
+    for name, key, allowed in (() if flip is not None else SWITCHES):
         v = run["sets"].get(key, 0)
         if type(v) is not int or v not in allowed:
             return "INVALID", "queue sets %s=%r, not one of %s" % (key, v, allowed)
