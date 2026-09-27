@@ -32,6 +32,10 @@ SEED42 = frozenset((
     "test_unresolved_victim_coverage::test_seed42_scenario_a_all_victims_accounted_by_300",
 ))
 PASSED_ALL0 = 875
+# per suite tag: cl1 = the round's suites (875 = 783 + 92 new tests); cl2 = after the ruling-S2
+# enforcement commit (+72 tests: 48 MODE-0 x SERVED forms, 21 non-zero MODE forms, 1 model
+# level, +2 from the write-off pin parametrized over MODE 0 / 1)
+PASSED_BY_TAG = {"cl1": 875, "cl2": 947}
 
 
 def read(xml):
@@ -62,9 +66,15 @@ def judge(xml):
     text = open(log, encoding="utf-8", errors="replace").read() if os.path.exists(log) else ""
     if "CL_PYTEST_COMPLETE" not in text:
         bad.append("log %s has no CL_PYTEST_COMPLETE line" % os.path.basename(log))
+    start = re.search(r"^CL_PYTEST START .*$", text, re.M)
+    if not start or " dirty_tracked=0 " not in start.group(0) + " ":
+        bad.append("the suite did not run on a clean committed tree (START line: %r)" % (
+            start.group(0) if start else None))
+    elif start:
+        notes.append(start.group(0).split(" start=")[0])
     failed, errors, skipped, total = read(xml)
     want_failed = set(BASELINE) | ({PIN} if variant == "sim" else set())
-    want_passed = PASSED_ALL0 - (1 if variant == "sim" else 0)
+    want_passed = PASSED_BY_TAG.get(m.group(1), PASSED_ALL0) - (1 if variant == "sim" else 0)
     passed = total - len(failed | errors) - skipped
     if variant == "sim" and "CLSIM END CHECK OK" not in text:
         bad.append("sim log without CLSIM END CHECK OK")

@@ -23,7 +23,10 @@ Written tmp + os.replace, UTF-8, LF; line count and sha256 printed.
 
 QUARANTINE: outputs/_firemech_rewound_20260914/ is never read, listed or traversed.
 
-usage: .venv/Scripts/python.exe -B outputs/_cl_flip_queue.py
+usage: .venv/Scripts/python.exe -B outputs/_cl_flip_queue.py [--round 2]
+  --round 2 (carryleg_prereg.txt section 11, ruling S2): _cl_flip2_queue.txt, 82 lines - clF2Z C13
+  (explicit 0 x3), clF2M C13 (MODE=0 only), clF2D C13+U30 (no --set), clF2J C13 (junk MODE /
+  SERVED); refuses unless agents.ff_exit_leg_served carries the MODE-0 guard.
 """
 import hashlib
 import os
@@ -47,6 +50,15 @@ ARMS = (("clFZ", ("C13",), " --set FF_EXIT_LEG_MODE=0 --set FF_EXIT_LEG_HOLD=0 -
         ("clFD", ("C13", "U30"), ""),
         ("clFJ", ("C13",), " --set FF_EXIT_LEG_MODE=0.5 --set FF_EXIT_LEG_SERVED=0.5"))
 EXPECTED_LINES = 69
+# ROUND 2 (--round 2): the flip gate re-run on the ruling-S2 enforcement commit.
+#   clF2Z C13 explicit 0 x3 (== clB) | clF2M C13 MODE=0 ONLY (SERVED ships 1, enforced 0: == clB)
+#   clF2D C13+U30 no --set (== clA)  | clF2J C13 junk MODE/SERVED (== clA)
+ROUND2 = dict(fname="_cl_flip2_queue.txt", expected=82, arms=(
+    ("clF2Z", ("C13",), " --set FF_EXIT_LEG_MODE=0 --set FF_EXIT_LEG_HOLD=0 --set FF_EXIT_LEG_SERVED=0"),
+    ("clF2M", ("C13",), " --set FF_EXIT_LEG_MODE=0"),
+    ("clF2D", ("C13", "U30"), ""),
+    ("clF2J", ("C13",), " --set FF_EXIT_LEG_MODE=0.5 --set FF_EXIT_LEG_SERVED=0.5")))
+ENFORCE_MARK = "    if ff_exit_leg_mode() == 0:"   # agents.ff_exit_leg_served's enforcement line
 
 
 def stop(msg):
@@ -79,6 +91,16 @@ def tracked():
 
 
 def main():
+    global FNAME, ARMS, EXPECTED_LINES
+    if sys.argv[1:] == ["--round", "2"]:
+        FNAME, ARMS, EXPECTED_LINES = ROUND2["fname"], ROUND2["arms"], ROUND2["expected"]
+        with open(os.path.join(ROOT, "agents.py"), "rb") as f:
+            src = f.read().decode("utf-8", "replace").replace("\r", "")
+        body = src.split("def ff_exit_leg_served()", 1)[-1].split("\ndef ", 1)[0]
+        if ENFORCE_MARK not in body:
+            stop("round 2 needs the ruling-S2 enforcement in agents.ff_exit_leg_served (not found)")
+    elif sys.argv[1:]:
+        stop("usage: _cl_flip_queue.py [--round 2]")
     checked = _cl_seedcheck.run_checks()
     sets = CC.seed_sets(checked)
     flipped()

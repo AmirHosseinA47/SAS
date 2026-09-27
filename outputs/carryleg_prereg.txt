@@ -43,6 +43,9 @@ outputs/_cl_tooling_spec.txt.
   2026-09-27  SECTION 10 ADDED (the ship decision and the flip gate), after stage 3
               and the probe, and before the flip commit and any flip-gate run.
               It applies sections 5 and 9 as written.
+  2026-09-27  SECTION 11 ADDED: the maintainer's rulings S1-S3, the S2 enforcement, and
+              its round-2 gate. Written before the enforcement commit and before any
+              round-2 run; revised once after the review workflow, still before both.
 
 1. THE MAINTAINER'S ANSWERS (2026-09-26), AND HOW EACH IS APPLIED
   D-1  SERVED rung 2 NOT built. FF_EXIT_LEG_SERVED is 0/1; an exact 2 maps to 1 in
@@ -457,3 +460,108 @@ outputs/_cl_tooling_spec.txt.
     (5) The runner register: every queue or shell line in the repo that relies
         on the FF_EXIT_LEG_* defaults.
   Flip-gate tags clFZ / clFD / clFJ checked unused, 2026-09-27.
+
+11. THE MAINTAINER'S RULINGS ON THE REPORT'S STOP ITEMS (2026-09-27), AND THE S2
+    ENFORCEMENT GATE (added before the enforcement commit and before any round-2 run)
+  S1  HOLD stays 0. It is recorded as INERT UNDER THE SHIPPED CONFIGURATION:
+        - identical on all 160 runs with MODE 2 on;
+        - its one predicted conversion did not happen.
+      Its three LONGER-UNFINISHED legs are moot, since it does not ship.
+  S2  SERVED 1 is kept, but the dependency is ENFORCED IN CODE, not only a comment:
+        - SERVED behaves as 0 whenever MODE is 0, with the exact-zero rule as usual;
+        - a test asserts it;
+        - the value-identity check is re-run on the flip commit;
+        - the comment stays, as the reason.
+      Implementation: agents.ff_exit_leg_served() returns 0 when ff_exit_leg_mode()
+      == 0. MODE is 0 only on an exact integral zero, so junk or missing MODE (-> 2)
+      never suppresses SERVED. The one model-side reader (wildfire_model.py,
+      _update_unreachable_victims) goes through this accessor.
+  S3  Agreed: the first shipped-configuration custody write-off counts for MODE 2.
+  TOOLING DEFECT for the cleanup round: the probe pools' "INCOMPLETE" status.
+      The pool's live-process check counts other pools' jobs as its own when they
+      share a tag prefix (here stage 3's rb shards). The over-broad match is made by
+      the CALLER, outputs/_cl_pool.sh snapshot(), which passes -TagPrefix "$TAGPFX"
+      (cl, shared by every pool of the round) and -RbLike to outputs/_dcd4rb_live.ps1.
+      Fix both files together. No result depends on it.
+  HEADLINE NUMBERS ARE PRE-MODE-2: every headline number measured before this merge
+  predates MODE 2 and is no longer current behaviour. That includes the ungated
+  firefighting cost, the firefighter deaths and the base-station tradeoff.
+  THE TESTS (revised after the review workflow wf_8814dca1-ad9, before any commit)
+    - Moved to SERVED at MODE 1 (the minimal MODE >= 1; it changes only rescue
+      completion, and none of these tests completes a rescue):
+        - the 7 SERVED tests that failed at MODE 0;
+        - 2 that would have passed VACUOUSLY at MODE 0 (dead/off-grid custody;
+          distances untouched). The latter gained a positive control: in_custody is
+          True on both passes at SERVED 1, absent at 0.
+    - The write-off pin is parametrized over (MODE, SERVED) in {0,1}^2. MODE 0 /
+      SERVED 0 (today's configuration) is pinned in full again, and MODE 0 / SERVED 1
+      must equal it.
+    - New:
+        - SERVED is 0 for every exact-zero MODE form in _MATRIX (6) x 8 SERVED forms
+          (set, junk, missing): 48;
+        - SERVED is not suppressed for every non-zero MODE form in _MATRIX (21);
+        - the model level (1): a lone carrier at MODE 0 with SERVED 1 is written off
+          at 30 exactly as at SERVED 0, and at MODE 1 it serves.
+    - tests/test_carry_leg.py: 164 passed (92 + 72).
+    - Mutations, via a monkeypatch plugin in scratch (no source edited), are all
+      killed:
+        - enforcement removed;
+        - over-broad (MODE 1 suppressed);
+        - custody counting dead / off-grid units;
+        - custody always empty.
+  THE ROUND-2 GATE, on the enforcement commit; any failure -> STOP:
+    (0') outputs/_cl_flip_ast.py --enforce 5e3e542 <enforcement commit>:
+           - changed paths within agents.py, common_fixed_variables.py,
+             tests/test_carry_leg.py, wildfire_model.py,
+             src_extension/planning/rescue_planner.py;
+           - the last three are comment-only and must be AST-identical;
+           - agents.py AST-identical outside ff_exit_leg_served;
+           - inside it, the body is EXACTLY the base body with one leading statement
+             added, `if ff_exit_leg_mode() == 0: return 0`, and the same signature;
+           - every other frozen file identical.
+         Negative control: --enforce 108a0ad 5e3e542 FAILS, as it must.
+         Dry run on the uncommitted tree: PASS.
+    (1)  clF2Z, C13, explicit MODE=0 HOLD=0 SERVED=0: == clB (6160438) 13/13.
+    (1m) clF2M, C13, --set FF_EXIT_LEG_MODE=0 ONLY (SERVED left at its shipped 1):
+         == clB 13/13. MODE 0 alone is still the full kill switch on the enforced tree.
+         The value identity ALONE cannot tell an enforced tree from an unenforced one on
+         C13: MODE 0 + SERVED 1 without the enforcement already equals clB there
+         (clSN == clB 13/13), while its sidecars counted custody_calls 360 and
+         in_custody_calls 52. What discriminates:
+           - the sidecar switch "served" == 0 (checked by the validator and RunIndex);
+           - AND, behaviourally, every SERVED counter is 0 on every clF2M and clF2Z run:
+             custody_calls, custody_victim_steps, in_custody_calls,
+             served_by_custody_only, served_by_custody_only_not_geo
+             (outputs/_cl_flipgate.py --round 2).
+    (2)  clF2D, C13 + U30, no --set: == clA 43/43.
+    (3)  clF2J, C13, junk MODE / SERVED: == clA 13/13.
+         Field rule as section 10: every field except {tag, repo, wall_s, params,
+         extra_params}, stdout and the sidecar hashes included.
+         Queue outputs/_cl_flip2_queue.txt (82 lines), written by
+         outputs/_cl_flip_queue.py --round 2 on the enforcement commit.
+    (4)  G6b again (_cl_pytest.sh VARIANT=post, CLTAG cl2): failed == the baseline 8,
+         passed 947 (875 + 72), 0 errors, on a clean committed tree (the START line's
+         dirty_tracked=0, checked by outputs/_cl_g6.py).
+    Tags clF2Z / clF2M / clF2D / clF2J and suite tag cl2 checked unused, 2026-09-27.
+  REVIEW: workflow wf_8814dca1-ad9, 4 lenses + skeptics. No defect in the enforcement
+  itself. Every verified gap is fixed above: the (1m) wording and its counters; the
+  test coverage and the positive control; the MODE-0 write-off pin; the precise
+  in-function AST check; the G6 clean-tree check; the register; the comments; the
+  report / merge-notes order.
+  RECORDS
+    - Runs that measured SERVED at MODE 0 (clSN, clGSN*, clPS1, clKPS1) can be
+      reproduced only on a checkout <= 52da783: at HEAD, MODE unset is 2, and MODE=0
+      forces SERVED off. outputs/carryleg_flip_register.txt section E lists them.
+    - Stale comments are updated, comment-only: cfv (HOLD per S1), wildfire_model.py
+      custody, rescue_planner.py in_custody.
+    - The sim plugin's expected accessors know the enforcement.
+  ORDER
+    (i)   commit the round-2 tooling + this section;
+    (ii)  the enforcement commit (source + tests);
+    (iii) the round-2 gate on (ii);
+    (iv)  one commit with the report updated for S1-S3 plus the round-2 result, and
+          outputs/carryleg_merge_notes.txt (the pre-MODE-2 caveat, also in that
+          commit's message - an --ff-only merge makes no merge commit);
+    (v)   merge carryleg into main --ff-only, tag carrying-leg-fixed (the
+          maintainer's message), push main and the tag, delete the branch, remove the
+          6160438 worktree (no .venv junction: checked first).

@@ -122,10 +122,12 @@ for _name, _value in EXPECTED_CFV.items():
 
 def _expected_accessors():
     """What agents.ff_exit_leg_*() must return for EXPECTED_CFV (every value here is an
-    exact integer inside the allowed range, so the accessor returns it directly)."""
-    return (EXPECTED_CFV["FF_EXIT_LEG_MODE"],
+    exact integer inside the allowed range, so the accessor returns it directly) - except
+    SERVED, which the accessor enforces to 0 whenever MODE is 0 (ruling S2, 2026-09-27)."""
+    mode = EXPECTED_CFV["FF_EXIT_LEG_MODE"]
+    return (mode,
             EXPECTED_CFV["FF_EXIT_LEG_HOLD"] != 0,
-            EXPECTED_CFV["FF_EXIT_LEG_SERVED"])
+            0 if mode == 0 else EXPECTED_CFV["FF_EXIT_LEG_SERVED"])
 
 
 def _snapshot(module, names):

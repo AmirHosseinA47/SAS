@@ -42,6 +42,9 @@ for kind ff only, adds these checks AFTER its check returns VALID
       sidecar switches with FLIP_EXPECT (MODE 2, HOLD False, SERVED 1; exact types) and
       skips the line-value test (the lines' exact --set dicts are _cl_common.ARMS', checked
       by the flip-gate queue generator and the analyzer). clFZ keeps the plain rule.
+      Round 2 (ruling S2, prereg section 11): clF2D / clF2J likewise; clF2Z / clF2M keep the
+      plain rule - their lines set MODE=0, and SERVED reads 0 there (enforced) even where the
+      line leaves it unset (clF2M).
   Every queue tag must be a carrying-leg tag (^cl[A-Za-z0-9]+$), else SystemExit: a
   run of an earlier round has no sidecar and would read INVALID, and the pool moves
   INVALID runs aside - this validator must never be pointed at another round's queue.
@@ -83,7 +86,11 @@ import _cl_probe  # noqa: E402  (check (9): sidecar_problem is pure; importing r
 BASE_WORKTREE = os.path.abspath("E:/Projects/SAS_wt/base6160438")
 # check (3'): flip-gate tags whose sidecar must report the SHIPPED switches (prereg section 10)
 FLIP_EXPECT = {"clFD": {"mode": 2, "hold": False, "served": 1},
-               "clFJ": {"mode": 2, "hold": False, "served": 1}}
+               "clFJ": {"mode": 2, "hold": False, "served": 1},
+               # round 2 (ruling S2 enforcement): clF2Z / clF2M keep the plain rule - their lines
+               # set MODE=0, so SERVED reads 0 (enforced) where the line leaves it unset
+               "clF2D": {"mode": 2, "hold": False, "served": 1},
+               "clF2J": {"mode": 2, "hold": False, "served": 1}}
 TAG_RE = re.compile(r"^cl[A-Za-z0-9]+$")
 # sidecar name -> (cfv key, allowed exact-int values on a queue line)
 SWITCHES = (("mode", "FF_EXIT_LEG_MODE", (0, 1, 2)),

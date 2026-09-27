@@ -165,6 +165,16 @@ ARMS = {
                  expect=dict(SHIPPED_SWITCHES)),
     "clFJ": dict(instrument="stock", repo=MAIN_REPO, switches={MODE: 0.5, SERVED: 0.5},
                  kind="flip", expect=dict(SHIPPED_SWITCHES)),
+    # ROUND 2 of the flip gate, on the S2 enforcement commit (maintainer ruling S2: SERVED is
+    # 0 whenever MODE is 0). clF2M sets ONLY MODE=0: SERVED ships 1 but must read 0 there.
+    "clF2Z": dict(instrument="stock", repo=MAIN_REPO, switches={MODE: 0, HOLD: 0, SERVED: 0},
+                  kind="flip", expect={"mode": 0, "hold": False, "served": 0}),
+    "clF2M": dict(instrument="stock", repo=MAIN_REPO, switches={MODE: 0},
+                  kind="flip", expect={"mode": 0, "hold": False, "served": 0}),
+    "clF2D": dict(instrument="stock", repo=MAIN_REPO, switches={}, kind="flip",
+                  expect=dict(SHIPPED_SWITCHES)),
+    "clF2J": dict(instrument="stock", repo=MAIN_REPO, switches={MODE: 0.5, SERVED: 0.5},
+                  kind="flip", expect=dict(SHIPPED_SWITCHES)),
 }
 # rb shard tag prefixes -> the switches of the arm they gate (tag = prefix + a|b|c|s)
 RB_ARMS = {"clGC": {}, "clGE2": {MODE: 2}, "clGH": {HOLD: 1}, "clGSN": {SERVED: 1},

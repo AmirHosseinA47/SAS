@@ -159,6 +159,27 @@ def main():
     say("  (the harnesses _ffr_harness.py / _fm2_probe_harness.py / _rblatch_campaign2.py pass the queue")
     say("   line's --set through; their meaning is the line's, section A)")
     say("")
+    # lines that measured SERVED at MODE 0 (SERVED set non-zero, MODE unset or 0)
+    pre_enf = collections.Counter()
+    for n in qfiles:
+        for ln in read(os.path.join(HERE, n)).split("\n"):
+            if ln.count("|") < 7 or ln.startswith("#"):
+                continue
+            extra = ln.split("|", 7)[7]
+            sv = re.search(r"--set\s+FF_EXIT_LEG_SERVED=(\S+)", extra)
+            md = re.search(r"--set\s+FF_EXIT_LEG_MODE=(\S+)", extra)
+            if sv and sv.group(1) not in ("0", "0.0", "False") and (md is None or md.group(1) in ("0", "0.0", "False")):
+                pre_enf[n] += 1
+    say("E. RUNS THAT MEASURED SERVED AT MODE 0 - REPRODUCIBLE ONLY BEFORE THE ENFORCEMENT")
+    say("  Ruling S2 (2026-09-27) enforces SERVED to 0 whenever MODE is 0 (agents.ff_exit_leg_served). A")
+    say("  line that set FF_EXIT_LEG_SERVED non-zero with MODE unset (pre-flip: 0) or 0 measured SERVED")
+    say("  at MODE 0; at HEAD no --set combination reproduces it (MODE unset -> 2 since the flip;")
+    say("  MODE=0 -> SERVED forced off). Reproduce such a run only on a checkout <= 52da783 (the D-9")
+    say("  probe ran at 108a0ad). Queue lines of that kind:")
+    for n in sorted(pre_enf):
+        say("  %-44s %4d" % (n, pre_enf[n]))
+    say("  (+ the rbgate shards clGSNa/b/c/s, whose SERVED=1 rides in the rb extra field: counted above)")
+    say("")
     say("WHAT TO DO BEFORE RE-RUNNING ANY SILENT-CHANGE LINE: add --set FF_EXIT_LEG_MODE=0")
     say("--set FF_EXIT_LEG_SERVED=0 to reproduce its recorded pre-flip meaning. The recorded runs")
     say("themselves are unaffected (they are files); only a re-run changes meaning.")
