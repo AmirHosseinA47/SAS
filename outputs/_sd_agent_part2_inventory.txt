@@ -1,0 +1,674 @@
+AGENT PART 2 - STATIC INVENTORY: "AN INPUT THAT NEVER MOVES A DECISION"
+E:\Projects\SAS, branch sysdebug, HEAD 5a6dea6. READ-ONLY. No simulation, no pytest, no edits.
+Written 2026-09-28.
+
+================================================================================
+HEADLINE (ranked by how much decision they silently remove; all static, each with a probe in section 9)
+================================================================================
+ H1 NEW  Constraint gate removes EVERY local_path_move_toward_fire_* option on EVERY step:
+         mgm:31 avoid_fire_entry defaults True and is never set False; path_constraint_flags marks every
+         move_toward_fire path_action enters_fire_zone (mission_goal_integration.py:66-67); cf:171-174 rejects.
+         The whole tracker flank/standoff OPTION family (lag:2206-2252, :3057-3178) never reaches a planner. (G3)
+ H2 NEW  The local generator reads ~20 inputs (local_uncertainty, belief_gain, negative_observations,
+         fire_belief, stale_regions, victim_confidence, ...) off LocalAnalysisResult.to_dict() and the 2-key
+         local_models dict - neither has them; only tests supply them. has_sensing_evidence is always False,
+         overlap_penalty always 0, belief targets never exist. (G1)
+ H3 NEW  Fire agents have no "burnt_status" (lag:3434): the generator's fire-cell set is belief-only. (G2)
+ H4 NEW  Victim-candidate logic is unreachable in BOTH the generator (lag:2112-2134) and the executor
+         (ux:923-1210): a victim is confirmed on first sighting (wm.py:1401-1407) and both readers treat
+         confirmed as handled. (1.C-4, E3)
+ H5 KNOWN-BY-DESIGN rule, NEW consequence  At VICTIM_SEARCHER_HAZARD_RETREAT_RANGE 99 the searcher gate
+         replaces the chosen direction with a hazard-only retreat whenever one exists (ux:2426-2439): every
+         upstream searcher target input is dominated on those steps. (E1)
+ H6 NEW  Every MAPE rescue decision is a tie at 0 won by the first option and executes as a no-op
+         (victim_id "", rx:94). (R4/O6)
+ H7 NEW  Every fail-safe option scores 0 and the fail-safe planner scores under a constant "normal" profile
+         (fsp:101/:110 read AnalysisSnapshot attrs that do not exist; safety_checker.py:72 discards current_mode);
+         selection is keyword + list order. (FS1, FS4)
+ H8 NEW  "hold" is not a hold (F6): SAFETY_FIRST safe_hold is ignored by searchers and turns trackers into
+         "keep previous heading", bypassing the fire standoff logic. (D4)
+ H9 NEW  horizon_type (scorer, ue:423) vs horizon_action (writer, lag:4466): the horizon term is a constant
+         +0.0510 on every local option. (L17)
+ H10 NEW Global fail_safe_mission options are generated and then excluded by the global planner's own
+         "fail_safe" marker (gmp:28-39, :148-153); no planner scores them. (M2)
+
+================================================================================
+0. METHOD, CONVENTIONS, CONFIG ASSUMED
+================================================================================
+Config assumed (common_fixed_variables.py): GLOBAL_PLANNER_MODE 0 (:331), BASE_STATION_MODE 3 (:568),
+BASE_STATION_RETURN_MECHANISM 2 (:569), BASE_STATION_DOCK_FIX 2 (:599), FF_EXIT_LEG_MODE 2 (:312),
+FF_FIREFIGHT_EXTINGUISH/FIREBREAK/ENGAGED_RETREAT_RANGE 1, MISSION_GATE 0 (:280-284),
+VICTIM_SEARCHER_HAZARD_RETREAT_RANGE 99 (:165), VICTIM_SEARCHER_HAZARD_GATE_BOUNDS_FIX 1 (:216).
+"ue" = src_extension/planning/utility_evaluation.py; "lag" = src_extension/adaptation/
+local_adaptation_generator.py; "gag" = global_adaptation_generator.py; "rag" = rescue_adaptation_generator.py;
+"fag" = failsafe_adaptation_generator.py; "lpp" = planning/local_uav_path_planner.py; "fsp" =
+planning/fail_safe_planner.py; "rp" = planning/rescue_planner.py; "gmp" = planning/global_mission_planner.py;
+"ux" = execution/uav_executor.py; "dd" = execution/decision_dispatcher.py; "rx" = execution/rescue_executor.py;
+"wm" = wildfire_model.py; "cf" = adaptation/constraint_filter.py; "mgm" = knowledge/mission_goal_model.py.
+Verdicts: LIVE / SUSPECT-DEFAULT (read with a default, no production writer / writer only in tests / key or
+location mismatch) / SUSPECT-INERT (present, possibly varying, provably cannot change the output: dominated,
+overwritten, filtered, tied, log-only) / KNOWN (already in the brief or planner_part1 1.4/1.5/5.x/12 or
+globalplanner_scope B1-B8). "NEW" = not in any of those lists as far as I can tell.
+Writer searches: unless stated, pattern (ERE) over the source scope
+  agents.py wildfire_model.py common_fixed_variables.py serve_dashboard.py evaluate_scenarios.py src_extension
+with --exclude-dir=_firemech_rewound_20260914 --include=*.py:
+  WRITER_RE(k) = ["']k["']\s*:  |  \[["']k["']\]\s*=[^=]  |  \bk\s*=[^=]  |  setattr\([^,]+,\s*["']k["']  |  self\.k\s*[:=]
+and the same (first three alternatives) over tests/. Every non-zero source hit was opened and classified
+(local variable, output-only dict, a different object) - "no production writer on the READ PATH" below
+means none of the hits writes into the object the reader reads.
+All claims are static readings; each SUSPECT carries the runtime probe that would confirm it.
+
+KEY PIPELINE FACTS USED THROUGHOUT (verified in code):
+ F1 The local generator's first argument is LocalAnalysisResult.to_dict() + {trigger_batch, triggers,
+    all_triggers, target_entity} (wm.py:2089-2094; to_dict keys analysis/analysis_results.py:38-49:
+    uav_id, timestamp, local_trigger_list, local_risk_summary, path_quality_summary, uncertainty_summary,
+    information_summary, escalation_flags, explanation_context). Its second argument local_models is the
+    dict {"local_observation_model", "local_path_context_model"} (wm.py:2095-2098).
+ F2 The global generator gets GlobalAnalysisResult.to_dict() + trigger keys + target_entity "mission"
+    (wm.py:2109-2114). Rescue and fail-safe generators get shared_input = {trigger_batch, triggers,
+    all_triggers, target_entity: "mission", dashboard_summary, global_result} (wm.py:2121-2139).
+ F3 runtime_models for generation = {fire_runtime_model, visibility_model, victim_runtime_model,
+    uav_resource_model, communication_model, firefighter_model, mission_goal_model,
+    local_path_context_models, available_entities, global_observation_snapshot, simulation_model,
+    mission_goals} (+uav_id for local) (wm.py:2072-2085, 2099). For planning the same minus
+    global_observation_snapshot, plus communication_adaptation_space and latest_failsafe_state (wm.py:2218-2232).
+ F4 AnalysisSnapshot has ONLY timestamp, local_results, global_result, all_triggers, dashboard_summary
+    (analysis_results.py:95-102): every getattr(analysis_snapshot, "utility_mode" | "operational_mode" |
+    "mission_mode" | "uncertainty_level" | "affected_entities" | "confidence" | ... ) returns the default.
+    It also has no ".parameters", so ue._merge_params_for_feasibility (ue:241-253) adds nothing from context.
+ F5 Every option passes ConstraintFilter.filter_options(options, runtime_models, self.mission_goal_model)
+    (wm.py:2163-2167) BEFORE any planner sees it.
+ F6 UAV.move() has no stay action (agents.py:829-856; its own comment :829-832): a committed "hold" moves
+    the UAV one cell in selected_dir. Only rtb_docked (:833) or a missing execution_direction_applied (:844)
+    stops a UAV.
+ F7 A victim becomes managed_victims[v].confirmed = True on its FIRST sighting (wm.py:1401-1407), and
+    victim_runtime_model only ever contains sighted victims (update_detection at wm.py:1388 and :1452; the
+    local monitor's candidates are drawn FROM victim_runtime_model, local_uav_monitor.py:95-112). No code
+    sets confirmed back to False (grep "confirmed = False" over the source scope: 0 hits).
+
+================================================================================
+1. DECISION POINT 1 - LOCAL PATH PLANNER (+ local generator + local scoring + constraint gate)
+================================================================================
+Decision rule (lpp:325-349): (1) first feasible option whose id starts "local_path_return_to_base";
+(2) else "wind_aware_victim_search" if feasible; (3) else the top feasible by score; (4) else a hold option.
+Score = ue._evaluate_local_path_option (ue:634-777) x confidence multiplier (ue:506-600).
+
+1.A INPUT TABLE (planner + scorer)
+ #   input (reader file:line)                         how read                     writer / verdict
+ L1  local_path_return_to_base option (lpp:335-339)   option id prefix             lag:1963-2049, emitted only at
+                                                                                   RETURN_MECHANISM 1 (lag:1988) -> never at
+                                                                                   shipped 2. SUSPECT-INERT (config-dead). Latent
+                                                                                   defect at mechanism 1: the option carries
+                                                                                   "battery_level" (lag:2032) and ue:265 marks it
+                                                                                   infeasible at <= 15, so rule (1) SKIPS a
+                                                                                   critical-battery return. NEW (latent).
+ L2  wind_aware_victim_search precedence (lpp:340-345) option id                   lag:4255; LIVE. Consequence: for a searcher every
+                                                                                   score input below is dominated whenever this option
+                                                                                   exists (see 1.C-5).
+ L3  evaluation.feasible (lpp:336/:342/:347)          ue._check_utility_feasibility SUSPECT-INERT (NEW as a statement): the keys it
+                                                      (ue:255-293), params+context  tests have no production writer on the read path:
+                                                                                   hard_collision_violation, collision_risk,
+                                                                                   route_feasible, route_feasibility_confidence (written
+                                                                                   only to firefighter_model units, wm.py:4377-4452 /
+                                                                                   firefighter_model.py:105-212, never to option
+                                                                                   parameters), requires_critical_communication,
+                                                                                   fail_safe_mode, projected_battery_after_option; context
+                                                                                   adds nothing (F4). battery_level is written only on L1
+                                                                                   (dead) and on global role-switch options (mode 1).
+                                                                                   => feasible == True for every option at shipped config.
+ L4  G_info expected_info_gain|information_gain (ue:653) pfloat(params) default 0  written lag:2287 (0.75), :2360 (0.7), :4274 (0.65),
+                                                                                   :4348 (0.7, dead branch - 1.C-4). LIVE (explore + wind).
+ L5  G_belief belief_gain (ue:654)                    pfloat -> safe_float        SUSPECT-DEFAULT (type mismatch, NEW): for every option
+                                                                                   built on base_parameters the value is the DICT from
+                                                                                   lag:2075-2079/:2102 (itself {} - see G1); safe_float(dict)
+                                                                                   returns the default 0.0 (ue:1589-1601). Only the explore
+                                                                                   option writes a float (lag:2288, 0.55). LIVE only there.
+ L6  G_recovery recovery_value|information_recovery_score (ue:655)                 lag:2291 only (explore, 0.35). LIVE only on explore.
+ L7  S_task task_support (ue:656)                                                   lag:2289, :2361, :4273, :4349. LIVE.
+ L8  P_overlap overlap_penalty (ue:657)                                             written lag:2242/:2419/:3107 but ALWAYS 0.0: the value is
+                                                                                   negative_observation_map.get(...) and that map is {} (G1:
+                                                                                   "negative_observations" never present). The writers at
+                                                                                   :2242/:3107 are also on options the constraint filter
+                                                                                   always removes (G3). KNOWN (B8 "every penalty
+                                                                                   unproduced"); new specifics: source-key mismatch.
+ L9  P_collision collision_risk|risk_estimate (ue:658) pfloat(params)              KNOWN (B8). New specific: risk_estimate is an option
+                                                                                   ATTRIBUTE (constructor kwarg, e.g. lag:2470), never a
+                                                                                   parameter -> the fallback key can never hit.
+ L10 P_smoke smoke_penalty (ue:659)                                                 KNOWN (B8). New specific: KEY-NAME MISMATCH - the
+                                                                                   generator writes "next_step_smoke_penalty" (lag:3109,
+                                                                                   :3160, :3175) which only _adjust_option_confidence reads
+                                                                                   (lag:1818). WRITER_RE(smoke_penalty): 6 src hits, all local
+                                                                                   variables.
+ L11 Cost_battery battery_cost|cost_estimate (ue:660)                              KNOWN (B8). New specific: cost_estimate is an ATTRIBUTE
+                                                                                   (lag:2469), not a parameter.
+ L12 P_drift drift_penalty (ue:661)                                                 KNOWN (B8). WRITER_RE: 0 src, 10 tests.
+ L13 S_stability stability_bonus|path_stability_score (ue:662)                      stability_bonus lag:2290 (explore) LIVE there;
+                                                                                   path_stability_score lives in LocalPathContextModel
+                                                                                   (local_path_context_model.py:32/:233) and is never copied
+                                                                                   into option parameters (location mismatch).
+ L14 Cost_switch_policy role_change, task_change, recent_switch_count,
+     role_switch_count, role_stability_timer (ue:303-314)                           no local writer (WRITER_RE role_change/task_change/
+                                                                                   recent_switch_count: 0 in adaptation). Constant 0 for local
+                                                                                   options. SUSPECT-DEFAULT (NEW for the local scorer).
+ L15 S_hysteresis (ue:343-366)                        option_type/params markers  LIVE (stability_control options + both noops get
+                                                                                   0.12*w10). role_stability_timer term (ue:365) SUSPECT-
+                                                                                   DEFAULT - never a local param.
+ L16 U_negative_information: negative_observation_recent, negative_observation_stale,
+     avoids_recent_negative_region, confirms_stale_negative_region,
+     uncertainty_level (ue:385-389)                   pfloat/sig default 0         SUSPECT-DEFAULT (NEW): WRITER_RE over source AND tests
+                                                                                   = 0 for the first four; uncertainty_level KNOWN. The term
+                                                                                   is never added (ue:698-699 guard) - in all four scorers.
+ L17 U_horizon_context_fit: horizon_type (ue:423), candidate_horizon_length (:425), uncertainty_level (:426),
+     communication_reliability (:427), fire_spread_speed (:428), information_collapse (:429)
+                                                      params.get / safe_float      SUSPECT-DEFAULT, KEY-NAME MISMATCH (NEW): the horizon
+                                                      defaults "", 0.5, 0, 0.65,   options write "horizon_action" (lag:4466), the scorer
+                                                      0, 0                         reads "horizon_type" (WRITER_RE horizon_type: 0 src, 7
+                                                                                   tests). candidate_horizon_length is a path-context field
+                                                                                   (never set: set_candidate_horizon_length has no caller;
+                                                                                   update_context has no production caller), never a param.
+                                                                                   communication_reliability is written on horizon options
+                                                                                   but as None (lag:4409-4413: not in F1 keys, not a
+                                                                                   runtime_models key) -> 0.65. fire_spread_speed and
+                                                                                   information_collapse never option params. RESULT: the term
+                                                                                   is the CONSTANT +0.0510 (0.2*0.168*0.370 + 0.16*0.65*0.370)
+                                                                                   on every local option; it cannot change the argmax except
+                                                                                   through the per-option confidence multiplier.
+ L18 option.confidence (ue:538) + knowledge_confidence (ue:542) + uncertainty_level (ue:547)
+                                                                                   confidence LIVE (trigger mean, trigger_input.py:70-73, +
+                                                                                   mission-goal boosts lag:1750-1827). knowledge_confidence:
+                                                                                   WRITER_RE 0 src. uncertainty_level KNOWN.
+ L19 utility mode (lpp:81)                            mission_goal_integration      LIVE (mgm:120-138 via runtime_models["mission_goals"]).
+ L20 path_context keys (lpp:125-146, :177-178): force_wind_retarget, force_wind_sweep, force_coverage_escape,
+     post_rescue_coverage_steps_remaining, unresolved_victim_count, coverage_priority,
+     recent_x_positions, pocket_streak, wind_aware_hold_streak, wind_edge_streak
+                                                      dict.get default 0/False     LIVE: wm.py:1864-1905 refreshes them every step from the
+                                                                                   wind-search state; every source key has 3-16 writers
+                                                                                   (edge_streak, hold_streak, ... checked individually).
+                                                                                   Note hard-coded x>=38 test at lpp:136 (grid-size coupled).
+ L21 wind_direction (lpp:148)                         params or path_context       LIVE (lag:4264).
+ L22 uav_position (lpp:117, :447-477)                 uav_resource_model           LIVE.
+ L23 grid HEIGHT/WIDTH (lpp:514, :526, :543-544)      getattr default 50           LIVE (wm.py:178-179 sets HEIGHT/WIDTH).
+ L24 role (lpp:208)                                   uav_resource_model           LIVE.
+ L25 target_position/target_region/target_location/waypoint (lpp:438-444)          LIVE (feeds uncertainty_context + cardinal next_action).
+ L26 escalation_request / escalation / escalation_payload / escalation_reason (lpp:597-605)
+                                                      params.get                   SUSPECT-DEFAULT (NEW): WRITER_RE escalation_payload,
+                                                                                   escalation_reason = 0 src/0 tests; escalation_request only
+                                                                                   the PathDecision constructor (lpp:268). Always None. Also a
+                                                                                   dead OUTPUT (section 8).
+ L27 path_segment (lpp:425)                           params.get                   SUSPECT-DEFAULT (NEW): no option writes "path_segment"
+                                                                                   (WRITER_RE: 1 src hit = ux:1504, a label). Always ().
+ L28 _UNCERTAINTY_PARAM_KEYS from params/analysis (lpp:613-628)                    output-only context; analysis attrs absent (F4).
+
+1.B INPUT TABLE (local generator - what it hands the planner)
+ G1  ~20 named fields read from local_analysis_result with fallback to local_models, both dicts (F1):
+     local_uncertainty (lag:2070, :4404, :4510, :4667), belief_gain (:2075), negative_observations (:2080),
+     high_probability_hidden_regions (:2085), last_known_fire_location (:2090), communication_reliability
+     (:4409, fallback runtime_models - absent), environment_stability (:4414), drift_state (:4505),
+     belief_hotspots (:4515), oscillation_risk (:4525; rescued by path context :4532-4535), stuck_count
+     (:4531; rescued by path context :4537), fire_belief (:4672), victim_confidence (:4677), stale_regions
+     (:4682), recently_confirmed_empty_regions (:4689), delivery_confidence (:4866), shared_knowledge_sync_quality
+     (:4871), current_path (:4957), current_assignment (:4962), stability_state (:4967).
+     how read: read_value(dict, name, read_value(dict, name, default)) -> dict.get -> DEFAULT ({} / [] / None / False).
+     writers: none on the read path. The only producers of these names as INPUT dicts are tests
+     (tests/test_local_adaptation.py:20-28, tests/test_gap_fixes.py:76-116, tests/test_adaptation_mission_goal_
+     integration.py:66-69). The knowledge exists under OTHER names on OTHER objects:
+     LocalObservationModel.local_uncertainty_patch / negative_local_observations (local_observation_model.py:25,
+     :31), FireBeliefRuntimeState.negative_observation_map (fire_runtime_model.py:37).
+     consequences (c): has_sensing_evidence (lag:4716-4721) is ALWAYS False -> the sensing family is always the
+     "maintain_current_sensing"/"reduce_sensing_battery_save" pair at confidence 1.0 (lag:4766-4785, :4827-4836);
+     overlap_penalty always 0 (L8); belief targets never exist (lag:2368-2386 -> maximize_belief_gain gets
+     target_position None); hidden-region fallback empty (lag:2417); the smooth_transition option is gated only
+     by path-context oscillation_risk. VERDICT: SUSPECT-DEFAULT, NEW (the same defect class as KNOWN N3, on the
+     LOCAL side; B8 counted the scorer keys, not these generator inputs).
+ G2  Fire tracking cells - getattr(agent, "burnt_status", None) (lag:3434)
+     how read: getattr default None -> status_str "" -> never "burning" -> the schedule scan adds nothing.
+     writers: WRITER_RE(burnt_status) = 0 source, 0 tests; agents.Fire has burning / burnt / is_burning()
+     (agents.py:24-25, :38-42). The executor twin reads is_burning() (ux:3791-3796) and works.
+     consequence: the generator's _collect_active_fire_cells (lag:3422-3461) is the BELIEF map >= 0.3 only
+     (one step late, smoke-covered cells missing); it feeds _has_meaningful_fire (gate of the wind option,
+     lag:4232), the wind-aware target (lag:3849), the tracker smoke-safe step (lag:3006/:3069/:3144).
+     VERDICT: SUSPECT-DEFAULT, NEW (attribute-name mismatch).
+ G3  CONSTRAINT GATE: operational_constraints["avoid_fire_entry"] x params["enters_fire_zone"] (cf:171-174)
+     how read: _read(mission_goal_model, "operational_constraints") dict.get.
+     writers: avoid_fire_entry is True in DEFAULT_OPERATIONAL_CONSTRAINTS (mgm:30-35) and only ever set True
+     again (mgm:252-259); grep avoid_fire_entry over the source scope: no False writer. enters_fire_zone is set
+     by path_constraint_flags (mission_goal_integration.py:62-70) for every option whose path_action starts
+     "move_toward_fire" or whose fire_front_target is truthy, applied at lag:1745 via _merge_mission_goal_parameters.
+     consequence: EVERY local_path_move_toward_fire_* option (the whole tracker flank-hold/standoff option family,
+     lag:2206-2252 + _fire_tracker_path_parameters lag:3057-3113) is REJECTED on EVERY step before the planner
+     sees it; revisit_high_probability_hidden_regions and directed_search_last_known_fire_location are rejected
+     whenever front cells exist (fire_front_target=bool(front_cells), lag:2418/:2436).
+     VERDICT: SUSPECT-INERT (NEW) - the fire-target inputs (flank_hold_target, next_step_smoke_penalty,
+     greedy_step_would_enter_smoke, sector params on those options) can never reach a decision.
+ G4  Other constraint-filter inputs (cf): runtime_models "battery"/"battery_state" (cf:97) -> absent (F3) ->
+     battery rules never fire; also a UNIT mismatch: min_battery is a fraction 0.15-0.35 (mgm:274-285) vs 0-100
+     battery levels. runtime_models "communication_reliability"/"delivery_confidence" (cf:130-131) -> absent.
+     required_battery/battery_required/requires_communication/required_entities/feasible/infeasible option params:
+     WRITER_RE finds no option writer. max_risk_estimate (cf:73-87): 0.85/0.55/0.45/0.35 by phase vs option
+     risk_estimate <= 0.25 everywhere (lag:2470 0.2, :4296 0.25, :2307 0.08, :4366 0.15) -> never binds (KNOWN for
+     role options, planner_part1 2.2). forbidden_actions only in the "emergency" phase (mgm:276-279).
+     VERDICT: SUSPECT-DEFAULT (battery, communication) / SUSPECT-INERT (max risk) - NEW except the role case.
+ G5  _is_fire_front_cell(..., negative_observation_map) (lag:2671-2677): "del negative_observation_map" -
+     parameter discarded. SUSPECT-INERT (dead parameter; the map is {} anyway, G1).
+ G6  LIVE generator inputs: uav role (lag:3211-3225, uav_resource_model.current_role), fire_probability_map
+     (lag:2630-2645, belief), smoke-obscured cells (lag:2699-2722; VisibilityModel has no top-level
+     smoke_obscured_cells, fallback to state - LIVE), visibility observation_status_map (lag:2260-2281,
+     never_seen/stale -> explore target), mission_goals (priorities, phase), trigger confidence
+     (trigger_input.py:70-73), wind observation (lag:3332-3400, global snapshot wind_direction exists,
+     monitoring_interfaces.py:58), the per-UAV wind-search state (lag:468-500), available_entities / team size.
+
+1.C WHAT THE LOCAL DECISION CAN ACTUALLY BRANCH ON (derived; confirm with probe P-L0)
+ 1 Trackers: after G3 the surviving path options are explore_unknown_region_<uid>_<t> (lag:2295-2319), hold/
+   recompute/avoid_*/maximize_* (lag:2388-2447), plus horizon/movement/sensing/stability/noop. With L4-L17
+   the explore option scores ~2.15 (normal profile: 0.9*0.75 + 1.0*0.55 + 0.7*0.35 + 1.0*0.45 + 0.9*0.2 +
+   0.051) against 0.159 for the noop/stability options and ~0.051 for everything else. The explore option
+   exists whenever ANY never_seen/stale cell exists (sector filter falls back to all cells, lag:2575-2576).
+   => the tracker's PathDecision is (almost) a constant choice; its target is exp_cells[0], the first cell in
+   status-map iteration order of its flank half, not the nearest.
+ 2 Trackers in the executor: the decision's target is consulted only when BOTH runtime standoff targets are
+   None (ux:3031-3066); otherwise the runtime fire logic decides (ux:2932-3029, :3068-3113).
+ 3 Searchers: _generate_path_options returns early (lag:2112-2156): victim-candidate options if any live victim
+   target exists, else wind option + noop. Rule L2 then picks the wind option regardless of score.
+ 4 Victim-candidate branch is DEAD (F7): _collect_active_live_victim_targets -> _victim_needs_live_search
+   returns False for every confirmed victim (lag:3294-3314) and every victim in victim_runtime_model is
+   confirmed -> lag:2113-2134 and _build_path_options_toward_targets (lag:4329-4383) never produce an option.
+   SUSPECT-INERT, NEW. Probe P-L9.
+ 5 For searchers, see also 5.B-1 (hazard gate) - the planner's wind target is itself overridden downstream.
+
+================================================================================
+2. DECISION POINT 2 - GLOBAL PLANNER (gmp + gag + ue global scoring)
+================================================================================
+ KNOWN, confirmed at HEAD: the nine inputs (ue:812-820); do-nothing wins (N/A to repeat); assigned_role reader
+ now fixed for target_uav_id (gmp:233-248); "role"+"change" test (ue:855) dead; search_mode_required vs
+ search_mode (ue:843, fsp:338, fsp:447); target_regions vs target_region (reader now gmp:258, was ~251);
+ current_role / role_stability_timer / role_switch_count (gag:125-127, :241-243); recovery_value /
+ uncertainty_level; confidence discount N1; B5 region keys; B7 MissionDecision fields.
+
+ NEW / beyond the nine:
+ M1 battery_state|battery|battery_level and resource_state|resources read as top-level runtime_models keys
+    (gag:128-137, :244-253). Same defect as KNOWN N3, two more keys; always None. Consumed by nothing in the
+    scorer (feasibility reads "battery_level", not "battery_state"). SUSPECT-DEFAULT (KNOWN-pattern, new keys).
+ M2 GLOBAL fail_safe_mission family (gag:1051-1118, option_type "fail_safe_mission") is generated whenever a
+    trigger mentions INFORMATION_COLLAPSE / INFORMATION_INSUFFICIENT / CRITICAL / FAIL_SAFE, and is then
+    EXCLUDED by the global planner's own filter (gmp:135-153: "fail_safe" is in _NON_GLOBAL_TYPE_MARKERS,
+    gmp:28-39, applied even to MissionAdaptationOption). The fail-safe planner reads only fail_safe_space
+    (planning_coordinator.py:42, :63-71). => scored by nobody. SUSPECT-INERT, NEW (dead option family).
+ M3 Task / coverage / resource families read maps from global_analysis_result then runtime_models, neither of
+    which has them (F2, F3): fire_probability_map (gag:563, :761), uncertainty_map (:568, :771), victim_confidence
+    (:573, :776), negative_observation_maps|negative_observation_map (:578-586), stale_information (:587),
+    last_known_fire_regions (:592), communication_support_zones (:599), fire_confidence_map (:766),
+    predicted_remaining_useful_time (:907), communication_reliability (:912), battery|battery_state (:917),
+    uncertainty_regions (:922), critical_regions (:927), region_value_map (:932). All defaults ({} / []).
+    The knowledge exists in fire_runtime_model.belief.fire_probability_map / fire_confidence_map / visibility.
+    SUSPECT-DEFAULT (NEW as named inputs; the families are already KNOWN unable to act, planner_part1 5.4).
+ M4 Global scorer beyond the nine: mission_mode param (ue:826, :844) - no global option writes mission_mode;
+    horizon block needs all six _hz_required keys (ue:913-921) - never all present, term never added; U_negative
+    information (L16) never; switching keys (L14) KNOWN/none. SUSPECT-DEFAULT.
+ M5 LIVE: GLOBAL_PLANNER_MODE accessor (agents.py:1323-1336), mode via goals (gmp:72), trigger confidence (N1),
+    instability trigger text (gag:190-191), at mode 1 the role_option_values nine (audited by the planner round).
+
+================================================================================
+3. DECISION POINT 3 - RESCUE PLANNER AND DISPATCH
+================================================================================
+3.A MAPE rescue path (rag -> RescuePlanner.plan -> dd -> RescueExecutor.execute)
+ R1 rag inputs read from shared_input then runtime_models (F2, F3): victim_confidence (rag:148-152),
+    communication_reliability (:224-228), nearest_firefighter (:326-330), firefighter_candidates (:331-335),
+    safest_route (:395-399), uncertainty_map (:400-404), route_candidates (:405-409); target_entity is
+    "mission" for every option (shared_input sets it, wm.py:2126). All None/[]/{}. low_victim_confidence and
+    unreliable_communication are always False. SUSPECT-DEFAULT (NEW; B8 counted only scorer keys).
+ R2 rescue scorer keys victim_priority, support_quality, expected_delay, route_risk, victim_uncertainty,
+    communication_risk (ue:1041-1046) - KNOWN (B8 0/6). WRITER_RE: 0 src for victim_priority, support_quality,
+    expected_delay, victim_uncertainty; route_risk/communication_risk hits are rp:192-212 (reader locals).
+ R3 _rescue_signals (rp:174-216) reads victim_confidence|knowledge_confidence, uncertainty_level|
+    victim_uncertainty, route_risk, communication_risk, comm_risk from the AnalysisSnapshot (F4: absent) then
+    from option params (R1: None -> safe_float default). => signals are the constants 0.5/0/0/0, so
+    _preference_adjustment (rp:247-265) is 0 for every option. SUSPECT-DEFAULT (NEW).
+ R4 CONSEQUENCE - selection is a tie: every rescue option scores exactly 0 and every bonus is 0, so
+    max(feasible, key=(bonus, score)) (rp:243) returns the FIRST generated option,
+    rescue_victim_handling_confirm_victim. Its RescueDecision has rescue_action "victim_handling" (option_type,
+    rp:376-380) and victim_id "" (no option carries victim_id or a .victim attribute, rp:383-390).
+    RescueExecutor.execute: _classify_rescue_action("victim_handling") -> "" (rx:537-549) and the state updates
+    are gated on decision.victim_id (rx:94) -> NOTHING is written. SUSPECT-INERT / dead OUTPUT (NEW as a
+    statement; scope report said the MAPE rescue pipeline never reaches the physical path). If the tie order
+    ever changed so that delay_rescue won, _active_physical_pairing("", "") would treat "" as generic
+    (rx:499, :528-533) and print [RescueDelayRefused] - a latent log artefact, still no state change.
+
+3.B Physical pairing (select_rescue_assignment, rp:530-673) - the live rescue path
+ R5 snapshot keys (wm.py:3366-3452) vs reader keys (rp:549-605): position, confirmed, rescued, dead, cancelled,
+    unreachable, rescue_assigned, active_firefighter_id; firefighters dead, assigned, route_blocked,
+    available, position, off_grid. ALL MATCH. LIVE. (target_victim_id, status, return_step, incidents are
+    produced and not read by the pairing - output-only.)
+ R6 policy note (not a dead input): the victim chosen is the lowest victim id among the needy (rp:577, :587),
+    not the most urgent; only the firefighter is chosen by distance (rp:653-659).
+ R7 _find_closest_available_firefighter (wm.py:4112-4138): no production caller (grep "_find_closest_available_
+    firefighter(" over the source scope: definition only; tests/test_firefighter_dispatch_replacement.py uses it).
+    Dead helper (test-only).
+ R8 _dispatch_firefighter_to_victim (wm.py:5242-5257) - callers wm.py:2819 (_try_dispatch_unresolved_confirmed_
+    victims, called from :2966 and :3116) and :5709. LIVE.
+ R9 _firefighter_available_for_dispatch (wm.py:3333-3345): dead, status, assigned, exiting, rescue_completed,
+    pos - all written on Firefighter (agents.py:1769-1782) and by the command API. LIVE.
+ R10 apply_physical_rescue_command metadata keys (wm.py:4608-4931): victim_marker, target_pos (rx:407-410),
+    reset_victim_pending (wm.py:3709), victim_agent (wm.py:3674), unreachable_cause (wm.py:4963). LIVE.
+ R11 _update_unreachable_victims flags -> unreachable_escape_victims (wm.py:5175-5185 vs rp:436-527): keys
+    match. "approaching" (rp:453) is SUSPECT-INERT: it is set True only together with assigned_approaching
+    (wm.py:5165-5167), so the rp:453 branch can never change the result of rp:449-455.
+ R12 VictimState has no dataclass fields rescued/dead/cancelled/unreachable/assigned (managed/victim_state.py);
+    they are created by setattr. ".dead" is NEVER written on a VictimState (grep ".dead =" : only
+    ff_marker.dead wm.py:5450) - every getattr(state, "dead", False) on a victim is constant False; each such
+    site also tests status "dead"/cancelled, so SUSPECT-INERT, benign (e.g. ux:1593, lag:3302-3312,
+    wm.py:1374, :3656, :4874, adaptation_manager.py:266).
+ R13 _process_rescue_incidents swallows every exception (wm.py:3753-3757: "except Exception: continue"). Not a
+    dead input, but an error-masking gate that would make any failing incident silently never move a decision.
+    Probe: count exceptions.
+
+================================================================================
+4. DECISION POINT 4 - FAIL-SAFE LAYER
+================================================================================
+ FS1 fsp._resolve_utility_mode(analysis_snapshot) (fsp:101, :110, :422-429) reads utility_mode /
+     operational_mode / mission_mode from the AnalysisSnapshot (F4) -> None. (a) the fail-safe options are
+     scored with the default "normal_monitoring_mode" profile (ue:185) regardless of the live mode; (b)
+     classify_mode(current_mode=...) is fed "normal" - and SafetyChecker.classify_mode DISCARDS it anyway
+     ("_ = current_mode", safety_checker.py:72), as it does for ModeManager (mode_manager.py:37-40). WRITER_RE
+     operational_mode: 0; utility_mode: only predicted_effects outputs. The local/global/rescue planners use
+     mission_goal_integration.resolve_utility_mode instead. SUSPECT-DEFAULT + SUSPECT-INERT (NEW): no mode
+     hysteresis exists; the planner's profile is constant.
+ FS2 fag inputs (F2, F3): battery (fag:126-130), predicted_remaining_useful_time (:131-135), mission_state
+     (:180-184), communication_reliability (:235-239), delivery_confidence (:240-244), rescue_state (:288-292),
+     safety_state (:293-297) - all None; target_entity "mission" for every option. SUSPECT-DEFAULT (NEW).
+ FS3 fail-safe scorer keys mission_value, stability_bonus, energy_failure_risk, support_loss (ue:1380-1383) and
+     the hold/search modifiers (safety_risk, collision_risk, route_risk, information_recovery, recovery_value,
+     information_recovery_score, ue:1398-1419) - KNOWN (B8 0/4). communication_failsafe options are routed to
+     the COMMUNICATION evaluator and rescue_failsafe to the RESCUE evaluator ("communication"/"rescue" are
+     tested before scope, ue:214-217); both also score 0. => every fail-safe option scores exactly 0.
+ FS4 CONSEQUENCES (c): _needs_fallback_options (fsp:496-506) is True whenever step11 is active (best score
+     <= 0), so the fallback strategies are always appended; selection is then by keyword preference
+     (fsp:567-616) or, in NORMAL mode, by list order: max over (0, 0) returns the first option,
+     failsafe_uav_return_to_base (fag:139), fail_safe_action "return_to_base". The dispatcher neutralises it only
+     because latest_failsafe_state.mode == "normal" (dd:91-103). SUSPECT-INERT (NEW): the fail-safe utility
+     never selects anything; the decision is a function of (reasons, trigger names, option order).
+ FS5 SafetyChecker._reasons_from_execution reads no_search_target, partial_success, failures (safety_checker.py:
+     152-175) from DecisionDispatcher.dispatch's result, whose keys are fail_safe/global/local/rescue/
+     communication/fail_safe_override_active/override_reason (dd:129-137). WRITER_RE no_search_target: 0 src,
+     0 tests; partial_success: 0 src. SUSPECT-DEFAULT (NEW).
+ FS6 ModeManager reads decision.affected_entities (mode_manager.py:109-111) - FailSafeDecision has no such field
+     (decision_objects.py:71-85); execution_result "affected_entities" (:112) absent; analysis "confidence"/
+     "analysis_confidence" (:120-124) absent (F4) -> FailSafeState.confidence = 1-0.15*n. All three feed only
+     dashboard fields (see 8). SUSPECT-DEFAULT, benign.
+ FS7 ModeManager planning-text reasons (safety_checker.py:134-146): the planner's own fail_safe_action /
+     mission_mode / search_mode_active feed back as reasons (e.g. "activate_search_mode" contains "search_mode"
+     -> SEARCH_MODE_REQUIRED -> INFORMATION_RECOVERY). LIVE, self-reinforcing (not a dead input; a latch risk).
+ FS8 LIVE: analysis trigger names (safety_checker.py:119-132), trigger metadata affected_entities
+     (fsp:509-522, fallback target), mission goals. mode_manager and fsp both LIVE on triggers.
+
+================================================================================
+5. DECISION POINT 5 - EXECUTOR GATES (ux) AND DISPATCHER GATES (dd)
+================================================================================
+5.A Dispatcher
+ D1 _dispatch_fail_safe (dd:192-229) runs EVERY step, override or not. Per-UAV execution needs action["uav_id"]
+    or action["target_entity"] (dd:210): generator options carry neither (FS2) -> skipped; fallback options
+    carry target_entity = affected_entities[0] or "system" (fallback_strategy.py:82-85, fsp:538-556). For "system"
+    the executor returns agent_not_found. For a real UAV id the committed direction is OVERWRITTEN in the same
+    step by _dispatch_local_paths (dd:114-120, last writer of agent.selected_dir), unless that UAV's local path is
+    skipped (only for return_to_base with an inconsistent path, dd:497-508, :505-508). next_action is always ""
+    there (fallback params have no "next_action"/"action", dd:216). SUSPECT-INERT for the direction (NEW); NOT
+    side-effect free - the first execution still writes wind-search state, escape memory, movement_reason.
+ D2 _should_skip_global_execution (dd:474-480) needs EMERGENCY: KNOWN unreachable from INSTABILITY (N5). EMERGENCY
+    needs CRITICAL_BATTERY+(COLLISION|NO_FEASIBLE_PATH) or RESCUE_ROUTE_UNSAFE+CRITICAL_COMMUNICATION
+    (safety_checker.py:179-188); planner_part1 1.2 measured 0 EMERGENCY steps on C13. SUSPECT-INERT (measured).
+ D3 _adjust_local_path_for_fail_safe / _fail_safe_decision_for_execute (dd:483-535): LIVE, but see D4-D5.
+    DEGRADED mode: the selected option is a generator option (all tie at 0, no utility override), its
+    fail_safe_action is rewritten to "critical_tasks_only" (fsp:640-644) with mission_mode "" -> the override is
+    ACTIVE (dd:461-462, mode is not "normal") but dd:513-514 returns the path unchanged and the executor gets a
+    decision with search_mode_active False -> movement identical to no override. SUSPECT-INERT (NEW).
+ D4 SAFETY_FIRST safe_hold (fallback "safety-hold" wins by mode bonus, fsp:605-616): dd:494-496 rewrites every
+    non-exempt path to next_action "hold" and dd:529-530 passes fail_safe_decision=None. In ux.execute
+    (ux:346-398): a SEARCHER goes through _is_fail_safe_hold_decision(decision, None) (ux:99-123) which returns
+    False because the decision still carries its planner selected_option_id (ux:120-123) -> the searcher IGNORES
+    the hold and resolves its normal wind-aware direction. A TRACKER takes _execute_hold (ux:539-545) ->
+    (current selected_dir, "hold") -> by F6 it keeps MOVING in its previous heading, and the fire standoff logic
+    (_try_resolve_fire_role_direction) is bypassed for the whole safety_first period. SUSPECT-INERT for searchers /
+    semantic mismatch for trackers (NEW as a stated consequence; F6 itself is acknowledged in agents.py:829-832).
+ D5 ux:103-112 (the fail-safe branch of _is_fail_safe_hold_decision) is unreachable in production: the local
+    dispatch never passes a hold/safety_first/emergency decision (dd:519-535) and _dispatch_fail_safe's
+    PathDecision has next_action "" so the "hold" branch is never entered. SUSPECT-INERT (dead branch, NEW).
+ D6 INFORMATION_RECOVERY search mode: searchers are exempt (dd:403-424, executed with fail_safe_decision None);
+    trackers go through _execute_role_preserving_search (ux:468-537), which runs the same
+    _resolve_direction_intent + _apply_final_direction_safety as the normal path; differences are only the
+    empty-action default "explore_unknown_region" and the hold handling. LIVE but near-identical (report, not
+    a verdict).
+
+5.B UAV executor
+ E1 SEARCHER HAZARD GATE at RANGE 99 (ux:2413-2439): retreat_now is True on every gated step (ux:2426-2429);
+    whenever _retreat_to_safe_interior_direction returns a direction it REPLACES chosen_dir (ux:2434-2439).
+    That retreat's score has no target term at range >= 1 (edge_scored False, ux:2322; score = 8 x hazard
+    distance, ux:2339-2345; ties -> lowest direction index). With no hazard at all every candidate scores
+    99*8 and direction 0 (east) wins unless edge-blocked. => for every non-BFS-routed searcher step the
+    upstream direction (planner wind target, sweep, victim target, lpp next_action) is used ONLY when no
+    strictly-safe, buffer-clear, lookahead-safe, not-edge-blocked neighbour exists. KNOWN-BY-DESIGN as a rule
+    (cfv:145-165: "the model ran with this rule ALWAYS ON ... 99 is that behaviour made intentional"); NEW as
+    a dead-input statement: every searcher target input upstream is SUSPECT-INERT (dominated) on those steps.
+    The gate also runs twice per step on most paths (inside _resolve_direction_intent, e.g. ux:1297-1303,
+    :1347-1353, :1474-1478, and again in execute ux:419-427).
+ E2 _hazard_retreat_range fallback 0 while cfv ships 99 (ux:2109) - KNOWN (cleanup list).
+ E3 Victim-target branch (ux:923-1210): target = nearest of _victim_positions_from_runtime (ux:1657-1683), which
+    skips every victim _victim_handled_for_uav_target calls handled - confirmed included (ux:1603-1604). By F7
+    the list is always empty; _victim_id_from_decision's option-id fallback needs a
+    local_path_move_toward_victim_candidate_* option, never generated (1.C-4). => the whole branch (victim escape
+    memory ux:955-1070, victim stuck escape ux:1071-1210) is unreachable. SUSPECT-INERT, NEW.
+ E4 ctx["victim_id"] (ux:1544): the planner never copies victim_id into uncertainty_context (lpp:215-255 copy a
+    fixed key list; path context has no victim_id) - SUSPECT-DEFAULT, benign (fallback exists, and E3 makes it
+    moot).
+ E5 ctx["flank_standoff_hold"], ctx["flank_hold_target"] (ux:3138-3139): written into option params
+    (lag:3104/:3106/:3174/:3177) but never copied into uncertainty_context (lpp:245-255) -> always absent; and
+    both branches at ux:3155-3157 return the same value. SUSPECT-DEFAULT (key not propagated) + the options that
+    carry them are filtered anyway (G3). NEW.
+ E6 decision.path_segment (ux:1501-1505, :1532-1533): never populated (L27). SUSPECT-DEFAULT, dead branch.
+ E7 decision.waypoints_by_uav (ux:897, :1497-1499, :1529-1531): only RTB mechanism 1 (dead at 2) or the generic
+    branch for fire/general roles when _try_resolve_fire_role_direction returned None. LIVE-rare.
+ E8 getattr(model, "UAV_OBSERVATION_RADIUS", getattr(model, "observation_radius", 8)) (ux:638-641, :1158-1161,
+    :1786-1789, :4418-4421): the model has neither attribute (WRITER_RE: 0) -> 8, which equals cfv
+    UAV_OBSERVATION_RADIUS (cfv:753) today; an override of the cfv value would not reach these four sites.
+    SUSPECT-DEFAULT, benign (NEW).
+ E9 LAUNCH_GRACE_STEPS imported at module import (ux:11-15) and read at ux:4228 - an apply_scenario_config
+    override is invisible here (the star/import-time freeze class). SUSPECT-DEFAULT (override-dead), NEW.
+ E10 getattr(visibility, "smoke_obscured_cells") (ux:1860, :2260): VisibilityModel keeps it under .state
+    (visibility_model.py:36, :60) -> first branch always None; the status-map fallback (ux:1862-1873, :2265-2274)
+    carries the value. Benign.
+ E11 LIVE executor inputs: role (uav_resource_model), fire probability map, ground-truth burning/smoke cells via
+    the grid (ux:4612-4636), visit counts (wm.py:1122-1123), uav_last_failed_dir (wm.py:1126-1129), stuck counts,
+    sector assignments (after LAUNCH_GRACE_STEPS), wind-search state, pocket_streak, hazard_buffer_level,
+    _offgrid_guard_level (exact-integer accessor), HEIGHT/WIDTH, managed_uav_states positions.
+
+================================================================================
+6. DECISION POINT 6 - RETURN-TO-BASE (agents.UAV)
+================================================================================
+ All inputs LIVE through the cfv accessors (agents.py:922-1062) and UAV fields: base_station_mode (:654),
+ rtb_berth/rtb_berths (set by the model), pos, rtb_active/rtb_docked/rtb_target_berth/rtb_target_depot,
+ battery_level (drained :369-389), _rtb_trigger_level (:418-436: reserve 0.0 identity + 0.3*d + margin 39.23),
+ recharge_release_level (:669), dock_fix (:734, :776), rtb_last_pos/rtb_stall_steps (:734-738),
+ base_station_contains (wm.py:871, LIVE), base_station dict depots/cells (:618-629), return_stall_limit (:777),
+ return_mechanism (:796). No SUSPECT-DEFAULT found on the shipped path.
+ Notes:
+ T1 While rtb_active (mechanism 2) _apply_return_to_base is the last writer of selected_dir (agents.py:817-819),
+    and while rtb_docked move() returns early (:833-835): the whole MAPE output for that UAV is discarded - by
+    design (cfv:460-470), but the executor still runs and still writes wind-search state for it. Dead OUTPUT
+    during trips (by design).
+ T2 _rtb_berth_blocked (:561-572) reachable only at DOCK_FIX 0 (documented).
+ T3 UAV.battery_low_threshold / battery_critical_threshold are hard-coded 30/15 (agents.py:286-287) and only
+    label battery_status (:384-389); cfv LOW_BATTERY_THRESHOLD / BATTERY_CRITICAL_THRESHOLD reach the analyzer
+    (wm.py:321-326) and rtb_trigger_level_at (:1347), not these labels. Low priority SUSPECT-DEFAULT (override
+    of the cfv values would not change battery_status).
+ T4 rtb_trigger_level_at (:1339-1363) is used only at GLOBAL_PLANNER_MODE 1 (gag:436, :503). Config-dead at 0.
+ T5 KNOWN: the older accessors truncate 0.5 -> 0 (base_station_mode :925, return_mechanism :933, dock_fix
+    :1043, waypoint_fix :1059; cleanup list in planner_part1 12).
+ T6 L1 above: the planner route (mechanism 1) would mark its own critical-battery return option infeasible.
+
+================================================================================
+7. DECISION POINT 7 - FIREFIGHTING TARGETING (agents.Firefighter)
+================================================================================
+ All inputs LIVE: ff_firefight_extinguish/firebreak/engaged_retreat_range/mission_gate (exact-integer
+ accessors :1160-1235), dry_run (:1208), pos/target_pos/exiting (:2755), model._firefighter_available_for_
+ dispatch (:2757-2759 -> wm.py:3333), Fire agents is_burning/is_burnt/fuel/smoke.is_smoke_active (:2783-2796),
+ _firefight_suspended (:2802, written :3174), IDLE_RETREAT_SAFETY_BUFFER and the reach/band module constants,
+ grid bounds (:2886, :2971). The ctx fields n_front, n_band, blocked_target, lookahead_rejected, exit_guard are
+ log-only (:3177-3207) - by design.
+ Notes:
+ W1 With FIREBREAK=1 (shipped) the extinguish-only approach branch "elif extinguish: target = nearest_front"
+    (agents.py:2989-2990) is unreachable (ctx["firebreak"] True takes :2977-2988) and _firefight_plan returns
+    None when the band is empty (:2953-2954) even if a front cell is approachable. Config-dead branch (report).
+ W2 _firefight_mission_resolved (:2839-2865) is not evaluated at MISSION_GATE 0 (short-circuit :2764).
+    Config-dead.
+ W3 KNOWN: ff_firefight_dry_run keeps the bare int() (truncation), cleanup list.
+ W4 Firefighter.advance exit geometry reads getattr(model, "HEIGHT", 50) (:1950-1951) - LIVE (wm.py:178-179).
+
+================================================================================
+8. DEAD OUTPUTS (decision fields no executor/behaviour reads)
+================================================================================
+ O1 PathDecision.escalation_request (decision_objects.py:51; written lpp:268): no reader anywhere in
+    src_extension/agents/wm (grep "escalation_request": constructor + definition only). Always None anyway.
+ O2 PathDecision.path_segment: never non-empty (L27); readers ux:1501, :1532, dd:543 see ().
+ O3 PathDecision.confidence_score / comparison_summary / explanation: execution log + dashboard only
+    (ux:447-456; planning_coordinator.py:340-344).
+ O4 PathDecision.next_action for SEARCHERS: read only for "hold" (ux:346) - the victim branch never reaches the
+    generic action section (ux:923-1479 always returns). For trackers read only when the fire branch returns
+    None (ux:1481-1499).
+ O5 MissionDecision: KNOWN (B7) - only uav_assignments has a behavioural reader; task_assignments,
+    mission_mode, relay_assignments, recall_orders, confidence_score, uncertainty_context, comparison_summary,
+    explanation, selected_option_id, notes are inert/log-only (global_executor.py:77-120 sinks).
+ O6 MAPE RescueDecision (rescue_action, victim_id, firefighter_id, route_choice, payload): executed by
+    RescueExecutor.execute but a no-op (3.A R4). NEW.
+ O7 FailSafeDecision.target_region (fsp:212): no fail-safe option writes target_region (fag params; fallback
+    params fsp:539-548); its consumer ux:4655 (_search_target) is reached only via _execute_search_mode
+    (ux:334-336), i.e. role_kind "general" (neither live role). Dead. NEW.
+ O8 FailSafeDecision.actions (fsp:214): see D1 - mostly skipped, else overwritten. confidence_score /
+    uncertainty_context / comparison_summary / explanation: logs.
+ O9 FailSafeState: only .mode has behavioural readers (dd:93-101, wm.py:2292-2296, wm.py:3480-3485 -> mission
+    goals, communication_adaptation_generator.py:155). active_reasons, affected_entities, confidence,
+    recovery_score, started_at, previous_mode, explanation: dashboard/explanation only (grep over non-dashboard
+    source: only failsafe_state_to_dict). ModeManager.should_override_utility / is_information_recovery_active:
+    no production caller outside dashboard.
+ O10 sop.mission_mode (written dd:201-204, global_executor.py:94-96, wm.py:2292-2294): KNOWN (B7) no behavioural
+    reader.
+ O11 _wind_aware_last_targets (ux:3938-3942): KNOWN write-only.
+ O12 wm._resolve_uav_path_context_target (wm.py:1652-1685): the execution-result branch (target_position /
+    target_region / target keys in uav_results) and getattr(decision, "target_position"/"target_region"/
+    "waypoints") are always None (UAVExecutor results carry applied/uav_id/decision_id/selected_dir/action,
+    ux:460-466; PathDecision has no such attributes). Only the uncertainty_context branch is live. Minor.
+
+================================================================================
+9. SUSPECT TABLE WITH PROBES
+================================================================================
+Format: id | decision pt | input | reader file:line | default | writer evidence | probe (hook -> record)
+
+S1 | 1 | ~20 local_analysis_result fields (G1) | lag:2070-2094, :4404-4418, :4505-4531, :4667-4695, :4866-4875,
+   :4957-4971 | {} / [] / None / False | read path = LocalAnalysisResult.to_dict() + 4 keys (analysis_results.py:
+   38-49, wm.py:2089-2094) and local_models dict with 2 keys (wm.py:2095-2098); only tests pass these names
+   (tests/test_local_adaptation.py:20-28 etc.) | wrap LocalAdaptationSpaceGenerator.generate -> record
+   sorted(local_analysis_result.keys()), sorted(local_models.keys()); in _generate_sensing_options record whether
+   the returned ids are {maintain_current_sensing, reduce_sensing_battery_save} (== has_sensing_evidence False).
+   Expect: never contains the names; sensing pair on 100% of calls.
+S2 | 1 | Fire.burnt_status | lag:3434 | None | WRITER_RE(burnt_status): 0 src, 0 tests; Fire uses burning/burnt
+   (agents.py:24-25) | wrap LocalAdaptationSpaceGenerator._collect_active_fire_cells -> record
+   n_schedule_hits (cells added in the schedule loop) and n_true_burning (sum is_burning()). Expect n_schedule_hits
+   == 0 always while n_true_burning > 0.
+S3 | 1 | enters_fire_zone x avoid_fire_entry | cf:171-174 | constraint always True | mgm:31 default True, only
+   True writers mgm:253/:259; path_constraint_flags mission_goal_integration.py:66-67 | wrap
+   ConstraintFilter.filter_options -> per step count options with option_id starting
+   "local_path_move_toward_fire" in input vs output, and rejected reasons. Expect output count 0 on every step.
+S4 | 1 | horizon_type (vs horizon_action) | ue:423 | "" (h_len 0.5, comm 0.65) | writer uses "horizon_action"
+   lag:4466; WRITER_RE(horizon_type) 0 src / 7 tests | wrap UtilityEvaluation._compute_horizon_context_fit ->
+   record params.get("horizon_type"), params.get("candidate_horizon_length"), returned delta. Expect None/None and
+   delta == 0.0510 (constant) for every local option.
+S5 | 1 | smoke_penalty (vs next_step_smoke_penalty) | ue:659 | 0.0 | writer key next_step_smoke_penalty lag:3109,
+   :3160, :3175 | same hook as S6 -> record p_smoke. Expect 0.0 always. (KNOWN B8, new specifics)
+S6 | 1 | local penalties overlap/collision/battery/drift/stability-from-context | ue:657-662 | 0.0 | L8-L13 |
+   wrap UtilityEvaluation._evaluate_local_path_option -> record the ten raw values per option id. Expect the five
+   penalties 0.0 always. (KNOWN B8)
+S7 | 1 | switching / negative-information keys (L14, L16) | ue:303-314, ue:385-389 | 0.0 | WRITER_RE 0 src (and 0
+   tests for the four negative-observation keys) | same hook -> predicted_effects policy_switching_cost and
+   negative_information_adjustment. Expect 0.0 always.
+S8 | 1 | feasibility keys (L3) | ue:265-289 | feasible | no option writer on the read path (route_feasibility_
+   confidence goes to firefighter_model only) | wrap _check_utility_feasibility -> record (feasible, violations,
+   caller option_type). Expect feasible True on 100% at shipped config.
+S9 | 1 | escalation_* (L26), path_segment (L27) | lpp:597-605, :425 | None / () | WRITER_RE 0 | wrap
+   LocalUAVPathPlanner.plan -> record decision.escalation_request is not None, len(path_segment). Expect 0.
+S10 | 1/5 | victim-candidate branch | lag:3248-3280, ux:1657-1683 | [] | F7 (wm.py:1401-1407) | wrap
+   _collect_active_live_victim_targets and UAVExecutor._victim_positions_from_runtime -> count non-empty returns;
+   also count selected_option_id prefix local_path_move_toward_victim_candidate_. Expect 0 / 0 / 0.
+S11 | 5 | chosen_dir under the RANGE-99 retreat | ux:2426-2439 | replaced | cfv:165 ships 99 | wrap
+   UAVExecutor._apply_victim_searcher_hazard_gate -> record (chosen_dir, returned_dir, returned action, branch:
+   oncell / edge / retreat_now / lookahead / ranked). Report the fraction of calls where returned_dir came from
+   the retreat_now branch and differs from chosen_dir, split by whether chosen_dir came from the planner wind
+   target (action "victim_search_wind_aware"). Note the double invocation per step.
+S12 | 5 | ctx flank keys (E5) | ux:3138-3139 | False / None | params only (lag:3104/:3106), not copied
+   (lpp:245-255) | wrap _flank_target_from_decision -> record "flank_hold_target" in ctx. Expect never.
+S13 | 5 | UAV_OBSERVATION_RADIUS on model (E8) | ux:638-641, :1158-1161, :1786-1789, :4418-4421 | 8 | WRITER_RE 0
+   (model attr) | hasattr(model, "UAV_OBSERVATION_RADIUS") at step 1. Expect False (benign while cfv = 8).
+S14 | 5 | LAUNCH_GRACE_STEPS (E9) | ux:11-15 read at ux:4228 | import-time value | apply_scenario_config does not
+   touch ux | compare ux.LAUNCH_GRACE_STEPS with cfv.LAUNCH_GRACE_STEPS after an override in a harness import
+   test (import-only, no simulation).
+S15 | 4 | fsp mode / classify current_mode (FS1) | fsp:101, :110 | None -> "normal_monitoring_mode" | AnalysisSnapshot
+   fields (analysis_results.py:95-102); safety_checker.py:72 discards current_mode | wrap FailSafePlanner.plan ->
+   record the mode argument given to score_options and the mission-goal utility_weight_mode at that step.
+   Expect None every step while goals say information_recovery/safety_first.
+S16 | 4 | fag params (FS2) | fag:126-135, :180-184, :235-244, :288-297 | None | F2/F3 | wrap
+   FailSafeAdaptationGenerator.generate -> record param values. Expect all None.
+S17 | 4 | fail-safe utility (FS3/FS4) | ue:1380-1383 | 0 | KNOWN B8 | wrap FailSafePlanner.plan -> record
+   max(|score|) over scored and the selected option id + mode. Expect 0.0 always; selected = fallback keyword
+   winner or failsafe_uav_return_to_base in normal mode.
+S18 | 4 | execution-result reasons (FS5) | safety_checker.py:152-175 | [] | dd:129-137 result keys | wrap
+   SafetyChecker._reasons_from_execution -> record returned list. Expect [] always.
+S19 | 3 | rag inputs (R1) and rescue signals (R3) | rag:148-152, :224-228, :326-335, :395-409; rp:179-199 | None /
+   0.5,0,0,0 | F2/F3/F4 | wrap RescuePlanner.plan -> record signals dict and selected_option_id. Expect constant
+   signals and selected rescue_victim_handling_confirm_victim.
+S20 | 3 | MAPE RescueDecision (R4/O6) | rx:39, :94 | no-op | rp:376-390 | wrap RescueExecutor.execute -> record
+   (decision.victim_id, action_kind, victim_updates non-empty). Expect victim_id "" and no updates, every step.
+S21 | 2 | gag family inputs (M1, M3) | gag:128-137, :563-605, :761-776, :907-932 | None / {} / [] | F2/F3 | wrap
+   GlobalAdaptationSpaceGenerator.generate -> record the base_parameters of one option per family. Expect empty.
+S22 | 2 | global fail_safe_mission options (M2) | gmp:135-153 | excluded | gag:1105 option_type | wrap
+   GlobalMissionPlanner.plan -> count options in adaptation_space_snapshot.global_space.options with option_type
+   "fail_safe_mission" vs in the scored tuple. Expect scored count 0.
+S23 | 5 | fail-safe per-UAV dispatch (D1) | dd:207-222 | skipped / overwritten | fsp:214, fallback_strategy.py:82-85 |
+   wrap DecisionDispatcher._dispatch_fail_safe -> record uav_results keys and applied; then compare each UAV's
+   selected_dir after _dispatch_local_paths. Expect ids "system"/none, or the direction overwritten.
+S24 | 5 | safety_first hold (D4) and hold semantics (F6) | dd:494-496, ux:346-398, ux:539-545, agents.py:822-856 |
+   hold ignored (searcher) / previous heading (tracker) | - | wrap UAVExecutor.execute -> record (mode, role,
+   decision.next_action, returned action); wrap UAV.move -> record moved when execution_action == "hold". Expect
+   searchers never return "hold" under safety_first; trackers move on most "hold" steps.
+S25 | 3 | "approaching" flag (R11) | rp:453 | redundant | wm.py:5165-5167 | record flags where approaching and not
+   assigned_approaching. Expect 0.
+S26 | 3 | swallowed incident exceptions (R13) | wm.py:3753-3757 | continue | - | wrap _handle_rescue_incident ->
+   count exceptions. Expect 0 (if > 0, an input silently never moved a decision).
+
+================================================================================
+10. LIVE INPUTS CHECKED, PER DECISION POINT
+================================================================================
+ 1 LOCAL: 30 LIVE (option ids/precedence, expected_info_gain, belief_gain-on-explore, recovery_value,
+   task_support, stability_bonus, S_hysteresis markers, option.confidence, utility mode, 10 path-context keys,
+   wind_direction, uav position, HEIGHT/WIDTH, role, target keys; generator: role, fire belief map, smoke cells,
+   status map, mission goals, trigger confidence, wind observation, wind-search state).
+ 2 GLOBAL: 4 LIVE at mode 0 (planner-mode accessor, goal mode, trigger confidence, instability trigger text);
+   the nine at mode 1 are LIVE by the planner round (not re-audited).
+ 3 RESCUE: 22 LIVE on the physical path (14 snapshot keys, 6 availability fields, 4 command metadata keys -
+   counted once each where overlapping) ; 0 LIVE decision inputs on the MAPE rescue path.
+ 4 FAIL-SAFE: 4 LIVE (trigger names -> reasons, trigger affected_entities, planning-text feedback, mission
+   goals via mode); 0 LIVE utility inputs.
+ 5 EXECUTOR/DISPATCHER: 16 LIVE (role, fire map, grid burning/smoke, visit counts, failed dir, stuck counts,
+   sector bounds, wind-search state, pocket_streak, hazard_buffer_level, offgrid guard level, HEIGHT/WIDTH,
+   managed positions, decision.uncertainty_context flags/targets, fail-safe action/mode/search flag,
+   latest_failsafe_state.mode).
+ 6 RTB: 17 LIVE (all accessor-backed inputs listed in section 6).
+ 7 FIREFIGHTING: 14 LIVE (5 accessors, pos/target_pos/exiting, availability predicate, 4 Fire-agent reads,
+   _firefight_suspended, grid bounds).
+
+================================================================================
+11. SEARCH HYGIENE - COMMANDS THAT COULD HAVE TRAVERSED outputs/_firemech_rewound_20260914
+================================================================================
+ NONE. Every recursive search either named only allowed paths (agents.py wildfire_model.py
+ common_fixed_variables.py serve_dashboard.py evaluate_scenarios.py src_extension tests) with
+ --exclude-dir=_firemech_rewound_20260914, or used the Grep tool with path=src_extension or a single file, or
+ was a python os.walk over src_extension/ and tests/ only (scratchpad getattr_scan.py prunes the name and
+ __pycache__). outputs/ was touched only as: `ls outputs/` (non-recursive listing, piped to grep), `grep -n`
+ on three NAMED files (outputs/planner_part1.txt, outputs/globalplanner_scope.txt) and Read of those two
+ files. One early `find src_extension -path '*/_firemech_rewound_20260914' -prune -o -name '*.py' -print`
+ (pruned, and rooted at src_extension). No `git status` was run.

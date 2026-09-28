@@ -1,0 +1,500 @@
+================================================================================
+SYSDEBUG - WHOLE-SYSTEM DEBUG AUDIT (DIAGNOSIS ONLY)          outputs/sysdebug_report.txt
+================================================================================
+Branch sysdebug, cut from main 5a6dea6 (tracked tree clean and no python process running at
+start). NO SOURCE FILE WAS CHANGED. Every probe, hook and counterfactual lives in outputs/_sd_*.py
+and patches only its own process; a hooked run was checked value-identical to an unhooked one
+(stdout sha256 and every per-step row equal). The source is byte-identical to 43a866c (empty git
+diff outside outputs/), so outputs/_plM_pytest.log (8 failed / 1055 passed) is this tree's suite.
+
+ENVIRONMENT: sys.version = 3.10.11 (tags/v3.10.11:7d4cc5a, Apr 5 2023, 00:38:17) [MSC v.1929 64 bit
+(AMD64)]; mesa.__version__ = 1.2.1; interpreter E:\Projects\SAS\.venv\Scripts\python.exe.
+
+RUNS (all 360 steps, BATCH_SIZE pinned to 360 - see finding 3): 27 invariant smoke runs (Part 4) +
+8 hook runs + 24 + 24 + 6 seed-matched counterfactual runs = 89 simulation runs, 0 crashes, 0 pool
+failures. Run counts were stated before each launch. Evidence files: outputs/_sd_*.json/.stdout.txt/.log, analyses outputs/_sd_p4_*.txt,
+outputs/_sd_w2_hooks.txt, outputs/_sd_cf_pairs.txt, outputs/_sd_searchmode_D_S_9202.txt.
+
+VERDICTS  (A) LIVE DEFECT - reachable now and changes results  (B) LATENT - wrong, cannot change results
+in the shipped configuration (the exposing condition is named)  (C) NOT A DEFECT  (D) THE TEST IS WRONG.
+"CHANGES RESULTS" says HOW that is known:
+  OUTCOMES   a seed-matched counterfactual (CRN-pinned fire) moved rescued/dead/detection/completion
+  METRIC     changes a reported number by construction (no counterfactual needed)
+  DECISIONS  decisions/trajectories measurably differ; outcome effect stated separately
+  INFERRED   live on every call of a decision input; magnitude not measured
+KNOWN = on record in an earlier round (named). NEW = in no earlier report found.
+
+================================================================================
+THE TABLE - ranked by impact on the four-scenario measurement round and the paper
+================================================================================
+ #  V  CHANGES RESULTS        FINDING                                                  WHERE
+ 1  A  OUTCOMES (12/12 pairs  The fail-safe mode is never "normal" after step 1 and is  safety_checker.py:18-28,67-97;
+       diverge; +1 rescue,    set by artifact alarms + a per-UAV search hint            local_uav_analyzer.py:671-686
+       completion moves 5/12)                                                           decision_dispatcher.py:483-516
+ 2  A  OUTCOMES (3/3 pairs:   never_detected write-off at step 210 is permanent - at    rescue_planner.py:47-52,511-519;
+       +3 rescued, 6 write-    360 steps a victim unseen by 210 can never be found       wildfire_model.py:1372-1383
+       offs removed)
+ 3  A  METRIC (no output)     evaluate_scenarios.py exits 0, silently, at step 302      wildfire_model.py:5924-5931;
+                              of the first seed when --steps >= --batch-size + 2        evaluate_scenarios.py:195,269
+ 4  A  METRIC                 'geographically_isolated' is assigned when NO RESCUER     wildfire_model.py:5084-5111;
+                              exists (all firefighters dead / carrying / absent)        rescue_planner.py:443-455
+ 5  A  METRIC (scenario       Scenario B "Battery Fail-Safe" differs from A only in     serve_dashboard.py:37-42;
+       meaning)               team counts; no battery setting is applied                agents.py:286-287
+ 6  A  DECISIONS (98.7% of    A UAV "hold" moves the UAV: no stay action exists; hold   agents.py:822-856;
+       hold steps move)       re-commits the last heading and skips the safety filters  uav_executor.py:539-545,419,428
+ 7  A  DECISIONS (south wind: The searcher's y-target is a wind-blind camping commit     local_adaptation_generator.py
+       35% of targets pulled  (overlapping bands; latched in ~3 steps) - the cause of   :797-903, :1178-1189
+       upwind)                the two wind-trajectory test failures
+ 8  A  DECISIONS (12/12       Wind-search counters count per CALL (4-8 samples, 2-3     local_adaptation_generator.py
+       pairs); OUTCOMES 0/12  streak increments per step) though named and used per      :1209-1236,1594-1680,1326-1370
+                              STEP                                                      uav_executor.py:2525,3929
+ 9  A  INFERRED               West-first x-strip order for EVERY wind: upwind first     local_adaptation_generator.py
+                              under east wind (KNOWN "strip inversion")                 :1143-1181
+10  A  DECISIONS (1 of 33     Approach-leg idle-retreat latch: a stale stall flag makes  agents.py:2255-2258,2469-2494;
+       approach retreats)     the whole approach leg retreat-only near fire (KNOWN)     wildfire_model.py:4652-4657
+11  A  INFERRED               The option generator's "active fire" set is belief-only:  local_adaptation_generator.py
+                              it reads Fire.burnt_status, which does not exist           :3421-3446
+12  B  (none: no consumer at  NEW: the GLOBAL analyzer is fire-blind - it reads the fire global_analyzer.py:265-267,
+       mode 0)                belief maps as top-level FireRuntimeModel attributes;      1059-1068,1574-1579
+                              4 fire triggers + the global search trigger never fire
+13  B  (none - dominated /    Inputs that never move a decision (Part 2): 13 groups,    see PART 2
+       filtered / constant)   runtime-confirmed, incl. the tracker option family (CF:
+                              letting it through changes nothing, 6/6 identical)
+14  B  (none today)           MAPE rescue decision inert (KNOWN) with a latent crash     rescue_executor.py:94,605-608
+                              behind its gate
+15  B  (none - 0 exceptions)  ~20 decision-path swallow handlers; nothing was swallowed  see PART 6
+                              in 8 x 360 traced steps
+16  B  (none - after terminal) Tracker-tracker deadlocks, searcher sweep loops, one      PART 5
+                              transient double binding
+17  B  (tooling / design)     Harness '--roles half' works only for scenario D; roles    serve_dashboard.py:327-372;
+                              differ between measured D (2+2) and runner defaults (n-1+1) outputs/_ffr_harness.py:139-143
+18  C  -                      Invariants that hold (Part 5), dead bodies on grid,        PART 5
+                              'cancelled' only on terminal victims
+19  D  -                      Five long-failing tests are wrong; one (T5) is right       PART 1
+                              about latent code; the two trajectory tests are right
+
+--------------------------------------------------------------------------------
+TABLE DETAIL (evidence and meaning for the paper, same order)
+--------------------------------------------------------------------------------
+1  (A) THE FAIL-SAFE MODE IS NEVER NORMAL AND IS SET BY ARTIFACTS - NEW consequence of KNOWN artifacts
+   EVIDENCE  27 smoke runs (9,720 steps, 4 scenarios x 4 winds, team sizes, GPM 0/1): mode leaves
+     'normal' at step 2 in EVERY run. information_recovery 78.1% of steps, safety_first 20.3%,
+     degraded 1.4%, normal 0.3% (step 1 only). safety_first steps carry ONLY artifact reasons
+     (collision_risk / extreme_drift / critical_communication) on 99.4%; degraded 100%.
+     information_recovery = SEARCH_MODE_REQUIRED on 100% of its steps, and that trigger is the LOCAL
+     per-UAV one (local_uav_analyzer.py:671-686: this UAV sees no fire in its own window and has
+     smoke/uncertainty) - the fire-avoiding victim searcher satisfies it almost every step, and one
+     UAV's hint becomes the fleet's mode. The GLOBAL search trigger never fires (finding 12).
+     Artifact triggers fire on 91.1% (COLLISION_RISK) / 73.3% (DRIFT_TOO_HIGH) / 99.7%
+     (CRITICAL_LINK_UNRELIABLE) of steps.
+   MECHANISM classify_mode maps collision/drift -> SAFETY_FIRST, communication -> DEGRADED, search ->
+     INFORMATION_RECOVERY (safety_checker.py:67-97). Consumers that move UAVs (independent review):
+     SAFETY_FIRST rewrites every non-exempt path to "hold" (decision_dispatcher.py:483-516), which is a
+     move (finding 6); the fail-safe planner forces safe_hold / critical_tasks_only / search mode
+     (fail_safe_planner.py:619-653); any non-normal mode without an active rescue sets the mission
+     phase 'degraded_operation' (mission_goal_model.py:209), which switches off victim-search priority
+     and changes the utility profile of the local, global and rescue planners (runtime: local planner
+     scored in information_recovery / safety_first mode on 99.4% of 11,520 plannings) and the filter
+     limits. No mode consumer changes rescue DISPATCH directly (select_rescue_assignment reads no mode).
+   COUNTERFACTUAL CRN-pinned fire, scenario D, south + east, seeds 9301-9306; arm = the three
+     artifact reasons dropped in SafetyChecker.extract_fail_safe_reasons, nothing else. 12/12 pairs
+     diverge (first UAV difference at step 20-86; 219-341 of 360 steps differ); the evaluation differs
+     in 5/12: X_E_9306 rescued 3 -> 4 (victim_2 detected at step 154 instead of never; never_detected
+     1 -> 0); completion step 164->106, 139->224, 152->193, 266->267, 210->223; single victims'
+     detection moves by up to 81 steps in both directions (mean over victims detected in both arms
+     52.2 -> 54.2). Dead and firefighter deaths unchanged in 12/12. (outputs/_sd_cf_pairs.txt)
+   PAPER  Nothing about the fail-safe layer may be reported as a response to world conditions: its
+     mode is an artifact of three defective alarms (planner_part1 11A(c)) plus a per-UAV "no fire in
+     view" hint, and it steers the fleet on every step. Mode frequencies, "safety-first engaged N
+     times", and adaptive-mode narratives are not usable. Outcome effect over 12 pairs: +1 rescued
+     (a victim the stock arm never detects), deaths unchanged; completion time and detection timing
+     move in 5/12.
+
+2  (A) THE never_detected WRITE-OFF AT STEP 210 IS PERMANENT - KNOWN latch, NEW horizon consequence
+   EVIDENCE  unreachable_escape_victims marks a never-confirmed, unserved victim after 210 steps
+     (rescue_planner.py:47-52, :511-519; the comment sizes 210 for "the 240-step cap");
+     _detect_victims_in_uav_radius skips status 'unreachable' (wildfire_model.py:1372-1383); no path
+     resets it (reset_victim_pending relabels to 'confirmed' but leaves unreachable/cancelled set,
+     wildfire_model.py:4770-4799; dispatch drops such victims, rescue_planner.py:563-566). Smoke runs:
+     6 victims written off at exactly step 210 in 3 of 27 runs, none detected afterwards; hook runs: 2
+     more (K_Dh_S, K_B_N). The latch808 form (status resurrected while the flag stays set): 0 rows of
+     9,720 steps.
+   COUNTERFACTUAL seed-matched, stock (non-CRN) fire, the three smoke configurations that produced
+     write-offs (A/east 9103, D/east/10 victims 9122, D/2+2/north/GPM 1 9127); arm = the write-off
+     threshold set to 10^9 in the call the model makes (the 30-step geographic rule untouched). The
+     stock arm reproduces the smoke runs value-for-value. 3/3 pairs change outcome: A/east rescued
+     3 -> 5 (two victims detected at steps 260 and 278, then rescued); D/east/10 rescued 5 -> 6 (one
+     detected at 315 and rescued, two stay unresolved at the horizon instead of written off);
+     D/north: the victim stays unresolved instead of written off. Total +3 rescued, never_detected
+     6 -> 0, deaths unchanged. (A CRN version of the same three configurations was uninformative: under
+     the CRN fire no write-off occurred, so both arms were identical by construction.)
+   PAPER  At 360 steps "never_detected" means "not detected by step 210", and the write-off removes
+     rescues that the remaining 150 steps would have made: a 360-step round's rescued and
+     never_detected counts are biased by a constant sized for 240 steps. Decide the threshold (or
+     horizon) before the round.
+
+3  (A) evaluate_scenarios.py EXITS 0 WITH NO RESULTS FOR --steps >= --batch-size + 2 - NEW
+   EVIDENCE  WildFireModel.step() calls sys.exit(0) when BATCH_SIZE == counter - 1 (wildfire_model.py:
+     5924-5931). evaluate_scenarios defaults --batch-size 300; _run_seed's `except Exception` does not
+     catch SystemExit and stdout is redirected, so the process ends at the 302nd step of the first
+     seed with exit code 0. Reproduced: `evaluate_scenarios.py --scenario D --n 2 --steps 6
+     --batch-size 3 --seeds 101,202` -> exit 0, header line only, no seed row, no summary.
+   PAPER  A 360-step round through evaluate_scenarios needs --batch-size >= 359 (the harness has
+     pinned BATCH_SIZE=360 since the planner round, as did every run here). A runner that checks exit
+     codes records an empty round as a success. No existing number is wrong because of it.
+
+4  (A) 'geographically_isolated' IS ALSO "NO RESCUER LEFT" - NEW
+   EVIDENCE  the reachability BFS starts only from living, on-grid, NON-exiting firefighters
+     (wildfire_model.py:5084-5111); _is_productively_served protects only carried / assigned-and-
+     approaching victims (rescue_planner.py:443-455); geographic is preferred when both causes fire.
+     So with every firefighter dead (or all carrying / off-grid for 30 steps) every unresolved victim -
+     detected or not - becomes 'geographically_isolated' 30 steps later. Measured: T3_ff1_N_g0 (one
+     firefighter, died): all 4 open victims at step 107, one of them never detected.
+   PAPER  The unreachable-cause breakdown conflates "no firefighter alive" with fire isolation;
+     geographic counts need the firefighter-alive condition (scenarios with 1-2 firefighters: B, D).
+
+5  (A) SCENARIO B IS NOT A BATTERY SCENARIO AS RUN - NEW
+   EVIDENCE  BUILTIN_SCENARIOS B = 3 UAV / 2 victims / 2 FF only (serve_dashboard.py:37-42); the
+     BATTERY_CRITICAL_THRESHOLD = 50 of common_fixed_variables' commented scenario-B block is applied
+     by no runner; UAV thresholds are hard-coded 30/15 (agents.py:286-287) and the resource model's
+     20/50 (uav_resource_model.py:185-190). No battery trigger (LOW_BATTERY, CRITICAL_BATTERY) fired in
+     9,720 steps. B differs from A only in victims (2 vs 5) and firefighters (2 vs 3).
+   PAPER  Do not label B "battery fail-safe" in the four-scenario results unless the round sets and
+     wires a battery condition.
+
+6  (A) A "HOLD" MOVES THE UAV - NEW (the known "move() has no stay action" comment, now measured)
+   EVIDENCE  hooks, 8 runs: 1,803 of 1,826 (98.7%) hold steps moved the UAV (fire_flank_hold 914/929, hold
+     889/897). UAV.move has no stay action (agents.py:822-856); only rtb_docked or a missing executor
+     commit stops it; 'hold' re-commits the previous heading and bypasses the safety post-filters
+     (uav_executor.py:539-545, :419, :428). The dispatcher's SAFETY_FIRST safe_hold (finding 1)
+     therefore means "keep flying the last heading" for trackers; searchers ignore it.
+   PAPER  "Hold"/"safe hold" must not be described as stationary; tracker hold phases are oscillation
+     (they are most of the livelock-shaped windows in Part 5).
+
+7  (A) THE SEARCHER'S y-TARGET IS A WIND-BLIND CAMPING COMMIT - NEW (mechanism behind Part 1 T7/T8)
+   EVIDENCE  _coverage_y_lower_camping (max of tail < 31) and _coverage_y_upper_camping (min >= 25)
+     overlap on y in [25,31) and 'north' is tested first (lag:797-878); the commit REQUESTS target
+     y >= 45 (or <= 4) until the searcher reaches y >= 43 (<= 6) (lag:821-903, :1178-1189; reverted only
+     if that cell is fire/smoke or a target hold is live). Filled at 4-8 samples/step (finding 8) it
+     latches ~3 steps after launch. Replay (Part 1): south-wind target (2,5) became (2,45) at step 5.
+     Hooks, shipped config: the commit direction does not follow the wind - D/south (1 searcher)
+     committed NORTH on 79% of committed calls; over all south-wind finalizations 391 of 1,123 were
+     pulled upwind (north) by a 'north' commit against 167 pulled downwind by a 'south' commit;
+     D/north committed south on 31%.
+   PAPER  "Wind-aware victim search" is wind-aware in its first targets and x-lanes only; the
+     y-component is a coverage sweep set by the spawn half. Describe it as such, or fix it before the
+     round.
+
+8  (A) WIND-SEARCH COUNTERS COUNT PER CALL, NOT PER STEP - NEW
+   EVIDENCE  recent_x/y_positions are appended from 5 call sites across the planner and executor
+     passes (lag:1236, 1668, 3923, 4204, 4246; ux:2525, 3929): measured 5-6 samples per searcher per
+     step (_sd_p1_samples.py) and ~2-3 streak increments (pocket, edge, hold, same-target,
+     steps_since_detection). So COVERAGE_Y_SWEEP_MIN_STEPS = 15 acts as ~3 steps, the 30-entry
+     windows as ~5-6, and the `% 25` coverage escape fires every ~12 steps. The code already knows:
+     _touch_target_hold (lag:964-985) guards ITS counter on step_index because "a per-call counter
+     would inflate held-steps and the stall window by 2-3x" - the other counters are unguarded.
+   COUNTERFACTUAL CRN, D legacy, south+east, seeds 9301-9306, arm = one sample / one streak update per
+     searcher per step. 12/12 pairs diverge in UAV paths (first difference at step 90-315, 9 of 12
+     after step 230; 4-222 of 360 steps differ); evaluation, every victim outcome and every first-
+     detection step identical in 12/12. (outputs/_sd_cf_pairs.txt)
+   PAPER  Searcher parameters quoted in steps are 2-8x shorter in effect. Outcome-neutral on the
+     tested seeds; it changes late searcher paths only.
+
+9  (A, INFERRED) WEST-FIRST x-STRIP ORDER FOR EVERY WIND - KNOWN ("strip inversion"), HOLDS
+   EVIDENCE  both branches of _finalize_coverage_target pull to the west strip first (lag:1143-1150
+     west wind, :1162-1171 other winds); east wind spreads fire toward +x (agents.py:254-256), so
+     under east wind the first pull is upwind. Runtime frequency NOT isolated: the hook counted every
+     x relocation, including the interior clamp, so its west/east counts are not evidence either way.
+   PAPER  Same as 7: the x sweep order is fixed, not wind-derived.
+
+10 (A) APPROACH-LEG IDLE-RETREAT LATCH - KNOWN (exitstall (ii)), HOLDS, and it lasts the whole leg
+   EVIDENCE  no assignment path resets _idle_retreat_stalled (wildfire_model.py:4652-4657); an
+     assigned unit with the flag set takes _assigned_one_step_retreat (a fire-distance-maximising step
+     that ignores the target) on every survival move (agents.py:2255-2258, :2469-2494), and the only
+     reset reachable while assigned (ideal standoff) cannot fire from a hazard cell. Hooks: 1 of 33
+     approach survival entries in 8 runs (K_D_S step 63, ff_unit_0 at (6,18) toward (40,25)).
+   PAPER  Rare approach delays near fire; the S_A_W_g1 30-step standoff (ff_unit_1, steps 66-96,
+     victim rescued afterwards) is this movement family.
+
+11 (A, INFERRED) THE GENERATOR'S FIRE SET IS BELIEF-ONLY - NEW
+   EVIDENCE  _collect_active_fire_cells reads Fire.burnt_status, written nowhere (lag:3421-3446), so
+     its ground-truth branch is dead. Hooks (153,842 calls): 66% of its "active fire" cells were not
+     burning, 12.6% of truly burning cells were missing, and it was empty while fire burned on 20
+     calls (start of runs). The executor's twin (ux:3781-3806) misses 0% of burning cells. It sets the
+     wind-aware target's fire centroid and gates the wind-aware option (lag:4232, 3849).
+   PAPER  The planner's fire picture is decayed monitor belief; the executor's is truth + belief.
+
+12 (B) THE GLOBAL ANALYZER IS FIRE-BLIND - NEW
+   EVIDENCE  GlobalAnalyzer reads fire_probability_map / fire_confidence_map / last_observed_fire_time
+     and estimated_fire_front_cells / predicted_fire_front_map / predicted_spread_bias as top-level
+     attributes of FireRuntimeModel (global_analyzer.py:265-267, 1059-1068, 1574-1579); they live on
+     FireRuntimeModel.belief (fire_runtime_model.py:25-40). It also reads snapshot key
+     'fire_state_summary', which the monitor does not produce. Measured (_sd_searchmode.py, 45 steps):
+     merged fire map EMPTY on every step while 1-297 cells burned. Never fired in 9,720 steps:
+     HIGH_PRIORITY_FIRE_REGION, STALE_HIGH_PRIORITY_REGION, FIRE_SPREAD_ACCELERATING,
+     FIRE_DIRECTION_SHIFT, global SEARCH_MODE_REQUIRED; the fire-front term of the trend triggers never
+     sees a front.
+     (14 of 36 trigger types never fired; the others: POOR_FIRE_COVERAGE, UNSAFE_SYSTEM_STATE,
+     INFORMATION_INSUFFICIENT, LOCAL_PATH_UNRELIABLE, RESCUE_UNSAFE, RESOURCE_DEGRADING,
+     STALE_LOCAL_INFORMATION, LOW_BATTERY, CRITICAL_BATTERY, OSCILLATION_RISK - causes not all
+     determined; UNSAFE_SYSTEM_STATE's inputs are never produced, Part 6 #15.)
+   WHY (B)  none of the four maps to a fail-safe reason (safety_checker.py:18-28) and the global
+     families that would consume them cannot act at GLOBAL_PLANNER_MODE 0 (KNOWN, planner_part1 5.4).
+     Exposed by any consumer of global fire triggers.
+   PAPER  The global layer's fire awareness must not be claimed.
+
+13 (B) INPUTS THAT NEVER MOVE A DECISION - see PART 2 (13 groups, all runtime-confirmed)
+
+14 (B) MAPE RESCUE DECISION INERT (KNOWN, planner_part1 11A(b)) + LATENT CRASH (NEW)
+   EVIDENCE  2,880/2,880 plannings: every rescue option scores 0, the first option
+     (confirm_victim) wins, victim_id '' -> RescueExecutor.execute writes nothing (rescue_executor.py:
+     94). Behind that gate: assign_to_victim(..., action_kind=) always raises TypeError and the fallback
+     omits timestamp (rescue_executor.py:605-608) -> the first RescueDecision that ever carries a
+     firefighter_id kills the step. Exposed by any rescue option that carries victim/firefighter ids.
+
+15 (B) SILENT-FAILURE HANDLERS - see PART 6 (nothing swallowed at runtime)
+
+16 (B) MOVEMENT EPISODES AFTER THE MISSION ENDS - see PART 5
+
+17 (B) HARNESS / RUNNER ROLE SPLITS (tooling; paper comparability)
+   _ffr_harness.py --roles half calls _resolve_role_count_params(n, 2, 2), which raises ValueError for
+   3 UAVs (A, B) and 5 (C) (checked). evaluate_scenarios' default is the legacy split (n-1 trackers +
+   1 searcher). So "scenario D" as measured since the flip (2+2) is not scenario D as evaluate_scenarios
+   runs it (3+1). PAPER: state the role split per scenario; the round must choose one rule.
+
+18 (C) and 19 (D): PART 5 and PART 1.
+
+================================================================================
+PART 1 - THE EIGHT LONG-FAILING TESTS
+================================================================================
+All six non-trajectory tests fail with the SAME assertion at the initial import a4a01b4 (throwaway
+worktree): they have never passed in this repository.
+T1 test_behavior_regression::test_descriptive_next_action_uses_target_position        (D)
+   ASSERTS a descriptive next_action with target (7,5) is executed as 'computed_from_target', dir 0.
+   FAILS  role 'scout' (not a shipped role), no fire: the tracker branch's _flank_target_from_decision
+   (ux:3040-3058) claims the planner target first and labels it 'fire_flank_standoff'; the
+   computed_from_target branch (ux:3060-3066) is unreachable whenever that returns a target.
+   The executor chooses selected_dir 0 - exactly what the test wants (checked); only the label
+   differs. TEST is wrong (stale label; the "fire_flank_standoff" name for a no-fire target is a
+   cosmetic code-label oddity, no behavioural effect).
+T2 test_dashboard_panel::test_dashboard_panel_render_returns_string                    (D)
+   ASSERTS the panel HTML contains 'Step' and 'mission_mode'. The renderer emits lowercase 'step' and
+   the mode as a badge value (live_dashboard_panel.py:139-150). Presentation only.
+T3 test_firefighter_dispatch_replacement::test_no_replacement_available_marks_victim_unreachable_once (D)
+T4 test_rescue_planner_authority::test_no_firefighter_planner_delay_or_unreachable                  (D)
+   ASSERT "no firefighter left" behaviour (unreachable once / delay + mark_unreachable). The model is
+   built at cfv defaults (NUM_FIREFIGHTERS = 3); the tests disable ff_unit_0/1 only, and the code
+   correctly re-pairs ff_unit_2. Both PASS when the model has 2 firefighters (measured). Fragile
+   fixture: TEST is wrong.
+T5 test_uav_sector_assignment::test_fire_tracker_uavs_receive_different_target_sets    (B)
+   ASSERTS three trackers get pairwise-disjoint move_toward_fire target sets. _assign_fire_tracker_
+   flank_targets (lag:2553-2578) splits only TWO ways (index 0: y<=cy, every other index: y>cy), so
+   trackers 1..N-1 are identical. The TEST IS RIGHT about the code. Latent: the move_toward_fire family
+   never survives the constraint filter (and when let through it is never selected - finding 13),
+   and the tracker executor replaces planner targets with its own standoff target when fire is known;
+   the same split also feeds explore_unknown_region targets (lag:2277), where it is live only while no
+   fire is known. Exposure: >= 3 trackers (C: 4, D legacy: 3).
+T6 test_uav_sector_assignment::test_fire_tracker_still_overridden_by_search_mode_fail_safe  (D)
+   ASSERTS a tracker under a search-mode fail-safe is not exempt, is role-preserving, and executes
+   'computed_from_fire_perimeter'. Every override assertion passes; only the label differs (the
+   flank-hold layer answers first: 'fire_flank_hold'). Label supersession.
+T7 test_wind_aware_trajectory_regression::test_north_vs_south_trajectories_diverge_over_40_steps  CODE
+T8 ...::test_east_vs_west_trajectories_diverge_over_40_steps                                      CODE
+   ASSERT (BASE_STATION_MODE pinned 0: centre spawn) that opposite winds give different final planner
+   targets. Replay (_sd_p1_traj.py, _sd_p1_windstate.py): N/S - the south-wind target is (2,5) for
+   steps 2-4, coverage_y_commit latches 'north' at step 4 and _finalize_coverage_target moves it to
+   (2,45) from step 5, so both winds end on the same north target. E/W - both runs end in the
+   pocket/coverage escape to the global centre (24,24) (_gradual_escape_target anchors on the grid
+   midpoint), which the same y-commit moves to (24,45). Mechanism = findings 7 and 8. The TESTS ARE
+   RIGHT: the target should depend on the wind. (History: order-dependent - N/S passed and E/W failed
+   in the dimension round; both fail since the base-station round.)
+
+================================================================================
+PART 2 - DOES EVERY INPUT CHANGE A DECISION?
+================================================================================
+Static inventory: outputs/_sd_agent_part2_inventory.txt (7 decision points, 26 probes). Runtime:
+8 hook runs (outputs/_sd_w2_hooks.txt) + the decision-output census of the 27 smoke runs.
+DECISION OUTPUTS OVER 9,720 STEPS: mission decision = maintain_current on 100% of GPM-0 steps (GPM 1:
+26 role switches in 4,680 steps); MAPE rescue = confirm_victim 100%; fail-safe decision = a 1:1 image
+of the mode (incl. 'return_to_base' chosen in NORMAL mode at step 1 of every run - list order of
+all-zero scores); local path decisions use 3 families only: explore_unknown_region 60.3% (every tracker
+decision), wind_aware_victim_search 37.0%, maintain 2.7%. No move_toward_fire, sensing, victim-
+candidate or return-to-base option is ever selected.
+INPUTS THAT NEVER MOVE A DECISION (runtime-confirmed; KNOWN = planner_part1 1.4/1.5/5.x/11A/12):
+ LOCAL PATH PLANNER
+  L-a  the whole move_toward_fire family: 29,759/29,759 rejected ("fire entry disallowed": every
+       move_toward_fire path_action is flagged enters_fire_zone, mission_goal_integration.py:62-70;
+       avoid_fire_entry is only ever True, mission_goal_model.py:31/253/259), plus 12,832 other local
+       options flagged by fire_front_target. CF (let through, 6 pairs, CRN): ~5,300 options/run
+       pass, NONE is selected, runs value-identical 6/6. Filtered AND dominated.        NEW
+  L-b  evaluation.feasible: True on 461,166/461,166 checks (no option carries the keys it tests).  NEW
+  L-c  horizon term: constant +0.051 on 282,742/282,742 evaluations (horizon_type vs writer's
+       horizon_action) - a constant offset cannot change a ranking.                     NEW
+  L-d  8 named local-analysis inputs (local_uncertainty, belief_gain, negative_observations,
+       fire_belief, stale_regions, victim_confidence, hidden_regions, sensing_evidence): absent on
+       11,520/11,520 generator calls; sensing/belief options never exist.               NEW (B8 class)
+  L-e  victim-candidate branch: non-empty 0/3,600 (generator) and 0/3,600 (executor) - a victim is
+       confirmed on first sighting.                                                     NEW
+  L-f  penalty terms (smoke/overlap/collision/battery/drift) unproduced; smoke_penalty vs writer's
+       next_step_smoke_penalty.                                                         KNOWN (B8)
+  L-g  _coverage_mode_active ends in an unconditional `return True` (lag:775-790): steps since
+       detection, corridor-diversity failure, tracker boost and post-rescue window never change it.
+                                                                                        NEW
+ GLOBAL PLANNER
+  G-a  the nine scoring inputs at mode 0 (fixed at mode 1)                              KNOWN
+  G-b  fail_safe_mission options: 8,640 generated, excluded by the planner's own "fail_safe"
+       marker, never scored or selected (global_mission_planner.py:28-39, 135-153).     NEW
+  G-c  16 task/coverage/resource map inputs + battery_state/resource_state read as absent keys.
+                                                                                        NEW (5.4 class)
+  G-d  every global fire trigger (finding 12).                                          NEW
+ RESCUE PLANNER AND DISPATCH
+  R-a  MAPE rescue path: every input (0 of 6 scorer keys, 7 generator inputs, rescue signals
+       constant 0.5/0/0/0); all-zero scores 2,880/2,880; executes as a no-op.           KNOWN + NEW specifics
+  R-b  physical pairing (select_rescue_assignment): all 22 inputs LIVE; policy = lowest victim id
+       among the needy, nearest available firefighter (not urgency).                    LIVE
+ FAIL-SAFE LAYER
+  F-a  fail-safe utility: all options score 0 (5,752/5,752), always under the default profile (the
+       planner resolves its mode from AnalysisSnapshot fields that do not exist); selection = keyword
+       + list order.                                                                    KNOWN (B8) + NEW
+  F-b  execution feedback: SafetyChecker._reasons_from_execution returned [] on 8,640/8,640 calls
+       (reads top-level keys the dispatcher never produces).                            NEW
+  F-c  classify_mode discards current_mode (no hysteresis).                             NEW
+ EXECUTOR / DISPATCHER GATES
+  E-a  searcher hazard gate at RANGE 99 replaced the chosen direction on 31.7% of gated steps
+       (586/1,849), keeping the original action label (label-based attribution misses it). LIVE and
+       dominant, by the documented ruling.                                              KNOWN rule, NEW rate
+  E-b  UAV_OBSERVATION_RADIUS is not a model attribute: 4 scoring sites use the literal 8 (benign at
+       the default 8; an override would split them from detection).                     NEW (B)
+  E-c  LAUNCH_GRACE_STEPS bound at import in uav_executor (ux:11-12, :4228); an override reaches
+       wildfire_model but not the executor.                                             NEW (B)
+ RETURN-TO-BASE: 17 inputs checked, all live at mechanism 2; the RTB local option (mechanism 1) is
+   config-dead and would be infeasible at battery <= 15 (latent, mechanism 1 only).
+ FIREFIGHTING TARGETING: 14 inputs, all live.
+
+================================================================================
+PART 3 - KNOWN OPEN ITEMS RE-VERIFIED AT 5a6dea6
+================================================================================
+ victim `unreachable` latch            HOLDS; costs rescues at 360 steps -> findings 2 (write-off), 4 (cause)
+ west_strip_done / east_strip_done     HOLDS; west-first for every wind   -> finding 9 (A, inferred)
+   inversion
+ approach-leg idle-retreat latch       HOLDS; 1 of 33 approach retreats   -> finding 10 (A, rare)
+ search_mode_required vs search_mode   HOLDS: 'search_mode_required' carried by 17,280 global options,
+                                       'search_mode' by none; no result change - (B), planner_part1 5.3
+ local collision / drift /             HOLD, and they SET THE FAIL-SAFE MODE (safety_first 20.3%,
+   communication alarm artifacts       degraded 1.4% of steps)            -> finding 1 (A, OUTCOMES)
+ target_regions vs target_region       RECORD ONLY: still holds - global options carry 'target_regions'
+                                       (8,640 in 8 runs), the global reader reads 'target_region'. Not
+                                       expanded, as instructed.
+
+================================================================================
+PART 4 - CONDITIONS NEVER TESTED (27 invariant-only smoke runs, 360 steps, seeds 9101-9127)
+================================================================================
+Scenarios from evaluate_scenarios.py (serve_dashboard.BUILTIN_SCENARIOS): A 3 UAV/5 victims/3 FF,
+B 3/2/2, C 5/3/3, D 4/4/2; legacy role split (n-1 trackers + 1 searcher) unless stated.
+ S_* 16  every scenario x every wind (N/S/E/W), GLOBAL_PLANNER_MODE 0/1 by Latin square (each scenario
+         and each wind 2+2)
+ T_* 9   D with 1, 2, 8 UAVs; 1, 5 firefighters; 1, 10 victims; all-low (2/2/1); all-high (8 UAV 4+4 /
+         10 V / 5 FF)
+ H_* 2   D with the measured 2+2 split, west (GPM 0) and north (GPM 1)
+RESULT: 27/27 completed, 0 crashes, 0 warnings, every invariant of Part 5 checked on every step.
+West and north wind, 1-8 UAVs, 1-5 firefighters, 1-10 victims and GPM 1 run without error. Per-run
+outcomes: outputs/_sd_p4_invariants.txt (top block).
+
+================================================================================
+PART 5 - INVARIANTS, EVERY STEP OF EVERY PART 4 RUN (9,720 steps; + 8 hook runs, 2,880 steps)
+================================================================================
+ invariant                                  result
+ no agent off the grid                      HOLDS. UAV off-grid/out-of-bounds 0; firefighter off-grid
+                                            only while off_grid (absence 3-5 steps, never overrun);
+                                            victims off-grid only when rescued/dead; 0 grid ghosts,
+                                            0 pos/cell mismatches. Dead firefighters stay on the grid as
+                                            bodies - by design, every reader skips dead units (C).
+ no unit stuck / no livelock                37 episodes (thresholds: stuck >= 20 steps in one cell;
+                                            livelock = 30-step window, <= 3 cells, >= 8 changes;
+                                            no-progress = 30 steps without closing on the target).
+                                            32 start AFTER the mission's terminal step (searcher sweep
+                                            loops at (44-46,22); tracker edge loops; tracker-tracker
+                                            deadlocks frozen 26-38 steps, S_C_N_g0 (49,8)/(49,9),
+                                            T2_uav8 (19-20,21), T8 (18,40-42) - each UAV refused a move
+                                            into the other's cell). Before terminal: 3 tracker holding
+                                            patterns (finding 6) and 2 firefighter approach standoffs
+                                            (S_A_W_g1 ff_unit_1 66-96, T8 ff_unit_2 77-106; both victims
+                                            rescued later) - KNOWN approach-leg family. (B): exposed when
+                                            a deadlock or standoff happens with a victim waiting.
+ victims end rescued / dead / unresolved    HOLDS: counts sum to the total in 27/27 runs; statuses in
+   and add up                               vocabulary; rescued and dead never revert; rescued flag ==
+                                            status; marker == managed status at the end; 'cancelled'
+                                            only on dead/unreachable victims (C).
+ no rescue without contact                  HOLDS: every rescued victim has a pickup at the victim's
+                                            cell; 0 phantom rescues; [Rescue Complete] count == rescued
+                                            in every run; carried victim co-located with its carrier on
+                                            168/168 carry steps (hook runs).
+ no victim assigned to two units at end     HOLDS (0). One TRANSIENT double binding: S_A_N_g0 steps
+                                            64-74, victim_0 bound to ff_unit_0 and ff_unit_1 (a
+                                            route-blocked unit keeps its binding while a fresh
+                                            'initial' dispatch binds a second; the victim died at 75; no
+                                            other victim was waiting). (B).
+ no drone at zero battery / stranded return HOLDS: 0 UAV-steps at battery 0; 0 return legs without
+                                            progress for 20 steps; 0 legs open at the horizon.
+ depot cells never burn                     HOLDS: 0 of 50 depot cells burned/burnt/scorched in any run.
+ diagnostic lines                           0 [RemovalFailure], 0 [RescueInvariant], 0
+                                            [KnowledgeMismatch], 0 [Rescue Release Failed], 0 [Rescue
+                                            Hand-over Skipped], 0 [RescueAuthority], 0
+                                            [RescueDelayRefused], 0 [Rescue Failed]; all present tags are
+                                            ordinary events (Victim Detection, Dispatch, RescueEvent,
+                                            Rescue Complete, Off-Grid/Returned/Recycled, Casualty, Rescue
+                                            Blocked/Released, Route Cleared, Monitoring,
+                                            KnowledgeManager).
+
+================================================================================
+PART 6 - SILENT FAILURES
+================================================================================
+STATIC (outputs/_sd_agent_part6_silent.txt): 208 exception handlers in the simulation source, 189
+without a log. Excluding 25 config accessors (the int-cast round owns them), 54 attribute-assignment
+guards that cannot raise, ~45 numeric parse helpers and ~35 telemetry/dashboard handlers, ~20 sit on a
+decision path; the worst is `except Exception: continue` around ALL rescue-incident handling
+(wildfire_model.py:3750-3757 - a raise would drop the incident with no trace).
+RUNTIME: 11 functions holding those handlers ran under a scoped exception tracer in 8 x 360 steps
+(_process_rescue_incidents, _sync_victim_agent_status, _revalidate_route_blocked_firefighters,
+_update_uav_stuck_counts_after_move, _check_fire_casualties, _process_pending_agent_removals,
+_recycle_firefighter_after_exit, _clear_rescue_path_if_requested, _update_unreachable_victims,
+Firefighter.advance, UAV.advance), plus _handle_rescue_incident counted and re-raised: ZERO
+exceptions raised, so nothing was swallowed. Per-step invariants for the Part 6 list: before-move UAV
+position map complete (0 misses), carried victim co-located (0 misses), rescue_assigned always with a
+bound live firefighter (0 misses). The TypeError-retry wrappers (global_executor.py:164-176,
+communication_executor.py:252-263, uav_executor.py:4677-4683) are unreachable today: each first
+attempt matches the callee's real signature. VERDICT (B) for all: latent - each would hide a future
+exception (named sites). Getattr/get on never-assigned names and never-produced comparison literals:
+the decision-relevant ones are findings 11, 12 and PART 2 (F-b, L-d, L-e, G-c); ~60 others are listed
+in the static file. Not traced (cost 8x): _cell_agents, _active_burning_cells,
+_firefighter_fire_enclosed - callers bound-check first (B).
+
+================================================================================
+METHOD, LIMITS, HOUSEKEEPING
+================================================================================
+TOOLS (outputs/): _sd_probe.py (the evaluate_scenarios run + per-step rows + inline invariants),
+_sd_hooks.py (22 pass-through hooks + scoped exception tracer), _sd_cf.py / _sd_cf2.py (CRN fire and
+the counterfactual arms), _sd_pool.py (memory-aware pool), _sd_queue_{p4,w2,w3}.py and
+_sd_queue_w4.jsonl (written inline), _sd_analyze.py
+(Part 5), _sd_modes.py, _sd_unreach.py, _sd_cfcmp.py, _sd_hooksum.py, _sd_searchmode.py,
+_sd_p1_traj.py / _sd_p1_windstate.py / _sd_p1_samples.py (Part 1 replays).
+LIMITS  (1) Counterfactuals are 3-12 seed pairs per question (scenario D legacy roles, except the
+write-off pairs A/east, D/east/10 victims, D/2+2/north): "no outcome change" means none in those
+pairs, not none anywhere (the canonical-13 rule applies). (2) Findings 9
+and 11 are INFERRED: live on every call, magnitude not measured. (3) Smoke runs are one seed per
+configuration: they test invariants, not outcomes. (4) The x-strip hook counted every x relocation
+and cannot separate the strip pull from the interior clamp.
+AGENTS: 3 of the allowed 3 (Part 2 static inventory, Part 6 static scan, adversarial review of 12
+claims - all 12 held on the main mechanism; its corrections are in the text: per-call sampling comes
+from the planner + executor passes, the strip order is west-first for every wind, the idle latch lasts
+the whole leg, 'hold' also skips the safety filters).
+QUARANTINE CONTACT: the three agents report no recursive search into _firemech_rewound_20260914;
+the reviewer DISCLOSES one possible contact - a Glob-tool call rooted at the repo root with pattern
+tests/conftest.py (found nothing; it cannot rule out that the tool walked from the root). My own
+searches were scoped to named files/directories with --exclude-dir; `git status` was run only with
+-uno.
+TAGS: _sd_* was unused before the round (checked). WORKTREE: E:/Projects/SAS_wt/sd_a4a01b4 (initial
+import, for Part 1) - no .venv junction was created; removed with `git worktree remove`; the real
+.venv checked intact afterwards (python + mesa 1.2.1 import).
+DETERMINISM: the wave-4 stock arm reproduced three Part 4 runs value-for-value (stdout sha256, every
+per-step row, eval), which also shows the counterfactual wrappers' instrumentation is pass-through.

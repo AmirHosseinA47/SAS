@@ -1,0 +1,557 @@
+SILENT-FAILURE AUDIT (part 6) - E:\Projects\SAS, branch sysdebug, HEAD 5a6dea6
+Static, read-only. No simulation run, no pytest, no file in the repo touched.
+Scope searched: agents.py wildfire_model.py common_fixed_variables.py serve_dashboard.py
+evaluate_scenarios.py src_extension/ (tests/ parsed only to tag "written only in tests").
+Tools: AST scripts in the scratchpad (c1_scan.py, c2_scan.py, c2_loop.py, c3_scan.py,
+c3_analyze.py, c3_sub.py) run with E:\Projects\SAS\.venv\Scripts\python.exe (ast.parse only,
+no project import).
+
+Legend: C1 = broad handler that swallows; C2 = getattr/.get/hasattr on a name never written;
+C3 = comparison against a literal never produced for that field.
+"Changes a result?" = could this plausibly alter movement / dispatch / rescue status /
+battery / fire in a run. "Today" = at the shipped defaults.
+
+=====================================================================================
+0. HEADLINE
+=====================================================================================
+- 208 exception handlers in scope; 189 have no log. After removing config accessors (KNOWN
+  int-cast round), dead setattr guards, numeric coercion helpers and telemetry/dashboard,
+  about 20 sit in the decision path. Ranked below.
+- The biggest C1 risk is one blanket handler around ALL rescue-incident handling
+  (wildfire_model.py:3756). An exception there deletes the incident with no trace.
+- The biggest C2/C3 finding is new: the option generator's fire-cell collector reads a Fire
+  attribute that does not exist (`burnt_status`). The dominant searcher strategy
+  (wind_aware_victim_search) and the tracker flank options therefore see belief >= 0.3 only.
+  The executor's same-named helper sees ground truth `is_burning()` plus belief >= 0.55.
+  That is two definitions of "active fire" in one decision chain.
+- The fail-safe execution-feedback loop is open. SafetyChecker reads top-level keys
+  (`no_search_target`, `partial_success`, `failures`) that the dispatcher never produces. The
+  UAV executor reports them as VALUES under result["local"][uid]["reason"/"status"].
+- The MAPE rescue decision (planning_result["rescue_decision"]) cannot affect anything:
+  rescue options never carry victim_id/firefighter_id. Behind that gate there is a latent
+  crash (rescue_executor.py:606-608).
+
+=====================================================================================
+1. RANKED FINDINGS (suspected impact, highest first)
+=====================================================================================
+
+#1  wildfire_model.py:3750-3757  _process_rescue_incidents        [C1]
+    try: self._handle_rescue_incident(incident) / except Exception: continue   (no log)
+    Try body: the whole physical rescue state machine for one drained incident:
+      victim_dead release (3616-3630), rescue_complete finalize + release + post-rescue
+      coverage (3632-3683), route_blocked unassign (3685-3708), and the replacement/initial
+      pairing (3710-3731, select_rescue_assignment + apply_physical_pairing_decision).
+    Fallback: the incident was already drained, so it is lost for good. There is no retry and
+    no counter.
+    If it raised every step: no victim is ever dispatched, finalized or released. Dispatch and
+    rescue status freeze, and rescued collapses. A partial raise (e.g. inside
+    _activate_post_rescue_coverage_for_searchers, after finalize) silently skips the
+    post-rescue searcher coverage. The code comment at 3669-3677 already acknowledges that this
+    handler would swallow an activation raise.
+    Changes a result?  YES if it ever fires.
+    Runtime check: monkeypatch WildFireModel._handle_rescue_incident with a wrapper that
+    counts (incident type, exception type, step) and re-raises into the original handler.
+    Over a 360-step canonical+N30 wave, expect 0. Also count drained vs handled-to-completion
+    per type.
+
+#2  src_extension/adaptation/local_adaptation_generator.py:3421-3446  _collect_active_fire_cells   [C2+C3]
+    status = getattr(agent, "burnt_status", None); keeps the cell only if
+    status in ("burning","burned","on_fire","fire").
+    `burnt_status` is written nowhere. Fire (agents.py:18-42) has `burning`/`burnt` booleans
+    and is_burning(). The literals 'burned' and 'on_fire' are produced nowhere. So the whole
+    ground-truth branch is dead, and the set is only fire_probability_map cells >= 0.3.
+    The executor's twin (uav_executor.py:3781-3806) uses type(agent) is Fire and
+    is_burning(), plus belief >= 0.55.
+    Consumers of the generator version (decision path):
+      4232 _has_meaningful_fire gates the whole wind_aware_victim_search option
+           (memory: 41.5% of local choices are this fixed precedence).
+      3849 wind-aware search target; 3006/3069/3144 tracker flank/standoff targets.
+    Changes a result?  Not run-to-run: it is constant today. But it defines current
+    behaviour, and any fix or rename changes it. No wind-aware search before belief >= 0.3
+    exists anywhere; the executor and the generator disagree on fire extent.
+    Runtime check: per call, count schedule agents with a `burnt_status` attribute (expect 0).
+    Per step, record len(generator set), len(executor _collect_active_fire_cells(model)) and
+    the number of burning Fire agents. Record the steps where _has_meaningful_fire is False
+    while the executor set is non-empty (the gated-off window for wind-aware search).
+
+#3  wildfire_model.py:5664-5713  _sync_victim_agent_status (per-victim try / except: continue)   [C1]
+    Try body (13 statements):
+      - copies managed state -> marker.status (read by detection skip 1382, dispatch loop 2815,
+        the rescue snapshot 3382-3408, local_adaptation_generator 750 search targets,
+        uav_executor 1616)
+      - clears state.rescue_assigned when _find_active_firefighter_for_victim finds no FF
+        (5691-5698). This is the release that makes a victim dispatchable again.
+      - optional fallback dispatch (disabled: _allow_sync_victim_dispatch_fallback=False)
+    Fallback: that victim is skipped for the step, with no log.
+    If it raised every step: marker status stops following state, and rescue_assigned is never
+    released. The victim can stay "assigned" with no firefighter and is never re-dispatched.
+    This is a silent stall of rescue.
+    Changes a result?  YES if it ever fires.
+    Runtime check: wrap the loop body (or _find_active_firefighter_for_victim) and count
+    exceptions per victim per step over a 360-step wave. Separately assert after each
+    post-move cycle: rescue_assigned => an active FF exists.
+
+#4  wildfire_model.py:2936-2955  _revalidate_route_blocked_firefighters (per-unit try / except: continue)   [C1]
+    Try body: _fire_cells, _neighbor_cells, the enclosure test, _path_exists_avoiding_fire
+    BFS to every live victim cell, then ff_marker.status = "available".
+    Fallback: the unit keeps status route_blocked, which every dispatch gate refuses
+    (docstring 2822-2831). There is no log, unlike the stale clear at 4096, which prints.
+    If it raised every step: route-blocked firefighters never recover, and replacements run
+    short.
+    Changes a result?  YES (dispatch capacity).
+    Runtime check: wrap the loop body and count exceptions per (ff, step). Count units that
+    stay route_blocked for more than N steps while a BFS path exists (recompute offline from
+    the fire snapshot).
+
+#5  wildfire_model.py:3167-3191  _update_uav_stuck_counts_after_move (whole-loop try / except: pass)
+    + wildfire_model.py:5936-5949  step(): _uav_positions_before_step fill (whole-loop try / except: pass)   [C1]
+    Stuck counts feed decisions: uav_executor.py:1071-1076 (count >= 2 => "victim_stuck_escape")
+    and uav_executor.py:547-554 _uav_stuck_count.
+    Fallback: counts frozen at their last value (3190), or zero because before-pos is missing
+    (5948). The stuck escape then silently never triggers.
+    Changes a result?  YES (searcher movement) if it ever fires. The body is trivial, so this
+    is unlikely.
+    Runtime check: wrap both and count exceptions. Also assert every step that
+    set(_uav_positions_before_step) == UAV ids, and that max(_uav_stuck_counts) matches an
+    independent recount from recorded positions.
+
+#6  src_extension/execution/safety_checker.py:148-176  _reasons_from_execution   [C2+C3]
+    Reads top-level execution_result keys "no_search_target" (152), "partial_success" (155) and
+    "failures" (157). execution_result is DecisionDispatcher.dispatch()'s dict
+    (decision_dispatcher.py:129-137: fail_safe/global/local/rescue/communication/...). None of
+    those keys exists at top level. The UAV executor emits the condition as VALUES,
+    {"status": "partial_success", "reason": "no_search_target"}, nested under
+    result["local"][uid] (uav_executor.py:787-800). "failures" is written nowhere, even in
+    tests' src counterpart.
+    Silent effect: execution never contributes fail-safe reasons. A fail-safe search with no
+    target never escalates to INFORMATION_INSUFFICIENT or SEARCH_MODE_REQUIRED through this
+    route. The mode comes from analysis and planning only.
+    Changes a result?  Constant today. It would change fail-safe mode if wired.
+    Runtime check: hook SafetyChecker._reasons_from_execution and log non-empty returns
+    (expect 0). In the same run, count nested local results with reason == "no_search_target"
+    (expect > 0 whenever fail-safe search is active).
+
+#7  wildfire_model.py:5320-5325  _check_fire_casualties   [C1, fail-dangerous]
+    try: if callable(is_burning) and not is_burning(): continue / except Exception: pass
+    When is_burning raises, the cell falls through to fire_cells.add(). A Fire of unknown
+    state is treated as BURNING, and victims and FFs on it are killed (5331-5487). It is the
+    only handler that fails toward casualties. The mirror at 4978-4983
+    (_active_burning_cells) fails toward "not burning", so the two disagree on failure.
+    Changes a result?  YES if it ever fires (deaths). It is unlikely, because is_burning is a
+    getter.
+    Runtime check: wrap Fire.is_burning at class level to count raises (expect 0), and count
+    casualties whose cell had burning=False.
+
+#8  agents.py:2020-2025  Firefighter.advance, carrying leg   [C1]
+    try: self.model.grid.move_agent(self.rescued_victim, self.pos) / except Exception: pass
+    Fallback: the carried victim marker stays at its old cell while the FF walks off.
+    marker.pos feeds _check_fire_casualties (wildfire_model.py:5336-5341), so a carried
+    victim can "die" at a cell it has left. Detection (1381-1386) and the rescue snapshot also
+    read marker.pos.
+    Changes a result?  YES if it ever fires (the carried-victim isolation class named in the
+    exitstall round).
+    Runtime check: after every Firefighter.advance with exiting and rescued_victim set, assert
+    rescued_victim.pos == self.pos, and count mismatches and move_agent raises.
+
+#9  Rescue MAPE decision is structurally inert, with a latent crash behind the gate   [C2 + C1]
+    - rescue_planner.py:123-125 builds RescueDecision.victim_id / firefighter_id from option
+      params "victim_id"/"firefighter_id" or option attributes "victim"/"firefighter". None of
+      these is ever produced: rescue_adaptation_generator never writes them, and
+      AdaptationOption has no such fields (adaptation_option_objects.py:22-33). So both are
+      always "".
+    - rescue_executor.py:94 `if model is not None and decision.victim_id:` never passes.
+      _apply_victim_state, _apply_firefighter_model and _apply_victim_runtime never run from
+      the MAPE path. The VictimState status writes 'delayed' and 'cancelled'
+      (rescue_executor.py:581/588) are unreachable.
+    - LATENT CRASH, rescue_executor.py:605-608: assign_to_victim(ff, vid, action_kind=...).
+      The real signature (firefighter_model.py:160) has no action_kind, so this ALWAYS raises
+      TypeError. The fallback assign_to_victim(ff, vid) omits the required `timestamp`, raises
+      TypeError again, and nothing catches it. The first RescueDecision that carries a
+      firefighter_id kills the step.
+    - rescue_executor.py:633: update_rescue_state / set_rescue_state / apply_rescue_action are
+      defined nowhere. That branch is a permanent no-op.
+    Changes a result?  No today, because the chain is inert. It would the day options gain
+    victim ids.
+    Runtime check: hook RescueExecutor.execute and log decision.victim_id,
+    decision.firefighter_id and rescue_action per step (expect "" / "" every step).
+    Unit-probe _apply_firefighter_model with a real FirefighterModel to confirm the TypeError
+    (that is an import-only call, but it is outside this read-only brief, so it was not run).
+
+#10 src_extension/execution/uav_executor.py:637-640, 1158-1161, 1786-1789, 4418-4421   [C2]
+    obs_radius = getattr(model, "UAV_OBSERVATION_RADIUS", getattr(model, "observation_radius", 8))
+    Neither is ever a model attribute. UAV_OBSERVATION_RADIUS is only a module constant
+    (common_fixed_variables.py:753), so obs_radius is the literal 8 at all four sites (UAV
+    separation scoring in hold-escape, direction intent, escape score, best direction).
+    Silent effect: identical at default (8 == 8). Under an override of UAV_OBSERVATION_RADIUS
+    (apply_scenario_config setattrs modules, local_adaptation_generator.py:270-273), detection
+    and the local monitor use the new radius while these four scorers keep 8.
+    Changes a result?  Only with a non-default radius.
+    Runtime check: run with UAV_OBSERVATION_RADIUS overridden and hook the four sites (or
+    assert hasattr(model, "UAV_OBSERVATION_RADIUS") is False).
+
+#11 wildfire_model.py:3003-3043  _process_pending_agent_removals, inner removals   [C1]
+    Seven `try: grid.remove_agent / schedule.remove / agent.status="rescued" except: pass`.
+    The unit is still counted as removed (removed += 1). Only the outer handlers report
+    (3096 -> _report_pending_removal_failure prints). A victim or dead FF that fails removal
+    stays on the grid and schedule.
+    Changes a result?  Unlikely. Most readers skip rescued/dead by status, but fire casualty,
+    rendering and schedule iteration still see it.
+    Runtime check: after each post-move cycle, assert that no agent processed this step is
+    still in grid/schedule, and count the inner raises.
+
+#12 src_extension/execution/uav_executor.py:4596-4610  _cell_agents   [C1]
+    get_cell_list_contents([cell]) raising returns []. _cell_has_burning_fire and
+    _cell_has_active_smoke (4612-4637) then say "safe". A movement hazard check fails open.
+    mesa raises IndexError for x/y >= size. Negative indices wrap silently (no raise), which is
+    the off-grid class already audited.
+    Changes a result?  Only if called on an out-of-range cell. The callers normally
+    bound-check first.
+    Runtime check: count raises in _cell_agents with the cell, per step.
+
+#13 Option-generation scaffold inputs never produced   [C2, self-referential reads]
+    These are read from analysis results or runtime_models and only ever written back as
+    echoes into the option's own params. runtime_models has fixed keys (wildfire_model.py:
+    2072-2084, 2218-2232), and GlobalAnalysisResult/LocalAnalysisResult have fixed fields
+    (analysis_results.py:13-65); none of these names is among them.
+      local_adaptation_generator.py:2085-2093 high_probability_hidden_regions, last_known_fire_location
+         -> 2412-2436: revisit_high_probability_hidden_regions gets target_regions=[] and
+            directed_search_last_known_fire_location gets target_location=None whenever
+            fire_target_cells is empty. Movement-relevant: check how the executor treats a
+            None target.
+      rescue_adaptation_generator.py:326-334 nearest_firefighter, firefighter_candidates;
+         395-412 safest_route, route_candidates
+      global_adaptation_generator.py:128-140/240-252 battery_state, resource_state (+resources);
+         568-615 uncertainty_map, negative_observation_maps, stale_information,
+         last_known_fire_regions, communication_support_zones; 927-939 critical_regions,
+         region_value_map
+      local_adaptation_generator.py:2070-2100/4404-4424/4505-4542/4667-4704/4957-4981
+         local_uncertainty, environment_stability, drift_state, belief_hotspots, fire_belief,
+         stale_regions, recently_confirmed_empty_regions, current_path, stability_state
+      failsafe_adaptation_generator.py:177-183 mission_state; 287-296 safety_state
+    Changes a result?  Constant today. Some options exist with empty or None payloads.
+    Runtime check: hook the generator's read_value and record every (name, returned-default?)
+    pair per step (expect default 100%). For the two local path options, log target_location /
+    target_regions when selected.
+
+#14 Communication status is never produced; the degradation branches are dead   [C2+C3]
+    local_uav_monitor.py:264-269 reads uav.communication_status (the UAV has no such
+    attribute) and falls back to the resource model. uav_resource_model.py:120-121 is fed only
+    from obs.communication_status (wildfire_model.py:1477). The loop is circular, so the
+    status is always "".
+    Dead literal arms: wildfire_model.py:1534 ('failed','lost','error','down'), 1536
+    ('delayed','pending','degraded'), 1605/1607 (same). global_analyzer.py:1010-1015 'lost'
+    in cs.
+    Silent effect: telemetry-message delivery degrades only via drift_error. The comm-quality
+    penalty never uses a status.
+    Changes a result?  Constant today. It feeds CRITICAL_LINK_UNRELIABLE and DEGRADED mode.
+    Runtime check: record the distinct obs.communication_status values over a run
+    (expect {""}).
+
+#15 global_analyzer.py dead trigger inputs   [C2]
+    560 fire_belief_summary["confirmed_fire_cells"] (cannot cancel the SEARCH_MODE_REQUIRED
+    visible-empty test); 1024 issue_flags/flags and 1028-1033 unsafe/critical_issue/
+    system_fault in uav_team_summary.by_uav_id; 1039/1043 system_unsafe/fleet_emergency
+    (_fleet_level_unsafe is always False); 1178 knowledge_desync_risk/desync_risk; 603
+    sufficiency_score.
+    Changes a result?  Constant today. These are fail-safe trigger conditions that can never
+    fire.
+    Runtime check: hook _fleet_level_unsafe and _unwrap_summary_layer outputs, and assert the
+    keys are absent in every snapshot.
+
+#16 constraint_filter.py keys never produced; filters never bind   [C2]
+    mission_constraints: forbidden_option_types (70), forbidden_scopes (72),
+    min_communication_reliability (132), min_delivery_confidence (133),
+    unavailable_actions (193), unavailable_targets (194).
+    option.parameters: required_battery/battery_required (103-106), requires_communication
+    (134), enter_fire_zone/enter_smoke_zone (172/176, alternates of the produced enters_*),
+    high_battery_cost/battery_intensive (180), required_entities (196), infeasible (200).
+    Changes a result?  Constant today. Those constraints never remove an option.
+    Runtime check: hook ConstraintFilter and count rejections by reason string over a wave;
+    reasons tied to these keys stay at 0.
+
+#17 utility_evaluation.py dead scoring terms beyond the KNOWN nine   [C2/C3]
+    310-311 role_change, task_change, recent_switch_count (role_switch_count IS produced);
+    358-360 critical_trigger, criticality (the stability-bonus "critical" gate; also
+    fail_safe_planner.py:353); 385-388 negative_observation_recent, negative_observation_stale,
+    avoids_recent_negative_region, confirms_stale_negative_region. The whole
+    _compute_negative_information_adjustment is always 0.
+    1050-1052 (rescue scorer, C3): "confirm"/"delay" in option_type. No rescue option type
+    contains them (stability_control, victim_handling, rescue_decision,
+    firefighter_assignment, route_planning, rescue_failsafe), and the param keys
+    confirmation/confirm_rescue/delay_rescue/postpone_rescue are never produced. The value
+    lives in rescue_action="delay_rescue". This is the same bug rescue_planner.py:277-283
+    documents as fixed in _is_delay_or_cancel_option, but it is not fixed here. Also
+    rescue_planner.py:268-271 _is_confirmation_option is always False.
+    Changes a result?  No: constant across options, and the rescue scorer feeds the inert
+    decision (#9).
+    Runtime check: record per-term values in evaluate_option over a wave (expect exactly 0.0
+    for these terms).
+
+#18 UAV role vocabulary: produced vs compared   [C3, latent]
+    Produced as roles: 'fire_tracker', 'victim_searcher' (wildfire_model.py:1046-1051;
+    role_option_values.py:28-29 at mode 1).
+    Produced only as mode-0 option params, never applied because there is no target_uav_id
+    (global_mission_planner.py:233-249): 'fire_tracking', 'victim_search',
+    'victim_confirmation', 'victim_tracking', 'communication_relay'
+    (global_adaptation_generator.py:147-153).
+    Compared exactly: 'fire_tracker' (local_adaptation_generator.py:2169, 2190, 2215, 2450,
+    2539, 2549; uav_executor.py:151, 430); {'victim_searcher','victim_search'}
+    (decision_dispatcher.py:412, uav_executor.py:51/166, local_adaptation_generator.py:262/304).
+    Never produced: 'fire_search', 'fire_mapper', 'scout' (uav_executor.py:50 _FIRE_ROLES;
+    harmless, since "fire" in role covers them).
+    Risk: if anything ever applies a mode-0 role string, 'fire_tracking' passes _role_kind
+    ("fire" substring) but fails every exact 'fire_tracker' test. The generator and executor
+    would then disagree on the UAV's role.
+    Runtime check: record the distinct values of managed_uav_states[*].role and
+    uav_resource_model current_role over a wave (expect {fire_tracker, victim_searcher}).
+
+#19 communication_adaptation_planner.py:155-169   [C2+C3]
+    getattr(victim_model, attr) for active_rescues, assigned_victims and pending_rescues:
+    VictimRuntimeModel has none of them (also communication_adaptation_generator.py:126-131).
+    VictimState.status in {"assigned","en_route","confirmed","pending_rescue"}: 'en_route' is
+    FF-only vocabulary and 'pending_rescue' is produced nowhere.
+    Changes a result?  Low. Communication-mode choice already returns True via mission_goals
+    active_rescues or rescue_assigned.
+    Runtime check: none needed beyond an attribute assertion.
+
+#20 mode_manager.py:88-95  _to_reason_enums   [C1]
+    except (TypeError, ValueError): continue drops any reason string outside FailSafeReason.
+    Every current producer maps to enum values (safety_checker.py:18-47), so there are no
+    drops today. classify_mode uses the raw strings, so mode is unaffected. active_reasons
+    (which feeds should_override_utility and recovery_score) would silently lose one.
+    Runtime check: count drops (expect 0).
+
+#21 TypeError-retry wrappers (a TypeError inside the callee is misread as a signature
+    mismatch)   [C1]
+    global_executor.py:164-176 _call_update_role: an inner TypeError re-runs update_role with
+    fewer args. The final call omits the required timestamp, so it re-raises. Double
+    application is possible.
+    communication_executor.py:252-263: record_* have keyword-only params, so the 2nd call
+    always TypeErrors and the 3rd records timestamp 0.0. A bad timestamp gives staleness from
+    t=0.
+    uav_executor.py:4677-4683 _search_target: the 3rd attempt omits the required
+    current_time, TypeErrors, returns None (no search target).
+    rescue_executor.py:605-608: see #9.
+    Runtime check: wrap each and count except-branch entries (expect 0).
+
+#22 local_adaptation_generator.py:3363-3367 and 3383-3399  _resolve_wind_observation   [C1]
+    bridge.get_wind_summary() raising gives {}, then the config/env fallback. The fallback
+    itself is try/except: pass and returns None. None disables the wind-aware option (4229).
+    Primary source is global_observation_snapshot, so this is the fallback path only.
+    Runtime check: count returns by wind_source label ('global_monitor' / 'environment_bridge'
+    / 'config' / None).
+
+#23 wildfire_model.py:2497-2501  _recycle_firefighter_after_exit   [C1]
+    move_agent to standby raising gives pass. The FF is then set "available" at its current
+    cell, not at standby.
+    Low. Runtime check: assert ff.pos == standby_pos after recycle.
+
+#24 wildfire_model.py:3157-3165  _clear_rescue_path_if_requested   [C1]
+    A raise keeps _rescue_path_clear_requested True and leaves PathMarkers in the grid and
+    schedule. Mostly display, but PathMarkers are schedule agents that every loop iterates.
+    Low. Runtime check: count PathMarker agents per step.
+
+#25 failsafe_adaptation_generator.py:117-118, 173-174, 226-227   [C3]
+    "CRITICAL" in ctx and ("DEGRADATION" | "FAIL" | "COMMUNICATION") in ctx. ctx is trigger
+    names plus free-text explanation_context (trigger_input.py:48-76). None of the 36 produced
+    trigger types contains DEGRADATION, FAIL or COMMUNICATION (RESOURCE_DEGRADING is not
+    DEGRADATION). So the flag depends on explanation prose. "critical_degradation" is a
+    write-only option param: no reader anywhere.
+    Low.
+
+#26 wildfire_model.py:3995 _firefighter_fire_enclosed (returns False) and
+    wildfire_model.py:4982 _active_burning_cells (continue)   [C1]
+    On a raise, a unit is "not enclosed" (the stale clear proceeds at 3928/4047) and a cell is
+    "not burning" (the rescue snapshot's safe-path reachability at 5101 fails open).
+    Low. Runtime check: count raises.
+
+#27 KNOWN - victim marker 'confirmed' (recorded here for the mechanism)   [C3]
+    Detection writes marker.status="confirmed" (wildfire_model.py:1407). The same step's
+    post-move _sync_victim_agent_status writes "confirmed" (5684-5685), then overwrites it
+    with state.status (5688-5690), which is still "candidate" because detection sets only
+    state.confirmed=True (1403). That is the mechanism behind "markers go candidate ->
+    assigned".
+    EXCEPTION to "never produced": the route_blocked unassign with reset_victim_pending sets
+    state.status and marker.status to "confirmed" (4789, 4796), so after a route-block the
+    marker DOES read 'confirmed'.
+    All decision-side 'confirmed' tests are OR'd with state.confirmed (2815, 3390, 5169), so
+    they still work.
+
+=====================================================================================
+2. KNOWN ITEMS MET (not re-analysed)
+=====================================================================================
+- search_mode_required vs search_mode (safety_checker 44 "search_mode" text marker;
+  global_adaptation_generator 811/1083).
+- target_regions vs target_region (global_mission_planner.py:258-260 _task_assignments;
+  uav_executor.py:1525 loop). Also related: task_assignments keys "task"/"target_region" are
+  never UAV ids, so global_executor.py:77-90 never applies them. The resource-model task
+  methods update_assigned_task/update_task/assign_task (global_executor.py:83) are defined
+  nowhere.
+- The planner's nine scoring keys: fire_spread_speed, hard_collision_violation, horizon_type,
+  knowledge_confidence, projected_battery_after_option, requires_critical_communication,
+  route_feasible, uncertainty_level, victim_uncertainty (written only in tests;
+  utility_evaluation.py:267-428, 542-548; rescue_planner.py:208-209, 399; fail_safe_planner.py:462).
+- Victim marker 'confirmed': see #27 (the mechanism plus one writer the note does not mention).
+- int(0.5)==0 bare-cast accessors: every config accessor with except (TypeError, ValueError)
+  -> default (agents.py:891-1212 x18, 1152/1156; wildfire_model.py:2554, 4021;
+  uav_executor.py:2110, 2141, 2165). The same handlers also turn a malformed value such as
+  "abc" into the default silently. That belongs to the same round.
+
+=====================================================================================
+3. CLASS-3 VOCABULARY TABLES
+=====================================================================================
+Victim status - VictimState.status (managed_victims)
+  PRODUCED: candidate (wm:919), assigned (wm:4694), confirmed (wm:4789), unreachable (wm:4824),
+            rescued (wm:4887), dead (wm:5352); delayed/cancelled (rescue_executor.py:581/588,
+            UNREACHABLE: see #9); unknown (dataclass default, overwritten at init).
+Victim status - marker (agents.Victim.status)
+  PRODUCED: candidate (agents:1429, wm:934), confirmed (wm:1407, overwritten same step; wm:4796),
+            assigned (wm:4711), unreachable (wm:4853), rescued (wm:3022, 4919, 5677), dead
+            (wm:5344), plus copies of state.status from _valid_statuses (wm:5682/5690).
+  COMPARED: dead, rescued, unreachable, cancelled, confirmed, assigned, candidate, unknown, "",
+            delayed, en_route, pending_rescue.
+  COMPARED BUT NEVER PRODUCED FOR VICTIMS:
+    'en_route', 'pending_rescue': communication_adaptation_planner.py:169
+    'cancelled' as a STATUS string: its only writer is unreachable (#9). String arms at
+      wm:1377, 1382, 3404, 3658, 3663, 4876, 5137-5138, 5621, 5629, 5680;
+      adaptation_manager.py:219-221; local_adaptation_generator.py:737, 750, 3300, 3317, 3324;
+      uav_executor.py:1591, 1616, 1632; rescue_planner.py:440. All are paired with the
+      state.cancelled BOOL, which IS produced (wm:4816, 5360), so they are redundant, not
+      broken.
+    'delayed': wm:5650 _valid_statuses only (unreachable writer).
+Firefighter marker status
+  PRODUCED: available (agents:1770/2602/2626/2730; wm ~2503 recycle, 2954 revalidate,
+            ~3932 release), assigned
+            (agents:2602/2626/2730), en_route (wm:4655), route_blocked (agents:2535), off_grid
+            (wm:2587), dead (wm:5451).
+  COMPARED: dead, route_blocked, assigned, en_route, off_grid. No mismatch.
+UAV role: see #18.
+Executor action labels (execution_action / action)
+  COMPARED: rtb_waypoint (uav_executor:416), victim_search_escape_bfs (424),
+            "retarget_to_interior" substring (421), hold / hold_escape* (429), movement-category
+            substrings hold_escape/fire_smoke_escape/fire_flank_relocate/fire_flank_hold/
+            standoff/hazard/escape/wind_aware (151-173).
+  PRODUCED: all found (902, 1950, 1269/1280, 545/3002, 2959/2974, 2996/3113, 3029,
+            3032/3055, 2395-2484, 1471). No mismatch.
+Fail-safe modes: FailSafeMode enum (failsafe_modes.py:14-21). Every compared literal
+  (normal, degraded, safety_first, emergency, information_recovery; mission_mode search/none)
+  is produced. No mismatch.
+Fail-safe actions: every member of _REAL_OVERRIDE/_NO_OVERRIDE/_SEARCH sets and
+  _MODE_PREFERRED_ACTIONS is produced by fallback_strategy.py or the planner fallbacks
+  (633-650). No mismatch.
+Fail-safe reasons: _TRIGGER_TYPE_TO_REASON keys, all 9 produced trigger types. The
+  execution-derived route is dead (#6).
+Trigger types: 36 produced (grep trigger_type="..."). Compared exactly: OSCILLATION_RISK,
+  INSTABILITY_DETECTED (global_adaptation_generator:351), the 9 map keys, the 2
+  information names. All produced. Substring tokens DEGRADATION/FAIL/COMMUNICATION: #25.
+Rescue incident types: produced victim_confirmed (wm:1431), route_blocked (5285),
+  firefighter_casualty (5302/5485), victim_dead (5397), rescue_complete (5636). All handled
+  at 3601-3731.
+Rescue event types: produced dispatch_initial, dispatch_replacement_after_blocked,
+  dispatch_replacement_after_casualty (wm:4163-4175), rescue_failed (4858), rescue_complete
+  (4925), route_blocked (5276), victim_dead (5391), casualty (5477), firefighter_off_grid
+  (2640), firefighter_returned (2782). Compared: _RESCUE_EVENT_CONSOLE_TYPES (4140-4151),
+  action_map (4232-4241). All produced. Dashboard-only: 'firefighter_dead'
+  (timeline_builder.py:48) is never produced.
+rescue_action values: MAPE options produce delay_rescue/cancel_rescue/escalate_to_operator
+  (rescue_adaptation_generator.py:244-266). Physical path produces assign/delay/
+  mark_unreachable (rescue_planner.py:620-666). _classify_rescue_action matches 'confirm'
+  (never produced as a rescue_action), assign/initiate/dispatch, delay, cancel. The confirm
+  arm is unreachable, and the whole path is inert (#9).
+option_type values: produced (22 literals + fail_safe_{action} + local path types):
+  communication_adaptation, communication_failsafe, communication_strategy, coverage_strategy,
+  explore_unknown_region, fail_safe_mission, firefighter_assignment, horizon_control,
+  mission_failsafe, movement_strategy, path_planning, rescue_decision, rescue_failsafe,
+  resource_reallocation, role_assignment, route_planning, sensing_strategy, stability_control,
+  task_allocation, uav_failsafe, victim_handling, wind_aware_victim_search.
+  Substring gates that no rescue/communication option type satisfies:
+  utility_evaluation.py:553/1050 'confirm', 1051 'initiate', 1052 'delay', 854 'reassign',
+  855 'change', 1216 'reduced', 1220 'priorit', 1390 'hold_position'; rescue_planner.py:155/269
+  'confirm'; local_uav_path_planner.py:601 'escalat' (plus params escalation/
+  escalation_payload/escalation_reason, never produced).
+option_id values: compared by exact action name in local_adaptation_generator.py:1762-1814;
+  every name has a producing occurrence (tuple elements at 2389-2440, 4432-5024). No mismatch.
+
+=====================================================================================
+4. CLASS-2 FULL LIST (read, never written in src; reader file:line -> default)
+=====================================================================================
+Decision-path (see ranked items): burnt_status (#2); no_search_target/partial_success/failures
+(#6); victim_id/firefighter_id on rescue options, update_rescue_state/set_rescue_state/
+apply_rescue_action (#9); UAV_OBSERVATION_RADIUS/observation_radius on model (#10); scaffold
+inputs (#13); communication_status (#14); analyzer keys (#15); constraint keys (#16); scoring
+keys (#17); active_rescues/assigned_victims/pending_rescues on victim model (#19);
+update_assigned_task/update_task/assign_task (KNOWN target_region area).
+Other never-written alternates (a produced primary key exists, so harmless):
+  operational_mode (fail_safe_planner:425, global_mission_planner:210,
+  local_uav_path_planner:403, mission_goal_integration:92, rescue_planner:363); role_assignments
+  (global_mission_planner:234); task_assignment (252); relay_assignment/relay_assignments
+  (265, never produced at all, so relay commands never exist); recall_order
+  (global_mission_planner:276); waypoint (uav_executor:1525; local_uav_path_planner:429/438);
+  reachable (rescue_planner:503, fallback of geo_reachable); options_by_uav
+  (local_uav_path_planner:279); code (trigger_objects:216; safety_checker:168); information_gain
+  (global_monitor:81, fallback of raw_information_gain); near_smoke/smoke_exposure
+  (mission_goal_integration:68); coverage_score (wm:3548, fallback);
+  grid.shape (wm:3519: MultiGrid has no .shape, so the numpy branch of _estimate_fire_severity
+  is dead).
+Mesa/stdlib names (false positives): pos, unique_id, schedule.agents, schedule._agents,
+  get_cell_list_contents, out_of_bounds, Content-Length, argparse dests (fire_trackers,
+  victim_searchers, ff_absence_min/max).
+_call_stage (adaptation_manager.py:196-199) is a getattr-with-default dispatcher. All 23 stage
+  names were verified to exist in wildfire_model.py, so there is no silent skip today. A rename
+  would skip a stage silently.
+
+=====================================================================================
+5. APPENDIX - counts only
+=====================================================================================
+Class-1 handlers in scope: 208 (no log: 189).
+  per file: wildfire_model 91, agents 31, local_adaptation_generator 18, uav_executor 17,
+  global_analyzer 12, serve_dashboard 9, local_uav_analyzer 5, evaluate_scenarios 4,
+  dashboard_state_builder 4, live_dashboard_panel 3, and 1-2 each in 9 other files.
+  - Decision-path swallows ranked above: 20 sites (#1, #3-#5, #7, #8, #11, #12, #20-#24, #26,
+    rescue_executor 606-608).
+  - Dead setattr/del guards on plain objects (try: obj.attr = literal except: pass; cannot
+    raise on non-slotted dataclasses/agents): 54 (wm 3022, 4474-4490, 4543, 4665-4711,
+    4757-4802, 4816-4853, 4883-4919, 5344-5385, 5460-5468, 5540, 5677, 5696; agents 1634).
+    They are dead, but they would hide a future frozen=True or __slots__ change.
+  - Config/env accessors (KNOWN int-cast round): 25.
+  - Numeric/parse coercion helpers returning None/default/continue: ~45 (analyzers,
+    local generator cell parsers, uav_executor 808/4528/1100/4697/4707/4836,
+    global_adaptation_generator 383, utility_evaluation 1599, agents 1453). One is worth a
+    look: local_adaptation_generator.py:2519-2521 _get_uav_index returns 0 for a non-numeric
+    id, so every such UAV would share sector index 0. Ids are numeric today.
+  - Dead guards on non-raising expressions: agents.py:842 (getattr cannot raise),
+    decision_dispatcher.py:102, wm:3524 (branch unreachable).
+  - Telemetry/log/dashboard (skipped): wm 3139, 4323 (execution-log mirror, no decision
+    reader), 5720-5904 _log_step_summary x6, 5966; uav_executor 311, 3831 (explanations);
+    global_analyzer 655/658 (_info_explain); serve_dashboard x9; alert_manager x2;
+    dashboard_state_builder x4; live_dashboard_panel x3; evaluate_scenarios x4 (all
+    print/raise; 269 skips a failed seed but the summary prints "over N successful runs").
+Class-2 never-written names: 219 raw reader hits over ~150 names. After removing
+  substring/in-literal reads (moved to class 3), mesa/argparse/HTTP names and fallback
+  alternates: ~60 real never-produced inputs, all listed in sections 1 and 4. Dashboard-only:
+  firefighter_dead, recovery, tracker (live_dashboard_panel 141/225/268).
+Class-3 compared-but-never-produced literals with no producing occurrence anywhere (AST free
+  scan): 21. Decision-relevant ones: 'burned', 'on_fire' (#2); 'acked' (communication_model.py:
+  197/256/266 accepted alongside 'delivered'); 'down', 'error', 'lost', 'pending' (#14);
+  'pending_rescue' (#19); 'send_message' (decision_dispatcher.py:373, harmless because "comm"
+  also matches); 'safety', 'resource' (mission_goal_model.py:86/88 category keys);
+  'test_initial' (a test hook). The rest are HTTP paths, class __name__ tests and truthy
+  parsing.
+
+=====================================================================================
+6. COMMANDS THAT COULD HAVE TRAVERSED outputs/ OR outputs/_firemech_rewound_20260914
+=====================================================================================
+None.
+- Every grep -r was rooted at src_extension (plus the five named top-level files), always
+  with --exclude-dir=_firemech_rewound_20260914 (and --exclude-dir=__pycache__). There was no
+  grep/rg/Grep from the repo root or from outputs/.
+- `find` was run only on src_extension (find src_extension -name '*.py'; -type f listing;
+  one no-op `find src_extension -prune -o -print | head -1`).
+- The Python AST scripts walked only src_extension/ (c1_scan: os.walk pruning __pycache__)
+  and src_extension/ + tests/ (c2_scan; the dirs filter also prunes __pycache__,
+  _firemech_rewound_20260914 and outputs). No script walked the repo root or outputs/.
+- git status was never run. The only non-repo reads were the user's memory directory
+  (C:\Users\ahrar\.claude\projects\E--Projects-SAS\memory\: planner-round,
+  victim-candidate-not-undetected, direct-attr-hooks..., bare-int-cast...) to identify KNOWN
+  items.
+- tests/ was only AST-parsed (never executed), to tag names written only by tests.
