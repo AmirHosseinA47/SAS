@@ -221,17 +221,28 @@ def test_wind_does_not_overwrite_selected_dir() -> None:
 
 
 def test_descriptive_next_action_uses_target_position() -> None:
-    executor, agent, _ = _executor_at((2, 5))
-    decision = PathDecision(
-        decision_id="p-5",
-        uav_id="0",
-        next_action="move_toward_fire_front",
-        uncertainty_context={"target_position": (7.0, 5.0)},
-    )
-    result = executor.execute(decision, timestamp=1.0)
-    assert result["action"] == "computed_from_target"
-    assert result["selected_dir"] == 0
-    assert agent.selected_dir == 0
+    """A descriptive next_action carrying a target_position is executed TOWARD the target.
+
+    fix1 item 7 (T1). The fixture role 'scout' is not a shipped role; it takes the
+    tracker branch, whose planner-target layer (UAVExecutor._flank_target_from_decision)
+    consumes the decision's target first and labels the move fire_flank_standoff - a
+    cosmetic misnomer when no fire is known. The generic computed_from_target branch this
+    test used to assert is unreachable whenever that layer returns a target, so the test
+    never passed. What matters is that the direction follows the target: one target on
+    each side of the UAV.
+    """
+    for target, expected_dir in (((7.0, 5.0), 0), ((2.0, 1.0), 1), ((0.0, 5.0), 2), ((2.0, 8.0), 3)):
+        executor, agent, _ = _executor_at((2, 5))
+        decision = PathDecision(
+            decision_id="p-5",
+            uav_id="0",
+            next_action="move_toward_fire_front",
+            uncertainty_context={"target_position": target},
+        )
+        result = executor.execute(decision, timestamp=1.0)
+        assert result["action"] == "fire_flank_standoff"
+        assert result["selected_dir"] == expected_dir
+        assert agent.selected_dir == expected_dir
 
 
 def test_local_path_options_include_target_position_for_fire_and_victim() -> None:

@@ -447,7 +447,11 @@ def test_fire_tracker_still_overridden_by_search_mode_fail_safe() -> None:
 
     assert uav_result.get("override_exempt") is not True
     assert uav_result.get("role_preserving_search") is True
-    assert uav_result["action"] == "computed_from_fire_perimeter"
+    # fix1 item 7 (T6): the tracker keeps a TRACKER action under the override. Its flank-hold
+    # layer answers before the perimeter fallback this test used to name
+    # (computed_from_fire_perimeter), so the action is fire_flank_hold - a label
+    # supersession; every override assertion above already held.
+    assert uav_result["action"] == "fire_flank_hold"
 
 
 def test_emergency_and_safe_hold_still_override_victim_searcher() -> None:
@@ -585,14 +589,31 @@ def test_exploration_fallback_smoke_hazard_overrides_directional_bias() -> None:
 
 
 def test_exploration_fallback_respects_boundary_safe_movement() -> None:
+    """At every corner, for every UAV id, the fallback's move stays on the grid.
+
+    fix1 item 8. The oracle used to be `direction in {0, 1}` at (0, 0): with
+    move_x = [1, 0, -1, 0] and move_y = [0, -1, 0, 1], direction 1 is (0, -1) - OFF the
+    grid - and direction 3, (0, 1), is on it. It accepted exactly the off-grid move the
+    searcher livelock fix exists to prevent, and passed only because uav_id 0 happens to
+    prefer direction 0. Each agent's previous heading is set to an off-grid direction, so a
+    fallback that returned its previous heading unvalidated, or preferred an off-grid move,
+    fails here. (The downstream legality guard is pinned by
+    tests/test_victim_searcher_offgrid_guard.py.)
+    """
     from src_extension.execution.uav_executor import UAVExecutor
 
-    agent = _ExplorationAgent(pos=(0, 0))
-    model = _exploration_model(grid=_FakeGrid(width=20, height=20))
-    direction = UAVExecutor(uav_id="0", model=model, agent=agent)._exploration_fallback(agent)
-
-    assert direction in {0, 1, 2, 3}
-    assert direction in {0, 1}
+    move_x = [1, 0, -1, 0]
+    move_y = [0, -1, 0, 1]
+    # corner -> (the two on-grid directions, an off-grid previous heading)
+    corners = {(0, 0): ({0, 3}, 1), (19, 0): ({2, 3}, 0), (0, 19): ({0, 1}, 3), (19, 19): ({1, 2}, 0)}
+    for pos, (legal, off_grid_heading) in corners.items():
+        for uav_id in range(8):
+            agent = _ExplorationAgent(pos=pos, selected_dir=off_grid_heading)
+            model = _exploration_model(grid=_FakeGrid(width=20, height=20))
+            direction = UAVExecutor(uav_id=str(uav_id), model=model, agent=agent)._exploration_fallback(agent)
+            nxt = (pos[0] + move_x[direction], pos[1] + move_y[direction])
+            assert not model.grid.out_of_bounds(nxt), (pos, uav_id, direction)
+            assert direction in legal, (pos, uav_id, direction)
 
 
 def test_exploration_fallback_returns_valid_direction() -> None:

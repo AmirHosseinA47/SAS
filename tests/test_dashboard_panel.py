@@ -57,8 +57,13 @@ def test_dashboard_panel_render_returns_string() -> None:
     html = DashboardPanel().render(model)
     assert isinstance(html, str)
     assert html
-    assert "Step" in html
-    assert "mission_mode" in html
+    # fix1 item 7 (T2): the header prints a lowercase "step" label with the step number,
+    # and the mission mode as a badge VALUE - never the key name "mission_mode", which this
+    # test used to look for (live_dashboard_panel.DashboardPanel._header).
+    mission = model.get_dashboard_state()["mission_status"]
+    assert "step " in html
+    assert ">%s</b>" % model.evaluation_timesteps_counter in html
+    assert str(mission["mission_mode"]) in html
     assert "Fire" in html or "fire" in html.lower()
     assert "UAV" in html or "UAVs" in html
 

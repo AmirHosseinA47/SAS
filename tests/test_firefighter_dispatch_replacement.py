@@ -62,6 +62,25 @@ def _reset_firefighters(model: WildFireModel) -> None:
         ff.status = "available"
 
 
+def _disable_other_firefighters(model: WildFireModel, keep=(FF_FAR, FF_NEAR)) -> None:
+    """Every firefighter the model has, other than `keep`, dead.
+
+    fix1 item 7 (T3/T4): the "no firefighter left" tests assumed a two-firefighter model -
+    that ff_unit_0 and ff_unit_1 are the only units, i.e. NUM_FIREFIGHTERS == 2 (the B/D
+    team size). WildFireModel() is built at whatever NUM_FIREFIGHTERS the config holds (3
+    at the cfv default), so ff_unit_2 stayed alive and the code correctly re-paired it.
+    Disabling every other unit makes the premise hold for any team size.
+    """
+    for ff_id, ff in model.firefighter_marker_agents.items():
+        if ff_id in keep:
+            continue
+        ff.dead = True
+        ff.assigned = False
+        ff.rescued_victim = None
+        ff.target_pos = None
+        ff.status = "dead"
+
+
 def _set_cell_burning(model: WildFireModel, cell: tuple[int, int]) -> agents.Fire:
     for agent in model.grid.get_cell_list_contents([cell]):
         if type(agent) is agents.Fire:
@@ -184,6 +203,7 @@ def test_firefighter_casualty_triggers_replacement() -> None:
 def test_no_replacement_available_marks_victim_unreachable_once() -> None:
     model = _fresh_model()
     _reset_firefighters(model)
+    _disable_other_firefighters(model)
     marker = _prepare_victim_for_dispatch(model)
     _place(model, _ff(model, FF_FAR), FF_FAR_CELL)
     near = _ff(model, FF_NEAR)
