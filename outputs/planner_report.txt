@@ -1,0 +1,710 @@
+================================================================================
+GLOBAL PLANNER FOR UAV ROLES - PARTS 2 AND 3: IMPLEMENTATION AND MEASUREMENT
+The planning step of the MAPE-K loop now decides, for UAV roles only, behind
+GLOBAL_PLANNER_MODE (shipped 0 = today's local strategy).
+Design and pre-registration: outputs/planner_part1.txt (Part 1, Linux container).
+================================================================================
+
+START STATE (2026-09-28, the maintainer's Windows machine, E:\Projects\SAS)
+  BRANCH   claude/exciting-euler-24cn12; HEAD at start aa373a4 (then 6c6cc93, 879c7ed), as instructed.
+           Tracked tree clean (`git status --porcelain -uno` empty); no python.exe running.
+  ENV      Windows 11 Pro 10.0.26200.
+             sys.version      3.10.11 (tags/v3.10.11:7d4cc5a, Apr  5 2023, 00:38:17) [MSC v.1929 64 bit (AMD64)]
+             mesa.__version__ 1.2.1        numpy 2.2.6        pytest 9.1.1
+           Part 1 ran on Linux, Python 3.10.20. NO Part 3 number below is compared with a Part 1
+           number except the open-loop switch share, and that comparison is labelled "Windows closed
+           loop against the Linux open loop". Every reference arm was established HERE, from a
+           dfbfbe7 baseline measured on this machine (plB, plD, plRB on a pinned worktree).
+  TAGS     re-checked before the first run: 0 files in outputs/ (or its _ffr_logs/) and 0 tracked
+           paths start with _ffr_pl / _rblatch_camp2_pl; the only _pl_ files were Part 1's own
+           (_pl_verify/, _pl_pytest_base.log/.xml); none in the worktree's outputs/. Every Part 3 tag
+           (plB plD plC plP plZ plJ plG plQ plKC plKG plF plS, rbgate plRB/plRC/plRG + a|b|c|s)
+           was unused, and no tag is a prefix of another except a shard tag of its own arm.
+  QUARANTINE  outputs/_firemech_rewound_20260914/ was never read or listed by this session: every
+           shell search was scoped to named files, src_extension/ or tests/; git was run with -uno or an
+           index-only command (ls-files, diffs of commits); the directory is in .git/info/exclude.
+           (A top-level `ls outputs` shows the directory's NAME; nothing inside it.)
+           POSSIBLE CONTACT, disclosed per the house rule: ONE Glob-tool call (pattern
+           outputs/_ffr_cl*.clobs.json from the repo root, to see whether the carrying-leg sidecars
+           exist) - the tool is ripgrep-based and honours .git/info/exclude, but it cannot be proven not
+           to have entered the directory. Nothing from it was read or used. The review agents of
+           section 10 were told to exclude it (see there).
+  WORKTREE E:/Projects/SAS_wt/basedfbfbe7, detached at dfbfbe7, tracked tree clean throughout, with a
+           .venv JUNCTION to the real E:\Projects\SAS\.venv (created with `cmd /c mklink /J`). Removal:
+           see HOUSEKEEPING at the end.
+
+--------------------------------------------------------------------------------
+0. SUMMARY
+--------------------------------------------------------------------------------
+PART 2 (committed, df1ff03..9a2e5c4, six commits C1-C6 as planned in 8.1):
+  GLOBAL_PLANNER_MODE = 0 in common_fixed_variables.py; agents.global_planner_mode() is ON only on
+  an exact 1 (D-1, the helper reading, ACCEPTED 2026-09-28); the nine values as pure functions
+  (src_extension/adaptation/role_option_values.py); the per-UAV role-switch builder behind the switch
+  with invariants I1-I5; the reader fix; the GlobalExecutor hook and the model's role-change hygiene.
+  108 new tests; the suite on the final source: 8 failed (the 8 baseline names) / 1055 passed
+  (947 + 108, declared in the C6 commit) / 0 errors.
+
+PART 3 (all arms on this machine, 360 steps unless stated):
+  7.1 SWITCH OFF IS VALUE-IDENTICAL ............ PASS  (a)-(g), incl. plB (dfbfbe7) == plC 13/13
+  7.2 THE PLANNER DECIDES (primary gate) ....... PASS  PURITY, P1-P5, null control; no CHURN
+        the planner switched a role on 76 of 15,480 planner steps (0.49%) in 34 of 43 runs; every
+        switch reached the UAV (P2 76/76) and acted (P3 76/76); every value but communication is
+        non-zero and moves decisions; drift_risk moved 1 decision (a pre-registered SURPRISE).
+        DIRECTIONS: 31 tracker -> searcher (all with a victim undetected) and 45 searcher -> tracker,
+        of which 16 happened WHILE A VICTIM WAS STILL UNDETECTED - the planner does not wait for
+        every victim to be found before moving a searcher to tracking. In 13 of the 16 that victim
+        was alive on the map; in 3 the only undetected victim had already died or been declared
+        unreachable without being detected, which the planner still counts as outstanding (D-7).
+  7.3 COMPARISON (report) ...................... pooled C13+N30 rescued 148 -> 148, dead 18 -> 19,
+        unreachable 4 -> 3, firefighter deaths 11 -> 9 (both changes from single seeds); two N30
+        seeds differ (one up, one down), both attributed to the planner by the fire-equal-until-fate
+        rule. CRN PAIR (N30, the fire's random spread draw pinned per cell and tick): rescued 96 -> 98,
+        dead 21 -> 20, firefighter deaths 7 -> 6; 4 seeds differ, 3 up / 1 down - too few to give the
+        effect a sign; one of the two stock differences does not recur under CRN (section 5).
+  7.4 REFERENCE ARMS (N30, vs plC) ............. plF (no firefighting at all): rescued 106 -> 109
+        (3 seeds), firefighter deaths during the mission 8 -> 2 and after it 0 -> 9; plS
+        (BASE_STATION_MODE 0, a whole-configuration change): rescued 106 -> 98, unreachable 4 -> 8
+        (section 6)
+  7.5 SAFETY ................................... gate items (a)(c)(d)(e) PASS; (b) no livelock
+        increase; (f) TO THE MAINTAINER - steps with no flying searcher 1909 -> 2057 pooled, +120 of
+        the +148 after the mission's terminal step; RULED 2026-09-28: continue.
+  7.6 SUITE .................................... PASS (8 failed = the baseline names / 1055 / 0)
+  Nothing was dropped: every pre-registered arm ran (7 waves: 243 harness runs + 12 rbgate shards =
+  54 seed-runs; 0 failures, 0 retries).
+PAPER FINDINGS 11A (a) (b) (c): section 8, with the corrected wording of (b) and its COUNT (the
+  local strategy's selector calls: 41.5% decided by fixed precedence, 58.5% by score - and
+  precedence never chose anything but the top-scored feasible option), and the fuller 360-step
+  evidence for (a).
+INDEPENDENT REVIEW (section 10): 3 agents re-derived the paper-quoted claims from the raw files;
+  94 claims checked: 79 confirmed, 13 refuted, 2 unverifiable; every refuted one corrected here. The largest: "undetected"
+  had been read from a victim marker status that persists after detection (first detection, 8 (a),
+  7.5 (f) corrected); plF means no firefighting AT ALL and its extra firefighter deaths are all after
+  the mission; plS changes the whole configuration, not only recharging.
+
+--------------------------------------------------------------------------------
+1. THE RULINGS THIS PART RAN UNDER (2026-09-28, in addition to planner_part1.txt section 11)
+--------------------------------------------------------------------------------
+  D-1  the broader reading of "exact 1" ACCEPTED (the house helper _exact_integer's definition,
+       mirroring the exact-zero helper); "0.0", junk and missing stay OFF. Tested on the whole
+       boundary table of 6.1 (section 2.3).
+  (b)  count local selections decided by precedence vs by score in Part 3 (section 8 (b)).
+  DROP ORDER  plRB is the route_blocked safety gate and is NEVER dropped; if quota runs short drop
+       plF/plS first, then the CRN pair; report anything skipped. APPLIED: plRB was moved from
+       after the CRN pair into wave q4 beside plRC/plRG, because section 7's ORDER requires every
+       arm that is never dropped to run before any droppable one. Nothing was skipped.
+  7.5(f) TO-THE-MAINTAINER (asked mid-round, answered 2026-09-28): "Continue" - record (f) with its
+       breakdown and run the CRN pair and the reference arms.
+  WORDING (2026-09-28): correct any wording that says the planner switches searchers to trackers
+       only after every victim is found, and state plainly that closed loop 16 of 45 such switches
+       happened while a victim was still undetected (sections 0, 4.2, 5, 9; Part 1's open-loop
+       sentence is marked SUPERSEDED in section 5 and in planner_part1.txt itself).
+  REVIEW QUOTA: at most 3 independent review agents, focused on the claims the paper will quote
+       (section 10). Commit and push; do not merge.
+
+--------------------------------------------------------------------------------
+2. PART 2 - WHAT WAS BUILT (each site, and why mode 0 cannot reach it)
+--------------------------------------------------------------------------------
+2.1 THE COMMITS (source and tests only; outputs/ tooling is committed separately)
+  df1ff03 C1 common_fixed_variables.py:331 GLOBAL_PLANNER_MODE = 0 with the house comment block;
+          agents.py:1323 global_planner_mode() = 1 iff _exact_integer(raw) == 1 else 0 (no JUNK
+          constant); agents.py:1339 rtb_trigger_level_at(uav, cell) - the return trigger at an
+          arbitrary cell by the same formula and accessors as UAV._rtb_trigger_level, PURE (unlike
+          _rtb_select_berth it writes no rtb_target_*); 15 below base_station_mode 2 or with no berth.
+  7d66f33 C2 src_extension/adaptation/role_option_values.py (new): the four demands, the share rule
+          and the nine value functions as pure functions of plain numbers (section 3 of Part 1, E3).
+  3738a1e C3 global_adaptation_generator.py: at :105 `if _agents.global_planner_mode() != 0:` returns
+          the mode-1 builder (_generate_role_switch_options :221, _unstable_uav_ids :332 = I5,
+          _role_switch_specs :357 = I1-I4 + the gathering of the inputs); below it, today's body
+          line for line. maintain_current and delay_change carry the nine values as explicit 0.0 at
+          mode 1; the five generator-vocabulary options are not generated at mode 1.
+  54d282a C4 global_mission_planner.py _uav_assignments_from_params: a STRING assigned_role with a
+          non-empty target_uav_id gives {target: role}; every earlier form keeps its meaning.
+  7800def C5 global_executor.py: reads model.on_uav_role_changed / model._uav_assignment_role (pure
+          getattr) and, per assignment, the old role BEFORE the two writes; after them calls the
+          hook only on a real change (lower-cased compare). wildfire_model.py:423 on_uav_role_changed:
+          returns at once unless global_planner_mode() != 0; else resets ONLY the switched UAV's
+          sector (full grid), _wind_search_target_state and _victim_sweep_state entries (D-5).
+  9a2e5c4 C6 tests/test_global_role_planner.py (108 tests; count declared in the commit message).
+  Diff dfbfbe7..9a2e5c4 outside outputs/: 8 files, 1,505 insertions, 0 deletions.
+
+2.2 WHY MODE 0 IS VALUE-IDENTICAL BY CONSTRUCTION (confirmed by measurement in 7.1)
+  At 0 the only new work per step is, per role-generator call, one `import agents` (a sys.modules
+  lookup) and one accessor call (a cfv getattr), and two getattr reads per GlobalExecutor.execute
+  call; no option carries target_uav_id, so the reader returns {} as before, the executor loop body
+  never runs, and the hook is never called. No RNG draw, no print, no new instance state (the model
+  CLASS gains the method on_uav_role_changed, which the executor's getattr finds and never calls at
+  0), no new key in any recorded dict.
+  "EXACT 1" (D-1) means _exact_integer(raw) == 1: besides the table in 2.3 that includes any string
+  int() parses to 1 - e.g. "1\n" or a non-ASCII digit one - which only Python code setting the
+  constant can produce (the harness parser turns every --set spelling into int, float or bool first).
+
+2.3 TESTS (tests/test_global_role_planner.py, 108; switch set through apply_scenario_config with a
+    restore fixture and a teardown canary on the accessor)
+  ACCESSOR MATRIX, 57 rows - the whole 6.1 boundary table (D-1, "test every boundary form"):
+    ON  (11)  1, 1.0, "1", True, " 1 ", "+1", "01", Decimal("1"), numpy.int64(1), numpy.float64(1.0),
+              an IntEnum of value 1
+    OFF (28)  missing attribute; None; 0, 0.0, "0", " 0 ", False, Decimal("0"); "0.0", "1.0", "2.0";
+              0.5, "0.5", Decimal("0.5"), 1.5, 2, -1, inf, -inf, nan; "on", "off", "true", "True",
+              "yes", ""; "1_0"; an object whose __int__ and __eq__ raise
+    HARNESS PATH (15): _ffr_harness._parse_value then the accessor: =1 =01 =+1 =1.0 =1e0 =true ON;
+              =0 =0.0 =0.5 =2 =on =none =inf =nan =1_0 OFF
+    plus: read at call time through apply_scenario_config (1 -> ON, then 0 -> OFF, one process); the
+    string "1.0" set in cfv is OFF while `--set ...=1.0` is ON; the shipped default is int 0 and OFF.
+  OFF IDENTITY (3): the mode-0 role family equals a frozen dfbfbe7 literal (ids, types, targets,
+    parameters, cost/risk/confidence); at mode 0 neither the mode-1 builder nor any value function
+    is called and no global option carries a nine-key or target_uav_id; a selected string role
+    option still gives {}.
+  READER (3). FAMILY SHAPE (3, incl. the constraint filter keeping every switch option and
+    delay_change's explicit zeros). INVARIANTS (10): I1 flags, I1's 10-moving-step margin at the
+    boundary (trigger + 3.0 is OFF, + 3.0 + 1e-6 ON) and its absence below base_station_mode 2, I2
+    (incl. "last AVAILABLE member"), I3, I4, I5 for both trigger types and both object/dict forms,
+    drift None -> 0, N_v = 0 -> D_vict 0, the managed-store-first role read with the victim_search
+    alias.
+  ONE SCORE TEST PER VALUE (8 + communication): two real model states differing only in that
+    value's input, the other eight values asserted bit-equal; the value, its UtilityTerm and the
+    score move in the stated direction. communication_contribution: present, exactly 0.0, and read
+    by the scorer (0.5 on a copy raises C_comm and the score).
+  ONE SELECTION TEST PER VALUE WITH AN INPUT (8): changing that input alone flips the selected option
+    between a named switch and the baseline, with a margin > 1e-6 both ways.
+  ANTISYMMETRY (3 configurations) + the share formula + value ranges. TRIGGER HELPER (2): equals
+    _rtb_trigger_level at the UAV's own cell on 24 positions; pure. HYGIENE (5): the hook resets
+    exactly the switched UAV's three entries; inert at mode 0; the executor calls it only on a real
+    change (not on a re-assertion, not on a case-only difference); a model without the hook runs as
+    before; order fail_safe -> hook -> local paths through the real DecisionDispatcher. PURITY (1):
+    generating at mode 1 leaves the RNG states, the knowledge models, the UAV agents' attributes and
+    the model's stores unchanged and prints nothing. INTEGRATION (1): generate -> ConstraintFilter
+    -> GlobalMissionPlanner.plan -> MissionDecision {2500: victim_searcher} -> GlobalExecutor ->
+    both stores + the hook.
+
+2.4 THE SUITE (7.6)                                                               PASS
+  outputs/_pl2_pytest.log / .xml, serial, at 9a2e5c4 (the final SOURCE and TESTS: everything
+  committed after it is under outputs/): 8 failed / 1055 passed / 0 errors (1:02:23). The failed NAME
+  SET is exactly the 8 baseline names of planner_part1.txt's header; 1055 = 947 + 108, the count
+  declared in the C6 commit before the run.
+
+--------------------------------------------------------------------------------
+3. PART 3 TOOLING (outputs/, the carrying-leg pattern under the pl prefix)
+--------------------------------------------------------------------------------
+  _pl_obs.py + _pl_obs_stock.py / _pl_obs_crn.py   the sidecar (6.4 + the 7 SIDECAR SCHEMA), pass-
+        through wraps, writes <run>.plobs.json; also the LOCAL planner precedence/score counter
+        (ruling (b)). The P5 counterfactuals re-run the ORIGINAL scorer and selection on copies.
+  _pl_pool.sh + _pl_live.ps1   the wave pool (_cl_pool.sh mechanisms: validator-backed skip,
+        orphan adoption, no bare wait, heartbeat, lock, SOURCE CHANGED stop on a planner source digest,
+        an ext digest incl. the dfbfbe7 worktree's HEAD/status, and the full HEAD on every line). The
+        instrument is per queue line: ff plain harness, fo stock sidecar, fc CRN sidecar, rb shard.
+  _pl_validate.py   VALID = the house checks + the JSON's repo IS the line's repo (the two-checkout
+        hazard) + the sidecar's json_sha256/repo/harness/--out/source provenance. Queue rules: pl tags,
+        the two repos, every --set key declared at column 0 in the line's repo's cfv, FM2P_ only as
+        exactly FM2P_CRN=1 on fc lines.
+  _pl_queue.py   the waves q1-q6 (+ qQ). N30 is read from the frozen outputs/_cl_seeds.txt, never
+        choose(); see NOTE N30.
+  _pl_analyze.py   every section of 7 and the 11A findings; refuses a run whose repo is not its arm's.
+  _pl_pytest.sh   the serial suite.
+  NOTE N30: the Windows checkout holds outputs/_cl_seeds.txt with CRLF line ends (core.autocrlf), so
+        its raw sha256 is bfe9a827...; the pre-registered e6fe0698f794549729e4fdd40ef6d41722a171c1bcd92
+        89b3a17ce794f01b81f is the LF content - exactly the committed blob (`git show HEAD:...|sha256sum`).
+        _pl_queue.n30() checks the LF-normalised hash and STOPS on anything else. It passed.
+  NOTE POOL: the q2 pool ended "PL_POOL_INCOMPLETE ... valid=13/13": its live-process snapshot
+        counted the plQ job of a CONCURRENT pl pool as its own orphan (the same defect the carrying-
+        leg round recorded for _cl_pool.sh). No run was affected (13/13 VALID). Fixed before q3: a pool
+        now counts only its own queue's outputs as live.
+
+  WAVES (all complete, 0 failures, 0 retries; each wave log carries head/src/ext on every line and
+  the SHIPPED switch values - GLOBAL_PLANNER_MODE=0 BASE_STATION_MODE=3 FF_EXIT_LEG_MODE=2
+  FF_EXIT_LEG_HOLD=0 FF_EXIT_LEG_SERVED=1 FF_FIREFIGHT_EXTINGUISH=1 FF_FIREFIGHT_FIREBREAK=1
+  ROUTE_BLOCK_STALE_CLEAR=1; the control worktree: the same with GLOBAL_PLANNER_MODE ABSENT):
+    q1  plB C13 + plD x2 (worktree, sidecar), plC C13 (sidecar), plP, plZ x3 (plain), plJ x3   35 runs
+    q2  plG C13 (sidecar)                                                                        13
+    qQ  plQ east/half/101 (plain, mode 1)                                                         1
+    q3  plC + plG N30 (sidecar)                                                                  60
+    q4  plC + plG RB7 (sidecar); rbgate plRC, plRG (branch), plRB (worktree), 4 shards each      26
+    q5  plKC + plKG N30 (CRN sidecar)                                                            60
+    q6  plF + plS N30 (sidecar)                                                                  60
+  plZ ran through the PLAIN harness: the ARMS table gives it no sidecar and its gate (7.1 c)
+  compares harness JSON only. RUNTIME: a mode-1 run is slower than its mode-0 twin because more
+  searchers run the known O(cells^2) search-target scoring (memory: gridscale hotspot); the builder
+  itself costs ~3 ms per step (profiled).
+
+--------------------------------------------------------------------------------
+4. PART 3 RESULTS - THE GATES
+--------------------------------------------------------------------------------
+Full analyzer output: outputs/_pl_analysis_{id,c13,gate,cmp,safety,local,gap,ref}.txt.
+
+4.1 7.1 SWITCH OFF IS VALUE-IDENTICAL                                              PASS
+  (a) plB (dfbfbe7 worktree) vs plC (branch, mode 0), C13, every key but tag/repo/wall_s (params,
+      extra_params, stdout_sha256, stdout_lines, fire_digests included): 13/13 equal.
+  (b) plC sidecars: accessor 0 on every generator call (360 of 360 per run); 0 calls of the mode-1
+      builder and of every role_option_values function; 0 global options carrying a nine-key or
+      target_uav_id; the per-step census of option ids and parameter-key sets == plB's; 0 executor
+      role writes; 0 hook calls. plB: accessor "ABSENT" on every call. (Scope: the census covers the
+      global generator's five families; no other family writes any of the nine keys - source grep,
+      and Part 1's writer census 1.1.)
+  (c) plZ (--set GLOBAL_PLANNER_MODE=0) == plB on every key but tag/repo/wall_s/params/extra_params
+      (the last two record the --set), 3/3.  (d) plD == plB (fresh process), every key but
+      tag/repo/wall_s, 2/2.
+  (e) plP (no sidecar) == plC (sidecar), east/half/101: the mode-0 sidecar is pass-through.
+  (f) the sidecar's planner records plC == plB, 13/13 (per step: mode, every scored id with score and
+      feasibility, selection, baseline score, margin, tie flag, uav_assignments, the P5 null
+      re-selection, the executor's applied roles).
+  (g) plJ (--set GLOBAL_PLANNER_MODE=0.5) == plB on every key but tag/repo/wall_s/params/
+      extra_params, 3/3; its sidecar reads accessor 0 on every call and 0 mode-1 builder calls: junk
+      is OFF (D-1).
+  PAPER: with the switch at 0 the planner round changes nothing a run records, on this machine,
+  against the pinned pre-round commit - measured, not only argued.
+
+4.2 7.2 THE PLANNER DECIDES - plG on C13 + N30 (43 runs)                            PASS
+  PURITY  plQ (no sidecar) == plG (sidecar) on east/half/101 (the first plZ tuple where plG applied a
+          switch; it switches at step 143), every key but tag/repo/wall_s: the mode-1 sidecar,
+          counterfactuals included, is pass-through.
+  P1 SELECTS  15,480 planner steps: SWITCH 76 (0.49%), OTHER 0, BASELINE 15,404. Runs with >= 1 SWITCH
+          34 of 43 (required >= 15). OTHER is 0 as expected.
+          Closed-loop share 0.49% against the open-loop would-win share 8.24% (257 of 3,120; Linux,
+          dfbfbe7 C13 states, 240 steps) - a Windows closed loop against a Linux open loop, stated as
+          such. Part 1 expected the closed-loop share to be lower: a switch changes the demands'
+          split, and on unchanged demands its reversal is unattractive, so a would-win state is
+          acted on once instead of being "won" on every step it lasts.
+  P2 REACHES  76/76 SWITCH selections carried MissionDecision.uav_assignments == {target: to_role}.
+  P3 ACTS     76/76: both role stores went from_role -> to_role inside the step and still held to_role
+          at its end; the dispatcher's global-execution skip never fired (0).
+  P4 THE DIFFERENCE IS THE PLANNER'S  (plG vs plC, seed-matched)
+          (a) the 9 runs with no applied change are value-identical to plC (all keys but tag, repo,
+              wall_s, params, extra_params); (b) in all 34 runs with a change, the first behavioural
+              divergence (uav_steps without the role field, fire_digests, ff_steps, victim_steps) is at
+              or after the first applied change (same step in most: the switched UAV's move on the
+              flip step is executed under its new role - the one-step mixed state of 6.3);
+          (c) named chains, the two where a fate changed (N30):
+            south/half/1887778617: DECISION step 10, UAV 2500 fire_tracker -> victim_searcher, margin
+              +0.0097 over the baseline 0.187 (information_recovery mode); values fire -0.0156, victim
+              +0.3333, communication 0, uncertainty +0.2423, information 0, collision 0, battery
+              0.0975, drift 0, switching 0.7450 -> first behavioural divergence step 10 (uav_steps)
+              -> firefighter/victim series diverge at 13, the fire only at 139 -> victim_3
+              unreachable (step 213) under plC becomes rescued (step 137) under plG; rescued 3 -> 4,
+              firefighter deaths 2 -> 0. Later switches in this run: 51, 87.
+            south/half/684332673: DECISION step 11, UAV 2500 fire_tracker -> victim_searcher, margin
+              +0.0187; values fire -0.0173, victim +0.3333, uncertainty +0.2391, battery 0.0986,
+              switching 0.7167, the rest 0 -> first behavioural divergence step 11 -> ff/victim series
+              at 15, fire at 170 -> victim_0 rescued (step 165) under plC dies (step 204) under plG;
+              rescued 4 -> 3. Later switches: 41 (searcher 2503 -> tracking WITH a victim still
+              undetected), 220.
+            (C13: 11 runs switch; none changes a fate.)
+  P5 EVERY VALUE IS LIVE OR REPORTED DEAD - 46,145 switch-option scorings
+          NULL CONTROL: re-selection with nothing removed reproduces the selected id on 15,480/15,480
+          steps.
+                                      non-zero   decisions moved when removed (of 15,480 steps)
+            fire_contribution          84.46%     111
+            victim_contribution        46.28%     285
+            communication_contribution  0.00%       0   STRUCTURALLY ZERO (D-3)
+            uncertainty_reduction      68.18%     283
+            information_recovery       56.77%      25
+            collision_risk             26.71%     519
+            battery_cost               69.85%     848
+            drift_risk                  1.17%       1   SURPRISE: pre-registered to move none (below)
+            switching_cost            100.00%    1206 (whole term, 1e-12) / 369 (recency part, 0.15)
+          Every expected mover moves decisions; no STOP item. drift_risk: removing it changes the
+          decision on exactly 1 step - south/half/303 step 219, where UAV 2501's last move had been
+          refused (drift 1) and the baseline was kept instead of moving it to tracking (it switched at
+          step 239). Reported as the pre-registered surprise, no stop.
+          Exact-tie selections (a switch scoring EXACTLY the baseline's score): 0.
+  CHURN   aggregate SWITCH share 0.49% (< 25%); no run selects the baseline on < 50% of its steps;
+          no UAV switched >= 3 times within 30 steps; OSCILLATION_RISK (a UAV's 3rd lifetime switch)
+          never reached; INSTABILITY_DETECTED onsets 17 (each after a UAV's 2nd lifetime switch; I5
+          then withholds that UAV while it is named); delay_change was generated on 170 steps and,
+          scoring 0.0, was never selected.
+  PAPER: the planning step now selects a role change on stated world quantities, and the selection
+  reaches the UAV and acts. Seven of the nine values change decisions (all but communication and,
+  practically, drift). Fire, victim, uncertainty and information recovery were each NECESSARY for
+  some of the selected switches (removing one turned 45 / 31 / 31 / 25 selected switches back into
+  the baseline); battery, collision and switching cost never undid a selected switch - they chose
+  WHICH UAV switched (15 / 10 / 1 cases) and held switches back (833 / 509 / 1,205 steps on which
+  removing them would have produced a switch). The planner moves a searcher to tracking while a
+  victim is still undetected in 16 of its 45 such switches - an alive victim in 13 (section 5).
+
+4.3 7.5 SAFETY - plG against plC, C13 + N30 + RB7 (50 runs each)               GATE PASS
+  (a) NO UAV STRANDED: frames at battery <= 0 outside the depot, D3 ZERO-BATT, D1 STUCK:
+      plC 0/0/0, plG 0/0/0.                                                         PASS
+  (b) NO LIVELOCK: flying UAVs stationary >= 10 frames before the terminal step plC 6 -> plG 7,
+      after it 8 -> 7; return legs L1 200/200, L2 freezes 10 -> 7, L3-L6 0 in both. No item above
+      plC by > 10% AND >= 2.                                                      no maintainer item
+  (c) BATTERY RETURN COMPLETES: unarrived trips 0 in both (no second return trip falls inside 360
+      steps in any run).                                                            PASS
+  (d) SEARCHER GUARD REFUSALS: off-grid refusals, searcher attributed per step AND by the step-1
+      role: plC 0/0, plG 0/0.                                                       PASS
+  (e) NO NEW route_blocked FAILURES (rbgate, 18 seeds, 240 steps)
+      (i)  plRC (branch, mode 0) == plRB (dfbfbe7 worktree), every key but tag, evals element by
+           element without wall_s: 4/4 shards.                                      PASS
+      (ii) plRG vs plRC: NO seed loses a rescue (known four included); totals rescued 57 -> 58, dead
+           8 -> 8, firefighter deaths 3 -> 3; latched units 0 -> 0. Re-rolled seeds (plG vs plC fire
+           diverges before plC's terminal step): east/303, east/505, east/909, pooled rescued
+           10 -> 10.                                                                PASS
+      plRB totals (57 / 8 / 3) are this machine's dfbfbe7 record; the Windows ihrest record is not
+      re-compared here (information only in the design).
+  (f) SEARCH COVERAGE: steps with no flying searcher / no flying tracker / no flying UAV, pooled:
+      plC 1909 / 1701 / 1529, plG 2057 / 1691 / 1547 -> plG above plC on searchers: TO THE
+      MAINTAINER. Breakdown: before the terminal step 412 -> 440 (+28), after it 1497 -> 1617
+      (+120). Runs with more no-searcher steps 25, fewer 10 (of 50). Steps with no flying searcher
+      AND an alive victim not yet detected (detection from the model's detection events - the
+      marker status 'candidate' persists after detection and is NOT used): 89 -> 106 (+17), all of it
+      in one run, N30 east/half/2091896221 (25 -> 42); equal in the other 49. (The first draft of
+      this report said 94 -> 107 from the marker status; corrected after the independent review.)
+      RULED 2026-09-28: continue (section 1).
+      PAPER: the planner makes no-searcher states slightly more frequent - mostly AFTER the victims
+      are resolved; the increase in steps with an undetected alive victim and no searcher comes from a
+      single run. That is consistent with (not shown to be caused by) the searcher -> tracking
+      switches, which leave fewer searchers to go home in the synchronized return window of
+      finding (a).
+  (g) SWITCH TRANSITIONS (reported): 86 switches (35 to search, 51 to tracking; C13+N30+RB7).
+      Every one re-indexed at least one incumbent (flank index/count or lane changed between steps
+      t-1 and t: 86/86) - structurally, since flanks and lanes are divided among a role's holders; the
+      incumbents' held targets are not released (D-8). The new searchers stood still on 3 frames in
+      total over their first 10 steps; 2 switches fell within +/-10 steps of a return trigger or a
+      release.
+
+--------------------------------------------------------------------------------
+5. 7.3 THE COMPARISON THE PAPER NEEDS                                              REPORT
+--------------------------------------------------------------------------------
+  plC = the local strategy (mode 0) - the paper's baseline at dfbfbe7 + this round; plG = the global
+  planner (mode 1). 360 steps.
+              victims rescued dead unreach ff_deaths never_det terminal mean (term./not) role chg  E1      E2
+    C13  plC     52     42     8     0       3        0      158.8 (12/1)              0     2.150%  1.480%
+         plG     52     42     8     0       3        0      158.0 (12/1)             24     2.754%  1.597%
+    N30  plC    120    106    10     4       8        1      150.50 (30/0)             0     1.592%  0.926%
+         plG    120    106    11     3       6        1      150.47 (30/0)            52     1.490%  0.933%
+    pooled plC  172    148    18     4      11        1      152.9 (42/1)              0     1.755%  1.093%
+         plG    172    148    19     3       9        1      152.6 (42/1)             76     1.867%  1.134%
+    RB7  plC     28     26     2     0       0        0      148.9 (7/0)               0     1.012%  0.863%
+         plG     28     26     2     0       0        0      149.0 (7/0)              10     0.611%  0.714%
+  (C13's 2 missing victims are unresolved at the horizon in the one non-terminal run, south/half/404.
+  never_det = eval's never_detected: the victims that end UNREACHABLE with cause never_detected - a
+  sub-count of unreach; an undetected victim that dies counts as dead. Role changes from uav_steps
+  field 2 equal the sidecar's applied writes in every run. E1 = searcher frames on a burning cell /
+  searcher frames, the searcher attributed PER FRAME; E2 = all UAV frames.)
+  PER SEED: C13 - no seed changes rescued or dead; RB7 - none. N30 - two: south/half/1887778617 3 -> 4
+  and south/half/684332673 4 -> 3, both "planner" by the attribution rule, which requires the fire to
+  be identical until the EARLIER of the two fates: 1887778617 - plG rescues victim_3 at 137, the fire
+  diverges at 139; 684332673 - plC rescues victim_0 at 165, the fire diverges at 170, and plG's death
+  of that victim at 204 falls in a diverged fire (the rule attributes the MISSED RESCUE to the planner,
+  not the death). Chains in 4.2 P4 (c). Both pooled differences come from single seeds: firefighter
+  deaths -2 are all south/half/1887778617 (2 -> 0); dead +1 (684332673) is matched by unreachable -1
+  (1887778617). The TERMINAL step (the last victim resolved) moves in 11 of 30 N30 seeds, in both
+  directions (e.g. 265702576 157 -> 96, 481765503 102 -> 167), with the mean essentially unchanged
+  (150.50 -> 150.47).
+  SWITCH DIRECTIONS (C13+N30, 76): tracker -> search 31, every one with a victim undetected;
+  searcher -> tracking 45, of which 29 with every victim detected and 16 WITH A VICTIM STILL
+  UNDETECTED (margins +0.0002 to +0.0995). "Undetected" is the planner's own count (N_v - N_det
+  from the confirmed flags); it equals the count from the model's detection events on 45/45 of
+  these switches. In 13 of the 16 the undetected victim was ALIVE on the map (steps 39-110, median
+  44; margins +0.0012 to +0.0263). In the other 3 (east/default/202 step 237, east/half/1506055301
+  step 65, south/half/1386492524 step 139) the only undetected victim had already died or been
+  declared unreachable without ever being detected - the planner, reading only the detection flag,
+  still counts it as outstanding (D-7). The open-loop split of Part 1 (all 121 would-win to-tracking
+  steps had every victim detected) does NOT hold closed loop. The typical path: in 15 of the 16 an
+  earlier switch had moved a tracker to search, and in 14 of the 16 three UAVs held the searcher
+  role, so the victim demand per searcher is smaller and the fire terms can outweigh it (the
+  stale-fire term was non-zero in 5 of the 16). This is the case Part 1's risk list named ("nothing
+  in the formulas prevents one"). Timing: to search at steps 3-57 (median 10); to tracking with a
+  victim undetected at 39-237 (median 47; alive: 39-110, median 44); to tracking with every victim
+  detected at 51-245 (median 94).
+  SUPERSEDED: planner_part1.txt section 0 ("WHAT THIS MEANS FOR THE PAPER") says the planner would
+  move "a SEARCHER TO TRACKING late, after every victim has been detected" and that "the split is
+  clean". That was an OPEN-LOOP observation on the local strategy's recorded states. Closed loop it
+  is false: 16 of 45 searcher -> tracker switches happened while a victim was still undetected.
+  UTILITY MODES: plC normal 86 / information_recovery 12,644 / safety_first 2,750; plG 86 / 12,730 /
+  2,664 - a NET 86 steps; seed-matched, 1,398 steps differ in mode (742 safety_first ->
+  information_recovery, 656 the reverse).
+  FIRST DETECTION per victim (the model's detection event - see NOTE DETECTION): plC mean 37.5
+  (median 16, n 159); plG mean 36.9 (median 16, n 161). The planner does not delay detection. (The
+  first draft said 43.1 / 43.7 (median 16 / 19.5): that measured when a victim's marker left
+  'candidate', i.e. its first rescue ASSIGNMENT, not its detection.)
+  NOTE DETECTION: a victim marker keeps reading 'candidate' after the victim is detected, until a
+  firefighter is assigned (sometimes 70+ steps). Every "undetected" in this report is therefore
+  taken from the run's '[Victim Detection] step=t ... detected <vid>' lines - the code path that sets
+  managed_victims[vid].confirmed - together with the first non-candidate marker status
+  (outputs/_pl_verify2.py; _pl_analyze.py fixed to the same definition).
+  LATCHES: OSCILLATION_RISK never reached; INSTABILITY_DETECTED onsets 17.
+  THE CRN PAIR (D-10, RULED RUN) - plKC (mode 0) vs plKG (mode 1), N30, FM2P_CRN=1 on both. The
+  fire's random spread draw is pinned per cell and tick: a pure function of (seed, cell, the cell's
+  own step counter) instead of the next number of one shared stream. (The wind is fixed in both
+  instruments; CRN pins only this draw.) A planner decision can then change the fire only
+  PHYSICALLY (through a firefighting write), never by shifting the stream. CRN arms are compared only
+  with each other: a CRN fire is a different, equally distributed realisation, not a second
+  measurement of the stock arms.
+                 victims rescued dead unreach ff_deaths never_det terminal mean  role chg  E1      E2
+    N30 CRN plKC   120     96    21     3       7        1      157.0 (30/0)        0     1.801%  1.079%
+            plKG   120     98    20     2       6        1      173.0 (30/0)       48     1.729%  1.102%
+  Seeds whose rescued differs under CRN: 4 - up 3, down 1 (fate steps of BOTH arms):
+    south/half/684332673     3 -> 4  victim_3 unreachable (plKC step 189) -> rescued (plKG step 320);
+                             fire identical until step 351, after both fates: the planner's decisions
+                             alone (first switch step 11)
+    east/default/6554204     3 -> 4  victim_2 unreachable, never detected (plKC 210) -> rescued
+                             (plKG 59); fire identical until step 70: the planner's decisions alone
+                             (first switch step 3)
+    east/default/1325753362  2 -> 3  victim_0 dead (plKC 183) -> rescued (plKG 155); the fire diverges
+                             at 74, before both fates - under CRN that is a PHYSICAL consequence of the
+                             planner's changes (a different firefighting write), not a re-roll
+    east/default/1686457565  4 -> 3  victim_3 rescued (plKC 145) -> unreachable, never detected (plKG
+                             210); fire diverges at 52, physically, as above
+  The two STOCK differences, re-examined under CRN:
+    south/half/1887778617   stock 3 -> 4, CRN 2 -> 2: NO difference under CRN. The CRN fire is a
+                            different realisation, so this does not re-attribute the stock gain (the
+                            fire-equal-until-fate rule gives it to the planner: fire identical until
+                            step 139, the fate at 137); it says the gain does not recur in a
+                            different fire realisation.
+    south/half/684332673    stock 4 -> 3, CRN 3 -> 4: still differs, in the OPPOSITE direction; the
+                            first behavioural divergence is the switch at step 11 in both instruments.
+  TERMINAL STEP under CRN: 8 of 30 seeds change, both ways (731846821 222 -> 169, 6554204 210 -> 116;
+  1335705976 150 -> 308, 684332673 189 -> 320, 422588777 100 -> 322); the mean rises 157 -> 173,
+  driven by the last three - the last victim is resolved much later in them, with rescued equal or
+  higher.
+  WHAT THE CRN PAIR MEANS FOR THE PAPER: with the fire's spread draw pinned per cell and tick, the
+  planner's decisions change the rescued count in 4 of 30 seeds, 3 up and 1 down (+2 net, dead -1,
+  firefighter deaths -1). Per-seed effects depend on the fire realisation: of the two stock
+  differences, one does not recur under CRN and the other recurs with the opposite sign. CRN rules
+  out a re-rolled fire stream as the channel of these differences; it does NOT make a 3-up / 1-down
+  split on 4 seeds evidence of a direction (two-sided sign test p = 0.63), and it does not separate
+  the planner's intended mechanism from downstream firefighter repositioning. The planner can delay
+  the resolution of the last victim substantially in individual runs.
+  THE TRADEOFF, PLAINLY: rescued did not fall on these sets (148 = 148 pooled stock; 106 = 106 on
+  N30; CRN 96 -> 98). Only 2 (stock) and 4 (CRN) seeds differ, in both directions - far too few to
+  establish the sign of an effect, so the paper cannot claim the planner is outcome-neutral beyond
+  "no difference detected on 43 + 30 runs". Pooled stock: one more death and two fewer firefighter
+  deaths, each from a single seed. Rescued falling would not be a gate failure; it did not fall.
+
+--------------------------------------------------------------------------------
+6. 7.4 THE CONTROL AS THE PAPER'S BASELINE; REFERENCE ARMS                         REPORT
+--------------------------------------------------------------------------------
+  plC (C13 + N30 at 360) is the current baseline (section 5 table); every headline number measured
+  before dfbfbe7 predates MODE 2 and is stale.
+  Both reference arms ran (nothing dropped): N30, 360 steps, stock instrument, through the sidecar,
+  each against plC's N30 (outputs/_pl_analysis_ref.txt). Pooled numbers only - these are stock
+  arms, so per-seed signs carry fire re-rolls (no CRN pair was pre-registered for them).
+                  victims rescued dead unreach (never_det) ff_deaths (at/before | after terminal)  terminal mean
+    plC (shipped)   120     106    10     4        (1)        8       (8 | 0)                    150.5
+    plF             120     109    10     1        (1)       11       (2 | 9)                    160.5
+    plS             120      98    14     8        (6)        6       (6 | 0)                    188.1
+  plF = FF_FIREFIGHT_EXTINGUISH=0 and FF_FIREFIGHT_FIREBREAK=0: NO FIREFIGHTING AT ALL - not only
+    during search. No plF run carries a firefight block (the model never created a firefight log);
+    plC's firefight counters are non-zero in 29 of 30 runs.
+  plF vs plC - SHIPPED UNGATED FIREFIGHTING AGAINST NONE, under MODE 2: with firefighting the team
+    rescued 3 fewer (106 vs 109; 3 seeds, 0 the other way; all 3 via unreachable 1 vs 4 - dead is
+    10 = 10) and resolved the last victim 10 steps sooner on average. Firefighter deaths were 8 vs 2
+    AT OR BEFORE the terminal step and 0 vs 9 AFTER it: during the mission the arm WITH firefighting
+    lost 6 more firefighters; all 9 of plF's deaths come after the last victim is resolved, when
+    nothing fights the fire at all. The net 8 vs 11 must not be read as firefighting saving lives.
+    This compares ungated firefighting with none, not with the gated variant.
+  plS = BASE_STATION_MODE 0, A WHOLE-CONFIGURATION CHANGE: UAVs launch at the grid centre (e.g.
+    x 24-27, y 24-26) instead of the depot berths, the firefighters start elsewhere, there are no
+    fireproof depots (the fire differs from step 1 in 30 of 30 runs), and no UAV ever returns (0
+    trips; plS has 0 no-searcher steps against plC's 1,125). Battery reaches 0 on 2,904 UAV frames
+    (118 UAV-runs end at 0); at mode 0 battery is observed only - the return trigger that reads it is
+    off; this round did not trace whether anything else reads a zero battery at mode 0.
+  plS vs plC - BASE_STATION_MODE 3 vs 0 AS WHOLE CONFIGURATIONS: rescued 106 vs 98 (per seed 12
+    better, 6 worse), unreachable 4 vs 8 (never-detected cause 1 vs 6), dead 10 vs 14, firefighter
+    deaths 8 vs 6, the last victim resolved 38 steps sooner on average. Not attributable to any one
+    component - in particular NOT to search time saved by recharging: plS UAVs never leave the air.
+  PAPER: these replace the pre-MODE-2 headline numbers for the two features (every earlier one is
+  stale, memory pre-mode2-numbers-stale), as one 30-seed stock screen, not a CRN-adjudicated result:
+  against no firefighting at all, the shipped ungated firefighting rescued 3 fewer and lost more
+  firefighters during the mission (8 vs 2) but none after it (0 vs 9); the shipped base-station
+  configuration rescued 8 more than the no-base-station configuration.
+
+--------------------------------------------------------------------------------
+7. THE REST OF THE DESIGN'S REPORT ITEMS
+--------------------------------------------------------------------------------
+  D-2 SENSITIVITY RESULT (ruled: switch options carry confidence 1.0). The trigger-mean variant,
+  open loop on C13 (Part 1, Linux, dfbfbe7 states): 2.40% of planner steps (75 of 3,120) in 6 of 13
+  runs would switch, against 8.24% (257) in 11 of 13 at 1.0. No closed-loop trigger-mean arm was
+  run (none was ruled). PAPER: the confidence discount is switched OFF for role options - "the
+  constants were left unchanged" alone would mislead; the baseline constants 0.12 x sw and 0.05 x sw
+  ARE unchanged and act as the margin a switch must clear.
+  D-7 THE TOTAL VICTIM COUNT IS A MISSION-BRIEFING PRIOR: victim_contribution's demand is
+  (N_v - N_det) / N_v with N_v = len(managed_victims) - the number of victims the mission was briefed
+  with, not something the UAVs sensed; a victim that dies undetected keeps counting as outstanding.
+  N4 MONITOR-FED FIRE BELIEF: fire_contribution and information_recovery read the managing system's
+  fire belief, fed by the UAVs' local observations AND by the environment monitor's whole-grid scan of
+  every burning, non-smoke cell no UAV reported: close to ground truth minus smoke, not limited to
+  what the UAVs saw. The paper must not present these two values as UAV-sensed estimates.
+  D-3 COMMUNICATION PLAYS NO PART: communication_contribution is an explicit 0.0 on every switch
+  option (present, read by the scorer, moves nothing) - the simulator has no link model.
+  3.11 MAPE-K SHORTCUT: the planner reads managed-entity fields directly for return-to-base state and
+  berths (rtb_active, rtb_docked, rtb_berths, drain rates, and the pure trigger formula), as the local
+  generator already does.
+
+--------------------------------------------------------------------------------
+8. PAPER FINDINGS (planner_part1.txt 11A), each in its own section
+--------------------------------------------------------------------------------
+8 (a) SYNCHRONIZED RECHARGING LEAVES SEARCH UNCOVERED - A REAL COORDINATION GAP
+  PART 1 (Linux, dfbfbe7, C13, 240 steps): one contiguous block per run ending at step 218-221 in
+  which every searcher is returning or docked, 29-50 steps (35-57 with I1's margin); the whole fleet
+  out on 22-41 of them; a victim undetected during it in 5 of 13 runs. (Two definitions differ from
+  Part 3's: Part 1 counted a victim never confirmed, ALIVE OR DEAD, and numbered block steps one
+  higher than the harness rows used here - the same blocks, e.g. east/default/101 [193, 221] in Part 1
+  is [192, 220] here. On Part 3's definition an ALIVE undetected victim is on the map during the block
+  in 1 of the 13 C13 runs, east/half/404.)
+  FULLER EVIDENCE (Windows, 360 steps, C13 + N30 = 43 runs per arm; outputs/_pl_analysis_gap.txt):
+    - EVERY run of both arms has exactly ONE such block; plC blocks start 168-201 and end 217-221,
+      17-50 steps long (median 38); plG 163-197 to 217-221, 21-55 (median 42).
+    - WHY: every UAV launches at battery 100 (99.7/99.9 after step 1 in all 172 UAV-runs per arm) and
+      return is a per-UAV battery rule with no coordination; the first return triggers of a run fall
+      in one window - earliest UAV at step 156-188, latest 172-201, median span 20 steps (plC).
+    - The 360-step horizon adds NO second cycle: 0 of 43 runs has a second return trip in either arm.
+    - The whole fleet is also out: no flying UAV at all on 1,529 (plC) / 1,547 (plG) steps pooled
+      over C13+N30+RB7.
+    - It matters only while victims are outstanding: BEFORE the terminal step, 13 of 43 runs in each
+      arm have no-searcher steps (up to 50 in plC, 55 in plG), and 10 (plC) / 11 (plG) have no flying
+      UAV at all (up to 39 / 46 steps). An ALIVE victim NOT YET DETECTED (detection from the model's
+      detection events, section 5 NOTE DETECTION) is on the map during the block in 3 runs of each
+      arm: east/half/404, east/half/2095654154, east/half/2091896221. (The first draft said 4, adding
+      east/default/101 from the marker status: there victim_2 was detected at step 160 (plC) / 149
+      (plG), before the block, and only its marker still read 'candidate'.)
+  PAPER: search coverage has a structural gap that neither the local strategy nor this round's
+  planner closes (I2 keeps the last AVAILABLE searcher from being switched away; nothing stops a
+  searcher from returning to recharge). In about a third of the runs (13 of 43) the gap opens while
+  victims are still outstanding, and in 3 of 43 runs an alive, undetected victim is on the map while
+  no searcher flies. The planner makes no-searcher steps slightly more frequent (7.5 f), mostly
+  after the mission is decided.
+
+8 (b) THE LOCAL STRATEGY IS PARTLY UTILITY-BASED (corrected wording, ruled 2026-09-28); RESCUE
+      DISPATCH IS THE NEAREST-AVAILABLE RULE; RESCUE AND FAIL-SAFE SCORES DECIDE NOTHING
+  CORRECTED WORDING: the local path planner selects by FIXED PRECEDENCE for return-to-base and for
+  wind-aware victim search, and otherwise takes the TOP-SCORING feasible option
+  (local_uav_path_planner.py _select_feasible_option, :325-349 at dfbfbe7). The paper describes the
+  local strategy - the baseline - exactly so.
+  COUNTED IN PART 3 (sidecar, every local selection = one per UAV per step; outputs/_pl_analysis_
+  local.txt):
+    plC, the local strategy (C13 + N30, 43 runs, 61,920 selections):
+      fixed precedence 25,701 (41.5%) - all of them wind_aware_victim_search, all by searchers;
+      return-to-base precedence 0 (the shipped BASE_STATION_RETURN_MECHANISM = 2 returns a UAV in
+      advance(), outside the planner, so the return option is never generated);
+      by score 36,219 (58.5%) - every fire-tracker selection (33,480) and 2,739 searcher selections;
+      no feasible option 0.
+      IN NO SELECTION did precedence pick an option other than the top-scored feasible one (0 of
+      25,701): in these runs the precedence rule never changed an outcome of the score ranking.
+    plB (dfbfbe7, C13): 41.2% precedence / 58.8% score, 0 overrides - the same. plC RB7 (7 runs,
+      10,080 selections): 41.9% / 58.1%, 0 overrides. plG (43 runs): 39.7% / 60.3%, 0 overrides;
+      plG RB7: 36.0% / 64.0%, 0 overrides.
+  WHAT THE COUNT IS: one selector call per UAV per step, INCLUDING the 11.8% of plC UAV-steps
+  (7,322 of 61,920) on which the UAV was returning, charging or docked - whose movement, under return
+  mechanism 2, advance() sets regardless of the selection. "Never overrode" cannot tell apart "the
+  precedence option out-scored every competitor" from "it had no feasible competitor": the sidecar
+  did not record the number of feasible options.
+  PAPER: "the local strategy selects by fixed precedence for return-to-base and wind-aware search,
+  otherwise by the top utility score; in 43 runs 41.5% of local selector calls were decided by the
+  precedence rule and 58.5% by score, and the precedence rule never selected anything but the
+  top-scored feasible option" - with the caveat of 11A (b): the local scores have no penalty or risk
+  term (6 of 10 inputs, B8) - and with the counting unit above.
+  Rescue dispatch is the nearest-available rule (select_rescue_assignment, rescue_planner.py:530-673)
+  and must not be described as utility-optimised; the rescue (0 of 6 scorer inputs) and fail-safe
+  (0 of 4) scores are not decisions. After this round the global planner's UAV-role options are
+  scored on stated world quantities and their scores decide (section 4.2).
+
+8 (c) THE LOCAL COLLISION, DRIFT AND COMMUNICATION ALARMS ARE ARTIFACTS
+  As in planner_part1.txt 11A (c), unchanged by this round: local congestion has no distance filter
+  (COLLISION_RISK every step from step 2), local_risk_status latches at high_drift after one refused
+  move, the communication executor counts "fail" in any action string as a failed delivery and
+  critical_link_reliability is always 0.0. PAPER: none of the three may be quoted as a monitoring
+  result; where the paper describes the monitor, it states they are defective as built. (The D-2
+  ruling rests on this.) This round's planner reads none of them: its drift_risk is the last move's
+  drift (not the latched status), its collision_risk counts working UAVs of the joined role within
+  the security distance, and communication is an explicit zero.
+
+--------------------------------------------------------------------------------
+9. WHAT EACH OTHER FINDING OF THIS PART MEANS FOR THE PAPER
+--------------------------------------------------------------------------------
+  - Closed loop the planner acts rarely: 76 switches in 15,480 steps (0.49%; 1.8 per run). Its
+    margin over the do-nothing baseline has median 0.022 (37 of 76 under 0.02; range 0.0002-0.239):
+    the unchanged baseline constants act as a real hysteresis margin.
+  - THE PLANNER DOES NOT SWITCH SEARCHERS TO TRACKING ONLY AFTER EVERY VICTIM IS FOUND. Closed loop,
+    16 of its 45 searcher -> tracker switches happened while a victim was still undetected (steps
+    39-237, median 47) - in 13 of them an ALIVE victim still to be found (steps 39-110, median 44);
+    in 3 the only undetected victim had already died or been declared unreachable, which the planner
+    still counts as outstanding (D-7). The other 29 came after every victim was detected (steps
+    51-245, median 94). Its 31 tracker -> searcher switches all happened with a victim undetected
+    (steps 3-57, median 10). Part 1's open-loop "clean split" (all 121 would-win to-tracking steps
+    had every victim detected) is a property of the recorded local-strategy states, NOT of the
+    planner, and the paper must not state it as one.
+  - drift_risk changed 1 decision in 15,480 steps - it HELD BACK one switch (south/half/303 step 219);
+    it never caused one. "Drift plays practically no part" is accurate, "no part" is not.
+  - Every switch re-indexes the incumbents' flanks or lanes (86/86, structurally): a role change moves
+    more than one UAV's work area (D-8, measured, not fixed).
+  - The planner is a MAPE-K shortcut in one place (3.11) and a briefing prior in another (D-7).
+  - The global planner costs ~3 ms per step; the extra wall time of mode-1 runs is the local
+    searchers' existing O(cells^2) scoring, which runs for more searcher-steps.
+
+--------------------------------------------------------------------------------
+10. INDEPENDENT REVIEW OF THE PAPER-QUOTED CLAIMS (2026-09-28)
+--------------------------------------------------------------------------------
+  Three agents (the ruled maximum), each given one claim group and told to recompute INDEPENDENTLY
+  from the raw run JSON / sidecars / shards (own code, not _pl_analyze.py) and to be adversarial:
+    planner-decides   4.2 and the switch directions: 36 claims - 31 confirmed, 4 refuted, 1
+                      unverifiable (the Part 1 open-loop share, a Linux number)
+    outcomes          5, the CRN pair, 6, 4.3 (e)(f): 28 claims - 22 confirmed, 6 refuted
+    findings+identity 4.1, 7, 8, 2.1-2.2: 30 claims - 26 confirmed, 3 refuted, 1 unverifiable
+  CONFIRMED independently, among others: every 7.1 identity (4 tuples in full); 15,480 steps, 76
+  switches, 34/43 runs; P2 and P3 76/76 under a stricter test; the P5 table to the unit and its null
+  control; the 31 / 45 / 16 direction counts (the 16 also by a geometric detection reconstruction
+  that reproduces the planner's count on 13,116/13,116 steps); the margins; the section 5 stock and
+  CRN tables; rbgate identity and totals; the 8 (b) local counts and the code reason why return
+  precedence never fires; 8 (a)'s block structure; the D-1 accessor table.
+  REFUTED OR UNVERIFIABLE, and what was done (all re-verified by the orchestrator before changing
+  the report; outputs/_pl_verify2.py, outputs/_pl_analysis_review.txt):
+    - FIRST DETECTION 43.1 / 43.7: measured the first rescue ASSIGNMENT (marker leaves 'candidate').
+      Corrected to the detection event: 37.5 / 36.9, median 16 = 16. _pl_analyze.py fixed.
+    - 8 (a) ALIVE UNDETECTED VICTIM DURING THE BLOCK: 3 runs per arm, not 4; "one run in ten" -> 3 of
+      43. Part 1's differing definitions and one-higher step numbering stated.
+    - 7.5 (f) exposure 94 -> 107: marker-based; corrected to 89 -> 106, all from one run; the "25
+      more / 10 fewer runs" belonged to total no-searcher steps and is now attached to them. (The
+      reviewers' own event-based figures differed - 89 -> 106 and 97 -> 115 - by step alignment; the
+      alignment used here reproduces the planner's own undetected count on 45/45 switch steps.)
+    - The mechanism "(3 holders)": true in 14 of 16 -> stated as 14 of 16.
+    - CRN rows mixed the two arms' fate steps -> both steps given.
+    - plF "no firefighting during search" and "the firefight counters are all 0" -> no firefighting
+      at all; no firefight block in any plF run; plC non-zero in 29/30; firefighter deaths split
+      at/after the terminal step (8 | 0 vs 2 | 9): the "3 rescues for 3 firefighter lives" reading
+      was withdrawn.
+    - plS "what the base station buys" -> a whole-configuration comparison (launch, start cells,
+      fireproof depots, fire differs from step 1 in 30/30; UAVs never leave the air).
+    - N4 "fed by the environment monitor (one step late)" -> fed by UAV observations and the
+      monitor's whole-grid scan; "one step late" dropped (not traced).
+  WORDING fixed on the reviewers' advice: the 16-of-45 qualifier (13 alive, 3 dead/unreachable
+  undetected); CRN does not fix the weather, only the fire's spread draw; the attribution of
+  684332673 (the rule gives the missed rescue, not the death, to the planner); "rescued does not
+  fall" -> "did not fall on these sets; too few differing seeds to give the effect a sign"; the
+  terminal mean 150.50 -> 150.47; never_detected is a sub-count of unreachable; an unreachable
+  column added; the mode shift is a net of 742 / 656 seed-matched flips; "seven values decide real
+  switches" split into necessary-for vs choosing/holding-back; drift held a switch back; 7.1 (c)(g)
+  exclude params/extra_params; 2.2 names the new class method and the import lookup; "exact 1"
+  includes any string int() parses to 1; the local count's unit (selector calls, 11.8% for
+  returning/charging UAVs) and what "never overrode" cannot distinguish.
+  Planner_part1.txt section 0's open-loop sentence was ANNOTATED as superseded (one dated line).
+  REVIEWERS' RULE CONTACT (self-reported): none traversed, listed or read the quarantine directory;
+  none wrote into the repository or the worktree (scripts in the session scratchpad); enumerations of
+  outputs/ were Python glob.glob with non-recursive patterns (_ffr_<tag>_*.json, _ffr_logs/plG_*),
+  one `ls outputs/_pl_verify/` (a named non-quarantine subdirectory), explicit paths otherwise; git
+  only as git show / diff / log / ls-files / status --porcelain -uno. One agent imported agents /
+  cfv with PYTHONDONTWRITEBYTECODE=1 and changed cfv in memory only. Two agents overwrote each
+  other's scratch helper files (common.py, peek.py) mid-task; both re-ran on private copies with
+  identical output.
+
+--------------------------------------------------------------------------------
+11. HOUSEKEEPING
+--------------------------------------------------------------------------------
+  WORKTREE  E:/Projects/SAS_wt/basedfbfbe7 removed after every arm that used it had run. Its only
+    untracked files were the four plRB shards; they had been copied into this checkout's outputs/
+    and were re-compared byte for byte (identical) before the worktree copies were deleted. The .venv
+    JUNCTION was unlinked first with `cmd /c rmdir .venv` (removes the link, not its target), then
+    `git worktree remove`; afterwards `git worktree list` shows only E:/Projects/SAS, and the real
+    E:\Projects\SAS\.venv is intact (python 3.10.11, mesa 1.2.1, numpy 2.2.6 import from it).
+  SWITCH VALUES  every wave log's SHIPPED line (section 3); no source default changed this round
+    except the new GLOBAL_PLANNER_MODE = 0.
+  TAGS  every run tag was unused before its first run (START STATE); _pl_validate.py refused any
+    non-pl tag, and no pl run overwrote an earlier file (the instruments refuse existing paths).
+  QUARANTINE  START STATE and section 10.
+  COMMITTED (outputs/, after the source commits df1ff03..9a2e5c4): this report; the planner_part1.txt
+    SUPERSEDED annotation; the tooling (_pl_obs.py, _pl_obs_stock.py, _pl_obs_crn.py, _pl_pool.sh,
+    _pl_live.ps1, _pl_validate.py, _pl_queue.py, _pl_analyze.py, _pl_verify2.py, _pl_pytest.sh); the
+    queues and wave logs (_pl_q1.._q6, _pl_qQ); the analyzer outputs (_pl_analysis_*.txt); the suite
+    log (_pl2_pytest.log / .xml); every run's JSON, .stdout.txt and .plobs.json (_ffr_pl*); the
+    rbgate shards (_rblatch_camp2_plR*) and their logs (_ffr_rb_plR*.log) - as the carrying-leg round
+    committed its own. NOT committed, as in earlier rounds: outputs/_ffr_logs/pl*.out/.err and the
+    pools' state, attempts, lock and heartbeat-sentinel files.
+  NOT MERGED (the maintainer's instruction): the branch is pushed; main is untouched.
