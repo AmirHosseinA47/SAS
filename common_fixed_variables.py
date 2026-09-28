@@ -119,11 +119,13 @@ GLOBAL_ANALYZER_FIRE_SOURCE_FIX = 1
 FAILSAFE_REAL_ALARMS = 1
 # Item 2. A hold holds: a committed 'hold' leaves the UAV on its cell (move() had no stay
 # action). Under SAFETY_FIRST only the UAV that must yield in a close pair holds (right of way
-# to the lower unique_id, at most 3 consecutive steps). agents.uav_hold_stationary.
+# to the lower unique_id, never to a UAV on a return leg, at most 3 consecutive steps). A return
+# leg never stays. agents.uav_hold_stationary.
 UAV_HOLD_STATIONARY = 1
 # Item 4. Staggered launch batteries: L_i = 100 - 0.3 * 220 / n * rank_i, the searchers spread
 # evenly over the ~220-step battery cycle, so returns stop coinciding and (with two searchers) one
-# searcher is always flying. Scenario B stays a multiplier: 0.5 x L_i. agents.staggered_launch_bases.
+# searcher is meant to be flying at all times (the design's prediction; outputs/fix2_report.txt has
+# the measurement). Scenario B stays a multiplier: 0.5 x L_i. agents.staggered_launch_bases.
 STAGGERED_LAUNCH_BATTERY = 1
 # Item 3a. The victim searcher's coverage y-commit follows the wind (downwind strip first under
 # north/south wind; disjoint camping bands under east/west). agents.searcher_wind_coverage_fix.
@@ -216,7 +218,9 @@ VICTIM_FLEE_MAX_DISPLACEMENT = 6
 #           edge-only gate, with the retreat scored toward the interior)
 #   1..98   on when the nearest strict fire/smoke cell is within this many
 #           cells of the searcher (manhattan)
-#   >= 99   on at every gated step
+#   >= 99   on at every gated step - with SEARCHER_GATE_NEAR_FIELD on (fix2 item
+#           3b, the default) only while a strict fire/smoke cell is within 6 cells,
+#           and the same rule also applies to the pathfinding route
 # When on, the retreat and the gate's fallback ranking score by hazard distance
 # only; keeping off the grid edge is left to the edge-blocked filter (margin 3)
 # and the planner's boundary margins, which are live regardless.

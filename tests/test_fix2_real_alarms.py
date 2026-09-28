@@ -20,6 +20,8 @@ import pytest
 import agents
 import common_fixed_variables as cfv
 import wildfire_model as wf
+from src_extension.adaptation.adaptation_option_objects import FailSafeAdaptationOption
+from src_extension.adaptation.adaptation_option_objects import Scope as OptionScope
 from src_extension.adaptation.adaptation_results import FailSafeAdaptationSpace
 from src_extension.analysis.global_analyzer import GlobalAnalyzer
 from src_extension.analysis.trigger_objects import InformationTrigger, Scope, Severity
@@ -31,7 +33,10 @@ from src_extension.knowledge.communication_model import CommunicationModel
 from src_extension.knowledge.fire_runtime_model import FireRuntimeModel
 from src_extension.knowledge.shared_operational_picture import SharedOperationalPicture
 from src_extension.knowledge.uav_resource_model import UAVResourceModel
+from src_extension.monitoring.monitoring_buffer import MonitoringBuffer
+from src_extension.monitoring.monitoring_interfaces import LocalObservation
 from src_extension.planning.fail_safe_planner import FailSafePlanner
+from src_extension.planning.utility_evaluation import UtilityEvaluation
 from wildfire_model import WildFireModel
 
 
@@ -259,11 +264,30 @@ def test_mode_is_normal_on_a_local_hint_alone(switch) -> None:
 
 # --------------------------------------------------------------------------- 1d' the planning echo
 
+def _search_space() -> FailSafeAdaptationSpace:
+    # the search option of tests/test_rescue_failsafe_planners.py::
+    # test_fail_safe_planner_marks_search_mode_active_for_search_decision - the one a reasonless
+    # planner SELECTS (fail_safe_action 'failsafe_search_patrol', search_mode_active True). An empty
+    # space cannot tell the no-op from the old planner: both return an empty decision (review D1).
+    search = FailSafeAdaptationOption(
+        option_id="search", option_type="failsafe_search_patrol", target_entity="uav-1",
+        parameters={"mission_value": 0.5, "stability_bonus": 0.5, "energy_failure_risk": 0.2,
+                    "support_loss": 0.1, "search_mode": True, "recovery_value": 0.8},
+        expected_effect="test", cost_estimate=0.1, risk_estimate=0.1, confidence=1.0,
+        scope=OptionScope.system, timestamp=0.0, originating_trigger="t", explanation_hint="")
+    return FailSafeAdaptationSpace(options=[search])
+
+
+def _plan_local_hint_only(triggers=None):
+    snapshot = {"all_triggers": (_search_trigger(Scope.LOCAL),) if triggers is None else triggers}
+    planner = FailSafePlanner(utility_evaluator=UtilityEvaluation(default_mode="information_recovery_mode"))
+    return snapshot, planner.plan(1, analysis_snapshot=snapshot, fail_safe_space=_search_space(),
+                                  timestamp=1.0)
+
+
 def test_no_reason_no_action(switch) -> None:
     switch(1)
-    snapshot = {"all_triggers": (_search_trigger(Scope.LOCAL),)}
-    decision = FailSafePlanner().plan(1, analysis_snapshot=snapshot,
-                                      fail_safe_space=FailSafeAdaptationSpace(options=[]), timestamp=1.0)
+    snapshot, decision = _plan_local_hint_only()
     assert decision is not None
     assert decision.fail_safe_action == "" and decision.search_mode_active is False
     assert decision.mission_mode == ""
@@ -273,6 +297,20 @@ def test_no_reason_no_action(switch) -> None:
     assert state.mode == FailSafeMode.NORMAL
 
 
+@pytest.mark.parametrize("value, action, search", [(1, "", False), (0, "failsafe_search_patrol", True)])
+def test_no_trigger_at_all(switch, value, action, search) -> None:
+    # the planning echo itself: with NO reason (no trigger at all) the old planner still SELECTS
+    # from the space - the search patrol, search_mode_active True - and the mode manager reads that
+    # back as information_recovery. On: the no-op, and the mode stays normal.
+    switch(value)
+    snapshot, decision = _plan_local_hint_only(triggers=())
+    assert decision.fail_safe_action == action
+    assert decision.search_mode_active is search
+    state = ModeManager(SafetyChecker()).update(analysis_snapshot=snapshot, planning_result=decision,
+                                                timestamp=1.0)
+    assert state.mode == (FailSafeMode.INFORMATION_RECOVERY if search else FailSafeMode.NORMAL)
+
+
 def test_a_real_reason_still_plans(switch) -> None:
     switch(1)
     snapshot = {"all_triggers": (_search_trigger(Scope.GLOBAL),)}
@@ -280,3 +318,72 @@ def test_a_real_reason_still_plans(switch) -> None:
                                       fail_safe_space=FailSafeAdaptationSpace(options=[]), timestamp=1.0)
     assert decision.search_mode_active is True
     assert decision.mission_mode == "information_recovery"
+
+
+# --------------------------------------------------------------------------- the model wiring (review R1)
+
+def _fleet_fire_lost_triggers(model):
+    return [t for t in model.latest_analysis_snapshot.all_triggers
+            if t.trigger_type == "SEARCH_MODE_REQUIRED" and t.scope == Scope.GLOBAL
+            and "FLEET_FIRE_LOST" in str(t.explanation_context)]
+
+
+def _model_believing_an_unseen_fire():
+    model = WildFireModel()
+    for _ in range(2):
+        model.fire_runtime_model.update_fire_observation((3, 3), timestamp=1.0, source="t",
+                                                         confidence=1.0, probability=1.0)
+    for lom in model.local_observation_models.values():
+        lom.visible_fire_cells = set()
+    return model
+
+
+def test_the_model_raises_fleet_fire_lost(switch) -> None:
+    # _run_analysis must hand the analyzer the fleet's view (snap_dict['fleet_fire_view']);
+    # without it FLEET_FIRE_LOST can never fire in a run and no unit test would notice
+    switch(1)
+    model = _model_believing_an_unseen_fire()
+    model._run_analysis(1.0, None)
+    assert len(_fleet_fire_lost_triggers(model)) == 1
+    next(iter(model.local_observation_models.values())).visible_fire_cells = {(3, 3)}
+    model._run_analysis(2.0, None)
+    assert _fleet_fire_lost_triggers(model) == []           # one UAV sees fire: not lost
+    switch(0)
+    model = _model_believing_an_unseen_fire()
+    model._run_analysis(1.0, None)
+    assert _fleet_fire_lost_triggers(model) == []
+
+
+def _observation(uid, drift):
+    return LocalObservation(
+        uav_id=uid, timestamp=1.0, visible_fire_cells=[], visible_smoke_cells=[],
+        visible_victim_candidates=[], current_position=(5, 5), intended_move=(6, 5), actual_move=(5, 5),
+        drift_error=drift, battery_level=90.0, battery_status="normal", communication_status="",
+        nearby_uavs=[], task_context={}, negative_observations=[], raw_information_gain=0.0,
+        normalized_information_gain=0.0, local_uncertainty_patch=[], observation_confidence=1.0,
+        belief_confirmation_flags=[])
+
+
+@pytest.mark.parametrize("value", [1, 0])
+def test_a_refused_move_is_not_a_lost_message(switch, value) -> None:
+    # every UAV refused (drift 1.0) for 50 steps, with the model's 3%-per-step delivery decay:
+    # on, telemetry stays delivered and delivery confidence never nears the 0.25 alarm; off, the
+    # old derivation marks telemetry delayed and takes delivery confidence from the drift
+    switch(value)
+    model = WildFireModel()
+    buf = MonitoringBuffer()
+    for uid in model.local_observation_models:
+        buf.add_local_observation(uid, _observation(uid, 1.0))
+    cm = model.communication_model
+    lowest = 1.0
+    for t in range(1, 51):
+        cm.apply_time_decay(float(t))
+        model._apply_communication_updates(buf, float(t))
+        lowest = min(lowest, float(cm.state.delivery_confidence or 0.0))
+    status = {cm.state.last_delivery_status.get("uav_%s_telemetry" % uid) for uid in model.local_observation_models}
+    if value:
+        assert status == {"delivered"}
+        assert lowest >= 0.25
+    else:
+        assert status == {"delayed"}
+        assert lowest < 0.25

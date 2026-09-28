@@ -2136,7 +2136,10 @@ class UAVExecutor:
                  grid edge, and the retreat is scored toward the interior
           1..98  it retreats when the nearest strict fire/smoke cell is
                  within that many cells, scored by hazard distance only
-          >= 99  it retreats on every gated step, scored by hazard only
+          >= 99  it retreats on every gated step, scored by hazard only - with
+                 SEARCHER_GATE_NEAR_FIELD on (fix2 item 3b, the default) only
+                 while a strict fire/smoke cell is within SEARCHER_GATE_NEAR_RANGE
+                 (6), plus the same rule on the pathfinding route
         """
         try:
             return max(0, int(getattr(_cfv, "VICTIM_SEARCHER_HAZARD_RETREAT_RANGE", 0)))

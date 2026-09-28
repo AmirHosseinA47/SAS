@@ -260,3 +260,109 @@ def test_dispatch_off_rewrites_every_path(switch) -> None:
         ex.execute = spy
     d._dispatch_local_paths(paths, 30.0, fs, fail_safe_override_active=True, override_reason="safety_first_mode")
     assert set(seen.values()) == {"hold"}
+
+
+# --------------------------------------------------------------------------- review follow-ups
+
+def test_no_yield_to_a_returning_partner(switch) -> None:
+    # review R3: a UAV held in front of a lower-id UAV on a return leg would block that leg for as
+    # long as the geometry lasts (the cap only restarts the streak) - a returning UAV is no partner
+    switch(1)
+    model, u, d = _yield_setup([(20, 20), (21, 21), (40, 40)], named=[])
+    model.latest_analysis_snapshot = SimpleNamespace(all_triggers=(_collision(u[1].unique_id),))
+    model.evaluation_timesteps_counter = 30
+    u[0].rtb_active = True
+    assert d._must_yield(str(u[1].unique_id)) is False
+    u[0].rtb_active = False
+    model.evaluation_timesteps_counter = 31
+    assert d._must_yield(str(u[1].unique_id)) is True      # the same pair, partner flying: yields
+
+
+def test_a_docked_uav_never_yields(switch) -> None:
+    switch(1)
+    model, u, d = _yield_setup([(20, 20), (21, 21), (40, 40)], named=[])
+    model.latest_analysis_snapshot = SimpleNamespace(all_triggers=(_collision(u[1].unique_id),))
+    model.evaluation_timesteps_counter = 30
+    u[1].rtb_docked = True                                 # the would-be yielder itself
+    assert d._must_yield(str(u[1].unique_id)) is False
+
+
+def test_emergency_keeps_the_fleet_rewrite(switch) -> None:
+    # EMERGENCY is excluded from the yield rewrite: every rewritten path stays a hold (review R5:
+    # with the stationary hold that is a fleet freeze - unreachable on the measured sample)
+    switch(1)
+    model, u, d = _yield_setup([(20, 20), (21, 21), (40, 40)], named=[])
+    model.latest_analysis_snapshot = SimpleNamespace(all_triggers=(_collision(u[0].unique_id),
+                                                                   _collision(u[1].unique_id)))
+    model.evaluation_timesteps_counter = 30
+    fs = FailSafeDecision(decision_id="fs", selected_option_id="emergency-hold", fail_safe_action="safe_hold",
+                          mission_mode="emergency", uncertainty_context={"fail_safe_mode": "emergency"})
+    paths = [PathDecision(decision_id="p%d" % i, uav_id=str(a.unique_id), selected_option_id="explore_x",
+                          next_action="east") for i, a in enumerate(u)]
+    seen = {}
+    for a in u:
+        ex = d._get_uav_executor(str(a.unique_id))
+        orig = ex.execute
+
+        def spy(decision, timestamp=0.0, fail_safe_decision=None, _o=orig, _id=str(a.unique_id)):
+            seen[_id] = decision.next_action
+            return _o(decision, timestamp, fail_safe_decision=fail_safe_decision)
+
+        ex.execute = spy
+    d._dispatch_local_paths(paths, 30.0, fs, fail_safe_override_active=True, override_reason="emergency_mode")
+    assert seen and set(seen.values()) == {"hold"}
+    assert d._yield_streaks == {}                          # the yield rule was never consulted
+
+
+@pytest.mark.parametrize("mechanism", [1, 2])
+def test_a_return_leg_never_stays(switch, mechanism) -> None:
+    # review R4: mechanism 1 returns before the steering that clears the flag; move() itself
+    # excludes a return leg from the stay under either mechanism
+    switch(1)
+    cfv.BASE_STATION_RETURN_MECHANISM = mechanism
+    model, u = _airborne_model([(20, 20), (30, 30), (40, 40)])
+    uav = u[0]
+    uav.selected_dir = 0
+    uav.execution_direction_applied = True
+    uav.execution_action = "hold"
+    uav.execution_stay = True
+    uav.rtb_active = True
+    assert uav.move() is True
+    assert tuple(uav.pos) == (21, 20)
+
+
+def _flank_executor(model, uav, lateral):
+    ex = _executor(model, uav)
+    stubs = {
+        "_fire_positions_from_runtime": lambda: [(30.0, 20.0)],
+        "_standoff_fire_cells": lambda targets: {(30, 20)},
+        "_effective_standoff_min": lambda m: 3,
+        "_cell_in_smoke_envelope": lambda cell, clearance=1: False,
+        "_cell_has_burning_fire": lambda cell: False,
+        "_fire_tracker_position_unsafe": lambda agent, cells: False,
+        "_tracker_in_flank_band": lambda agent, m: True,
+        "_fire_tracker_hold_needs_escape": lambda agent: False,
+        "_fire_tracker_at_safe_standoff": lambda agent, cells: True,
+        "_fire_tracker_far_from_fire": lambda agent, cells: False,
+        "_fire_tracker_lateral_hold_target": lambda agent, cells: lateral,
+        "_choose_best_direction_fire": lambda agent, target, **kw: 2,
+    }
+    for name, fn in stubs.items():
+        setattr(ex, name, fn)
+    return ex
+
+
+@pytest.mark.parametrize("lateral, stays", [(None, True), ((20.0, 22.0), False)])
+def test_the_flank_layer_marks_an_in_place_hold(switch, lateral, stays) -> None:
+    # review R2: the flank branch itself sets the in-place flag only when there is no lateral
+    # patrol target (D-4: the lateral step still moves)
+    switch(1)
+    model, u = _airborne_model([(20, 20), (40, 40), (45, 45)])
+    ex = _flank_executor(model, u[0], lateral)
+    decision = PathDecision(decision_id="p", uav_id=str(u[0].unique_id), selected_option_id="flank",
+                            next_action="east")
+    got = ex._try_resolve_fire_role_direction(u[0], decision, "flank")
+    assert got == (2, "fire_flank_hold")
+    assert ex._flank_hold_in_place is stays
+    ex._commit_execution_direction(u[0], got[0], got[1])
+    assert u[0].execution_stay is stays

@@ -76,10 +76,11 @@ class DecisionDispatcher:
         """fix2 item 2 - does this UAV yield (hold) under the fail-safe hold this step?
 
         Yes when it is airborne (not docked), not on a return leg, named by its OWN
-        COLLISION_RISK trigger, and another airborne UAV with a LOWER unique_id stands within
-        COLLISION_RISK_RADIUS (right of way to the lower id) - unless it has already yielded
-        FAILSAFE_YIELD_MAX_STEPS steps in a row, in which case it proceeds this step and the
-        streak restarts. One answer per UAV per step.
+        COLLISION_RISK trigger, and another airborne UAV with a LOWER unique_id, not on a
+        return leg, stands within COLLISION_RISK_RADIUS (right of way to the lower id) - unless
+        it has already yielded FAILSAFE_YIELD_MAX_STEPS steps in a row, in which case it
+        proceeds this step and the streak restarts (so a persisting geometry yields 3 steps in
+        every 4, never more than 3 in a row). One answer per UAV per step.
         """
         import agents as agents_module  # lazy: agents is a root module
 
@@ -105,9 +106,13 @@ class DecisionDispatcher:
                 for t in (getattr(snapshot, "all_triggers", ()) or ())
             )
             mx, my = int(me.pos[0]), int(me.pos[1])
+            # the partner must be airborne AND not on a return leg: a returning UAV flies a fixed
+            # leg to its berth, and a UAV held in front of it would block that leg for as long
+            # as the geometry lasts (the cap only restarts the streak) - review R3.
             lower_close = any(
                 a is not me and getattr(a, "pos", None) is not None
                 and not bool(getattr(a, "rtb_docked", False))
+                and not bool(getattr(a, "rtb_active", False))
                 and int(a.unique_id) < int(me.unique_id)
                 and abs(int(a.pos[0]) - mx) + abs(int(a.pos[1]) - my)
                 <= agents_module.COLLISION_RISK_RADIUS

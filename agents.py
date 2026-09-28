@@ -819,6 +819,14 @@ class UAV(mesa.Agent):
         self.execution_action = "rtb_return"
         self.execution_stay = False  # fix2 item 2: a return leg always moves
 
+    def _stays_this_step(self) -> bool:
+        """fix2 item 2: the committed stay applies - UAV_HOLD_STATIONARY on, and the UAV is not
+        on a return leg. Mechanism 2 clears the flag when it steers the leg; mechanism 1 keeps
+        the executor's committed direction and returns before that, so the leg is excluded
+        here as well (review R4)."""
+        return (bool(getattr(self, "execution_stay", False)) and not bool(self.rtb_active)
+                and uav_hold_stationary())
+
     # function for moving UAV over the grid area
     def move(self):
         # vectors for moving to different positions, based on 4 directions = [0, 1, 2, 3] = [right, down, left, up].
@@ -847,9 +855,9 @@ class UAV(mesa.Agent):
             return False
 
         # fix2 item 2: the stay action this model never had. A committed 'hold' (and a flank
-        # hold aimed at the tracker's own cell) leaves the UAV where it is; a return leg clears
-        # the flag in _apply_return_to_base, so a battery return always moves.
-        if getattr(self, "execution_stay", False) and uav_hold_stationary():
+        # hold aimed at the tracker's own cell) leaves the UAV where it is; a return leg never
+        # stays (_stays_this_step), under either return mechanism.
+        if self._stays_this_step():
             return False
 
         # it calculates the position the corresponding UAV will move to
@@ -877,7 +885,7 @@ class UAV(mesa.Agent):
             # fix2 item 1: a deliberate stay intends the cell it is on - a docked UAV holding its
             # berth is not drifting. The old measure scored every recharge step as drift 1.0.
             intended_delta = (0, 0)
-        if not moved and getattr(self, "execution_stay", False) and uav_hold_stationary():
+        if not moved and self._stays_this_step():
             # fix2 item 2: a hold intends its own cell - owned by this switch, so a stationary
             # hold cannot create a drift sample even with FAILSAFE_REAL_ALARMS off.
             intended_delta = (0, 0)
@@ -1529,8 +1537,10 @@ def staggered_launch_battery() -> bool:
     On: UAV i launches with L_i = 100 - delta * r_i, delta = FLIGHT_DRAIN_PER_STEP *
     UAV_STAGGER_CYCLE_STEPS / n (n = fleet size), r_i its RETURN RANK - the s searchers take ranks
     floor(k * n / s) (evenly spread over the cycle, the first at full charge), the trackers the
-    remaining ranks in unique-id order - so consecutive returns come ~P / n steps apart and the
-    searchers' recharge windows never overlap. Scenario B multiplies: 0.5 x L_i. Off: every UAV
+    remaining ranks in unique-id order - so consecutive returns are DESIGNED to come ~P / n steps
+    apart and the searchers' recharge windows not to overlap (a prediction, measured in fix2 Part 3
+    P3-6; B recharges in place, which erases the stagger - fix2_part1 O-4). Scenario B multiplies:
+    0.5 x L_i. Off: every UAV
     launches at 100 (x f), all returning in one window (c08456b).
     """
     return _fix2_switch("STAGGERED_LAUNCH_BATTERY")
@@ -1586,6 +1596,10 @@ def rtb_trigger_level_at(uav, cell) -> float:
 # --- fix2 (session 2): behaviour fixes, each on its own switch (outputs/fix2_part1.txt) ------
 # Every fix2 switch SHIPS 1 (ruling D-1) and is off only on an EXACT integral zero (the
 # _exact_integer rule of fix1); missing or junk -> on. All fix2 switches at 0 is c08456b.
+# The fix2 CONSTANTS in this module (UAV_STAGGER_CYCLE_STEPS, FLIGHT_DRAIN_PER_STEP,
+# COLLISION_RISK_RADIUS, DRIFT_WINDOW_STEPS, FAILSAFE_YIELD_MAX_STEPS, SEARCHER_GATE_NEAR_RANGE) are
+# fixed design values, NOT run parameters: apply_scenario_config / --set write only
+# common_fixed_variables and wildfire_model, so a --set of one of these names has no effect.
 
 def _fix2_switch(name: str) -> bool:
     value = _exact_integer(getattr(cfv, name, 1))
@@ -1658,8 +1672,9 @@ def searcher_wind_coverage_fix() -> bool:
     On: the victim searcher's coverage y-commit follows the wind - under north/south wind a camping
     searcher is committed to the DOWNWIND strip until it has reached it, then the upwind strip; under
     east/west wind the camping bands are disjoint (a searcher on or across the midline is not
-    camping). Off: the overlapping bands send a searcher at y 25-30 north whatever the wind
-    (local_adaptation_generator._wind_aware_y_commit). The x-strip order is unchanged (D-8).
+    camping) - local_adaptation_generator._wind_aware_y_commit. Off: the original overlapping bands
+    in _update_coverage_y_commit send a searcher at y 25-30 north whatever the wind. The x-strip
+    order is unchanged (D-8).
     """
     return _fix2_switch("SEARCHER_WIND_COVERAGE_FIX")
 
