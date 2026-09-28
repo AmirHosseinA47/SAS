@@ -56,6 +56,15 @@ is no longer the drhD / d4D configuration; the firefighting-off pin is --set
 FF_FIREFIGHT_EXTINGUISH=0 --set FF_FIREFIGHT_FIREBREAK=0. The firefight_log /
 firefight_counters block in the JSON is what shows, after the fact, that a unit
 engaged (outputs/ungated_runner_register.txt).
+
+SINCE fix1 (outputs/fix1_part1.txt, fix1_report.txt) a bare run ALSO has the four fix1
+switches ON - REDUCED_LAUNCH_BATTERY, ROLE_SPLIT_HALF_RULE, UNDETECTED_WRITEOFF_FIX,
+SEARCHER_COUNTERS_PER_STEP - and: BATCH_SIZE defaults to max(300, --steps) (a 360-step
+run no longer needs --set BATCH_SIZE=360); --roles half is the maintainer's rule
+(searchers max(1, n // 2): A/B 2+1, C 3+2, D 2+2; the fixed 2+2 only when
+ROLE_SPLIT_HALF_RULE is 0 or the checkout predates fix1); --scenario B carries its
+preset's UAV_LAUNCH_BATTERY_FRACTION 0.5. The pre-fix1 system is the four switches at 0.
+The JSON gains roles_effective, and long_undetected_log when the model labelled one.
 """
 from __future__ import annotations
 
@@ -126,6 +135,8 @@ def main() -> int:
     from src_extension.adaptation.local_adaptation_generator import apply_scenario_config  # noqa: E402
     from wildfire_model import WildFireModel  # noqa: E402
     from serve_dashboard import BUILTIN_SCENARIOS, _build_evaluation, _resolve_role_count_params  # noqa: E402
+    import serve_dashboard as _sd  # noqa: E402
+    globals()["_scenario_extra_params"] = getattr(_sd, "scenario_extra_params", None)
 
     # sanity: the imported modules must come from --repo
     for mod in (am, cfv, wf):
@@ -135,23 +146,7 @@ def main() -> int:
             return 3
 
     # ---- params: identical to evaluate_scenarios._scenario_params at CLI defaults
-    preset = BUILTIN_SCENARIOS.get(args.scenario, {})
-    num_agents = int(preset.get("NUM_AGENTS", 3))
-    if args.roles == "half":
-        ft, vs = _resolve_role_count_params(num_agents, 2, 2)
-    else:
-        ft, vs = _resolve_role_count_params(num_agents, None, None)
-    params = {
-        "NUM_AGENTS": num_agents,
-        "NUM_VICTIMS": int(preset.get("NUM_VICTIMS", 5)),
-        "NUM_FIREFIGHTERS": int(preset.get("NUM_FIREFIGHTERS", 3)),
-        "WIND_DIRECTION": str(args.wind),
-        "BATCH_SIZE": 300,
-        "FIRE_SPREAD_MULTIPLIER": 0.75,
-        "PROBABILITY_MAP": False,
-        "NUM_FIRE_TRACKERS": ft,
-        "NUM_VICTIM_SEARCHERS": vs,
-    }
+    # --set is parsed FIRST since fix1: --roles half reads ROLE_SPLIT_HALF_RULE from it.
     extra: dict = {}
     for item in args.set:
         if "=" not in item:
@@ -159,6 +154,42 @@ def main() -> int:
             return 2
         k, v = item.split("=", 1)
         extra[k.strip()] = _parse_value(v)
+    preset = BUILTIN_SCENARIOS.get(args.scenario, {})
+    num_agents = int(preset.get("NUM_AGENTS", 3))
+    if args.roles == "half":
+        # fix1 item 3: --roles half is the maintainer's rule (searchers max(1, n // 2))
+        # while ROLE_SPLIT_HALF_RULE is on - the switch value this run will actually get,
+        # --set included, read with the accessor's exact-integer rule - and the old fixed
+        # (2, 2) when it is off or the checkout predates fix1 (so a 3- or 5-UAV run still
+        # raises there, exactly as before).
+        rule_fn = getattr(am, "half_rule_role_split", None)
+        rule_on = False
+        if rule_fn is not None:
+            raw = extra.get("ROLE_SPLIT_HALF_RULE", getattr(cfv, "ROLE_SPLIT_HALF_RULE", 1))
+            exact = am._exact_integer(raw)
+            rule_on = exact is None or exact != 0
+        ft, vs = rule_fn(num_agents) if rule_on else (2, 2)
+        ft, vs = _resolve_role_count_params(num_agents, ft, vs)
+    else:
+        ft, vs = _resolve_role_count_params(num_agents, None, None)
+    params = {
+        "NUM_AGENTS": num_agents,
+        "NUM_VICTIMS": int(preset.get("NUM_VICTIMS", 5)),
+        "NUM_FIREFIGHTERS": int(preset.get("NUM_FIREFIGHTERS", 3)),
+        "WIND_DIRECTION": str(args.wind),
+        # fix1 item 1: the batch always covers the run (300 for <= 300 steps, as before);
+        # a 360-step run used to exit 0 with no JSON unless --set BATCH_SIZE=360.
+        "BATCH_SIZE": max(300, int(args.steps)),
+        "FIRE_SPREAD_MULTIPLIER": 0.75,
+        "PROBABILITY_MAP": False,
+        "NUM_FIRE_TRACKERS": ft,
+        "NUM_VICTIM_SEARCHERS": vs,
+    }
+    # fix1 item 2: the preset's other model parameters (scenario B's launch charge), from
+    # the one helper every runner uses; {} on a checkout that predates it.
+    extra_fn = globals().get("_scenario_extra_params")
+    if extra_fn is not None:
+        params.update(extra_fn(args.scenario))
     params.update(extra)
 
     H = int(getattr(cfv, "HEIGHT", 50))
@@ -636,6 +667,10 @@ def main() -> int:
                         fdist = min(abs(cell[0] - fx) + abs(cell[1] - fy) for fx, fy in burning_cells)
                     arow.append([uid, act, burning, vsm, asm, int(fdist)])
                 uav_actions.append(arow)
+        # fix1 item 1: a model that advanced fewer steps than asked is a failed run.
+        advanced = int(getattr(model, "evaluation_timesteps_counter", -1) or 0)
+        if advanced != int(args.steps):
+            raise RuntimeError("the model advanced %d of the %d requested steps" % (advanced, args.steps))
         evaluation = _build_evaluation(model, terminal_step, step, params)
     wall = time.perf_counter() - t0
     for key, start in sorted(burn_open.items()):
@@ -748,6 +783,8 @@ def main() -> int:
             "absent_now": sorted(list(getattr(model, "_absent_firefighters", {}) or {})) if isinstance(getattr(model, "_absent_firefighters", None), dict) else None,
         },
         "unreachable_escape_log": list(getattr(model, "_unreachable_escape_log", []) or []),
+        # fix1 item 3: the split the model actually used (trackers, searchers).
+        "roles_effective": list(model._resolve_uav_role_counts(int(model.NUM_AGENTS))[:2]),
         "rescue_event_counts": event_counts,
         "rescue_failed": failed_reasons,
         "pending_removal_failures_total": int(getattr(model, "pending_removal_failures_total", 0) or 0),
@@ -809,6 +846,11 @@ def main() -> int:
     # without the feature, therefore produces exactly the JSON shape it produced
     # before this block existed, so fmOFF / fmREF stay comparable field for field
     # with the dfD arm recorded by the previous harness. Pure reads.
+    # fix1 item 4: the long-undetected LABELS (never write-offs), only when the model made
+    # one - a run without a label keeps the JSON shape it always had.
+    lu_log = getattr(model, "_long_undetected_log", None)
+    if lu_log is not None:
+        out["long_undetected_log"] = list(lu_log)
     ff_log = getattr(model, "_firefight_log", None)
     if ff_log is not None:
         shadow = getattr(model, "_firefight_shadow", None)
