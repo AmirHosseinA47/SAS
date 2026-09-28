@@ -1,0 +1,364 @@
+================================================================================
+FIX1 - SESSION 1 OF 3: MECHANICAL FIXES - REPORT (Parts 2 and 3)                 outputs/fix1_report.txt
+================================================================================
+Branch fix1, cut from main 51c5165 (main was fast-forwarded to the sysdebug commit and pushed;
+sysdebug pushed). Design: outputs/fix1_part1.txt. Decisions as ruled: D-1 all four switches ship ON
+(off only on an exact integral 0); D-2 scenario B launch fraction 0.5; D-2c DEFERRED (polish list);
+D-3 one role-split function; D-4a end-of-run never_detected inside unreachable AND its own sub-count
+everywhere results are summarised; D-4b undetected victims exempt from EVERY write-off; D-5 the broad
+no_firefighter_available rule; D-6 the first call of a step advances the counters.
+ENVIRONMENT: sys.version = 3.10.11 (tags/v3.10.11:7d4cc5a, Apr 5 2023, 00:38:17) [MSC v.1929 64 bit
+(AMD64)]; mesa.__version__ = 1.2.1; interpreter E:\Projects\SAS\.venv\Scripts\python.exe.
+
+COMMITS (51c5165..938565c; source + tests: 30 files, +1920 / -103 outside outputs/)
+  dd3ab44 item 1   7a6954b item 5   dcf1c63 items 7+8   a41fe62 item 2   68fed66 item 3
+  19dc39a item 4   78109ac item 6   ddd45dc harness + Part 1 + Part 3 tooling
+  505cf4d / 938565c two tests that pinned the legacy role split (item 3; test-only)
+  3340d42 fixes from the independent review (item 6 defect; items 1, 2, 4 risks)
+RUNS: 139 simulation processes (89 harness + 44 stage 2 [12 rbgate shards, 28 probes, 3 no-op
+re-runs, 1 360-step evaluate] + 4 attribution probes + 2 item-5 probes; the last two groups were added
+after the pre-registration to attribute episodes and exercise item 5), every one 360 steps except the
+240-step rbgate; 0 crashes, 0 pool failures (outputs/_mf1_pool_*.log). Run counts were stated before
+each launch. Full suite: 1 run (78 min). AGENTS: 2 of the allowed 3 (Part 1 battery trace; an
+adversarial review of the Part 2 diff, whose findings are in section 9).
+
+================================================================================
+1. VERDICTS
+================================================================================
+ #  item                         switch (ships 1)             behaviour change            Part 3 checks
+ 1  silent exit                  none                         none that produced results  P3-6 PASS
+ 2  scenario B battery           REDUCED_LAUNCH_BATTERY       scenario B only             P3-2 PASS
+    + one threshold source       (+ UAV_LAUNCH_BATTERY_FRAC.) (thresholds: value-identical, P3-1)
+ 3  one role-split rule          ROLE_SPLIT_HALF_RULE         C (4+1 -> 3+2); D in        P3-3 PASS
+                                                              evaluate / dashboard /
+                                                              harness 'default' (3+1->2+2)
+ 4  no permanent write-off       UNDETECTED_WRITEOFF_FIX      every scenario, runs with a P3-4 PASS
+    of an undetected victim                                   victim undetected at 210
+ 5  no_firefighter_available     none                         cause label only            unit + real run (6a)
+ 6  searcher counters per step   SEARCHER_COUNTERS_PER_STEP   every scenario (searcher    P3-5 PASS
+                                                              paths)
+ 7  five wrong tests             none                         tests only                  P3-9 PASS
+ 8  off-grid corner oracle       none                         test only                   P3-9 PASS
+ ALL SWITCHES 0 == 51c5165: P3-1 16/16, rbgate 4/4 shards, 3 probe configs row-for-row - PASS
+ INVARIANTS (4 scenarios x 4 winds, shipped): every hard invariant holds - PASS (section 7)
+ ROUTE_BLOCKED GATE: no NEW failure (no seed loses a rescue at all) - PASS
+ FULL SUITE failing NAME SET at HEAD = {T5, T7, T8} - as pre-registered (section 8)
+
+================================================================================
+2. ITEM 1 - THE SILENT EXIT
+================================================================================
+DONE  wildfire_model.step(): the over-limit call prints MR1/MR2 as before and RAISES BatchLimitReached
+  (a RuntimeError) instead of sys.exit(0); the last allowed step sets self.running = False (mesa's stop
+  signal, so main.py's ModularServer ends cleanly). evaluate_scenarios and evaluate_extended_metrics:
+  --batch-size defaults to max(300, --steps) (unchanged for <= 300 steps); an explicit batch that
+  cannot run --steps exits 2 before any seed; a seed raising Exception OR SystemExit is an ERROR row on
+  stdout and stderr and the batch exits 1 (summary of the good seeds still printed, marked FAILED k/n);
+  the runner checks the model advanced exactly --steps steps. Harness: BATCH_SIZE max(300, --steps) and
+  the same step check. Dashboard: batch clamped to cover the requested steps; a failed step returns
+  {"error": ...} and ends the run in the page.
+CHECKS (outputs/_mf1_item1_checks.txt, _mf1_eval360_summary.txt; tests/test_batch_limit.py)
+  (a) `evaluate_scenarios.py --scenario D --n 2 --steps 360 --seeds 101,202` with NO --batch-size:
+      exit 0, both seed rows, summary, steps_run 360.                                           PASS
+  (b) the sysdebug repro (--steps 6 --batch-size 3): exit 2, "--batch-size 3 cannot run --steps 6 ...".
+                                                                                               PASS
+  (c) every seed's model build failing / the model's batch limit forced below --steps inside every
+      seed (the old silent-exit shape): ERROR: BatchLimitReached rows on stdout and stderr, exit 1.
+                                                                                               PASS
+  (d) all 89 harness runs are 360 steps with no --set BATCH_SIZE.                              PASS
+PAPER: no reported number was wrong because of it. A 360-step evaluation needs no batch flag, and a
+  runner checking exit codes can no longer record an empty or partial round as a success.
+
+================================================================================
+3. ITEM 2 - SCENARIO B IS BATTERY-CONSTRAINED; ONE THRESHOLD SOURCE
+================================================================================
+DONE  REDUCED_LAUNCH_BATTERY (switch) + UAV_LAUNCH_BATTERY_FRACTION f (outside (0, 1] RAISES at model
+  build): each UAV launches at f x L_i, L_i = 100 today, set at spawn before the runtime knowledge reads
+  it. BUILTIN_SCENARIOS B carries f = 0.5 and is relabelled "B - Battery-Constrained";
+  scenario_extra_params() states the fraction for EVERY preset (A, C, D 1.0 - so a process that ran B
+  and then A cannot inherit 0.5; review risk 4). ONE threshold source: agents.battery_low_threshold() /
+  battery_critical_threshold() / battery_status_for() (cfv 30 / 15, read at call time) now feed the UAV
+  labels, both analyzers, the resource model (20/50/'nominal' -> 30/15/'normal'), the global monitor
+  (dead <20 branch removed), the dashboard alert (was frozen at import), the utility feasibility check
+  (literal 15) and rtb_trigger_level_at. The commented cfv B block (BATTERY_CRITICAL_THRESHOLD = 50) is
+  replaced by B's definition and a warning not to revive 50.
+  COMPOSITION WITH SESSION 2: agents.uav_launch_battery(i) = f x L_i; session 2 replaces L_i only, f
+  stays a multiplier ("each B pack at half the charge it would otherwise launch with").
+CHECKS (P3-2, outputs/_mf1_analysis.txt; shipped B: _mf1_b_shipped.txt; reasons: _mf1_battery_reasons.txt)
+  B, 4 winds x 2 seeds, item 2 alone vs all off: every B UAV starts at 49.7 after step 1 (50 - 0.3);
+  2 return trips per UAV (off: 1); the first at step 19-20, IN FLIGHT at 44.3-44.6 % from 17-18 cells;
+  the second at steps 212-276; every trip arrives; minimum in-flight battery 33.6 %.            PASS
+  A, C, D with item 2 on: value-identical to all off (params differ only in the switch).        PASS
+  Shipped B (4 winds): 2 returns per UAV (steps 19 and 214-234), minimum battery 38.7 %, LOW / CRITICAL
+  trigger instances 0, battery fail-safe reasons 0, emergency steps 0.                          PASS
+  Threshold consolidation value-identical: all-off identity (P3-1, rbgate, probes).             PASS
+FINDING - A RETURN-LEG STANDOFF, PRE-EXISTING, STRETCHED BY B. In B north/9511 the three UAVs trigger
+  together (step 19, same distance) toward one depot; UAV 2501 waited at (5,45), one cell outside the
+  NW depot, for 56 steps while 2500 sat docked on (4,45), the cell in front of 2501's berth (3,45); the
+  pure-axis approach cannot sidestep and the outside-depot recovery did not free it. It arrived at
+  33.6 %. The same standoff occurs at full charge, at 51c5165: B north/9502, 15 excess steps (mf1R ==
+  mf1Z). Excess steps (duration - distance) over the 48 item-2 B legs: 0 x35, 1-2 x9, 15-16 x3, 56 x1;
+  the record before this session was 17. Not fixed here (dock-fix family; outputs/_mf1_rtb_* and the
+  rtb_log of _ffr_mf1Bt_B_north_default_9511.json).
+PAPER (ruling D-2): describe B as BATTERY-CONSTRAINED - early and repeated returns: every UAV turns home
+  ~19 steps after launch, in flight, and returns twice in 360 steps (A, C, D: once, steps 160-202), so B
+  loses its searcher and trackers for part of the early search window. NO BATTERY TRIGGER FIRES in B.
+  PAPER FINDING: the low and critical battery triggers cannot drive any adaptation in flight - the
+  return rule fires at >= 39 % (0.3 x distance + 39.23), above the 30 % LOW threshold; nothing reads the
+  LOW trigger (it maps to no fail-safe reason and no planner acts on it); CRITICAL (<= 15) is outranked
+  (EMERGENCY needs a collision / no-path reason as well, and alone it gives 'degraded', which never
+  outranks information_recovery). The system's battery safety is the return-to-base rule, not the
+  analyzer triggers. Also report that synchronized returns to one depot can stall a leg for up to 56
+  steps (pre-existing standoff).
+
+================================================================================
+4. ITEM 3 - ONE ROLE-SPLIT RULE
+================================================================================
+DONE  agents.half_rule_role_split(n) (searchers max(1, n // 2)), default_role_split(n), switch
+  ROLE_SPLIT_HALF_RULE. WildFireModel._resolve_uav_role_counts: with no split given, the rule (trackers
+  first, then searchers; identical to the legacy map for n <= 3); explicit counts still win. Harness
+  --roles half: the rule when the switch (after --set) is on, the old fixed 2+2 when off or on a
+  pre-fix1 checkout. Dashboard: /scenarios carries each preset's split from default_role_split;
+  applyPreset uses it. evaluate_scenarios prints the split ("4 UAV (2T+2S)").
+WHICH SPLITS CHANGED FROM WHAT HAS BEEN RUN SO FAR
+  A 3 UAV: 2T+1S before and after - no change (harness 'half' newly runs: 2+1).
+  B 3 UAV: 2T+1S before and after - no change.
+  C 5 UAV: 4T+1S -> 3T+2S in evaluate_scenarios, the dashboard and the harness 'default'.
+  D 4 UAV: 3T+1S -> 2T+2S in evaluate_scenarios, the dashboard and the harness 'default' (e.g. C13's
+    three east/default tuples, the sysdebug S_D_* runs); harness 'half' and rbgate were 2T+2S - no
+    change.
+CHECKS (P3-3)  A and B, item 3 alone vs all off: value-identical.                             PASS
+  C (east/south x 2 seeds): 2 searchers from step 1, roles_effective [3, 2].                    PASS
+  D east/default 101/202/303 == all-off east/HALF 101/202/303 on every behavioural field.        PASS
+  harness --roles half for A and C runs (2+1, 3+2) and equals --roles default under the rule.   PASS
+TESTS changed because they pinned the legacy default: test_victim_searcher_scenario_matrix (5 UAVs -> 2
+  searchers) and test_base_station::test_role_index_map_matches_the_measured_runs (4 UAVs, no split ->
+  2+2); each keeps the legacy expectation as its ROLE_SPLIT_HALF_RULE=0 case.
+PAPER: state the split per scenario: A 2+1, B 2+1, C 3+2, D 2+2. C and D numbers from
+  evaluate_scenarios, the dashboard, the legacy-split smoke runs and C13's east/default tuples were
+  made with 4+1 / 3+1 and are not comparable with the new runs; the harness 'half' D record (2+2) is.
+
+================================================================================
+5. ITEM 4 - NO PERMANENT WRITE-OFF OF AN UNDETECTED VICTIM
+================================================================================
+DONE  unreachable_escape_victims(exempt_undetected=...) - a never-confirmed victim is never marked (no
+  never_detected mark at 210 and, D-4b, no geographic / no-firefighter mark: its geo streak is held at 0).
+  At the 210th undetected step the model LABELS it once: attributes["undetected_streak_label"] =
+  "long_undetected" + one _long_undetected_log entry {step, victim_id, streak}. The victim stays an
+  ordinary candidate - detectable, dispatched on detection, rescuable, counted unresolved by the
+  searchers. _build_evaluation (D-4a): a victim still undetected when the run ENDS is counted inside
+  unreachable as never_detected; never_detected stays its own sub-count in evaluate_scenarios'
+  per-seed line and summary, the CSV, the harness line and the dashboard's evaluation box ("unreachable
+  . N never detected"); new columns long_undetected / _detected / _rescued; all_terminal is False when
+  a victim was classified only at the end (review risk 2).
+READERS CHECKED (Part 1 section 4 + the review): detection, dispatch, finalize, searcher unresolved
+  count, handled-status tests, mission goals, GPM 1 demand (confirmed flag), casualty, reset paths,
+  dashboard, evaluation - each now sees an ordinary candidate. `confirmed` is only ever set True (single
+  writer), so a detected victim can never be counted never_detected.
+CHECKS (P3-4, outputs/_mf1_item4_analysis.txt): the three sysdebug write-off configurations + three more
+  D/east/10-victim seeds, item 4 alone vs all off (sysdebug probe):
+  write-offs of an undetected victim: 0 with item 4 (all off: 11, every one at step 210).       PASS
+  labels == victims alive and undetected at step 210, in 6/6 runs (11 labels).                 PASS
+  labelled victims later DETECTED: 6 of 11; later RESCUED: 3 (A/east/9103 victims detected at 260 and
+  278, both rescued; D/east/10/9122 victim_6 detected at 315, rescued) - the sysdebug counterfactual
+  reproduced value for value. Not detected by the end: 4; 1 labelled victim died undetected.   PASS
+  rescued, all six runs: 27 all off -> 30; terminal_step becomes None in 4 runs (a victim still open).
+  All-off probe runs == sysdebug's own stock runs, row for row (3 configs).                   PASS
+  REACH: in 55 all-off / reference harness runs the only write-offs were 4 never_detected at 210; no
+  fire-isolation write-off of an undetected victim occurred, so D-4b's geographic exemption was not
+  exercised in the sample (unit-tested: tests/test_undetected_writeoff.py).
+PAPER: never_detected means NOT DETECTED BY THE END OF THE RUN, for any horizon, and is reported as its
+  own sub-count of unreachable - the core search metric. The 210-step constant no longer removes rescues
+  the remaining steps would make (+3 in 6 runs here). long_undetected reports victims unseen for 210
+  steps whatever happened later. geographically_isolated now means "a DETECTED victim cut off by fire".
+  terminal_step (completion time) is defined only for runs that resolved every victim; runs ending with
+  an undetected victim are non-terminal.
+
+================================================================================
+6. ITEM 5, ITEM 6, ITEMS 7-8
+================================================================================
+ITEM 5 - no_firefighter_available
+DONE  The model flags each step with no FREE rescuer (no living, on-grid, non-exiting firefighter; a HOLD
+  carrier's cell stays a start for its own victim only - a carrying-leg test exposed that refinement);
+  unreachable_escape_victims counts those steps inside each victim's streak (nostart_streaks); a write-off
+  whose every streak step had no free rescuer gets cause no_firefighter_available, otherwise
+  geographically_isolated. The escape-log entry records firefighters_alive, so "none alive" and "all busy"
+  separate without a third cause. A no_firefighter_available column in every summary. test_carry_leg's
+  lone-carrier cases changed their expected cause (4 cases in 2 tests - Part 1 said 5, a miscount).
+CHECKS  unit tests (tests/test_no_firefighter_cause.py: all dead / all off-grid / free-but-cut-off /
+  mixed streak). No pre-registered Part 3 run produced a rescuer-less write-off, so a real-run check
+  was added (section 6a): the relabel fires where the rule says it should, and not in sysdebug's T3.
+PAPER: geographic isolation means "a rescuer existed and fire cut the victim off"; losses because the
+  whole team was dead or busy get their own bar (B and D field two firefighters).
+
+ITEM 6 - searcher counters per step
+DONE  _first_call_this_step(wind_state, key, step) inside the lag counter functions: samples, streaks
+  (edge / hold / wind-aware-hold / same-target / no-move / pocket / steps_since_detection), dwell and the
+  post-rescue countdown advance once per model step. The guard is inside the functions, so the
+  executor's by-name import is covered. REVIEW DEFECT, FIXED (3340d42): the executor's sync - the only
+  caller that passes wind_aware_active=True - is the repeat call the guard drops, so
+  wind_aware_hold_streak could never advance; the executor now records the flag beside last_action
+  and the planner-pass sync passes it on (both only with the switch on).
+CHECKS (P3-5, 3 seeds x south/east, D 2+2, instrumented at the single gate; pass-through verified)
+  item 6 on: at most 1 advance per searcher per step in every family (sample, streaks, dwell,
+  post_rescue); all off: up to 8 samples, 3 streak updates, 2 dwell and 2 countdown updates per step.
+  Mean calls per step with the guard: sample 2.9-4.3, streaks 1.8-2.4.                         PASS
+  first differing UAV row of every pair is a searcher (steps 22-141).                           PASS
+  outcomes (reported, not gated): first detections identical for 22 of 23 victims (one 199 -> 198);
+  rescued 23 -> 23, dead 1 -> 1; terminal step moves in 1 run (260 -> 258).
+CORRECTION RECORDED (ruling): sysdebug's test of this fix never reached the executor's call -
+  uav_executor.py:27 imports _sync_wind_search_streaks by name, so the module-level patch in _sd_cf.py
+  de-duplicated the SAMPLES only; the streaks kept advancing ~2x per step in its "fixed" arm. The full
+  fix's effect was unmeasured until P3-5 above.
+PAPER: searcher parameters quoted in steps now act in steps. On 6 seed pairs the change moves searcher
+  paths (from steps 22-141) and not outcomes; the wind-trajectory defect (session 2) is unchanged.
+
+ITEMS 7-8 - tests (no code change)
+  T1 direction follows the target (4 targets), label fire_flank_standoff; T2 "step", the step number and
+  the mission-mode VALUE; T3/T4 assumed a TWO-firefighter model (ff_unit_0 and ff_unit_1 the only units,
+  NUM_FIREFIGHTERS == 2 - the B/D team) while the fixture builds 3: every other unit is now disabled;
+  T6 fire_flank_hold; corner oracle: every corner x uav_id 0-7 with an off-grid previous heading must
+  move on the grid (at (0,0): {0, 3}). Mutation-checked: the oracle fails if the fallback returns its
+  previous heading unvalidated, or if both boundary layers are removed (one layer removed alone is caught
+  by the other - defence in depth). T5 left failing and documented; T7/T8 left failing (session 2).
+
+================================================================================
+6a. ITEM 5 IN A REAL RUN
+================================================================================
+sysdebug's T3 configuration (D/north/9119, ONE firefighter, which dies) re-run at fix1, 360 steps
+(outputs/_mf1_item5_realrun.txt):
+  ALL SWITCHES 0: per-step rows, decisions, triggers, terminal step and stdout IDENTICAL to sysdebug's
+  own T3 run; the only eval differences are the four new keys, all 0. Its three write-offs (step 107)
+  KEEP geographically_isolated - by the ruled D-5 definition, correctly: each victim's 30-step streak
+  (steps 78-107) contains steps 78-80 on which the lone firefighter was alive, on the grid and free -
+  already trapped by fire (the BFS from its cell reached nothing) - and it died at step 81. The streak
+  is mixed, so fire isolation is part of the cause.
+  SHIPPED: victim_2, labelled long_undetected at 210, is found at step 321 - after the only
+  firefighter has died - and written off 30 steps later as no_firefighter_available (1), with
+  geographically_isolated 0. Items 4 and 5 compose as designed: a victim found late with no rescuer
+  left is a no-firefighter loss, not a never-detected one.
+DECISION POINT FOR THE MAINTAINER: sysdebug's flagship example for this item (T3) is NOT relabelled
+  under the ruled rule, because the firefighter was fire-trapped for 3 steps before dying. If the
+  paper wants T3-type losses under no_firefighter_available, the rule must weigh the end of the streak
+  (e.g. "no free rescuer when written off", or "most of the streak") - a one-line change in
+  unreachable_escape_victims; not made here without a ruling.
+
+================================================================================
+7. INVARIANTS (sysdebug Part 5), SHIPPED DEFAULTS, 4 SCENARIOS x 4 WINDS
+================================================================================
+16 sysdebug-probe runs (seeds 9601-9616, GPM 0), outputs/_sd_analyze.py unchanged ->
+outputs/_mf1_invariants.txt. 16/16 complete, 0 crashes, 0 inline violations.
+  HOLD in 16/16: no agent off grid / out of bounds; victim counts add up, statuses in vocabulary, rescued
+  and dead never revert, marker == managed at the end; no rescue without contact; no victim bound to
+  two units at the end; no UAV at battery 0; no return leg open at the end; depot cells never burn;
+  0 diagnostic failure tags; [Rescue Complete] == rescued.
+  EPISODES (reported against sysdebug's):
+   - dead firefighters left on the grid as bodies (2 runs) - by design, as in sysdebug.
+   - searcher sweep loops at x 44-46 after the terminal step (A/S, B/N, B/S, C/E, C/W, D/E) and a
+     tracker-pair stuck at the NW depot after it (C/N) - sysdebug's after-terminal families.
+   - firefighter approach standoffs before the terminal step: C/W ff_unit_0 steps 33-62, D/N ff_unit_1
+     68-97 - the KNOWN approach-leg family (sysdebug had 2).
+   - one transient double binding (D/W victim_3, steps 51-113, rescued afterwards) - the sysdebug (B)
+     family (route-blocked unit keeps its binding while a fresh dispatch binds a second); 62 steps here
+     against 10 in sysdebug.
+   - B/W: a searcher sweep loop from step 110 to the horizon while one victim stays undetected (never
+     detected in every arm). ATTRIBUTED (outputs/_mf1_attrib_invariants.txt): the same loop exists with
+     ALL switches 0 (from step 61); it is pre-existing, before the terminal step at 51c5165 too. Item 4
+     only keeps the run non-terminal after step 210. No fire burned in this seed (burnt cells 0).
+     Session 2 (wind search).
+   - C/W: one return leg without progress for 20 steps (UAV 2502 at (3,44), one cell outside the NW
+     depot) - the depot-approach standoff of section 3. Absent in the all-off run of the same seed: the
+     3+2 split (item 3) changes the trajectories and meets the pre-existing standoff. sysdebug had 0 such
+     legs in its sample; this session's B runs show the class at 51c5165 too.
+  VERDICT: every hard invariant holds; no NEW kind of episode before the terminal step (the one
+  before-terminal searcher loop is pre-existing and reproduced with all switches 0).
+
+================================================================================
+8. FULL TEST SUITE (outputs/_mf1_pytest.log)
+================================================================================
+At 3340d42 (shipped defaults): 1205 passed, 4 failed, 78 min. FAILED:
+  test_uav_sector_assignment::test_fire_tracker_uavs_receive_different_target_sets      (T5, left)
+  test_wind_aware_trajectory_regression::test_north_vs_south_trajectories_diverge_over_40_steps (T7)
+  test_wind_aware_trajectory_regression::test_east_vs_west_trajectories_diverge_over_40_steps   (T8)
+  test_base_station::test_role_index_map_matches_the_measured_runs - pinned the legacy default split
+    (item 3); updated at 938565c (legacy kept as its ROLE_SPLIT_HALF_RULE=0 case); its module re-run:
+    59/59 pass.
+FAILING NAME SET AT HEAD 938565c = {T5, T7, T8} - exactly as pre-registered. T1, T2, T3, T4, T6 and the
+corner oracle pass; every new test passes (tests/test_batch_limit, _no_firefighter_cause, _launch_battery,
+_role_split_rule, _undetected_writeoff, _searcher_counters_per_step: 67 test functions, more cases).
+Item 6 alone does not make T7/T8 pass (both still fail), as predicted.
+CHANGED PRE-EXISTING TESTS and why: test_carry_leg (item-5 relabel, 4 cases), test_victim_searcher_
+scenario_matrix and test_base_station (item-3 legacy-split pins); T1-T4, T6, corner oracle (items 7-8).
+
+================================================================================
+9. THE INDEPENDENT REVIEW (1 agent, adversarial, of the Part 2 diff)
+================================================================================
+  DEFECT  item 6: wind_aware_hold_streak could never advance under the guard -> FIXED (3340d42), with a
+          test; the fix is a no-op at switch 0 (mf1Zv: 3 all-off tuples re-run after it == before).
+  RISK    item 4: all_terminal True beside terminal_step None -> FIXED.
+  RISK    item 2: the launch fraction sticks between in-process runs -> FIXED (every preset states it).
+  RISK    item 2: the dashboard's launch charge is invisible (the Part 1 design promised a field) -> NOT
+          done: the session is simulation-only (ruling D-2c); on the polish list.
+  NIT     item 1: a failed dashboard step left Step/Resume live -> FIXED.
+  NIT     two coded "detected" tests (sweep vs evaluation) agree in every reachable state; left.
+  NIT     _advance_corridor_index and the hazard_buffer_level decrement still run per call - event
+          updates, not step counters; left, not measured.
+  Claims the reviewer tried and failed to break: all-off identity (every path), the item-4 readers, the
+  item-5 counting, the item-1 exit paths, the role edge cases.
+RUN PROVENANCE: runs launched before 16:01:47 (all mf1R, 15 of the P3-1 mf1Z) ran the pre-review
+  source (505cf4d == ddd45dc source); later runs ran 3340d42's. mf1Zv shows the difference is inert at
+  switch 0; every item-6-on run (mf1Ct) launched after it.
+
+================================================================================
+10. CORRECTIONS TO EARLIER STATEMENTS
+================================================================================
+  - fix1_part1 section 2's probe table said "no arm produced a battery fail-safe reason": the Part 1
+    summary read a key the probe does not write. Re-read with the probe's 'why' key: 0 battery reasons
+    and 0 emergency steps in every arm - the statement stands, now on evidence
+    (outputs/_mf1_battery_reasons.txt).
+  - fix1_part1 said 5 test_carry_leg cases would relabel; it is 4 cases in 2 tests.
+  - sysdebug finding 8's counterfactual covered samples only (section 6).
+
+================================================================================
+11. POLISH LIST (deferred; simulation-only session)
+================================================================================
+  - D-2c: dashboard battery colours from the battery_status label (the 50 / 20 display bands remain).
+  - a visible launch-charge field / run-info text for B in the dashboard (B runs at 0.5 with nothing on
+    screen; selecting "Custom..." resets it to 1).
+  - the dashboard's live mission strip shows no never_detected / long_undetected count (the final
+    evaluation box does).
+  - 'horizon_unresolved' is read by every summary and assigned by nothing (dead category).
+
+================================================================================
+12. FOR SESSIONS 2 AND 3
+================================================================================
+  - Session 2, staggered launch batteries: replace L_i in agents.uav_launch_battery(i); B's 0.5 stays a
+    multiplier. With a stagger reaching L_i <= 50, B's lower packs dock in place at launch and raise LOW on
+    the berth (inert).
+  - Session 2, false alarms: a CRITICAL battery trigger reaches EMERGENCY only through the collision /
+    no-path artifacts; at f_B = 0.5 CRITICAL never fires, so B does not depend on that work. Once the mode
+    can be 'normal', mission goals read alive_victims - item 4 keeps undetected victims alive there.
+  - Session 2, wind: design against SEARCHER_COUNTERS_PER_STEP = 1 (y-commit samples now per step);
+    T7/T8 still fail; the B/W edge sweep loop (section 7) is in this family.
+  - Session 2, "hold": hold_streak / wind_aware_hold_streak count executor actions labelled "hold".
+  - Session 3, belief gap: detection is ground-truth Euclidean <= 8 inside a Chebyshev 17x17 window
+    (fix1_part1 O-7); item 4's label and end-of-run meaning do not depend on how detection works.
+  - A future dock-fix round: the depot-approach standoff (56 steps in B, 15-20 at full charge).
+
+================================================================================
+13. HOUSEKEEPING
+================================================================================
+  TAGS: mf1 (runs), checked unused before each wave (0 files, 0 tracked paths). Harness outputs
+  outputs/_ffr_mf1{R,Z,Bt,Rl,Ct,Zc,Zv}_*; probes outputs/_sd_mf1{Un,Zp,P,X}_*; rbgate
+  outputs/_rblatch_camp2_mf1g{R,Z,S}*.
+  WORKTREE: E:/Projects/SAS_wt/mf1_51c5165 (detached 51c5165) - no .venv junction was created (runs used
+  the parent .venv with --repo). Its only untracked content (the 4 mf1gR rbgate shards + pool
+  bookkeeping) was copied to outputs/ (byte-compared) and it was removed with `git worktree remove
+  --force`; `git worktree list` shows the main checkout only; the real .venv re-checked intact
+  (python 3.10.11, mesa 1.2.1).
+  QUARANTINE: my recursive searches were scoped to the root *.py, src_extension/, tests/; git status only
+  -uno or named paths. Non-recursive listings of outputs/ itself (tag checks, glob of _ffr_mf1*/_sd_mf1*)
+  read outputs/'s own entry names, which include the quarantined directory's name; nothing inside it was
+  listed, opened or traversed. Both agents report the same (the reviewer disclosed two outputs/*.py
+  globs of entry names only).
+  SWITCHES: all four ship ON and disable only on an exact integral 0 (_exact_integer), junk -> ON; the
+  launch fraction raises on invalid values instead of falling back.

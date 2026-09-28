@@ -122,8 +122,23 @@ def main() -> int:
                        "argv": [os.path.join(root, "outputs", "_rblatch_campaign2.py"), "--scenario", "D",
                                 "--wind", wind, "--steps", "240", "--seeds", seeds, "--tag", tag] + extra,
                        "out": os.path.join(root, "outputs", "_rblatch_camp2_%s_D_%s.json" % (tag, wind))})
+    # Stage 2 (after the harness queue): probes, rbgate, the 360-step evaluate run (P3-6a),
+    # and mf1Zv - three mf1Z tuples that ran BEFORE the review fix (3340d42) re-run after
+    # it, to show the fix is inert with every switch at 0 (compared field for field).
+    zv = []
+    for tup in (("D", "south", "half", 202), ("A", "west", "default", 9501), ("B", "north", "default", 9502)):
+        ln = harness_line("mf1Z", tup)
+        name = ln["name"].replace("mf1Z_", "mf1Zv_", 1)
+        out = ln["out"].replace("_ffr_mf1Z_", "_ffr_mf1Zv_")
+        argv = [x if x != ln["out"] else out for x in ln["argv"]]
+        argv[argv.index("--tag") + 1] = "mf1Zv"
+        zv.append({"name": name, "argv": argv, "out": out})
+    ev = [{"name": "mf1_eval360", "argv": [os.path.join(OUT, "_mf1_eval360.py"), os.path.join(OUT, "_mf1_eval360.json")],
+           "out": os.path.join(OUT, "_mf1_eval360.json")}]
+    stage2 = rb + zv + ev + probe
     for fname, lines in (("_mf1_q_harness.jsonl", harness), ("_mf1_q_probe.jsonl", probe),
-                         ("_mf1_q_rbgate.jsonl", rb), ("_mf1_q_invariants.jsonl", inv)):
+                         ("_mf1_q_rbgate.jsonl", rb), ("_mf1_q_invariants.jsonl", inv),
+                         ("_mf1_q_stage2.jsonl", stage2)):
         with open(os.path.join(OUT, fname), "w", encoding="utf-8", newline="\n") as fh:
             for ln in lines:
                 fh.write(json.dumps(ln) + "\n")

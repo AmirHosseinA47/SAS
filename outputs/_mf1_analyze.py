@@ -14,6 +14,8 @@ import sys
 
 OUT = os.path.dirname(os.path.abspath(__file__))
 IGNORE = {"tag", "repo", "wall_s"}
+# extra_params is the --set dict a run was given; it is ignored ONLY where the arms differ
+# in a switch value by construction (passed through ignore_top), never in P3-1.
 NEW_EVAL = {"no_firefighter_available", "long_undetected", "long_undetected_detected", "long_undetected_rescued"}
 LINES: list = []
 
@@ -186,7 +188,8 @@ def main() -> int:
             say("  %s MISSING" % nm("", t)[1:])
             continue
         if t[0] != "B":
-            ok, notes = identity(nm("mf1Z", t), nm("mf1Bt", t), ignore_params=("REDUCED_LAUNCH_BATTERY",))
+            ok, notes = identity(nm("mf1Z", t), nm("mf1Bt", t), ignore_params=LAUNCH + ("REDUCED_LAUNCH_BATTERY",),
+                                 ignore_top=("extra_params",))
             say("  %-28s A/C/D unaffected: %s  %s" % (nm("", t)[1:], "IDENTICAL" if ok else "DIFFERS",
                                                      "; ".join(notes)))
             continue
@@ -218,7 +221,8 @@ def main() -> int:
         line = "  %-28s roles_effective %s, searchers at step 1: %d" % (nm("", t)[1:], rl["roles_effective"], n_search)
         if t[0] in "AB":
             if t[2] == "default":
-                ok, notes = identity(nm("mf1Z", t), nm("mf1Rl", t), ignore_params=LAUNCH + ROLE_KEYS)
+                ok, notes = identity(nm("mf1Z", t), nm("mf1Rl", t), ignore_params=LAUNCH + ROLE_KEYS,
+                                     ignore_top=("extra_params",))
                 line += "  vs mf1Z: %s %s" % ("IDENTICAL" if ok else "DIFFERS", "; ".join(notes))
             else:
                 ok, notes = identity(nm("mf1Rl", (t[0], t[1], "default", t[3])), nm("mf1Rl", t),
@@ -226,7 +230,7 @@ def main() -> int:
                 line += "  vs its own --roles default: %s %s" % ("IDENTICAL" if ok else "DIFFERS", "; ".join(notes))
         elif t[0] == "D":
             ok, notes = identity(nm("mf1Z", ("D", "east", "half", t[3])), nm("mf1Rl", t),
-                                 ignore_params=ROLE_KEYS, ignore_top=("roles",))
+                                 ignore_params=LAUNCH + ROLE_KEYS, ignore_top=("roles", "extra_params"))
             line += "  vs mf1Z east/HALF: %s %s" % ("IDENTICAL" if ok else "DIFFERS", "; ".join(notes))
         elif t[0] == "C" and t[2] == "half":
             ok, notes = identity(nm("mf1Rl", (t[0], t[1], "default", t[3])), nm("mf1Rl", t),
