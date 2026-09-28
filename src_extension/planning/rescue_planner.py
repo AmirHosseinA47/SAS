@@ -473,6 +473,7 @@ def unreachable_escape_victims(
     geo_threshold: int = UNREACHABLE_STREAK_STEPS,
     undetected_threshold: int = UNDETECTED_STREAK_STEPS,
     nostart_streaks: dict[str, int] | None = None,
+    exempt_undetected: bool = False,
 ) -> tuple[list[tuple[str, str]], dict[str, int], dict[str, int]]:
     """Return ``(victim_id, cause)`` pairs whose consecutive streak reached a threshold.
 
@@ -488,6 +489,11 @@ def unreachable_escape_victims(
 
     Geographic isolation is preferred when both geo and never-detected would fire.
     Leftover non-terminal victims at a step cap are left as-is.
+
+    ``exempt_undetected`` (fix1 item 4; False = the pre-fix1 behaviour): a never-confirmed
+    victim is never marked - its geo streak is held at 0 and no never_detected mark is
+    returned. Its undetected streak still counts, so the caller can LABEL a long
+    undetected streak without writing the victim off.
     """
     if not isinstance(victim_flags, dict):
         victim_flags = {}
@@ -514,8 +520,10 @@ def unreachable_escape_victims(
         served = _is_productively_served(entry)
         geo_reachable = bool(entry.get("geo_reachable", entry.get("reachable", False)))
         assigned = bool(entry.get("assigned", False))
+        # fix1 item 4 (D-4b): nobody has detected it, so no write-off of any kind applies.
+        exempt = bool(exempt_undetected) and _is_never_confirmed(entry)
 
-        if (not served) and (not geo_reachable):
+        if (not served) and (not geo_reachable) and not exempt:
             geo_streaks[vid_s] = int(geo_streaks.get(vid_s, 0) or 0) + 1
             if nostart_streaks is not None and bool(entry.get("no_rescuer_start", False)):
                 nostart_streaks[vid_s] = int(nostart_streaks.get(vid_s, 0) or 0) + 1
@@ -529,6 +537,8 @@ def unreachable_escape_victims(
         else:
             undetected_streaks[vid_s] = 0
 
+        if exempt:
+            continue
         if geo_streaks[vid_s] >= geo_limit:
             no_rescuer = (
                 nostart_streaks is not None

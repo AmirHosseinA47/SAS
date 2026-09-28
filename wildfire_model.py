@@ -73,6 +73,7 @@ from src_extension.planning.rescue_planner import (
     UNREACHABLE_CAUSE_GEOGRAPHIC,
     UNREACHABLE_CAUSE_NO_FIREFIGHTER,
     UNREACHABLE_CAUSE_UNDETECTED,
+    UNDETECTED_STREAK_STEPS,
 )
 from src_extension.execution.failsafe_modes import FailSafeMode
 from src_extension.execution.mode_manager import ModeManager, build_failsafe_dashboard_summary
@@ -5095,6 +5096,42 @@ class WildFireModel(mesa.Model):
                 return None
         return (cx, cy)
 
+    def _label_long_undetected_victims(self, undetected_streaks: dict[str, int]) -> None:
+        """fix1 item 4: label - never write off - a victim undetected for 210 steps.
+
+        Once per victim, at the step its undetected streak reaches UNDETECTED_STREAK_STEPS:
+        the managed state's attributes get undetected_streak_label = "long_undetected" and
+        model._long_undetected_log gets {step, victim_id, streak}. The label is a REPORT,
+        not a status: detection, dispatch and rescue treat the victim as before, and the
+        label stays if it is later detected, rescued or killed. The log is created on the
+        first label only, so a run without one has no such attribute.
+        """
+        managed = getattr(self, "managed_victims", None)
+        if not isinstance(managed, dict):
+            return
+        step = int(getattr(self, "evaluation_timesteps_counter", 0) or 0)
+        for vid, streak in sorted(undetected_streaks.items()):
+            if int(streak or 0) < UNDETECTED_STREAK_STEPS:
+                continue
+            state = managed.get(vid)
+            if state is None:
+                continue
+            attrs = getattr(state, "attributes", None)
+            if not isinstance(attrs, dict):
+                attrs = {}
+                try:
+                    state.attributes = attrs
+                except Exception:
+                    continue
+            if attrs.get("undetected_streak_label"):
+                continue
+            attrs["undetected_streak_label"] = "long_undetected"
+            log = getattr(self, "_long_undetected_log", None)
+            if not isinstance(log, list):
+                log = []
+                self._long_undetected_log = log
+            log.append({"step": step, "victim_id": str(vid), "streak": int(streak)})
+
     def _update_unreachable_victims(self) -> None:
         """Periodic escape hatch: isolated victims become unreachable after N steps."""
         managed = getattr(self, "managed_victims", None)
@@ -5227,14 +5264,18 @@ class WildFireModel(mesa.Model):
         if not isinstance(nostart_streaks, dict):
             nostart_streaks = {}
             self._unreachable_nostart_streak = nostart_streaks
+        exempt_undetected = agents.undetected_writeoff_fix()
         marked, geo_streaks, undetected_streaks = unreachable_escape_victims(
             flags,
             geo_streaks,
             undetected_streaks,
             nostart_streaks=nostart_streaks,
+            exempt_undetected=exempt_undetected,
         )
         self._unreachable_geo_streak = geo_streaks
         self._unreachable_undetected_streak = undetected_streaks
+        if exempt_undetected:
+            self._label_long_undetected_victims(undetected_streaks)
         if not marked:
             return
 

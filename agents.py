@@ -1333,6 +1333,25 @@ def global_planner_mode() -> int:
     return 1 if _exact_integer(getattr(cfv, "GLOBAL_PLANNER_MODE", 0)) == 1 else 0
 
 
+# --- fix1 item 4: no permanent write-off of an undetected victim ---------------------------
+
+def undetected_writeoff_fix() -> bool:
+    """UNDETECTED_WRITEOFF_FIX - fix1 item 4's switch. Shipped 1 (ruling D-1).
+
+    On: a victim nobody has detected is never written off - not at the 210-step
+    never_detected timeout and not by the fire-isolation / no-firefighter sweep either
+    (ruling D-4b). It stays an ordinary candidate that any UAV in range can detect and
+    any firefighter can then rescue; a 210-step undetected streak only LABELS it
+    ("long_undetected"). never_detected in the results means "not detected by the end
+    of the run" (serve_dashboard._build_evaluation). Off only on an EXACT integral zero:
+    the pre-fix1 permanent write-off; missing or junk -> on.
+    """
+    value = _exact_integer(getattr(cfv, "UNDETECTED_WRITEOFF_FIX", 1))
+    if value is None:
+        return True
+    return value != 0
+
+
 # --- fix1 item 3: ONE role-split rule for every scenario -----------------------------------
 # The maintainer's rule: searchers = max(1, floor(n / 2)), trackers = the rest
 # (3 -> 2T+1S, 4 -> 2T+2S, 5 -> 3T+2S, 8 -> 4T+4S). It is the default whenever a runner

@@ -89,6 +89,14 @@ NUM_VICTIM_SEARCHERS = None
 # n-1 trackers + 1 searcher (which gave C 4+1 and D 3+1 in evaluate_scenarios / the
 # dashboard, while the harness's --roles half ran D 2+2).
 ROLE_SPLIT_HALF_RULE = 1
+
+# fix1 item 4. A victim nobody has detected is never written off (it used to be marked
+# unreachable/never_detected after 210 undetected steps, or geographically_isolated after
+# 30 fire-isolated ones, and could then never be detected or rescued). A 210-step
+# undetected streak now only labels it "long_undetected"; never_detected in the results
+# means "not detected by the end of the run". SHIPPED 1 (ruling D-1); only an exact
+# integral 0 restores the permanent write-off (agents.undetected_writeoff_fix).
+UNDETECTED_WRITEOFF_FIX = 1
 # The ONE battery threshold pair (fix1 item 2), read at call time through
 # agents.battery_low_threshold() / battery_critical_threshold() by every reader: the UAV
 # labels, both analyzers, the resource model, the global monitor, the dashboard alert and

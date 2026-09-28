@@ -120,6 +120,7 @@ class DashboardStateBuilder:
         rescued = dead = unreachable = 0
         geographically_isolated = never_detected = horizon_unresolved = 0
         no_firefighter_available = 0
+        long_undetected = 0
         all_terminal = bool(managed)
         for _, state in managed.items():
             status = str(getattr(state, "status", "") or "").strip().lower()
@@ -140,6 +141,9 @@ class DashboardStateBuilder:
                     no_firefighter_available += 1
             if status not in _TERMINAL_VICTIM and not bool(getattr(state, "rescued", False)):
                 all_terminal = False
+            attrs = getattr(state, "attributes", None)
+            if isinstance(attrs, dict) and attrs.get("undetected_streak_label"):
+                long_undetected += 1  # fix1 item 4: a report label, not a status
 
         try:
             from src_extension.adaptation.local_adaptation_generator import (
@@ -179,6 +183,7 @@ class DashboardStateBuilder:
             "never_detected_count": never_detected,
             "horizon_unresolved_count": horizon_unresolved,
             "no_firefighter_available_count": no_firefighter_available,
+            "long_undetected_count": long_undetected,
             "unresolved_victim_count": unresolved,
             "all_victims_terminal": all_terminal and len(managed) > 0,
         }

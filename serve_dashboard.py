@@ -417,14 +417,36 @@ def _unreachable_cause_of(state):
     return ""
 
 
+def _victim_ever_detected(state, marker) -> bool:
+    """The sweep's own notion of 'confirmed' (wildfire_model._update_unreachable_victims)."""
+    if bool(getattr(state, "confirmed", False)):
+        return True
+    marker_status = str(getattr(marker, "status", "") or "").strip().lower()
+    return marker_status in ("confirmed", "assigned", "rescued")
+
+
 def _build_evaluation(model, terminal_step, steps, params):
     mv = getattr(model, "managed_victims", {}) or {}
+    markers = getattr(model, "victim_marker_agents", {}) or {}
     rescued = dead = unreachable = candidate = 0
     geographically_isolated = never_detected = horizon_unresolved = unreachable_other = 0
     no_firefighter_available = 0
+    long_undetected = long_undetected_detected = long_undetected_rescued = 0
+    # fix1 item 4 (ruling D-4a): with the write-off fix on, a victim still undetected when
+    # the run ENDS is counted here as unreachable / never_detected - "not detected by the
+    # end of the run", for any horizon - and never_detected stays its own sub-count. The
+    # model's state is not touched (only the evaluation knows the horizon).
+    end_of_run_undetected = am.undetected_writeoff_fix()
     cause_parts = []
     for vid, st in mv.items():
         s = str(getattr(st, "status", "")).lower()
+        attrs = getattr(st, "attributes", None)
+        if isinstance(attrs, dict) and attrs.get("undetected_streak_label"):
+            long_undetected += 1
+            if _victim_ever_detected(st, markers.get(vid)):
+                long_undetected_detected += 1
+            if s == "rescued":
+                long_undetected_rescued += 1
         if s == "rescued":
             rescued += 1
         elif s == "dead":
@@ -444,6 +466,10 @@ def _build_evaluation(model, terminal_step, steps, params):
                 no_firefighter_available += 1
             else:
                 unreachable_other += 1
+        elif end_of_run_undetected and not _victim_ever_detected(st, markers.get(vid)):
+            unreachable += 1
+            never_detected += 1
+            cause_parts.append("%s:never_detected" % vid)
         else:
             candidate += 1
     ff_dead = 0
@@ -459,6 +485,9 @@ def _build_evaluation(model, terminal_step, steps, params):
             "horizon_unresolved": horizon_unresolved,
             "no_firefighter_available": no_firefighter_available,
             "unreachable_other": unreachable_other,
+            "long_undetected": long_undetected,
+            "long_undetected_detected": long_undetected_detected,
+            "long_undetected_rescued": long_undetected_rescued,
             "unreachable_causes": ";".join(sorted(cause_parts)),
             "total_victims": rescued + dead + unreachable + candidate, "firefighter_deaths": ff_dead,
             "burnt_cells": burnt, "steps_run": steps, "terminal_step": terminal_step,
@@ -848,7 +877,7 @@ function showEval(e){const box=document.getElementById('eval');box.style.display
   box.innerHTML=`<h2>&#x1F3C1; Mission Evaluation <span class="badge" style="background:${ok}22;color:${ok};border:1px solid ${ok}55;margin-left:8px">${e.scenario} · wind ${e.wind}</span></h2>
   <div class="grid"><div class="stat"><b style="color:var(--green)">${e.rescued}</b><span>rescued</span></div>
   <div class="stat"><b style="color:var(--red)">${e.dead}</b><span>dead</span></div>
-  <div class="stat"><b style="color:var(--muted)">${e.unreachable}</b><span>unreachable</span></div>
+  <div class="stat"><b style="color:var(--muted)">${e.unreachable}</b><span>unreachable${e.never_detected!=null?' &middot; '+e.never_detected+' never detected':''}</span></div>
   <div class="stat"><b style="color:var(--amber)">${e.candidate}</b><span>unresolved</span></div>
   <div class="stat"><b style="color:var(--accent)">${e.rescue_rate}%</b><span>rescue rate</span></div>
   <div class="stat"><b style="color:var(--red)">${e.firefighter_deaths}</b><span>FF deaths</span></div>
