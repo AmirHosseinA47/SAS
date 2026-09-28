@@ -1333,6 +1333,26 @@ def global_planner_mode() -> int:
     return 1 if _exact_integer(getattr(cfv, "GLOBAL_PLANNER_MODE", 0)) == 1 else 0
 
 
+# --- fix1 item 6: the searcher's wind-search counters count per STEP ----------------------
+
+def searcher_counters_per_step() -> bool:
+    """SEARCHER_COUNTERS_PER_STEP - fix1 item 6's switch. Shipped 1 (ruling D-1).
+
+    On: every wind-search counter of a victim searcher (the 30-entry position samples,
+    the edge / hold / wind-aware-hold / same-target / no-move / pocket streaks,
+    steps_since_detection, the dwell count and the post-rescue countdown) advances at most
+    once per model step - the first call of the step advances, later calls in the same
+    step leave it alone (local_adaptation_generator._first_call_this_step). They were
+    advanced on every CALL - 2-8 times per step, from the planner pass, the executor's
+    second target computation and its post-decision sync. Off only on an EXACT integral
+    zero (per call, the pre-fix1 behaviour); missing or junk -> on.
+    """
+    value = _exact_integer(getattr(cfv, "SEARCHER_COUNTERS_PER_STEP", 1))
+    if value is None:
+        return True
+    return value != 0
+
+
 # --- fix1 item 4: no permanent write-off of an undetected victim ---------------------------
 
 def undetected_writeoff_fix() -> bool:

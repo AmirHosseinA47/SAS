@@ -414,6 +414,42 @@ def _step_index_from_runtime(runtime_models: Any) -> int:
     return 0
 
 
+def _simulation_step(simulation: Any | None) -> int | None:
+    """The model step a simulation is on, or None without one."""
+    if simulation is None:
+        return None
+    try:
+        return int(getattr(simulation, "evaluation_timesteps_counter", 0) or 0)
+    except (TypeError, ValueError):
+        return None
+
+
+def _first_call_this_step(
+    wind_state: dict[str, Any], key: str, step_index: int | None
+) -> bool:
+    """fix1 item 6: True when this call may advance the counter family `key`.
+
+    With SEARCHER_COUNTERS_PER_STEP on, only the FIRST call of a model step advances
+    (the precedent of _touch_target_hold): the planner pass, the executor's second target
+    computation and the executor's post-decision sync all run within one step, and
+    uav_executor imports _sync_wind_search_streaks BY NAME, so the guard has to live
+    inside these functions to reach every caller. Pre-move and post-move cycles share the
+    step index. Always True when the switch is off (per call, pre-fix1), and for a step
+    <= 0 or None - before the first step, or a stand-in runtime without a step counter.
+    """
+    if step_index is None or int(step_index) <= 0:
+        return True
+    import agents as agents_module  # lazy: agents is a root module
+
+    if not agents_module.searcher_counters_per_step():
+        return True
+    slot = "_per_step_%s" % key
+    if wind_state.get(slot) == int(step_index):
+        return False
+    wind_state[slot] = int(step_index)
+    return True
+
+
 def _default_wind_search_state() -> dict[str, Any]:
     return {
         "current_target": None,
@@ -1210,7 +1246,13 @@ def _record_victim_searcher_x_band(
     wind_state: dict[str, Any],
     agent_x: int | float | None,
     agent_y: int | float | None = None,
+    *,
+    step_index: int | None = None,
 ) -> None:
+    # fix1 item 6: at most one position sample per model step (the 30-entry windows and
+    # COVERAGE_Y_SWEEP_MIN_STEPS are counted in steps).
+    if not _first_call_this_step(wind_state, "sample", step_index):
+        return
     if agent_x is not None:
         recent = list(wind_state.get("recent_x_positions") or [])
         recent.append(int(round(float(agent_x))))
@@ -1229,11 +1271,13 @@ def _update_unresolved_coverage_state(
     agent_y: int | float | None = None,
 ) -> None:
     wind_state["unresolved_victim_count"] = _count_unresolved_victims(simulation)
+    step_index = _simulation_step(simulation)
     post_rescue = int(wind_state.get("post_rescue_coverage_steps_remaining", 0) or 0)
-    if post_rescue > 0:
+    # fix1 item 6: POST_RESCUE_COVERAGE_DURATION counts steps, not calls.
+    if post_rescue > 0 and _first_call_this_step(wind_state, "post_rescue", step_index):
         wind_state["post_rescue_coverage_steps_remaining"] = post_rescue - 1
     if agent_x is not None or agent_y is not None:
-        _record_victim_searcher_x_band(wind_state, agent_x, agent_y)
+        _record_victim_searcher_x_band(wind_state, agent_x, agent_y, step_index=step_index)
 
 
 def _apply_unresolved_coverage_mode(wind_state: dict[str, Any]) -> bool:
@@ -1461,6 +1505,9 @@ def _touch_wind_search_dwell(
 ) -> None:
     if uav_pos is None or target is None:
         return
+    # fix1 item 6: WIND_SATURATE_DWELL_STEPS counts steps, not calls.
+    if not _first_call_this_step(wind_state, "dwell", step_index):
+        return
     ax, ay = float(uav_pos[0]), float(uav_pos[1])
     tx, ty = float(target[0]), float(target[1])
     dist = _manhattan(ax, ay, tx, ty)
@@ -1604,6 +1651,12 @@ def _sync_wind_search_streaks(
     wind_aware_active: bool = False,
     step_index: int = 0,
 ) -> None:
+    # fix1 item 6: the streaks, the pocket / no-move / steps_since_detection counters and
+    # the position sample below advance once per model step. A repeat call in the same
+    # step leaves the whole state alone. Each executed action is still counted once: the
+    # generator's call reads last_action, which the executor writes after its own call.
+    if not _first_call_this_step(wind_state, "streaks", step_index):
+        return
     if grid_position is not None:
         on_edge = _cell_on_edge(
             grid_position[0],
@@ -1665,7 +1718,9 @@ def _sync_wind_search_streaks(
         )
     if grid_position is not None:
         wind_state["last_grid_position"] = grid_position
-        _record_victim_searcher_x_band(wind_state, grid_position[0], grid_position[1])
+        _record_victim_searcher_x_band(
+            wind_state, grid_position[0], grid_position[1], step_index=step_index
+        )
         _update_coverage_y_commit(
             wind_state,
             y_min,
@@ -3920,7 +3975,9 @@ fire_cells=fire_cells, smoke_cells=smoke_cells, step_index=step_index,
                 _record_wind_search_target(wind_state, escape)
                 _record_corridor_target(wind_state, escape)
                 if grid_pos is not None:
-                    _record_victim_searcher_x_band(wind_state, grid_pos[0], grid_pos[1])
+                    _record_victim_searcher_x_band(
+                        wind_state, grid_pos[0], grid_pos[1], step_index=step_index
+                    )
                 return escape
 
         pocket = int(wind_state.get("pocket_streak", 0) or 0)
@@ -4201,7 +4258,9 @@ fire_cells=fire_cells, smoke_cells=smoke_cells, step_index=step_index,
         wind_state["force_interior_retarget"] = False
         wind_state["force_east_interior"] = False
         if grid_pos is not None:
-            _record_victim_searcher_x_band(wind_state, grid_pos[0], grid_pos[1])
+            _record_victim_searcher_x_band(
+                wind_state, grid_pos[0], grid_pos[1], step_index=step_index
+            )
         if simulation is not None:
             simulation._wind_search_target_state = getattr(
                 simulation, "_wind_search_target_state", {}
@@ -4243,7 +4302,10 @@ fire_cells=fire_cells, smoke_cells=smoke_cells, step_index=step_index,
         wind_state = _wind_search_state(simulation, uav_id)
         uav_pos = self._read_uav_position(runtime_models, uav_id)
         if uav_pos is not None:
-            _record_victim_searcher_x_band(wind_state, uav_pos[0], uav_pos[1])
+            _record_victim_searcher_x_band(
+                wind_state, uav_pos[0], uav_pos[1],
+                step_index=_step_index_from_runtime(runtime_models),
+            )
         option_confidence = self._adjust_path_confidence(
             confidence,
             goals,

@@ -97,6 +97,13 @@ ROLE_SPLIT_HALF_RULE = 1
 # means "not detected by the end of the run". SHIPPED 1 (ruling D-1); only an exact
 # integral 0 restores the permanent write-off (agents.undetected_writeoff_fix).
 UNDETECTED_WRITEOFF_FIX = 1
+
+# fix1 item 6. The victim searcher's wind-search counters (position samples, streaks,
+# steps_since_detection, dwell, post-rescue countdown) advance at most once per model step,
+# so COVERAGE_Y_SWEEP_MIN_STEPS, WIND_POCKET_CAMP_THRESHOLD and the rest mean what their
+# names say; they were counted per CALL (2-8x per step). SHIPPED 1 (ruling D-1); only an
+# exact integral 0 restores per-call counting (agents.searcher_counters_per_step).
+SEARCHER_COUNTERS_PER_STEP = 1
 # The ONE battery threshold pair (fix1 item 2), read at call time through
 # agents.battery_low_threshold() / battery_critical_threshold() by every reader: the UAV
 # labels, both analyzers, the resource model, the global monitor, the dashboard alert and
