@@ -90,6 +90,17 @@ class PhysicalRescueCommand:
     metadata: dict
 
 
+class BatchLimitReached(RuntimeError):
+    """step() was called after the model's last allowed step (BATCH_SIZE + 1).
+
+    fix1 item 1. This used to be sys.exit(0) from inside step(): a library ending the
+    whole process with a SUCCESS code. evaluate_scenarios caught only Exception, so a
+    run with --steps >= --batch-size + 2 exited 0 with no results at all. An exception
+    reaches every caller as a failure; the mesa server stops one step earlier through
+    self.running (set at the end of the last allowed step), exactly as mesa intends.
+    """
+
+
 # class WildFireModel holds methods for managing the main logic of the grid, such as the main execution loop,
 # setting agents, methods for checking the state of the grid, etc
 def _base_station_origins(height: int, width: int, size: int) -> list:
@@ -5920,13 +5931,19 @@ class WildFireModel(mesa.Model):
         self.datacollector.collect(self)
 
         # check if simulation ended, if so print MR1 and MR2 overall metrics,
-        # and finish loop. Otherwise, keep executing.
+        # and refuse the step. Otherwise, keep executing. (fix1 item 1: this was
+        # sys.exit(0), which ended the caller's process with a success code.)
         if BATCH_SIZE == self.evaluation_timesteps_counter - 1:
             print(" --- MR1 --- ")
             print(self.MR1_LIST)
             print(" --- MR2 --- ")
             print(self.MR2_VALUE)
-            sys.exit(0)
+            raise BatchLimitReached(
+                "BATCH_SIZE=%d: the model has run its last allowed step (%d) and cannot "
+                "run step %d; give it a batch size of at least the number of steps"
+                % (BATCH_SIZE, self.evaluation_timesteps_counter,
+                   self.evaluation_timesteps_counter + 1)
+            )
 
         self.evaluation_timesteps_counter += 1
         current_step_time = float(self.evaluation_timesteps_counter)
@@ -5965,3 +5982,9 @@ class WildFireModel(mesa.Model):
             self.latest_dashboard_state = self.get_dashboard_state()
         except Exception:
             pass
+        # fix1 item 1: the last allowed step. mesa's ModularServer stops stepping a
+        # model whose `running` is False, so the server ends here instead of calling
+        # step() once more and meeting BatchLimitReached. A pure attribute write:
+        # nothing in the simulation reads it.
+        if BATCH_SIZE == self.evaluation_timesteps_counter - 1:
+            self.running = False

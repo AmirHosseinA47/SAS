@@ -52,6 +52,33 @@ METRIC_KEYS = (
 )
 
 
+DEFAULT_BATCH_SIZE = 300
+
+
+def effective_batch_size(batch_size: int | None, steps: int | None) -> int:
+    """The BATCH_SIZE a run is given (fix1 item 1).
+
+    An explicit value is used as given. Otherwise the default 300 is raised to the
+    number of steps, so the batch always covers the run: the model runs BATCH_SIZE + 1
+    steps and refuses the next. Every run of <= 300 steps keeps BATCH_SIZE 300 exactly.
+    """
+    if batch_size is not None:
+        return int(batch_size)
+    return max(DEFAULT_BATCH_SIZE, int(steps or 0))
+
+
+def batch_size_error(batch_size: int | None, steps: int) -> str | None:
+    """A message when an explicit --batch-size cannot run --steps, else None."""
+    if batch_size is None:
+        return None
+    if int(steps) > int(batch_size) + 1:
+        return (
+            "--batch-size %d cannot run --steps %d: the model runs at most batch-size + 1 "
+            "steps; pass --batch-size >= %d or omit it" % (batch_size, steps, int(steps) - 1)
+        )
+    return None
+
+
 def _scenario_params(args: argparse.Namespace) -> dict:
     preset = BUILTIN_SCENARIOS.get(args.scenario, {})
     num_agents = int(args.uavs if args.uavs is not None else preset.get("NUM_AGENTS", 3))
@@ -67,7 +94,9 @@ def _scenario_params(args: argparse.Namespace) -> dict:
             args.firefighters if args.firefighters is not None else preset.get("NUM_FIREFIGHTERS", 3)
         ),
         "WIND_DIRECTION": str(args.wind),
-        "BATCH_SIZE": int(args.batch_size),
+        "BATCH_SIZE": effective_batch_size(
+            getattr(args, "batch_size", None), getattr(args, "steps", None)
+        ),
         "FIRE_SPREAD_MULTIPLIER": float(args.fire_spread),
         "PROBABILITY_MAP": False,
         "NUM_FIRE_TRACKERS": fire_trackers,
@@ -101,7 +130,7 @@ def _reproduce_line(args: argparse.Namespace, seeds: list[int]) -> str:
         parts.append("--firefighters %d" % args.firefighters)
     if args.fire_spread != 0.75:
         parts.append("--fire-spread %s" % args.fire_spread)
-    if args.batch_size != 300:
+    if args.batch_size is not None:
         parts.append("--batch-size %d" % args.batch_size)
     if getattr(args, "fire_trackers", None) is not None:
         parts.append("--fire-trackers %d" % args.fire_trackers)
@@ -112,6 +141,19 @@ def _reproduce_line(args: argparse.Namespace, seeds: list[int]) -> str:
     if getattr(args, "ff_absence_max", None) is not None:
         parts.append("--ff-absence-max %d" % args.ff_absence_max)
     return "REPRODUCE: " + " ".join(parts)
+
+
+def check_steps_advanced(model, steps: int) -> None:
+    """Raise unless the model advanced exactly `steps` steps (fix1 item 1).
+
+    A model that stopped stepping without raising would otherwise be evaluated as a
+    complete run of `steps` steps - a short run reported as a full one.
+    """
+    advanced = int(getattr(model, "evaluation_timesteps_counter", -1) or 0)
+    if advanced != int(steps):
+        raise RuntimeError(
+            "the model advanced %d of the %d requested steps" % (advanced, int(steps))
+        )
 
 
 def _run_seed(seed: int, params: dict, steps: int, *, quiet: bool = True) -> dict:
@@ -143,6 +185,7 @@ def _run_seed(seed: int, params: dict, steps: int, *, quiet: bool = True) -> dic
                 if mission.get("all_victims_terminal"):
                     terminal_step = step
 
+    check_steps_advanced(model, steps)
     evaluation = _build_evaluation(model, terminal_step, step, params)
     evaluation["seed"] = seed
     return evaluation
@@ -192,7 +235,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--wind", default="east", choices=["north", "south", "east", "west"])
     parser.add_argument("--n", type=int, default=20, help="Number of random seeds to run")
     parser.add_argument("--steps", type=int, default=300, help="Maximum simulation steps per run")
-    parser.add_argument("--batch-size", type=int, default=300, dest="batch_size")
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=None,
+        dest="batch_size",
+        help="Model BATCH_SIZE; default max(300, --steps). It must be >= --steps - 1",
+    )
     parser.add_argument("--fire-spread", type=float, default=0.75, dest="fire_spread")
     parser.add_argument("--uavs", type=int, default=None)
     parser.add_argument("--victims", type=int, default=None)
@@ -231,6 +280,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.n < 1:
         print("N must be >= 1", file=sys.stderr)
         return 2
+    batch_error = batch_size_error(args.batch_size, args.steps)
+    if batch_error:
+        print(batch_error, file=sys.stderr)
+        return 2
 
     try:
         seeds = _resolve_run_seeds(args)
@@ -263,11 +316,17 @@ def main(argv: list[str] | None = None) -> int:
     )
     print("-" * 72)
 
+    failed: list[int] = []
     for seed in seeds:
         try:
             row = _run_seed(seed, params, args.steps)
-        except Exception as exc:
-            print("seed=%-10d ERROR: %s: %s" % (seed, type(exc).__name__, exc))
+        except (Exception, SystemExit) as exc:
+            # SystemExit too (fix1 item 1): a seed that ends the process must be a
+            # failed seed with a message, never a silent success.
+            line = "seed=%-10d ERROR: %s: %s" % (seed, type(exc).__name__, exc)
+            print(line)
+            print(line, file=sys.stderr)
+            failed.append(seed)
             continue
         rows.append(row)
         print(
@@ -295,6 +354,7 @@ def main(argv: list[str] | None = None) -> int:
     print("-" * 72)
     if not rows:
         print("No successful runs.")
+        print("FAILED: %d of %d seed(s) errored" % (len(failed), len(seeds)), file=sys.stderr)
         return 1
     total = len(rows)
     print("Summary (mean +/- std) over %d successful run(s):" % total)
@@ -339,6 +399,14 @@ def main(argv: list[str] | None = None) -> int:
 
     print(_reproduce_line(args, seeds))
 
+    if failed:
+        # The summary above covers the successful seeds only; the batch as a whole
+        # failed, and says so in its exit code (fix1 item 1).
+        msg = "FAILED: %d of %d seed(s) errored: %s" % (
+            len(failed), len(seeds), ",".join(str(s) for s in failed))
+        print(msg)
+        print(msg, file=sys.stderr)
+        return 1
     return 0
 
 

@@ -446,7 +446,9 @@ def _start(cfg):
             NUM_VICTIMS=int(cfg["NUM_VICTIMS"]),
             NUM_FIREFIGHTERS=int(cfg["NUM_FIREFIGHTERS"]),
             WIND_DIRECTION=str(cfg.get("wind", "east")),
-            BATCH_SIZE=int(cfg.get("batch_size", 300)),
+            # fix1 item 1: the batch always covers the requested steps (steps is
+            # capped at 600 by the form, batch defaults to 300).
+            BATCH_SIZE=max(int(cfg.get("batch_size", 300)), int(cfg.get("steps", 100))),
             FIRE_SPREAD_MULTIPLIER=float(cfg.get("fire_spread", 0.75)),
             PROBABILITY_MAP=False,
             NUM_FIRE_TRACKERS=num_fire_trackers,
@@ -497,7 +499,14 @@ def _step():
                     "finished": True,
                     "evaluation": _build_evaluation(model, SESSION["terminal_step"],
                                                     SESSION["step"], SESSION["params"])}
-        model.step()
+        try:
+            model.step()
+        except Exception as exc:
+            # fix1 item 1: a failed step is shown to the viewer (the page's step loop
+            # stops on res.error) instead of silently killing this request thread.
+            SESSION["finished"] = True
+            return {"error": "step %d failed: %s: %s"
+                    % (SESSION["step"] + 1, type(exc).__name__, exc)}
         SESSION["step"] += 1
         frame = _capture_frame(model, SESSION["step"])
         ms = frame["panel"].get("mission_status", {}) or {}

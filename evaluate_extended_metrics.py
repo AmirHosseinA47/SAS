@@ -21,7 +21,7 @@ import wildfire_model as wf
 from src_extension.adaptation.local_adaptation_generator import apply_scenario_config
 from wildfire_model import WildFireModel
 
-from evaluate_scenarios import _scenario_params
+from evaluate_scenarios import _scenario_params, batch_size_error, check_steps_advanced
 from serve_dashboard import _build_evaluation
 
 
@@ -82,6 +82,7 @@ def _run_with_tracker_metrics(seed: int, params: dict, steps: int) -> dict:
                     ):
                         fire_steps[uid] += 1
 
+    check_steps_advanced(model, steps)
     evaluation = _build_evaluation(model, terminal_step, step, params)
     evaluation["seed"] = seed
     evaluation["tracker_smoke"] = smoke_steps
@@ -111,7 +112,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--wind", default="east", choices=["north", "south", "east", "west"])
     parser.add_argument("--n", type=int, default=10)
     parser.add_argument("--steps", type=int, default=300)
-    parser.add_argument("--batch-size", type=int, default=300, dest="batch_size")
+    # fix1 item 1: default max(300, --steps) (evaluate_scenarios.effective_batch_size)
+    parser.add_argument("--batch-size", type=int, default=None, dest="batch_size")
     parser.add_argument("--fire-spread", type=float, default=0.75, dest="fire_spread")
     parser.add_argument("--fixed-seed", type=int, default=42)
     parser.add_argument("--extra-seeds", type=str, default="", help="Comma-separated seeds")
@@ -119,6 +121,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--victims", type=int, default=None)
     parser.add_argument("--firefighters", type=int, default=None)
     args = parser.parse_args(argv)
+    batch_error = batch_size_error(args.batch_size, args.steps)
+    if batch_error:
+        print(batch_error, file=sys.stderr)
+        return 2
 
     params = _scenario_params(args)
     seeds: list[int] = []
