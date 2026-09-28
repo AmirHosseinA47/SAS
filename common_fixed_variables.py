@@ -83,6 +83,12 @@ NUM_FIREFIGHTERS = 3
 # NUM_FIRE_TRACKERS + NUM_VICTIM_SEARCHERS when both are specified.
 NUM_FIRE_TRACKERS = None
 NUM_VICTIM_SEARCHERS = None
+# fix1 item 3: with both counts None the split is the maintainer's rule, searchers =
+# max(1, n // 2) and trackers the rest (agents.half_rule_role_split): A 2+1, B 2+1, C 3+2,
+# D 2+2. SHIPPED 1 (ruling D-1); only an exact integral 0 restores the legacy default of
+# n-1 trackers + 1 searcher (which gave C 4+1 and D 3+1 in evaluate_scenarios / the
+# dashboard, while the harness's --roles half ran D 2+2).
+ROLE_SPLIT_HALF_RULE = 1
 # The ONE battery threshold pair (fix1 item 2), read at call time through
 # agents.battery_low_threshold() / battery_critical_threshold() by every reader: the UAV
 # labels, both analyzers, the resource model, the global monitor, the dashboard alert and

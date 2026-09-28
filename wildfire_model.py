@@ -1029,6 +1029,11 @@ class WildFireModel(mesa.Model):
         ft_raw = getattr(self, "NUM_FIRE_TRACKERS", None)
         vs_raw = getattr(self, "NUM_VICTIM_SEARCHERS", None)
         if ft_raw is None and vs_raw is None:
+            # fix1 item 3: the one rule (trackers first, then searchers - for n <= 3 the
+            # same mapping as the legacy last-slot searcher).
+            if agents.role_split_half_rule():
+                ft_count, vs_count = agents.half_rule_role_split(n_uavs)
+                return ft_count, vs_count, False
             return max(0, n_uavs - 1), min(1, n_uavs), True
         ft_count = max(0, int(ft_raw if ft_raw is not None else 0))
         vs_count = max(0, int(vs_raw if vs_raw is not None else 0))

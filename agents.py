@@ -1333,6 +1333,42 @@ def global_planner_mode() -> int:
     return 1 if _exact_integer(getattr(cfv, "GLOBAL_PLANNER_MODE", 0)) == 1 else 0
 
 
+# --- fix1 item 3: ONE role-split rule for every scenario -----------------------------------
+# The maintainer's rule: searchers = max(1, floor(n / 2)), trackers = the rest
+# (3 -> 2T+1S, 4 -> 2T+2S, 5 -> 3T+2S, 8 -> 4T+4S). It is the default whenever a runner
+# gives no split - WildFireModel._resolve_uav_role_counts, the harness's --roles half and
+# the dashboard presets all call half_rule_role_split, so no second copy exists. Explicit
+# counts (CLI flags, dashboard fields) still win.
+
+def role_split_half_rule() -> bool:
+    """ROLE_SPLIT_HALF_RULE - fix1 item 3's switch. Shipped 1 (ruling D-1).
+
+    Off only on an EXACT integral zero: then the default is the legacy n-1 trackers + 1
+    searcher (the last UAV searches). Missing or junk -> on.
+    """
+    value = _exact_integer(getattr(cfv, "ROLE_SPLIT_HALF_RULE", 1))
+    if value is None:
+        return True
+    return value != 0
+
+
+def half_rule_role_split(n_uavs: int) -> tuple[int, int]:
+    """(fire_trackers, victim_searchers) by the rule; (0, 0) for no UAVs."""
+    n = int(n_uavs)
+    if n <= 0:
+        return 0, 0
+    searchers = max(1, n // 2)
+    return n - searchers, searchers
+
+
+def default_role_split(n_uavs: int) -> tuple[int, int]:
+    """The split a UAV team gets when nothing is specified: the rule, or legacy when off."""
+    n = int(n_uavs)
+    if role_split_half_rule():
+        return half_rule_role_split(n)
+    return max(0, n - 1), min(1, max(0, n))
+
+
 # --- fix1 item 2: battery thresholds (ONE source) and the launch charge -----------------
 # Read through `cfv` at call time, like every accessor above. The LOW / CRITICAL pair is
 # the only battery threshold pair in the model: the UAV labels, both analyzers, the

@@ -62,6 +62,22 @@ def scenario_extra_params(scenario: str) -> dict:
     return {k: v for k, v in preset.items() if k not in _PRESET_NON_PARAM_KEYS}
 
 
+def scenarios_payload() -> dict:
+    """BUILTIN_SCENARIOS as the page receives them, each with its role split (fix1 item 3).
+
+    The split is agents.default_role_split - the same function the model uses when no
+    split is given - so the page no longer computes n-1 / 1 itself.
+    """
+    out = {}
+    for key, preset in BUILTIN_SCENARIOS.items():
+        entry = dict(preset)
+        ft, vs = am.default_role_split(int(preset.get("NUM_AGENTS", 3)))
+        entry["NUM_FIRE_TRACKERS"] = ft
+        entry["NUM_VICTIM_SEARCHERS"] = vs
+        out[key] = entry
+    return out
+
+
 VEG = set(cfv.VEGETATION_COLORS)
 _lock = threading.Lock()
 SESSION: dict = {"model": None, "step": 0, "steps": 0, "params": None,
@@ -570,7 +586,7 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == "/":
             self._send(200, HTML, "text/html; charset=utf-8")
         elif u.path == "/scenarios":
-            self._send(200, json.dumps(BUILTIN_SCENARIOS))
+            self._send(200, json.dumps(scenarios_payload()))
         elif u.path == "/step":
             self._send(200, json.dumps(_step(), separators=(",", ":")))
         else:
@@ -735,7 +751,10 @@ function syncUavTotal(){
   document.getElementById(id).addEventListener('input',syncUavTotal);
 });
 function applyPreset(k,s){if(k==='custom'){LAUNCHF=1;return;}
-  const n=s[k].NUM_AGENTS||3;firetrackers.value=Math.max(0,n-1);victimsearchers.value=1;syncUavTotal();
+  const n=s[k].NUM_AGENTS||3;
+  // fix1 item 3: the server's split (agents.default_role_split), n-1 / 1 only as a fallback.
+  firetrackers.value=(s[k].NUM_FIRE_TRACKERS==null?Math.max(0,n-1):s[k].NUM_FIRE_TRACKERS);
+  victimsearchers.value=(s[k].NUM_VICTIM_SEARCHERS==null?1:s[k].NUM_VICTIM_SEARCHERS);syncUavTotal();
   victims.value=s[k].NUM_VICTIMS;ffs.value=s[k].NUM_FIREFIGHTERS;
   LAUNCHF=(s[k].UAV_LAUNCH_BATTERY_FRACTION==null?1:s[k].UAV_LAUNCH_BATTERY_FRACTION);}
 

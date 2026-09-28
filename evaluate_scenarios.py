@@ -307,12 +307,18 @@ def main(argv: list[str] | None = None) -> int:
     rows: list[dict] = []
 
     launch = params.get("UAV_LAUNCH_BATTERY_FRACTION")
+    if params["NUM_FIRE_TRACKERS"] is None and params["NUM_VICTIM_SEARCHERS"] is None:
+        roles = am.default_role_split(params["NUM_AGENTS"])  # what the model will use
+    else:
+        roles = (params["NUM_FIRE_TRACKERS"], params["NUM_VICTIM_SEARCHERS"])
     print(
-        "Scenario %s | wind %s | %d UAV / %d victims / %d FF%s | steps=%d | N=%d"
+        "Scenario %s | wind %s | %d UAV (%dT+%dS) / %d victims / %d FF%s | steps=%d | N=%d"
         % (
             args.scenario,
             params["WIND_DIRECTION"],
             params["NUM_AGENTS"],
+            roles[0],
+            roles[1],
             params["NUM_VICTIMS"],
             params["NUM_FIREFIGHTERS"],
             "" if launch is None else " | launch charge x%g" % launch,
