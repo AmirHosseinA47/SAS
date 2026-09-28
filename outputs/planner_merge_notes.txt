@@ -1,0 +1,113 @@
+================================================================================
+GLOBAL PLANNER FOR UAV ROLES - MERGE NOTES (2026-09-28)
+Round accepted by the maintainer. The global planner ships as a SELECTABLE strategy:
+GLOBAL_PLANNER_MODE = 0 (the local strategy) is the default, so shipped behaviour is unchanged.
+Report: outputs/planner_report.txt. Design / pre-registration: outputs/planner_part1.txt.
+================================================================================
+
+1. THE MERGE
+  Before: branch claude/exciting-euler-24cn12 = 43a866ce8c034f0bbf93f3930eee6b4adcb53009 = its origin
+          ref; main = dfbfbe7c2aaaf2c3f8bb6b37aafb4fc8bf731a41 = origin/main; tracked tree clean;
+          no python.exe running; no pool running.
+  Shared checkout: three peer Claude sessions were registered on this machine (all idle, started 9 h
+          or more earlier), so - as earlier rounds did - main was fast-forwarded as a REF, without
+          switching the checkout: `git merge-base --is-ancestor dfbfbe7 43a866c` (true), then
+          `git update-ref refs/heads/main 43a866c dfbfbe7` (the old-value check makes it exactly a
+          --ff-only fast-forward: it refuses if main moved). No merge commit, no conflict.
+          The checkout was then switched to main (the SAME commit: no file changed).
+  Merged main = 43a866ce8c034f0bbf93f3930eee6b4adcb53009.
+  Tag global-planner-uav-roles (annotated, tag object d590933bf36c6e22cc72a17af3185eafe1fbd75a)
+          -> 43a866c, with the maintainer's message verbatim. `git push origin main --tags`:
+          dfbfbe7..43a866c main -> main, new tag global-planner-uav-roles; origin/main = 43a866c.
+  Commits merged (dfbfbe7..43a866c): 879c7ed, 6c6cc93, aa373a4 (Part 1, outputs/ only); df1ff03,
+          7d66f33, 3738a1e, 54d282a, 7800def (source C1-C5), 9a2e5c4 (tests C6); 43a866c (Part 3,
+          outputs/ only). Outside outputs/ and tests/: 7 files, 640 insertions, 0 deletions.
+
+2. VERIFICATION ON MERGED MAIN (43a866c)
+  SUITE      serial, on main 43a866c (outputs/_plM_pytest.log / .xml, 0:44:14): 8 failed / 1055
+             passed / 0 errors. FAILING NAME SET - identical to the Part 2 run (_pl2_pytest.log) and to
+             the 8 baseline names of planner_part1.txt:
+               test_behavior_regression::test_descriptive_next_action_uses_target_position
+               test_dashboard_panel::test_dashboard_panel_render_returns_string
+               test_firefighter_dispatch_replacement::test_no_replacement_available_marks_victim_unreachable_once
+               test_rescue_planner_authority::test_no_firefighter_planner_delay_or_unreachable
+               test_uav_sector_assignment::test_fire_tracker_uavs_receive_different_target_sets
+               test_uav_sector_assignment::test_fire_tracker_still_overridden_by_search_mode_fail_safe
+               test_wind_aware_trajectory_regression::test_north_vs_south_trajectories_diverge_over_40_steps
+               test_wind_aware_trajectory_regression::test_east_vs_west_trajectories_diverge_over_40_steps
+  SHIPPED DEFAULTS - constant and accessor (agents.* / UAVExecutor._offgrid_guard_level /
+             WildFireModel._route_block_stale_clear_mode), all as shipped before this round plus
+             the new switch at 0:
+               GLOBAL_PLANNER_MODE                      0   accessor 0
+               FF_EXIT_LEG_MODE                         2   accessor 2
+               FF_EXIT_LEG_SERVED                       1   accessor 1; with FF_EXIT_LEG_MODE set to 0
+                                                            (in memory) the accessor gives 0 - enforced off
+               FF_EXIT_LEG_HOLD                         0   accessor False
+               BASE_STATION_MODE                        3   accessor 3
+               BASE_STATION_FIREPROOF                   1   accessor True
+               VICTIM_SEARCHER_HAZARD_GATE_BOUNDS_FIX   1   accessor 1   (the searcher guard)
+               FF_FIREFIGHT_MISSION_GATE                0   accessor False
+               FF_FIREFIGHT_EXTINGUISH                  1   accessor True
+               FF_FIREFIGHT_FIREBREAK                   1   accessor True
+               ROUTE_BLOCK_STALE_CLEAR                  1   accessor 1
+             NOTHING FROM EARLIER ROUNDS MOVED: `git diff dfbfbe7 main -- common_fixed_variables.py`
+             removes or changes no line; its only new constant is GLOBAL_PLANNER_MODE = 0. agents.py
+             loses no line (43 insertions: the two new functions).
+  THE MERGE INTRODUCED NOTHING: one canonical run at merged main - _ffr_harness.py east/half/101,
+             360 steps, --uav-actions --set BATCH_SIZE=360, tag plMV (unused before) - is
+             value-identical, every key but tag/repo/wall_s (57 keys; stdout_sha256 and
+             fire_digests included), to its plC arm, to plP (plC without the sidecar) and to plB
+             (the dfbfbe7 worktree). Files: outputs/_ffr_plMV_east_half_101.json / .stdout.txt.
+
+3. NOT CURRENT - DO NOT QUOTE THESE AS RESULTS (maintainer, 2026-09-28)
+  - WITHDRAWN: "firefighting trades 3 rescues for 3 firefighter lives". plF
+    (FF_FIREFIGHT_EXTINGUISH=0, FF_FIREFIGHT_FIREBREAK=0) turned firefighting off ENTIRELY, not
+    only during search, and its extra firefighter deaths fall AFTER the mission ends: deaths at or
+    before the terminal step plC 8 vs plF 2, after it 0 vs 9 (N30, 360 steps). What plF measured
+    is ungated firefighting against none - 3 fewer rescued with firefighting (3 seeds) - not
+    against the gated variant.
+  - The base-station comparison (plS 106 vs 98 rescued) CHANGES THE WHOLE CONFIGURATION -
+    BASE_STATION_MODE 0 moves the UAV launch to the grid centre and the firefighters' start cells,
+    removes the fireproof depots (the fire differs from step 1 in 30 of 30 runs) and keeps every
+    UAV in the air - so the difference CANNOT be credited to recharging (plS UAVs never land).
+  - EVERY HEADLINE NUMBER FROM BEFORE dfbfbe7 PREDATES FF_EXIT_LEG_MODE 2 AND IS STALE (the
+    ungated firefighting cost, firefighter deaths, the base-station tradeoff, every stored control
+    baseline). Re-measure at the current commit before comparing.
+  - THE SYNCHRONIZED RECHARGE GAP: every run of both strategies (43 of 43 each, C13 + N30, 360
+    steps) has exactly ONE block in which no victim searcher flies, because every UAV launches at
+    full battery and return-to-base is a per-UAV rule with no coordination (first triggers of a
+    run within a median 20-step window, steps 156-201); in 13 of 43 runs the block opens while
+    victims are outstanding and in 3 of 43 an alive, undetected victim is on the map during it.
+    NEITHER STRATEGY CLOSES IT; the global planner makes no-searcher steps slightly more frequent
+    (1909 -> 2057 pooled, +120 of +148 after the mission's terminal step).
+  Also corrected in the report and not to be quoted in their first-draft form: first detection
+  43.1 / 43.7 (it measured first ASSIGNMENT; detection is 37.5 / 36.9, median 16 = 16); 4 runs with
+  an alive undetected victim in the gap (3); the 7.5 (f) exposure 94 -> 107 (89 -> 106); and Part 1's
+  open-loop "clean split" (closed loop, 16 of 45 searcher -> tracker switches happened while a
+  victim was undetected, 13 of them with that victim alive).
+
+4. OPEN QUESTIONS - THE NEXT ROUND'S SUBJECT
+  - Firefighting: ungated vs GATED under MODE 2, with deaths split before / after the terminal step
+    (plF compared ungated with none).
+  - The base station: which component (launch geometry, fireproof depots, recharging) carries the
+    106 vs 98, one switch at a time.
+  - The synchronized recharge gap: stagger the launch batteries or coordinate returns across UAVs
+    and roles; the planner's I2 protects only the last AVAILABLE searcher.
+  - Every stale pre-MODE-2 headline number, re-measured at the current commit.
+
+5. CLEANUP
+  - Branch claude/exciting-euler-24cn12 deleted locally (`git branch -d`, it was fully merged at
+    43a866c) and on origin with the full ref name (`git push origin --delete
+    refs/heads/claude/exciting-euler-24cn12`); `git fetch --prune` then lists no such ref.
+  - Worktrees: the round's dfbfbe7 worktree (E:/Projects/SAS_wt/basedfbfbe7) had already been removed
+    before the merge (.venv junction unlinked with `cmd /c rmdir` first; the real .venv confirmed).
+    `git worktree list` now shows only E:/Projects/SAS [main]. No .venv junction exists anywhere
+    this round created.
+  - REMAINING, not this round's and left untouched:
+      local branches  main (checked out), globalplanner (pre-existing)
+      remote branches origin/main and 9 older claude/* branches of earlier sessions
+      directories     E:/Projects/SAS_wt/ (empty); E:/Projects/SAS/.claude/worktrees/
+                      searcher-lane-partitioning-diagnosis-752483/ (an EMPTY directory from
+                      2026-08-24 - no .git file, no junction, not a registered worktree)
+  - These notes, the suite log and the canonical plMV run are committed on main AFTER the tag, so
+    main is one outputs-only commit ahead of global-planner-uav-roles (43a866c).
