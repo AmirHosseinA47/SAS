@@ -676,6 +676,12 @@ def test_role_index_map_matches_the_measured_runs(monkeypatch) -> None:
     legacy = _SplitModel()
     legacy.NUM_FIRE_TRACKERS = None
     legacy.NUM_VICTIM_SEARCHERS = None
+    # fix1 item 3: with no split given the default is now the maintainer's rule (4 UAVs ->
+    # 2+2, the same map as the explicit split above); the recorded legacy map - n-1
+    # trackers + the last UAV searching - is ROLE_SPLIT_HALF_RULE 0.
+    assert [legacy._uav_role_for_index(i, 4) for i in range(4)] == [
+        "fire_tracker", "fire_tracker", "victim_searcher", "victim_searcher"]
+    monkeypatch.setattr(cfv, "ROLE_SPLIT_HALF_RULE", 0)
     assert [legacy._uav_role_for_index(i, 4) for i in range(4)] == [
         "fire_tracker", "fire_tracker", "fire_tracker", "victim_searcher"]
 
