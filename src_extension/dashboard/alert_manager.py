@@ -7,7 +7,6 @@ from typing import Any
 
 import agents
 
-from common_fixed_variables import LOW_BATTERY_THRESHOLD
 
 from .contracts import AlertRecord
 
@@ -234,7 +233,9 @@ class AlertManager:
                 continue
             uav_id = str(getattr(agent, "unique_id", ""))
             battery = float(getattr(agent, "battery_level", 100.0) or 100.0)
-            if battery <= LOW_BATTERY_THRESHOLD:
+            # fix1 item 2: the one threshold source, read at call time (it was bound
+            # at import, so a per-run override never reached this alert).
+            if battery <= agents.battery_low_threshold():
                 add(
                     alert_type="low_battery",
                     severity=SEVERITY_WARNING,

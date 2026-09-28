@@ -33,6 +33,7 @@ from serve_dashboard import (
     _build_evaluation,
     _resolve_role_count_params,
     _resolve_seed,
+    scenario_extra_params,
 )
 
 METRIC_KEYS = (
@@ -103,6 +104,8 @@ def _scenario_params(args: argparse.Namespace) -> dict:
         "NUM_FIRE_TRACKERS": fire_trackers,
         "NUM_VICTIM_SEARCHERS": victim_searchers,
     }
+    # fix1 item 2: the preset's other model parameters (scenario B's launch charge).
+    params.update(scenario_extra_params(args.scenario))
     # Feature 1 knobs are only passed when given, so a bare run takes the
     # common_fixed_variables defaults exactly like every other constant.
     absence_min = getattr(args, "ff_absence_min", None)
@@ -303,14 +306,16 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     rows: list[dict] = []
 
+    launch = params.get("UAV_LAUNCH_BATTERY_FRACTION")
     print(
-        "Scenario %s | wind %s | %d UAV / %d victims / %d FF | steps=%d | N=%d"
+        "Scenario %s | wind %s | %d UAV / %d victims / %d FF%s | steps=%d | N=%d"
         % (
             args.scenario,
             params["WIND_DIRECTION"],
             params["NUM_AGENTS"],
             params["NUM_VICTIMS"],
             params["NUM_FIREFIGHTERS"],
+            "" if launch is None else " | launch charge x%g" % launch,
             args.steps,
             args.n,
         )

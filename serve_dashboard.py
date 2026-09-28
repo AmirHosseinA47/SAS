@@ -36,10 +36,31 @@ PORT = 8000
 
 BUILTIN_SCENARIOS = {
     "A": {"label": "A - Rescue Success", "NUM_AGENTS": 3, "NUM_VICTIMS": 5, "NUM_FIREFIGHTERS": 3},
-    "B": {"label": "B - Battery Fail-Safe", "NUM_AGENTS": 3, "NUM_VICTIMS": 2, "NUM_FIREFIGHTERS": 2},
+    # fix1 item 2: B is a real battery scenario - every UAV launches at half charge
+    # (early in-flight return + a second return per UAV). Renamed from "Battery Fail-Safe":
+    # no battery trigger fires at this setting (outputs/fix1_part1.txt section 2).
+    "B": {"label": "B - Battery-Constrained", "NUM_AGENTS": 3, "NUM_VICTIMS": 2, "NUM_FIREFIGHTERS": 2,
+          "UAV_LAUNCH_BATTERY_FRACTION": 0.5},
     "C": {"label": "C - Large Operation", "NUM_AGENTS": 5, "NUM_VICTIMS": 3, "NUM_FIREFIGHTERS": 3},
     "D": {"label": "D - Rescue Priority", "NUM_AGENTS": 4, "NUM_VICTIMS": 4, "NUM_FIREFIGHTERS": 2},
 }
+
+# The preset keys that are team counts or display text; every other key of a preset is a
+# model parameter the runners pass through apply_scenario_config.
+_PRESET_NON_PARAM_KEYS = frozenset({"label", "NUM_AGENTS", "NUM_VICTIMS", "NUM_FIREFIGHTERS"})
+
+
+def scenario_extra_params(scenario: str) -> dict:
+    """A preset's model parameters beyond the team counts (fix1 item 2).
+
+    {"UAV_LAUNCH_BATTERY_FRACTION": 0.5} for B, {} for A, C, D and unknown keys. The ONE
+    place evaluate_scenarios, the harness and the dashboard read a preset's extra
+    parameters from, so a scenario cannot mean one thing to one runner and another to
+    the next.
+    """
+    preset = BUILTIN_SCENARIOS.get(str(scenario), {}) or {}
+    return {k: v for k, v in preset.items() if k not in _PRESET_NON_PARAM_KEYS}
+
 
 VEG = set(cfv.VEGETATION_COLORS)
 _lock = threading.Lock()
@@ -458,9 +479,14 @@ def _start(cfg):
             PROBABILITY_MAP=False,
             NUM_FIRE_TRACKERS=num_fire_trackers,
             NUM_VICTIM_SEARCHERS=num_victim_searchers,
+            # fix1 item 2: the preset's launch charge (1.0 unless the page sent B's 0.5).
+            UAV_LAUNCH_BATTERY_FRACTION=float(cfg.get("UAV_LAUNCH_BATTERY_FRACTION", 1.0)),
         )
         apply_scenario_config(cfv, wf, **params)
-        model = WildFireModel()
+        try:
+            model = WildFireModel()
+        except ValueError as exc:
+            return {"error": str(exc)}
         model.debug_log = False
         SESSION.update(model=model, step=0, steps=int(cfg.get("steps", 100)),
                        params=params, terminal_step=None, finished=False, trails={},
@@ -692,6 +718,8 @@ let W=50,H=50,cs=11.2,probMode=false,playing=false,timer=null,totalSteps=80,curF
 // observation block); VFR is manhattan (the victim flee trigger), and <= 0 is
 // that feature's kill switch, so 0 means draw no diamonds at all.
 let FOVR=8,VFR=0;
+// fix1 item 2: the selected preset's launch-charge fraction (B 0.5), sent with /start.
+let LAUNCHF=1;
 const cv=document.getElementById('map'),ctx=cv.getContext('2d');
 
 fetch('/scenarios').then(r=>r.json()).then(s=>{
@@ -706,9 +734,10 @@ function syncUavTotal(){
 ['firetrackers','victimsearchers'].forEach(id=>{
   document.getElementById(id).addEventListener('input',syncUavTotal);
 });
-function applyPreset(k,s){if(k==='custom')return;
+function applyPreset(k,s){if(k==='custom'){LAUNCHF=1;return;}
   const n=s[k].NUM_AGENTS||3;firetrackers.value=Math.max(0,n-1);victimsearchers.value=1;syncUavTotal();
-  victims.value=s[k].NUM_VICTIMS;ffs.value=s[k].NUM_FIREFIGHTERS;}
+  victims.value=s[k].NUM_VICTIMS;ffs.value=s[k].NUM_FIREFIGHTERS;
+  LAUNCHF=(s[k].UAV_LAUNCH_BATTERY_FRACTION==null?1:s[k].UAV_LAUNCH_BATTERY_FRACTION);}
 
 document.getElementById('probtoggle').onclick=function(){probMode=!probMode;this.classList.toggle('on',probMode);
   this.textContent='Probability map: '+(probMode?'on':'off');if(curFrame){render(curFrame);setLegend();}};
@@ -718,7 +747,8 @@ document.getElementById('run').onclick=async function(){
   syncUavTotal();
   const cfg={NUM_AGENTS:+uavs.value,NUM_FIRE_TRACKERS:+firetrackers.value,NUM_VICTIM_SEARCHERS:+victimsearchers.value,
     NUM_VICTIMS:+victims.value,NUM_FIREFIGHTERS:+ffs.value,
-    wind:wind.value,batch_size:+batch.value,steps:+steps.value,fire_spread:+spread.value};
+    wind:wind.value,batch_size:+batch.value,steps:+steps.value,fire_spread:+spread.value,
+    UAV_LAUNCH_BATTERY_FRACTION:LAUNCHF};
   const seedRaw=seed.value.trim();
   const randomize=document.getElementById('randseed').checked;
   if(!randomize && seedRaw!=='' && seedRaw.toLowerCase()!=='random'){

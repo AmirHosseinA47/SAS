@@ -83,15 +83,32 @@ NUM_FIREFIGHTERS = 3
 # NUM_FIRE_TRACKERS + NUM_VICTIM_SEARCHERS when both are specified.
 NUM_FIRE_TRACKERS = None
 NUM_VICTIM_SEARCHERS = None
+# The ONE battery threshold pair (fix1 item 2), read at call time through
+# agents.battery_low_threshold() / battery_critical_threshold() by every reader: the UAV
+# labels, both analyzers, the resource model, the global monitor, the dashboard alert and
+# the utility feasibility check. The return-to-base rule turns a UAV home at >= 39 %
+# (0.3 * distance + BASE_STATION_RETURN_MARGIN), ABOVE LOW, so in flight neither value is
+# ever reached, and LOW_BATTERY has no consumer - see outputs/fix1_part1.txt section 2.
 LOW_BATTERY_THRESHOLD = 30.0
 BATTERY_CRITICAL_THRESHOLD = 15.0
 
-# Scenario B — Battery Fail-Safe Validation
-# Expected: fail-safe mode activation when battery falls below threshold
-# NUM_AGENTS = 3
-# NUM_VICTIMS = 2
-# NUM_FIREFIGHTERS = 2
-# BATTERY_CRITICAL_THRESHOLD = 50.0
+# Launch charge (fix1 item 2). Every UAV launches with UAV_LAUNCH_BATTERY_FRACTION x its
+# launch battery (100 today; session 2's staggered launch battery replaces that base and
+# this fraction stays a multiplier on it). A value outside (0, 1] RAISES at model build.
+# Scenario B's preset (serve_dashboard.BUILTIN_SCENARIOS) sets 0.5; A, C and D leave 1.0.
+# REDUCED_LAUNCH_BATTERY is the switch: SHIPPED 1 (ruling D-1); only an exact integral 0
+# turns it off, and then the fraction is ignored (B launches at full charge, as before).
+UAV_LAUNCH_BATTERY_FRACTION = 1.0
+REDUCED_LAUNCH_BATTERY = 1
+
+# Scenario B — Battery-Constrained (fix1 item 2)
+# 3 UAV / 2 victims / 2 FF, every UAV launching at HALF charge (UAV_LAUNCH_BATTERY_FRACTION
+# 0.5, set by the preset). Expected: an early in-flight return (steps ~19-23 at ~43 %) and
+# a second one (~215-246) per UAV, against one (~160-202) in A, C and D. It is NOT a
+# "fail-safe on low battery" scenario: no battery trigger fires at this setting.
+# DO NOT revive the old `BATTERY_CRITICAL_THRESHOLD = 50.0` of this block: every return
+# leg arrives at ~39 %, so every trip would raise CRITICAL_BATTERY and - with the
+# collision-risk artifact alarm live on ~91 % of steps - put the whole fleet in EMERGENCY.
 
 # Scenario C — Large Operation
 # Expected: stress-test with more UAVs/victims/firefighters

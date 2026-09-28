@@ -182,12 +182,12 @@ class UAVResourceModel:
         level = max(0.0, min(100.0, float(battery_level)))
         prev = self._last_battery_update.get(uav_id)
         state.battery_level = level
-        if level < 20.0:
-            state.battery_status = "critical"
-        elif level < 50.0:
-            state.battery_status = "low"
-        else:
-            state.battery_status = "nominal"
+        # fix1 item 2: the label from the ONE threshold source (<= 15 critical, <= 30 low,
+        # else 'normal' - the agent's vocabulary). It was < 20 / < 50 / 'nominal' here,
+        # a pair no live reader saw: update_uav_state overwrites it with the agent's label.
+        import agents as _agents  # lazy: agents is a root module
+
+        state.battery_status = _agents.battery_status_for(level)
         if prev is not None:
             prev_level, prev_ts = prev
             dt = max(0.0, ts - prev_ts)

@@ -341,19 +341,22 @@ class GlobalMonitor:
         """Classify event flags into structured groups (observe-only)."""
         low_battery_event = False
         critical_battery_event = False
+        # fix1 item 2: thresholds from the one source (agents accessors). The former third
+        # test, `0 < level < 20 -> low`, was dead: every such level already met `<= 30`.
+        import agents as _agents  # lazy: agents is a root module
+
+        critical_level = _agents.battery_critical_threshold()
+        low_level = _agents.battery_low_threshold()
         for uav in self.uavs:
             obs = getattr(uav, "latest_local_observation", None)
             if isinstance(obs, LocalObservation):
                 st_b = (obs.battery_status or "").strip().lower()
                 bl = float(obs.battery_level)
-                if st_b == "critical" or bl <= 15.0:
+                if st_b == "critical" or bl <= critical_level:
                     critical_battery_event = True
                     low_battery_event = True
                     break
-                if st_b == "low" or bl <= 30.0:
-                    low_battery_event = True
-                    break
-                if bl > 0.0 and bl < 20.0:
+                if st_b == "low" or bl <= low_level:
                     low_battery_event = True
                     break
 

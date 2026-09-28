@@ -254,7 +254,10 @@ class UtilityEvaluation:
 
     def _check_utility_feasibility(self, option: object, context: object | None = None) -> tuple[bool, tuple[str, ...]]:
         """Utility-level hard constraints; reads merged option/context parameters only."""
-        critical_battery_threshold = 15.0
+        import agents as _agents  # lazy: agents is a root module
+
+        # fix1 item 2: the one threshold source (it was the literal 15.0).
+        critical_battery_threshold = _agents.battery_critical_threshold()
         hard_collision_risk_threshold = 0.95
         route_feasibility_min_confidence = 0.25
         communication_min_confidence = 0.25

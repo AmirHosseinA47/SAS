@@ -225,6 +225,11 @@ class WildFireModel(mesa.Model):
         for a in range(0, self.NUM_AGENTS):
             aux_UAV = agents.UAV(self.unique_agents_id, self)
             aux_UAV.selected_dir = warmup_dirs[a % len(warmup_dirs)]
+            # fix1 item 2: the launch charge, f x L_i - exactly the 100.0 / 'normal' that
+            # UAV.__init__ set unless the scenario reduces it (scenario B: f = 0.5). Set
+            # before _init_runtime_knowledge reads it into the managed state.
+            aux_UAV.battery_level = agents.uav_launch_battery(a)
+            aux_UAV.battery_status = agents.battery_status_for(aux_UAV.battery_level)
             if self.base_station is not None:
                 # One dedicated berth per UAV PER DEPOT, used as the spawn cell at
                 # the home depot and as the docking cell at whichever depot the UAV
@@ -330,12 +335,12 @@ class WildFireModel(mesa.Model):
         )
         self.latest_global_snapshot = None
         self.local_uav_analyzer = LocalUAVAnalyzer(
-            low_battery_threshold=LOW_BATTERY_THRESHOLD,
-            critical_battery_threshold=BATTERY_CRITICAL_THRESHOLD,
+            low_battery_threshold=agents.battery_low_threshold(),
+            critical_battery_threshold=agents.battery_critical_threshold(),
         )
         self.global_analyzer = GlobalAnalyzer(
-            low_battery_threshold=LOW_BATTERY_THRESHOLD,
-            critical_battery_threshold=BATTERY_CRITICAL_THRESHOLD,
+            low_battery_threshold=agents.battery_low_threshold(),
+            critical_battery_threshold=agents.battery_critical_threshold(),
         )
         self.latest_analysis_snapshot = None
         self.global_adaptation_generator = GlobalAdaptationSpaceGenerator()

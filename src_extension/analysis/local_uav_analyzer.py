@@ -8,7 +8,7 @@ TODO: Implement private analyzers; pair with monitoring/planning as needed.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from ..knowledge.local_observation_model import LocalObservationModel
@@ -27,12 +27,25 @@ from .trigger_objects import (
 )
 
 
+def _default_low_battery_threshold() -> float:
+    import agents as _agents  # lazy: agents is a root module
+
+    return _agents.battery_low_threshold()
+
+
+def _default_critical_battery_threshold() -> float:
+    import agents as _agents
+
+    return _agents.battery_critical_threshold()
+
+
 @dataclass
 class LocalUAVAnalyzer:
     """Interpretation step: local models → ``LocalAnalysisResult`` (no execution)."""
 
-    low_battery_threshold: float = 30.0
-    critical_battery_threshold: float = 15.0
+    # fix1 item 2: defaults from the one threshold source (agents accessors, 30 / 15).
+    low_battery_threshold: float = field(default_factory=_default_low_battery_threshold)
+    critical_battery_threshold: float = field(default_factory=_default_critical_battery_threshold)
     drift_warning_threshold: float = 1.0
     drift_critical_threshold: float = 2.0
     low_information_gain_threshold: float = 0.05

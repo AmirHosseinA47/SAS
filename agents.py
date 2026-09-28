@@ -283,8 +283,10 @@ class UAV(mesa.Agent):
         self.battery_status = "normal"
         self.battery_drain_per_step = 0.1
         self.battery_drain_per_move = 0.2
-        self.battery_low_threshold = 30.0
-        self.battery_critical_threshold = 15.0
+        # fix1 item 2: no per-UAV thresholds any more. The label comes from the ONE source
+        # (battery_status_for -> battery_low_threshold() / battery_critical_threshold());
+        # it used literals here (30 / 15) beside a second, disagreeing pair (20 / 50) in
+        # uav_resource_model.
         # Feature 3 (base station). All defaulted so that with BASE_STATION_MODE = 0
         # nothing here is ever read and the class behaves exactly as before.
         # rtb_berth is the UAV's own docking cell, assigned once by the model at
@@ -381,12 +383,7 @@ class UAV(mesa.Agent):
             self.battery_level += base_station_recharge_per_step()
             self.rtb_charge_steps += 1
         self.battery_level = max(0.0, min(100.0, float(self.battery_level)))
-        if self.battery_level <= self.battery_critical_threshold:
-            self.battery_status = "critical"
-        elif self.battery_level <= self.battery_low_threshold:
-            self.battery_status = "low"
-        else:
-            self.battery_status = "normal"
+        self.battery_status = battery_status_for(self.battery_level)
 
     # function that checks if an UAV in a certain position (pos), has another UAV nearby. If so, it can't move,
     # otherwise it will be possible to move.
@@ -1336,6 +1333,92 @@ def global_planner_mode() -> int:
     return 1 if _exact_integer(getattr(cfv, "GLOBAL_PLANNER_MODE", 0)) == 1 else 0
 
 
+# --- fix1 item 2: battery thresholds (ONE source) and the launch charge -----------------
+# Read through `cfv` at call time, like every accessor above. The LOW / CRITICAL pair is
+# the only battery threshold pair in the model: the UAV labels, both analyzers, the
+# resource model, the global monitor, the dashboard alert and the utility feasibility
+# check all read it here. (Before fix1 the labels were literals in UAV.__init__ and the
+# resource model used a second pair, 20 / 50, that no live reader ever saw.) NOT the
+# return-to-base rule (0.3 * distance + BASE_STATION_RETURN_MARGIN), which is a different
+# quantity: it turns a UAV home at >= 39 % on 50x50, above LOW, so in flight neither
+# threshold is ever reached (outputs/fix1_part1.txt section 2).
+
+def battery_low_threshold() -> float:
+    """LOW_BATTERY_THRESHOLD (shipped 30): the 'low' label and the LOW_BATTERY trigger (<=)."""
+    try:
+        return float(getattr(cfv, "LOW_BATTERY_THRESHOLD", 30.0))
+    except (TypeError, ValueError):
+        return 30.0
+
+
+def battery_critical_threshold() -> float:
+    """BATTERY_CRITICAL_THRESHOLD (shipped 15): the 'critical' label and CRITICAL_BATTERY (<=)."""
+    try:
+        return float(getattr(cfv, "BATTERY_CRITICAL_THRESHOLD", 15.0))
+    except (TypeError, ValueError):
+        return 15.0
+
+
+def battery_status_for(level) -> str:
+    """'critical' / 'low' / 'normal' for a battery level, from the one threshold source."""
+    value = float(level)
+    if value <= battery_critical_threshold():
+        return "critical"
+    if value <= battery_low_threshold():
+        return "low"
+    return "normal"
+
+
+def reduced_launch_battery() -> bool:
+    """REDUCED_LAUNCH_BATTERY - fix1 item 2's switch. Shipped 1 (ruling D-1).
+
+    On: every UAV launches at UAV_LAUNCH_BATTERY_FRACTION of its launch battery (1.0 in
+    scenarios A, C and D; scenario B's preset sets 0.5). Only an EXACT integral zero turns
+    it off (then the fraction is ignored and B is the pre-fix1 B); missing or junk -> on.
+    """
+    value = _exact_integer(getattr(cfv, "REDUCED_LAUNCH_BATTERY", 1))
+    if value is None:
+        return True
+    return value != 0
+
+
+# The launch battery L_i of every UAV before fix1. Session 2 (staggered launch batteries)
+# replaces L_i per UAV; the scenario fraction below stays a multiplier on top of it.
+UAV_FULL_LAUNCH_BATTERY = 100.0
+
+
+def uav_launch_battery_fraction() -> float:
+    """UAV_LAUNCH_BATTERY_FRACTION f in (0, 1]; shipped 1.0.
+
+    RAISES on anything else (0, negative, > 1, nan, inf, non-numeric) instead of falling
+    back: a silent fallback would run a different scenario than the one recorded, the
+    dead-input class base_station_depots also refuses.
+    """
+    raw = getattr(cfv, "UAV_LAUNCH_BATTERY_FRACTION", 1.0)
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        raise ValueError("UAV_LAUNCH_BATTERY_FRACTION must be a number in (0, 1], got %r" % (raw,)) from None
+    if not 0.0 < value <= 1.0:
+        raise ValueError("UAV_LAUNCH_BATTERY_FRACTION must be in (0, 1], got %r" % (raw,))
+    return value
+
+
+def uav_launch_battery(uav_index: int) -> float:
+    """The battery UAV `uav_index` launches with: f x L_i.
+
+    L_i = UAV_FULL_LAUNCH_BATTERY for every UAV today; f = uav_launch_battery_fraction()
+    while REDUCED_LAUNCH_BATTERY is on, else 1. At f = 1 this is exactly 100.0, the value
+    UAV.__init__ has always set. COMPOSITION (outputs/fix1_part1.txt 2d): session 2's
+    staggered launch battery replaces L_i only; a scenario's f multiplies whatever L_i is.
+    """
+    _ = uav_index  # L_i does not depend on the index yet (session 2)
+    base = UAV_FULL_LAUNCH_BATTERY
+    if not reduced_launch_battery():
+        return base
+    return base * uav_launch_battery_fraction()
+
+
 def rtb_trigger_level_at(uav, cell) -> float:
     """The return-to-base trigger UAV._rtb_trigger_level would give `uav` if it stood on
     `cell`: max(reserve, 0.3 * Manhattan distance from `cell` to the nearest of the UAV's
@@ -1344,7 +1427,7 @@ def rtb_trigger_level_at(uav, cell) -> float:
     planner (GLOBAL_PLANNER_MODE 1); pinned by a test to equal _rtb_trigger_level at the
     UAV's own cell. Below BASE_STATION_MODE 2 no UAV returns, and without a berth there is
     nothing to return to: both give BATTERY_CRITICAL_THRESHOLD (15)."""
-    critical = float(getattr(cfv, "BATTERY_CRITICAL_THRESHOLD", 15.0))
+    critical = battery_critical_threshold()
     if base_station_mode() < 2 or cell is None:
         return critical
     rtb_berth = getattr(uav, "rtb_berth", None)

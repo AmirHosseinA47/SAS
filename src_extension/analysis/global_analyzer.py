@@ -30,6 +30,18 @@ from .trigger_objects import (
 )
 
 
+def _default_low_battery_threshold() -> float:
+    import agents as _agents  # lazy: agents is a root module
+
+    return _agents.battery_low_threshold()
+
+
+def _default_critical_battery_threshold() -> float:
+    import agents as _agents
+
+    return _agents.battery_critical_threshold()
+
+
 @dataclass
 class GlobalAnalyzer:
     """Interpretation step: fused knowledge → ``GlobalAnalysisResult`` (no execution)."""
@@ -40,8 +52,9 @@ class GlobalAnalyzer:
     low_information_gain_threshold: float = 0.05
     communication_critical_threshold: float = 0.25
     stale_information_threshold: float = 10.0
-    low_battery_threshold: float = 30.0
-    critical_battery_threshold: float = 15.0
+    # fix1 item 2: defaults from the one threshold source (agents accessors, 30 / 15).
+    low_battery_threshold: float = field(default_factory=_default_low_battery_threshold)
+    critical_battery_threshold: float = field(default_factory=_default_critical_battery_threshold)
     previous_uncertainty_score: float | None = field(default=None, repr=False)
     previous_fire_front_count: int | None = field(default=None, repr=False)
     previous_predicted_spread_bias: Any = field(default=None, repr=False)
