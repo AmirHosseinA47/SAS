@@ -50,6 +50,11 @@ def test_local_observation_drives_fire_visibility_and_resource_knowledge() -> No
     assert vm.observation_status_map.get((3, 3)) == ObservationStatus.OBSERVED_NO_FIRE
 
     ur = model.uav_resource_model.by_uav_id["0"]
-    assert ur.drift_level == 2.5
+    # fix2 item 1 (FAILSAFE_REAL_ALARMS, shipped): the drift level is the share of the last 5
+    # readings that deviated (a sustained deviation), not the raw reading - one deviating
+    # reading of 2.5 is 1 / 5. With the switch off it is the raw reading, as before.
+    import agents
+
+    assert ur.drift_level == (0.2 if agents.failsafe_real_alarms() else 2.5)
     assert ur.current_role == "scout"
     assert ur.assigned_task == "patrol"

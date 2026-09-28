@@ -223,13 +223,18 @@ class WildFireModel(mesa.Model):
         # Depot-cost round: decide which depot each unit launches from BEFORE the
         # spawn loop reads a berth. A no-op with one depot or at spawn split 0.
         self._assign_depot_homes()
+        # fix2 item 4: each UAV's L_i from its return rank (searchers spread over the battery
+        # cycle); all 100 with STAGGERED_LAUNCH_BATTERY off. The one role mapping decides roles.
+        launch_bases = agents.staggered_launch_bases(
+            [self._uav_role_for_index(a, self.NUM_AGENTS) for a in range(self.NUM_AGENTS)]
+        )
         for a in range(0, self.NUM_AGENTS):
             aux_UAV = agents.UAV(self.unique_agents_id, self)
             aux_UAV.selected_dir = warmup_dirs[a % len(warmup_dirs)]
             # fix1 item 2: the launch charge, f x L_i - exactly the 100.0 / 'normal' that
             # UAV.__init__ set unless the scenario reduces it (scenario B: f = 0.5). Set
             # before _init_runtime_knowledge reads it into the managed state.
-            aux_UAV.battery_level = agents.uav_launch_battery(a)
+            aux_UAV.battery_level = agents.uav_launch_battery(a, launch_bases[a])
             aux_UAV.battery_status = agents.battery_status_for(aux_UAV.battery_level)
             if self.base_station is not None:
                 # One dedicated berth per UAV PER DEPOT, used as the spawn cell at
@@ -1551,6 +1556,10 @@ class WildFireModel(mesa.Model):
                 confidence=0.65,
             )
 
+        # fix2 item 1: a telemetry message's delivery status comes from the link, not from the
+        # UAV's position - a refused move is not a lost message. Off: drift > 1.0 'failed',
+        # > 0.5 'delayed' (and the delivery confidence averaged with 1 - mean drift below).
+        real_alarms = agents.failsafe_real_alarms()
         for uav_id, obs in buffer.local_observations.items():
             if not isinstance(obs, LocalObservation):
                 continue
@@ -1560,9 +1569,9 @@ class WildFireModel(mesa.Model):
                 want = "failed"
             elif cs_stat in ("delayed", "pending", "degraded"):
                 want = "delayed"
-            elif float(obs.drift_error) > 1.0:
+            elif not real_alarms and float(obs.drift_error) > 1.0:
                 want = "failed"
-            elif float(obs.drift_error) > 0.5:
+            elif not real_alarms and float(obs.drift_error) > 0.5:
                 want = "delayed"
             else:
                 want = "delivered"
@@ -1578,7 +1587,12 @@ class WildFireModel(mesa.Model):
                 )
 
         obs_list = [o for o in buffer.local_observations.values() if isinstance(o, LocalObservation)]
-        if obs_list:
+        if real_alarms:
+            # Refreshed every step from the delivery OUTCOMES (the share of tracked messages
+            # delivered). Without a refresh the model's time decay (3% per step) would walk it
+            # below the 0.25 alarm threshold in ~45 steps with every message delivered.
+            cm.state.delivery_confidence = cm.delivery_confidence_from_outcomes()
+        elif obs_list:
             avg_drift = sum(float(o.drift_error) for o in obs_list) / float(len(obs_list))
             from_drift = max(0.0, min(1.0, 1.0 - min(1.0, avg_drift)))
             if from_monitor > 0.0:
@@ -1803,6 +1817,21 @@ class WildFireModel(mesa.Model):
                 for uav_id, obs in raw.items()
                 if isinstance(obs, LocalObservation)
             }
+        # fix2 item 1: COLLISION_RISK on its real condition - another AIRBORNE UAV within
+        # Manhattan COLLISION_RISK_RADIUS (2) of this airborne UAV: one-cell moves on the
+        # 4-neighbourhood can contend for a cell on the next step only at <= 2. A docked UAV sits
+        # on its berth and never moves (an obstacle the move rule refuses entry to, not a
+        # collision partner), so it counts on neither side. Off: every other UAV of the fleet,
+        # at any distance (the monitor's nearby_uavs) - the alarm fired on ~95% of UAV-steps.
+        real_alarms = agents.failsafe_real_alarms()
+        airborne_cells: dict[str, tuple[int, int]] = {}
+        if real_alarms:
+            for other in self.schedule.agents:
+                if type(other) is not agents.UAV or getattr(other, "pos", None) is None:
+                    continue
+                if bool(getattr(other, "rtb_docked", False)):
+                    continue
+                airborne_cells[str(other.unique_id)] = (int(other.pos[0]), int(other.pos[1]))
 
         for agent in self.schedule.agents:
             if type(agent) is not agents.UAV:
@@ -1852,7 +1881,18 @@ class WildFireModel(mesa.Model):
                 else (0.0, 0.0)
             )
             congestion = 0.0
-            if local_obs_model is not None and local_obs_model.nearby_uavs:
+            if real_alarms:
+                here = airborne_cells.get(uav_id)
+                if here is not None:
+                    close = sum(
+                        1
+                        for other_id, cell in airborne_cells.items()
+                        if other_id != uav_id
+                        and abs(cell[0] - here[0]) + abs(cell[1] - here[1])
+                        <= agents.COLLISION_RISK_RADIUS
+                    )
+                    congestion = min(1.0, close / 3.0)
+            elif local_obs_model is not None and local_obs_model.nearby_uavs:
                 congestion = min(1.0, len(local_obs_model.nearby_uavs) / 3.0)
             elif obs is not None and obs.nearby_uavs:
                 congestion = min(1.0, len(obs.nearby_uavs) / 3.0)
@@ -2034,6 +2074,16 @@ class WildFireModel(mesa.Model):
             "communication_model": self.communication_model,
             "firefighter_model": self.firefighter_model,
         }
+        if agents.failsafe_real_alarms():
+            # fix2 item 1: the fleet's view of the fire - fire cells in the latest local
+            # observation of every UAV - for the global analyzer's FLEET_FIRE_LOST test (the
+            # analyzer does not read agents). Absent with the switch off.
+            snap_dict["fleet_fire_view"] = {
+                "visible_fire_cells": int(sum(
+                    len(getattr(lom, "visible_fire_cells", ()) or ())
+                    for lom in (getattr(self, "local_observation_models", {}) or {}).values()
+                )),
+            }
 
         local_results: list[Any] = []
         for uav_id in sorted(self.local_observation_models.keys()):
@@ -2475,6 +2525,7 @@ class WildFireModel(mesa.Model):
             if type(agent) is agents.UAV:
                 agent.execution_direction_applied = False
                 agent.execution_action = None
+                agent.execution_stay = False  # fix2 item 2: a stay lasts one step
 
     def _prepare_uav_directions_for_step(self) -> None:
         """Set movement intent for this step; never random when extension pipeline is active."""

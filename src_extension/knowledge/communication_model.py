@@ -257,8 +257,23 @@ class CommunicationModel:
         )
         return max(0.0, min(1.0, delivered / total_msgs))
 
-    def _compute_critical_reliability(self) -> Confidence:
+    def delivery_confidence_from_outcomes(self) -> Confidence | None:
+        """fix2 item 1: the share of tracked messages whose last outcome is a delivery, or None
+        when no message has been tracked yet (no evidence is not a bad link)."""
+        if not self.state.last_delivery_status:
+            return None
+        return self._compute_delivery_confidence()
+
+    def _compute_critical_reliability(self) -> Confidence | None:
         s = self.state
+        # fix2 item 1: with no critical message ever sent there is no evidence about the critical
+        # link; the old max(1, 0) denominator scored that absence as 0.0 - total failure - and the
+        # global analyzer raised CRITICAL_LINK_UNRELIABLE on every step. Off: as before.
+        if not s.critical_message_queue:
+            import agents as _agents  # lazy: agents is a root module
+
+            if _agents.failsafe_real_alarms():
+                return None
         critical_count = max(1, len(s.critical_message_queue))
         critical_delivered = 0
         for msg in s.critical_message_queue:

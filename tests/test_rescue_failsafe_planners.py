@@ -158,66 +158,87 @@ def test_fail_safe_planner_prefers_search_under_search_mode_required_trigger() -
 
 
 def test_fail_safe_planner_marks_search_mode_active_for_search_decision() -> None:
-    search = _failsafe_option(
-        "search",
-        "failsafe_search_patrol",
-        {
-            "mission_value": 0.5,
-            "stability_bonus": 0.5,
-            "energy_failure_risk": 0.2,
-            "support_loss": 0.1,
-            "search_mode": True,
-            "recovery_value": 0.8,
-        },
-    )
-    space = FailSafeAdaptationSpace(options=[search])
-    planner = FailSafePlanner(utility_evaluator=UtilityEvaluation(default_mode="information_recovery_mode"))
+    # fix2 item 1: this pins option SELECTION with no fail-safe reason, which is
+    # FAILSAFE_REAL_ALARMS = 0; with the switch on (shipped) no reason means no action - the
+    # planning echo (tests/test_fix2_real_alarms.py::test_no_reason_no_action).
+    import common_fixed_variables as cfv
 
-    decision = planner.plan(2, fail_safe_space=space)
+    cfv_saved = cfv.FAILSAFE_REAL_ALARMS
+    cfv.FAILSAFE_REAL_ALARMS = 0
+    try:
+        search = _failsafe_option(
+            "search",
+            "failsafe_search_patrol",
+            {
+                "mission_value": 0.5,
+                "stability_bonus": 0.5,
+                "energy_failure_risk": 0.2,
+                "support_loss": 0.1,
+                "search_mode": True,
+                "recovery_value": 0.8,
+            },
+        )
+        space = FailSafeAdaptationSpace(options=[search])
+        planner = FailSafePlanner(utility_evaluator=UtilityEvaluation(default_mode="information_recovery_mode"))
 
-    assert decision is not None
-    assert decision.search_mode_active is True
+        decision = planner.plan(2, fail_safe_space=space)
+
+        assert decision is not None
+        assert decision.search_mode_active is True
+    finally:
+        cfv.FAILSAFE_REAL_ALARMS = cfv_saved
 
 
 def test_fail_safe_planner_maintain_current_failsafe_fallback() -> None:
-    maintain = _failsafe_option(
-        "maintain",
-        "maintain_current_failsafe",
-        {
-            "mission_value": 0.4,
-            "stability_bonus": 0.5,
-            "energy_failure_risk": 0.1,
-            "support_loss": 0.1,
-            "maintain_current_failsafe": True,
-        },
-    )
-    infeasible_rtb = _failsafe_option(
-        "bad_rtb",
-        "failsafe_return_to_base",
-        {
-            "mission_value": 0.9,
-            "stability_bonus": 0.8,
-            "energy_failure_risk": 0.9,
-            "support_loss": 0.1,
-            "hard_collision_violation": True,
-        },
-    )
-    infeasible_search = _failsafe_option(
-        "bad_search",
-        "failsafe_search_patrol",
-        {
-            "mission_value": 0.8,
-            "stability_bonus": 0.7,
-            "energy_failure_risk": 0.2,
-            "support_loss": 0.1,
-            "search_mode": True,
-            "route_feasible": False,
-        },
-    )
-    space = FailSafeAdaptationSpace(options=[infeasible_rtb, infeasible_search, maintain])
-    planner = FailSafePlanner(utility_evaluator=UtilityEvaluation(default_mode="safety_first_mode"))
+    # fix2 item 1: this pins option SELECTION with no fail-safe reason, which is
+    # FAILSAFE_REAL_ALARMS = 0; with the switch on (shipped) no reason means no action - the
+    # planning echo (tests/test_fix2_real_alarms.py::test_no_reason_no_action).
+    import common_fixed_variables as cfv
 
-    decision = planner.plan(3, fail_safe_space=space)
+    cfv_saved = cfv.FAILSAFE_REAL_ALARMS
+    cfv.FAILSAFE_REAL_ALARMS = 0
+    try:
+        maintain = _failsafe_option(
+            "maintain",
+            "maintain_current_failsafe",
+            {
+                "mission_value": 0.4,
+                "stability_bonus": 0.5,
+                "energy_failure_risk": 0.1,
+                "support_loss": 0.1,
+                "maintain_current_failsafe": True,
+            },
+        )
+        infeasible_rtb = _failsafe_option(
+            "bad_rtb",
+            "failsafe_return_to_base",
+            {
+                "mission_value": 0.9,
+                "stability_bonus": 0.8,
+                "energy_failure_risk": 0.9,
+                "support_loss": 0.1,
+                "hard_collision_violation": True,
+            },
+        )
+        infeasible_search = _failsafe_option(
+            "bad_search",
+            "failsafe_search_patrol",
+            {
+                "mission_value": 0.8,
+                "stability_bonus": 0.7,
+                "energy_failure_risk": 0.2,
+                "support_loss": 0.1,
+                "search_mode": True,
+                "route_feasible": False,
+            },
+        )
+        space = FailSafeAdaptationSpace(options=[infeasible_rtb, infeasible_search, maintain])
+        planner = FailSafePlanner(utility_evaluator=UtilityEvaluation(default_mode="safety_first_mode"))
 
-    assert decision is not None
-    assert decision.selected_option_id == "maintain"
+        decision = planner.plan(3, fail_safe_space=space)
+
+        assert decision is not None
+        assert decision.selected_option_id == "maintain"
+    finally:
+        cfv.FAILSAFE_REAL_ALARMS = cfv_saved
+

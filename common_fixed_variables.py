@@ -111,6 +111,27 @@ SEARCHER_COUNTERS_PER_STEP = 1
 # lives (it read top-level attributes that do not exist, so its fire triggers never fired).
 # agents.global_analyzer_fire_source_fix.
 GLOBAL_ANALYZER_FIRE_SOURCE_FIX = 1
+# Item 1. Each fail-safe alarm fires only on the condition it names: COLLISION_RISK on another
+# airborne UAV within Manhattan 2; DRIFT_TOO_HIGH on a refused move on >= 2 of the last 5 steps
+# (no latch; a docked UAV is not drifting); CRITICAL_LINK_UNRELIABLE on real delivery outcomes;
+# the search_mode_required reason on the FLEET having lost sight of a fire it believes burning.
+# With no reason the fail-safe planner decides nothing. agents.failsafe_real_alarms.
+FAILSAFE_REAL_ALARMS = 1
+# Item 2. A hold holds: a committed 'hold' leaves the UAV on its cell (move() had no stay
+# action). Under SAFETY_FIRST only the UAV that must yield in a close pair holds (right of way
+# to the lower unique_id, at most 3 consecutive steps). agents.uav_hold_stationary.
+UAV_HOLD_STATIONARY = 1
+# Item 4. Staggered launch batteries: L_i = 100 - 0.3 * 220 / n * rank_i, the searchers spread
+# evenly over the ~220-step battery cycle, so returns stop coinciding and (with two searchers) one
+# searcher is always flying. Scenario B stays a multiplier: 0.5 x L_i. agents.staggered_launch_bases.
+STAGGERED_LAUNCH_BATTERY = 1
+# Item 3a. The victim searcher's coverage y-commit follows the wind (downwind strip first under
+# north/south wind; disjoint camping bands under east/west). agents.searcher_wind_coverage_fix.
+SEARCHER_WIND_COVERAGE_FIX = 1
+# Item 3b. At VICTIM_SEARCHER_HAZARD_RETREAT_RANGE >= 99 the searcher hazard gate retreats only
+# within 6 cells of a strict fire/smoke cell (it was a global repulsion on every gated step), and
+# the gate-bypassing pathfinding route gets the same near-field rule. agents.searcher_gate_near_field.
+SEARCHER_GATE_NEAR_FIELD = 1
 # The ONE battery threshold pair (fix1 item 2), read at call time through
 # agents.battery_low_threshold() / battery_critical_threshold() by every reader: the UAV
 # labels, both analyzers, the resource model, the global monitor, the dashboard alert and

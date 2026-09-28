@@ -625,7 +625,56 @@ class GlobalAnalyzer:
                 )
             )
 
+        lost = self._fleet_fire_lost(global_snapshot, runtime_models)
+        if lost is not None and not any(t.trigger_type == "SEARCH_MODE_REQUIRED" for t in triggers):
+            believed, best_p = lost
+            triggers.append(
+                InformationTrigger(
+                    trigger_type="SEARCH_MODE_REQUIRED",
+                    severity=Severity.MEDIUM,
+                    confidence=max(0.0, min(1.0, best_p)),
+                    scope=Scope.GLOBAL,
+                    affected_entities=("fleet",),
+                    timestamp=timestamp,
+                    recommended_planner="global_mission_planner",
+                    explanation_context=(
+                        f"SEARCH_MODE_REQUIRED: FLEET_FIRE_LOST - believed_burning_cells={believed}; "
+                        "visible_fire_cells=0"
+                    ),
+                )
+            )
+
         return triggers
+
+    def _fleet_fire_lost(
+        self,
+        global_snapshot: dict[str, Any],
+        runtime_models: dict[str, Any],
+    ) -> tuple[int, float] | None:
+        """fix2 item 1 - the genuine search condition, at FLEET level: the fire belief holds a
+        cell at or above fire_probability_threshold (0.7 - the belief's own estimated-burning
+        threshold) AND no UAV's latest observation contains a fire cell. Returns
+        (believed cells, best probability) when it holds, else None. Reads the belief directly
+        (its own path - independent of GLOBAL_ANALYZER_FIRE_SOURCE_FIX); needs the model's
+        fleet_fire_view, which exists only with FAILSAFE_REAL_ALARMS on."""
+        view = global_snapshot.get("fleet_fire_view") if isinstance(global_snapshot, dict) else None
+        if not isinstance(view, dict):
+            return None
+        import agents as _agents  # lazy: agents is a root module
+
+        if not _agents.failsafe_real_alarms():
+            return None
+        if int(view.get("visible_fire_cells", 0) or 0) > 0:
+            return None
+        fr = runtime_models.get("fire_runtime_model")
+        belief = getattr(fr, "belief", fr) if fr is not None else None
+        pmap = getattr(belief, "fire_probability_map", None) if belief is not None else None
+        if not isinstance(pmap, dict):
+            return None
+        high = [float(p) for p in pmap.values() if float(p) >= self.fire_probability_threshold]
+        if not high:
+            return None
+        return len(high), max(high)
 
     @staticmethod
     def _parse_optional_float(value: Any) -> float | None:

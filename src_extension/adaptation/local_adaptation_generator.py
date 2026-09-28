@@ -900,6 +900,11 @@ def _update_coverage_y_commit(
         # relative to the searcher's own visited span and stay lane-safe.
         wind_state["coverage_y_commit"] = None
         return
+    import agents as agents_module  # lazy: agents is a root module
+
+    wind_fix = agents_module.searcher_wind_coverage_fix()
+    if wind_fix and agent_y is not None:
+        _mark_y_strip_progress(wind_state, float(agent_y), y_min, y_max)
     commit = wind_state.get("coverage_y_commit")
     if commit in ("north", "south"):
         if agent_y is not None and _coverage_y_commit_penetrated(
@@ -908,10 +913,65 @@ def _update_coverage_y_commit(
             wind_state["coverage_y_commit"] = None
             return
         return
+    if wind_fix:
+        new_commit = _wind_aware_y_commit(wind_state, y_min, y_max)
+        if new_commit is not None:
+            wind_state["coverage_y_commit"] = new_commit
+        return
     if _coverage_y_lower_camping(wind_state, y_min, y_max):
         wind_state["coverage_y_commit"] = "north"
     elif _coverage_y_upper_camping(wind_state, y_min, y_max):
         wind_state["coverage_y_commit"] = "south"
+
+
+def _mark_y_strip_progress(
+    wind_state: dict[str, Any], agent_y: float, y_min: int, y_max: int,
+) -> None:
+    """fix2 item 3a: one-way latches, like the x strips - the north strip is reached at
+    y >= y_max - COVERAGE_Y_COMMIT_PENETRATE_MARGIN, the south strip at y <= y_min + margin (the
+    commit's own penetration test)."""
+    if agent_y >= y_max - COVERAGE_Y_COMMIT_PENETRATE_MARGIN:
+        wind_state["north_strip_done"] = True
+    if agent_y <= y_min + COVERAGE_Y_COMMIT_PENETRATE_MARGIN:
+        wind_state["south_strip_done"] = True
+
+
+def _wind_aware_y_commit(
+    wind_state: dict[str, Any], y_min: int, y_max: int,
+) -> str | None:
+    """fix2 item 3a (SEARCHER_WIND_COVERAGE_FIX) - which half a camping searcher is sent to.
+
+    The old rule tested 'lower camping' (the last COVERAGE_Y_SWEEP_MIN_STEPS samples all below
+    upper_min + COVERAGE_SWEEP_BAND_MARGIN) before 'upper camping' (all >= upper_min): the bands
+    overlap on y 25-30, so a searcher there was sent NORTH whatever the wind - under south wind,
+    upwind, before it had searched the downwind half its own first targets aim at.
+    Now: under NORTH/SOUTH wind a camping searcher goes to the DOWNWIND strip until it has reached
+    it (north wind spreads fire toward +y), then to the upwind strip, then the ordinary rule; under
+    EAST/WEST wind (no y preference) the ordinary rule, with DISJOINT halves - a searcher on or
+    across the midline is not camping.
+    """
+    if not (
+        _coverage_y_lower_camping(wind_state, y_min, y_max)
+        or _coverage_y_upper_camping(wind_state, y_min, y_max)
+    ):
+        return None
+    wind = str(wind_state.get("last_wind_direction") or "").strip().lower()
+    if wind in ("north", "south"):
+        downwind = wind
+        upwind = "south" if downwind == "north" else "north"
+        if not wind_state.get("%s_strip_done" % downwind):
+            return downwind
+        if not wind_state.get("%s_strip_done" % upwind):
+            return upwind
+    recent = [int(y) for y in (wind_state.get("recent_y_positions") or [])][-COVERAGE_Y_SWEEP_MIN_STEPS:]
+    if len(recent) < COVERAGE_Y_SWEEP_MIN_STEPS:
+        return None
+    lower_max, upper_min = _grid_y_half_split(y_min, y_max)
+    if max(recent) <= lower_max:
+        return "north"
+    if min(recent) >= upper_min:
+        return "south"
+    return None
 
 
 def _coverage_y_commit_target_y(

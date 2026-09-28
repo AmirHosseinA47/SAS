@@ -303,6 +303,11 @@ class LocalUAVMonitor:
 
         ix, iy = self._dir_to_delta(uav.selected_dir)
         intended_move: Cell = (ix, iy)
+        stored = getattr(uav, "_monitor_prev_intended_delta", None)
+        if stored is not None and (agents_module.failsafe_real_alarms() or agents_module.uav_hold_stationary()):
+            # fix2 items 1/2: report the intended delta the drift was measured against (a deliberate
+            # stay intends its own cell); with both switches off, selected_dir's delta as before.
+            intended_move = (int(stored[0]), int(stored[1]))
 
         prev_actual = getattr(uav, "_monitor_prev_actual_delta", (0, 0))
         prev_drift = getattr(uav, "_monitor_prev_drift_error", 0.0)
@@ -371,6 +376,9 @@ class LocalUAVMonitor:
         drift = euclidean_distance(float(target_x), float(target_y), float(pos_after[0]), float(pos_after[1]))
         uav._monitor_prev_actual_delta = actual
         uav._monitor_prev_drift_error = float(drift)
+        # fix2 items 1/2: the delta this step's drift was measured against - (0, 0) for a deliberate
+        # stay - so the observation's intended_move agrees with its drift_error.
+        uav._monitor_prev_intended_delta = (int(intended_delta[0]), int(intended_delta[1]))
 
 
 def local_observation_to_dict(obs: LocalObservation) -> dict[str, Any]:

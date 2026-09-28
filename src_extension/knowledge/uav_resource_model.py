@@ -52,6 +52,8 @@ class UAVResourceModel:
     step_index: int = 0
     by_uav_id: dict[str, UAVResourceRuntimeState] = field(default_factory=dict)
     _last_battery_update: dict[str, tuple[float, float]] = field(default_factory=dict)
+    # fix2 item 1: per UAV, (timestamp, deviated) of its last DRIFT_WINDOW_STEPS drift readings.
+    _drift_windows: dict[str, list[tuple[float, float]]] = field(default_factory=dict, repr=False)
 
     def update(self, step_index: int) -> None:
         """TODO: Refresh per-UAV state from observations; update stability timers."""
@@ -213,6 +215,38 @@ class UAVResourceModel:
         ts, conf, src = validate_metadata(timestamp=timestamp, confidence=confidence, source=source)
         state = self._get_or_create(uav_id)
         drift = max(0.0, float(drift_level))
+        import agents as _agents  # lazy: agents is a root module
+
+        if _agents.failsafe_real_alarms():
+            # fix2 item 1. A step's reading is 0 or 1 in this model (move() reaches the commanded
+            # cell or is refused; a deliberate stay intends its own cell, so it reads 0). The
+            # level is the share of the last DRIFT_WINDOW_STEPS readings that deviated - a
+            # SUSTAINED deviation - with a fixed denominator, so one refusal reads 0.2 and never
+            # reaches the 0.3 band; and the status follows the level on every update (the old
+            # branch below latched 'high_drift' for good after one reading above 0.7, keeping
+            # DRIFT_TOO_HIGH on for the rest of the run). A second reading at the same timestamp
+            # replaces the first (one sample per step).
+            n = int(_agents.DRIFT_WINDOW_STEPS)
+            window = self._drift_windows.setdefault(uav_id, [])
+            sample = (float(ts), 1.0 if drift > 0.5 else 0.0)
+            if window and window[-1][0] == sample[0]:
+                window[-1] = sample
+            else:
+                window.append(sample)
+            del window[:-n]
+            level = sum(v for _, v in window) / float(n)
+            state.drift_level = level
+            if level > 0.7:
+                state.local_risk_status = "high_drift"
+            elif level > 0.3:
+                state.local_risk_status = "moderate_drift"
+            else:
+                state.local_risk_status = "low_drift"
+            state.last_update_time = ts
+            state.provenance.timestamp = ts
+            state.provenance.source = src
+            state.provenance.confidence = conf
+            return
         state.drift_level = drift
         if drift > 0.7:
             state.local_risk_status = "high_drift"

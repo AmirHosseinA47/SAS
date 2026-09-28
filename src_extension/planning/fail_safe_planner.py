@@ -95,6 +95,20 @@ class FailSafePlanner:
             runtime_models=runtime_models,
         )
         step11_active = bool(reasons)
+        if not step11_active:
+            import agents as _agents  # lazy: agents is a root module
+
+            if _agents.failsafe_real_alarms():
+                # fix2 item 1 - no reason, no action. Otherwise the planner still picks an option
+                # (every fail-safe option scores 0; a SEARCH-named trigger adds a search
+                # preference), and a picked search option's search_mode_active flag is read back
+                # by the mode manager as the reason search_mode_required - the fleet would return
+                # to information_recovery on nearly every step (outputs/fix2_part1.txt 1d').
+                return FailSafeDecision(
+                    decision_id=f"fs-{step_index}",
+                    comparison_summary={"summary": "no fail-safe reason"},
+                    explanation="No fail-safe reason; maintain current fail-safe state.",
+                )
         classified_mode = (
             self.safety_checker.classify_mode(
                 reasons,

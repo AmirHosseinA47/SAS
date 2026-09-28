@@ -121,10 +121,22 @@ class SafetyChecker:
             return []
         batch = normalize_triggers(analysis_snapshot)
         found: list[str] = []
+        import agents as _agents  # lazy: agents is a root module
+
+        real_alarms = _agents.failsafe_real_alarms()
         for signal in batch.triggers:
             trigger_type = signal.name.strip().upper()
             reason = _TRIGGER_TYPE_TO_REASON.get(trigger_type)
             if not reason:
+                continue
+            if (
+                real_alarms
+                and trigger_type == "SEARCH_MODE_REQUIRED"
+                and str((signal.metadata or {}).get("scope", "")).lower() == "local"
+            ):
+                # fix2 item 1: one UAV's "no fire in MY window" (true by construction for the
+                # fire-avoiding searcher, a docked or a returning UAV) is a LOCAL planner hint,
+                # not a fleet condition; the reason comes from the global FLEET_FIRE_LOST test.
                 continue
             if not trigger_signal_passes_information_confidence(signal):
                 continue

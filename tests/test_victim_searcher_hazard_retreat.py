@@ -94,6 +94,10 @@ def test_range_zero_passes_a_safe_interior_direction_through(monkeypatch, search
 
 
 def test_range_always_retreats_away_from_the_fire(monkeypatch, searcher):
+    # fix2 item 3b: this pins the ALWAYS-retreat of range 99 (fire 10 cells away), which is
+    # SEARCHER_GATE_NEAR_FIELD = 0; with the switch on (shipped) the gate retreats only within 6
+    # cells - tests/test_fix2_wind_search.py::test_far_fire_keeps_the_searchers_direction.
+    monkeypatch.setattr(cfv, "SEARCHER_GATE_NEAR_FIELD", 0, raising=False)
     monkeypatch.setattr(cfv, "VICTIM_SEARCHER_HAZARD_RETREAT_RANGE", 99)
     fire = {(30, 20)}
     executor, agent = searcher((20, 20), fire)
@@ -117,6 +121,10 @@ def test_finite_range_fires_only_when_the_fire_is_within_range(monkeypatch, sear
 
 
 def test_retarget_label_is_kept_when_the_retreat_fires(monkeypatch, searcher):
+    # fix2 item 3b: this pins the ALWAYS-retreat of range 99 (fire 10 cells away), which is
+    # SEARCHER_GATE_NEAR_FIELD = 0; with the switch on (shipped) the gate retreats only within 6
+    # cells - tests/test_fix2_wind_search.py::test_far_fire_keeps_the_searchers_direction.
+    monkeypatch.setattr(cfv, "SEARCHER_GATE_NEAR_FIELD", 0, raising=False)
     monkeypatch.setattr(cfv, "VICTIM_SEARCHER_HAZARD_RETREAT_RANGE", 99)
     executor, agent = searcher((20, 20), {(30, 20)})
     direction, label = executor._apply_victim_searcher_hazard_gate(

@@ -156,6 +156,10 @@ def test_a_after_b_in_one_process_runs_at_full_charge() -> None:
 # --------------------------------------------------------------------------- the model
 
 def _model(**params) -> WildFireModel:
+    # fix2 item 4: these tests pin fix1's launch FRACTION on the unstaggered L_i = 100, so the
+    # stagger (a separate switch) is held at 0 here; its composition with the fraction
+    # (0.5 x L_i) is pinned in tests/test_fix2_stagger.py.
+    params.setdefault("STAGGERED_LAUNCH_BATTERY", 0)
     rng = random.Random(3)
     cfv.SYSTEM_RANDOM = wf.SYSTEM_RANDOM = rng
     agents.random = rng

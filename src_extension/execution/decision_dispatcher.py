@@ -69,6 +69,54 @@ class DecisionDispatcher:
         self._rescue = RescueExecutor(model=model, execution_log=execution_log)
         self._communication = CommunicationExecutor(model=model, execution_log=execution_log)
         self._uav_executors: dict[str, UAVExecutor] = {}
+        # fix2 item 2: per UAV (step, consecutive yield steps, yielded this step).
+        self._yield_streaks: dict[str, tuple[int, int, bool]] = {}
+
+    def _must_yield(self, uav_id: str) -> bool:
+        """fix2 item 2 - does this UAV yield (hold) under the fail-safe hold this step?
+
+        Yes when it is airborne (not docked), not on a return leg, named by its OWN
+        COLLISION_RISK trigger, and another airborne UAV with a LOWER unique_id stands within
+        COLLISION_RISK_RADIUS (right of way to the lower id) - unless it has already yielded
+        FAILSAFE_YIELD_MAX_STEPS steps in a row, in which case it proceeds this step and the
+        streak restarts. One answer per UAV per step.
+        """
+        import agents as agents_module  # lazy: agents is a root module
+
+        model = self._model
+        if model is None:
+            return False
+        step = int(getattr(model, "evaluation_timesteps_counter", 0) or 0)
+        last = self._yield_streaks.get(uav_id)
+        if last is not None and last[0] == step:
+            return last[2]
+        uavs = [a for a in getattr(getattr(model, "schedule", None), "agents", ()) or ()
+                if type(a) is agents_module.UAV]
+        me = next((a for a in uavs if str(a.unique_id) == str(uav_id)), None)
+        prior = last[1] if last is not None and last[0] == step - 1 else 0
+        verdict = False
+        if (me is not None and getattr(me, "pos", None) is not None
+                and not bool(getattr(me, "rtb_docked", False))
+                and not bool(getattr(me, "rtb_active", False))):
+            snapshot = getattr(model, "latest_analysis_snapshot", None)
+            named = any(
+                str(getattr(t, "trigger_type", "")).upper() == "COLLISION_RISK"
+                and str(uav_id) in {str(e) for e in (getattr(t, "affected_entities", ()) or ())}
+                for t in (getattr(snapshot, "all_triggers", ()) or ())
+            )
+            mx, my = int(me.pos[0]), int(me.pos[1])
+            lower_close = any(
+                a is not me and getattr(a, "pos", None) is not None
+                and not bool(getattr(a, "rtb_docked", False))
+                and int(a.unique_id) < int(me.unique_id)
+                and abs(int(a.pos[0]) - mx) + abs(int(a.pos[1]) - my)
+                <= agents_module.COLLISION_RISK_RADIUS
+                for a in uavs
+            )
+            verdict = named and lower_close and prior < agents_module.FAILSAFE_YIELD_MAX_STEPS
+        count = prior + 1 if verdict else 0
+        self._yield_streaks[uav_id] = (step, count, verdict)
+        return verdict
 
     @property
     def rescue_executor(self) -> RescueExecutor:
@@ -273,6 +321,24 @@ class DecisionDispatcher:
                 fail_safe_decision,
                 fail_safe_override_active,
             )
+            if (
+                execute_path
+                and path_to_execute is not None
+                and path_to_execute is not decision
+                and str(path_to_execute.next_action or "").strip().lower() == "hold"
+                and str(decision.next_action or "").strip().lower() != "hold"
+                and _classified_fail_safe_mode(fail_safe_decision) != FailSafeMode.EMERGENCY.value
+                and _hold_stationary()
+            ):
+                # fix2 item 2 (ruling D-5): the fail-safe hold goes only to the UAV that must
+                # yield in a close pair; every other UAV keeps its own path. The yield is marked
+                # as a fail-safe hold (no selected option), so the executor holds a searcher too
+                # instead of re-routing it. With a stationary hold, rewriting every path would
+                # freeze the fleet and never clear the pair's own alarm.
+                if self._must_yield(uav_id):
+                    path_to_execute = replace(decision, next_action="hold", selected_option_id="")
+                else:
+                    path_to_execute = decision
             if not execute_path or path_to_execute is None:
                 uav_results[uav_id] = {
                     "applied": False,
@@ -469,6 +535,23 @@ def _resolve_fail_safe_override(
     if not reasons:
         return False, ""
     return True, "; ".join(reasons)
+
+
+def _hold_stationary() -> bool:
+    import agents as agents_module  # lazy: agents is a root module
+
+    return agents_module.uav_hold_stationary()
+
+
+def _classified_fail_safe_mode(decision: FailSafeDecision | None) -> str:
+    """The mode the fail-safe planner classified from this step's reasons (its step-11 context),
+    else the decision's mission mode."""
+    if decision is None:
+        return ""
+    ctx = getattr(decision, "uncertainty_context", None)
+    if isinstance(ctx, dict) and ctx.get("fail_safe_mode"):
+        return _normalize_fail_safe_token(str(ctx.get("fail_safe_mode")))
+    return _fail_safe_mode(decision)
 
 
 def _should_skip_global_execution(decision: FailSafeDecision | None) -> bool:

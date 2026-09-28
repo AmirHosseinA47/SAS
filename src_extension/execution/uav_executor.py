@@ -137,6 +137,9 @@ class UAVExecutor:
         self._model = model
         self._agent = agent
         self._execution_log = execution_log
+        # fix2 item 2: set by the tracker flank layer when its hold target is the tracker's OWN
+        # cell (not the lateral patrol step); read and cleared by the next commit.
+        self._flank_hold_in_place = False
 
     def _commit_execution_direction(
         self, agent: Any, chosen_dir: int, action: str,
@@ -144,6 +147,19 @@ class UAVExecutor:
         agent.selected_dir = int(chosen_dir)
         agent.execution_direction_applied = True
         agent.execution_action = str(action or "set_direction")
+        import agents as agents_module  # lazy: agents is a root module
+
+        if agents_module.uav_hold_stationary():
+            # fix2 item 2 - a hold holds. move() has no stay action, so 'hold' used to re-commit
+            # the previous heading and move the UAV (99.5% of hold steps). The stay flag makes
+            # UAV.move leave it where it is. A 'fire_flank_hold' stays only when its target is the
+            # tracker's own cell; its lateral target (652 of 653 measured) is a patrol step and
+            # moves. 'hold_escape' is an escape and moves.
+            label = str(action or "").strip().lower()
+            agent.execution_stay = label == "hold" or (
+                label == "fire_flank_hold" and self._flank_hold_in_place
+            )
+        self._flank_hold_in_place = False
         self._record_uav_movement_reason(agent, str(action or "set_direction"))
 
     def _movement_category_for_action(self, role: str, action: str) -> str:
@@ -317,6 +333,7 @@ class UAVExecutor:
         timestamp: float = 0.0,
         fail_safe_decision: FailSafeDecision | None = None,
     ) -> dict[str, object]:
+        self._flank_hold_in_place = False  # fix2 item 2: never carried across decisions
         agent = self._resolve_agent()
         if agent is None:
             return {"applied": False, "reason": "agent_not_found", "uav_id": self.uav_id}
@@ -1945,6 +1962,22 @@ class UAVExecutor:
         next_cell = self._next_cell_for_direction(agent, forced)
         if next_cell is None or self._strict_victim_hazard_level(next_cell) != 0:
             return None
+        if self._hazard_retreat_range() >= 99 and self._gate_near_field():
+            # fix2 item 3b, part (ii): this route (the pocket escape toward the grid midpoint, the
+            # retarget fallback) is EXEMPT from the gate and steps with a one-cell lookahead and no
+            # hazard buffer. The always-retreat's far-field repulsion was its only protection; with
+            # the gate narrowed it walked a searcher to distance 1 of a spreading front
+            # (test_no_crash_zero_victims: 7 fire/smoke steps). Within the near range a routed move
+            # that brings the searcher closer to a strict hazard is replaced by the gate's retreat.
+            pos = getattr(agent, "pos", None)
+            if pos is not None:
+                here = (int(pos[0]), int(pos[1]))
+                d_here = self._min_strict_hazard_distance(here)
+                if (d_here <= float(self._gate_near_range())
+                        and self._min_strict_hazard_distance(next_cell) < d_here):
+                    retreat = self._retreat_to_safe_interior_direction(agent)
+                    if retreat is not None:
+                        forced = retreat
         escape_method = str(getattr(self, "_last_escape_method", "") or "")
         if prefer_bfs_action_label and escape_method.startswith("bfs"):
             return forced, "victim_search_escape_bfs"
@@ -2109,6 +2142,18 @@ class UAVExecutor:
             return max(0, int(getattr(_cfv, "VICTIM_SEARCHER_HAZARD_RETREAT_RANGE", 0)))
         except (TypeError, ValueError):
             return 0
+
+    @staticmethod
+    def _gate_near_field() -> bool:
+        import agents as agents_module  # lazy: agents is a root module
+
+        return agents_module.searcher_gate_near_field()
+
+    @staticmethod
+    def _gate_near_range() -> int:
+        import agents as agents_module
+
+        return int(agents_module.SEARCHER_GATE_NEAR_RANGE)
 
     _OFFGRID_GUARD_SHIPPED = 1
 
@@ -2423,9 +2468,17 @@ class UAVExecutor:
                 # size became readable (2026-09-06) the edge test below read 0.0
                 # everywhere and this fired on every gated step by accident; the
                 # constant makes that behaviour deliberate and switchable.
+                effective = retreat_range
+                if retreat_range >= 99 and self._gate_near_field():
+                    # fix2 item 3b (SEARCHER_GATE_NEAR_FIELD): the always-retreat was a GLOBAL
+                    # repulsion - _min_strict_hazard_distance has no range cap - that replaced the
+                    # searcher's own (wind-aware) direction on every gated step; with no fire on
+                    # the map its scores tied and the first direction, east, won (the B/west loop).
+                    # It now retreats only within SEARCHER_GATE_NEAR_RANGE (6) of a strict hazard.
+                    effective = self._gate_near_range()
                 retreat_now = (
-                    retreat_range >= 99
-                    or self._min_strict_hazard_distance(cell) <= float(retreat_range)
+                    effective >= 99
+                    or self._min_strict_hazard_distance(cell) <= float(effective)
                 )
             else:
                 # Range 0: the edge-only gate - a searcher within 2 cells of a grid
@@ -3026,6 +3079,9 @@ class UAVExecutor:
                     hold_target = lateral
                     if hold_target is None and pos is not None:
                         hold_target = (float(pos[0]), float(pos[1]))
+                        # fix2 item 2: a hold at the tracker's own cell - the commit makes it
+                        # stay (switch on); the lateral target above is a patrol step.
+                        self._flank_hold_in_place = True
                     if hold_target is not None:
                         direction = self._choose_best_direction_fire(
                             agent,

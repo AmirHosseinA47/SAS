@@ -190,6 +190,14 @@ class CommunicationExecutor:
         action = communication_action.strip().lower()
         if not action:
             return "success"
+        # fix2 item 1: an action's NAME is a command, not a delivery outcome. This simulation has
+        # no message-loss process, so a sent message is delivered. The substring test below
+        # scored 'prioritize_failsafe_messages' - issued on every non-normal step - as a failed
+        # delivery, which kept CRITICAL_LINK_UNRELIABLE on (>= 3 failed messages). Off: as before.
+        import agents as _agents  # lazy: agents is a root module
+
+        if _agents.failsafe_real_alarms():
+            return "success"
         if "fail" in action:
             return "failure"
         if "delay" in action:

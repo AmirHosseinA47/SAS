@@ -276,6 +276,9 @@ class UAV(mesa.Agent):
         self.selected_dir = 0
         self.execution_direction_applied = False
         self.execution_action: str | None = None
+        # fix2 item 2: the executor's STAY - a committed 'hold' leaves the UAV on its cell
+        # (UAV_HOLD_STATIONARY); cleared every step and by a return leg.
+        self.execution_stay = False
         # Managed operational battery (observed by Step 5 monitoring). At
         # BASE_STATION_MODE >= 2 - the shipped default is 3 - it also drives
         # movement: the return-to-base trigger in _apply_return_to_base reads it.
@@ -814,6 +817,7 @@ class UAV(mesa.Agent):
         self.selected_dir = direction
         self.execution_direction_applied = True
         self.execution_action = "rtb_return"
+        self.execution_stay = False  # fix2 item 2: a return leg always moves
 
     # function for moving UAV over the grid area
     def move(self):
@@ -842,6 +846,12 @@ class UAV(mesa.Agent):
             self.execution_action = "no_managed_direction_hold"
             return False
 
+        # fix2 item 2: the stay action this model never had. A committed 'hold' (and a flank
+        # hold aimed at the tracker's own cell) leaves the UAV where it is; a return leg clears
+        # the flag in _apply_return_to_base, so a battery return always moves.
+        if getattr(self, "execution_stay", False) and uav_hold_stationary():
+            return False
+
         # it calculates the position the corresponding UAV will move to
         pos_to_move = (self.pos[0] + move_x[self.selected_dir], self.pos[1] + move_y[self.selected_dir])
         # checks if the position to move is inside the grid bounds, and that the UAV doesn't have other UAV nearby. If
@@ -862,6 +872,15 @@ class UAV(mesa.Agent):
         pos_before = self.pos
         intended_delta = (move_x[self.selected_dir], move_y[self.selected_dir])
         moved = self.move()
+        if (not moved and failsafe_real_alarms()
+                and str(self.execution_action) in ("rtb_docked_hold", "no_managed_direction_hold")):
+            # fix2 item 1: a deliberate stay intends the cell it is on - a docked UAV holding its
+            # berth is not drifting. The old measure scored every recharge step as drift 1.0.
+            intended_delta = (0, 0)
+        if not moved and getattr(self, "execution_stay", False) and uav_hold_stationary():
+            # fix2 item 2: a hold intends its own cell - owned by this switch, so a stationary
+            # hold cannot create a drift sample even with FAILSAFE_REAL_ALARMS off.
+            intended_delta = (0, 0)
         self._update_battery_after_step(moved)
         if self.local_monitor is not None:
             self.local_monitor.finalize_step_after_move(
@@ -1479,19 +1498,62 @@ def uav_launch_battery_fraction() -> float:
     return value
 
 
-def uav_launch_battery(uav_index: int) -> float:
+def uav_launch_battery(uav_index: int, base: float | None = None) -> float:
     """The battery UAV `uav_index` launches with: f x L_i.
 
-    L_i = UAV_FULL_LAUNCH_BATTERY for every UAV today; f = uav_launch_battery_fraction()
-    while REDUCED_LAUNCH_BATTERY is on, else 1. At f = 1 this is exactly 100.0, the value
-    UAV.__init__ has always set. COMPOSITION (outputs/fix1_part1.txt 2d): session 2's
-    staggered launch battery replaces L_i only; a scenario's f multiplies whatever L_i is.
+    L_i = `base` - the UAV's staggered launch battery (fix2 item 4, staggered_launch_bases) -
+    or UAV_FULL_LAUNCH_BATTERY when no base is given; f = uav_launch_battery_fraction() while
+    REDUCED_LAUNCH_BATTERY is on, else 1. At f = 1 and no stagger this is exactly 100.0, the
+    value UAV.__init__ has always set. COMPOSITION (outputs/fix1_part1.txt 2d): the stagger
+    replaces L_i only; a scenario's f multiplies whatever L_i is (scenario B: 0.5 x L_i).
     """
-    _ = uav_index  # L_i does not depend on the index yet (session 2)
-    base = UAV_FULL_LAUNCH_BATTERY
+    _ = uav_index
+    launch = UAV_FULL_LAUNCH_BATTERY if base is None else float(base)
     if not reduced_launch_battery():
-        return base
-    return base * uav_launch_battery_fraction()
+        return launch
+    return launch * uav_launch_battery_fraction()
+
+
+# fix2 item 4 - staggered launch batteries (outputs/fix2_part1.txt section 4, ruling D-9).
+# A UAV's launch charge is a PHASE on the fleet's common battery cycle: launch at 100 -> first
+# return (median step 173 at c08456b) -> relaunch at 100 a median 46 steps later, so the cycle is
+# UAV_STAGGER_CYCLE_STEPS = 173 + 46 ~ 220 steps. FLIGHT_DRAIN_PER_STEP (battery_drain_per_step
+# 0.1 + battery_drain_per_move 0.2) converts a phase offset in steps into battery.
+UAV_STAGGER_CYCLE_STEPS = 220
+FLIGHT_DRAIN_PER_STEP = 0.3
+
+
+def staggered_launch_battery() -> bool:
+    """STAGGERED_LAUNCH_BATTERY - fix2 item 4. Shipped 1.
+
+    On: UAV i launches with L_i = 100 - delta * r_i, delta = FLIGHT_DRAIN_PER_STEP *
+    UAV_STAGGER_CYCLE_STEPS / n (n = fleet size), r_i its RETURN RANK - the s searchers take ranks
+    floor(k * n / s) (evenly spread over the cycle, the first at full charge), the trackers the
+    remaining ranks in unique-id order - so consecutive returns come ~P / n steps apart and the
+    searchers' recharge windows never overlap. Scenario B multiplies: 0.5 x L_i. Off: every UAV
+    launches at 100 (x f), all returning in one window (c08456b).
+    """
+    return _fix2_switch("STAGGERED_LAUNCH_BATTERY")
+
+
+def staggered_launch_bases(roles) -> list[float]:
+    """L_i for each UAV in unique-id order, given the role of each ('victim_searcher' or a
+    tracker role). All UAV_FULL_LAUNCH_BATTERY when the switch is off or the fleet has one UAV."""
+    roles = [str(r) for r in roles]
+    n = len(roles)
+    if n <= 1 or not staggered_launch_battery():
+        return [UAV_FULL_LAUNCH_BATTERY] * n
+    searchers = [i for i, r in enumerate(roles) if r == "victim_searcher"]
+    s = len(searchers)
+    rank: dict[int, int] = {}
+    for k, idx in enumerate(searchers):
+        rank[idx] = (k * n) // s
+    free = [r for r in range(n) if r not in set(rank.values())]
+    for idx in range(n):
+        if idx not in rank:
+            rank[idx] = free.pop(0)
+    delta = FLIGHT_DRAIN_PER_STEP * UAV_STAGGER_CYCLE_STEPS / float(n)
+    return [UAV_FULL_LAUNCH_BATTERY - delta * rank[i] for i in range(n)]
 
 
 def rtb_trigger_level_at(uav, cell) -> float:
@@ -1542,6 +1604,81 @@ def global_analyzer_fire_source_fix() -> bool:
     before, which do not exist, so every fire trigger of the global layer stayed silent.
     """
     return _fix2_switch("GLOBAL_ANALYZER_FIRE_SOURCE_FIX")
+
+
+# fix2 item 1: the real conditions of the fail-safe alarms (outputs/fix2_part1.txt 1a-1d).
+# COLLISION_RISK: another airborne UAV within this Manhattan distance - one-cell moves on the
+# 4-neighbourhood can contend for a cell on the next step only at <= 2 (ruling D-3).
+COLLISION_RISK_RADIUS = 2
+# DRIFT_TOO_HIGH: the deviation level is the share of the last DRIFT_WINDOW_STEPS readings on
+# which the commanded move was refused; one refusal (0.2) stays under the analyzers' 0.3 band.
+DRIFT_WINDOW_STEPS = 5
+
+
+def failsafe_real_alarms() -> bool:
+    """FAILSAFE_REAL_ALARMS - fix2 item 1. Shipped 1.
+
+    On, each fail-safe alarm fires only on the condition it names:
+      COLLISION_RISK   another airborne UAV within COLLISION_RISK_RADIUS (docked UAVs excluded);
+      DRIFT_TOO_HIGH   a refused move on >= 2 of the last DRIFT_WINDOW_STEPS steps (no latch; a
+                       deliberate stay - docked, no managed direction - intends its own cell);
+      CRITICAL_LINK_   real delivery outcomes only (no critical traffic is no evidence; an action's
+      UNRELIABLE       name is not a delivery failure; telemetry is not derived from position);
+      search_mode      the reason comes from the fleet-level FLEET_FIRE_LOST (fire believed, no UAV
+      _required        sees fire), not from one UAV's "no fire in my window";
+    and with no fail-safe reason the fail-safe planner returns its no-op decision (the planning
+    echo). Off: c08456b - the alarms fire on ~95% / ~67% / ~100% of steps (artifacts).
+    """
+    return _fix2_switch("FAILSAFE_REAL_ALARMS")
+
+
+# fix2 item 2: a UAV yields (holds) for at most this many consecutive steps, then proceeds one
+# step, so no close pair can freeze (= BASE_STATION_RETURN_STALL_LIMIT and UAV_STUCK's 3).
+FAILSAFE_YIELD_MAX_STEPS = 3
+
+
+def uav_hold_stationary() -> bool:
+    """UAV_HOLD_STATIONARY - fix2 item 2. Shipped 1.
+
+    On: (a) a committed 'hold' - and a tracker's flank hold aimed at its own cell - leaves the
+    UAV on its cell (move() had no stay action: 99.5% of hold steps moved), and that step intends
+    its own cell (no drift sample); a return leg clears the stay. (b) Under SAFETY_FIRST the
+    dispatcher holds only a UAV that must YIELD - airborne, not on a return leg, named by its own
+    COLLISION_RISK, with another airborne UAV of LOWER unique_id within COLLISION_RISK_RADIUS
+    (right of way to the lower id) - for at most FAILSAFE_YIELD_MAX_STEPS consecutive steps; every
+    other UAV keeps its own path (ruling D-5). Off: c08456b - a 'hold' re-commits the previous
+    heading, and SAFETY_FIRST rewrites every non-exempt path to that moving hold.
+    """
+    return _fix2_switch("UAV_HOLD_STATIONARY")
+
+
+def searcher_wind_coverage_fix() -> bool:
+    """SEARCHER_WIND_COVERAGE_FIX - fix2 item 3a. Shipped 1 (ruling D-6).
+
+    On: the victim searcher's coverage y-commit follows the wind - under north/south wind a camping
+    searcher is committed to the DOWNWIND strip until it has reached it, then the upwind strip; under
+    east/west wind the camping bands are disjoint (a searcher on or across the midline is not
+    camping). Off: the overlapping bands send a searcher at y 25-30 north whatever the wind
+    (local_adaptation_generator._wind_aware_y_commit). The x-strip order is unchanged (D-8).
+    """
+    return _fix2_switch("SEARCHER_WIND_COVERAGE_FIX")
+
+
+# fix2 item 3b: the near range of the searcher hazard gate (ruling D-7) - the interior-hazard round's
+# evaluated K = 6; half the corridor's minimum waypoint distance from the front (12).
+SEARCHER_GATE_NEAR_RANGE = 6
+
+
+def searcher_gate_near_field() -> bool:
+    """SEARCHER_GATE_NEAR_FIELD - fix2 item 3b. Shipped 1 (rulings D-6, D-7).
+
+    On, at the always-retreat setting (VICTIM_SEARCHER_HAZARD_RETREAT_RANGE >= 99, shipped 99):
+    (i) the searcher hazard gate retreats only when a strict fire/smoke cell is within
+    SEARCHER_GATE_NEAR_RANGE; (ii) the gate-bypassing pathfinding route gets the same rule - within
+    that range a routed move toward a strict hazard is replaced by the retreat. Any other range value
+    keeps its meaning. Off: the global, target-blind repulsion on every gated step (c08456b).
+    """
+    return _fix2_switch("SEARCHER_GATE_NEAR_FIELD")
 
 
 # Mode 2's search order: +x, -x, +y, -y. Its OWN constant, deliberately not
