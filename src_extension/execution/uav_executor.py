@@ -2535,6 +2535,13 @@ class UAVExecutor:
             step_index=step_index,
         )
         wind_state["last_action"] = str(action or "")
+        # fix1 item 6 (review defect): the next step's planner-pass sync - the one that
+        # counts this action under per-step counting - needs this call's wind-aware
+        # context (True above); written only when the per-step switch is on.
+        import agents as agents_module  # lazy: agents is a root module
+
+        if agents_module.searcher_counters_per_step():
+            wind_state["_last_action_wind_aware"] = True
         if action == "victim_search_wind_aware_sweep":
             wind_state["force_sweep"] = False
         if "hazard_retreat" in str(action or ""):

@@ -1242,6 +1242,23 @@ def _finalize_coverage_target(
     )
 
 
+def _carried_wind_aware_flag(wind_state: dict[str, Any]) -> bool:
+    """fix1 item 6 (review defect): the wind-aware context the planner-pass sync counts with.
+
+    With per-step counting the planner pass - the FIRST call of a step - is the call that
+    counts the executor's previous action (it passes last_action). The executor's own
+    sync always passes wind_aware_active=True, and it is the repeat call the guard drops;
+    without this flag wind_aware_hold_streak could never advance. The executor records the
+    flag beside last_action; the planner pass passes it on. Off (per call): False, the
+    argument the planner pass always gave, so the pre-fix1 path is unchanged.
+    """
+    import agents as agents_module  # lazy: agents is a root module
+
+    if not agents_module.searcher_counters_per_step():
+        return False
+    return bool(wind_state.get("_last_action_wind_aware", False))
+
+
 def _record_victim_searcher_x_band(
     wind_state: dict[str, Any],
     agent_x: int | float | None,
@@ -3938,6 +3955,7 @@ fire_cells=fire_cells, smoke_cells=smoke_cells, step_index=step_index,
             x_max=x_max,
             y_min=y_min,
             y_max=y_max,
+            wind_aware_active=_carried_wind_aware_flag(wind_state),
             step_index=step_index,
         )
 

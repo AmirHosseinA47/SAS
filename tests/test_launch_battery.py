@@ -123,10 +123,12 @@ def test_resource_model_labels_come_from_the_same_source(level, label) -> None:
 
 # --------------------------------------------------------------------------- scenario presets
 
-def test_only_scenario_b_carries_a_launch_fraction() -> None:
+def test_only_scenario_b_reduces_the_launch_fraction() -> None:
+    """Every scenario states its fraction (A, C, D 1.0), so an in-process run of A after B
+    cannot inherit B's 0.5 through the never-reset module globals (review, risk 4)."""
     assert scenario_extra_params("B") == {"UAV_LAUNCH_BATTERY_FRACTION": 0.5}
     for key in ("A", "C", "D", "nope"):
-        assert scenario_extra_params(key) == {}
+        assert scenario_extra_params(key) == {"UAV_LAUNCH_BATTERY_FRACTION": 1.0}
     assert "Battery-Constrained" in BUILTIN_SCENARIOS["B"]["label"]
 
 
@@ -137,10 +139,18 @@ def _args(scenario):
                               firefighters=None, batch_size=None, steps=360, fire_spread=0.75)
 
 
-def test_evaluate_params_pass_b_fraction_and_leave_a_c_d_untouched() -> None:
+def test_evaluate_params_pass_b_fraction_and_full_charge_elsewhere() -> None:
     assert es._scenario_params(_args("B"))["UAV_LAUNCH_BATTERY_FRACTION"] == 0.5
     for key in ("A", "C", "D"):
-        assert "UAV_LAUNCH_BATTERY_FRACTION" not in es._scenario_params(_args(key))
+        assert es._scenario_params(_args(key))["UAV_LAUNCH_BATTERY_FRACTION"] == 1.0
+
+
+def test_a_after_b_in_one_process_runs_at_full_charge() -> None:
+    def launch(key):
+        return {"UAV_LAUNCH_BATTERY_FRACTION": es._scenario_params(_args(key))["UAV_LAUNCH_BATTERY_FRACTION"]}
+
+    assert {u.battery_level for u in _uavs(_model(**launch("B")))} == {50.0}
+    assert {u.battery_level for u in _uavs(_model(**launch("A")))} == {100.0}
 
 
 # --------------------------------------------------------------------------- the model

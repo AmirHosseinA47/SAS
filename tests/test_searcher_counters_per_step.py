@@ -43,10 +43,10 @@ def _restore_module_config():
     agents.random = saved_random
 
 
-def _sync(ws, step, *, pos=(0, 10), action="hold", target=(5.0, 5.0), fn=None):
+def _sync(ws, step, *, pos=(0, 10), action="hold", target=(5.0, 5.0), fn=None, wind_aware=False):
     (fn or lag._sync_wind_search_streaks)(
         ws, grid_position=pos, action=action, target=target,
-        x_min=0, x_max=49, y_min=0, y_max=49, step_index=step,
+        x_min=0, x_max=49, y_min=0, y_max=49, wind_aware_active=wind_aware, step_index=step,
     )
 
 
@@ -83,6 +83,30 @@ def test_the_executors_by_name_import_is_guarded_too() -> None:
     _sync(ws, 7)  # the planner-pass call
     _sync(ws, 7, fn=ux._sync_wind_search_streaks, action="victim_search_wind_aware")  # executor
     assert ws["hold_streak"] == 1 and ws["steps_since_detection"] == 1
+
+
+def test_wind_aware_hold_streak_advances_once_per_step() -> None:
+    """Review defect: the executor's sync (wind_aware_active=True) is the repeat call the
+    guard drops, so the planner pass must count the executor's action WITH that context.
+    The executor records it beside last_action; the planner pass passes it on."""
+    ws = lag._default_wind_search_state()
+    for step in (1, 2, 3, 4, 5):
+        # planner pass: last_action as the executor left it, the carried wind-aware flag
+        _sync(ws, step, action=ws.get("last_action"), wind_aware=lag._carried_wind_aware_flag(ws))
+        # executor: this step's action, wind-aware (dropped by the guard); then it records
+        _sync(ws, step, action="hold", wind_aware=True, fn=ux._sync_wind_search_streaks)
+        ws["last_action"] = "hold"
+        ws["_last_action_wind_aware"] = True  # what uav_executor now writes
+    # step 1 counts no action yet (nothing executed before it); steps 2-5 count one each
+    assert ws["hold_streak"] == 4 and ws["wind_aware_hold_streak"] == 4
+
+
+def test_the_carried_flag_is_false_when_per_call(monkeypatch) -> None:
+    ws = lag._default_wind_search_state()
+    ws["_last_action_wind_aware"] = True
+    assert lag._carried_wind_aware_flag(ws) is True
+    monkeypatch.setattr(cfv, "SEARCHER_COUNTERS_PER_STEP", 0)
+    assert lag._carried_wind_aware_flag(ws) is False  # the pre-fix1 argument
 
 
 def test_one_sample_per_step_from_every_caller() -> None:

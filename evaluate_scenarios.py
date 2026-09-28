@@ -322,7 +322,7 @@ def main(argv: list[str] | None = None) -> int:
             roles[1],
             params["NUM_VICTIMS"],
             params["NUM_FIREFIGHTERS"],
-            "" if launch is None else " | launch charge x%g" % launch,
+            "" if launch in (None, 1, 1.0) else " | launch charge x%g" % launch,
             args.steps,
             args.n,
         )

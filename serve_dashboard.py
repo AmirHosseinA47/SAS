@@ -53,13 +53,16 @@ _PRESET_NON_PARAM_KEYS = frozenset({"label", "NUM_AGENTS", "NUM_VICTIMS", "NUM_F
 def scenario_extra_params(scenario: str) -> dict:
     """A preset's model parameters beyond the team counts (fix1 item 2).
 
-    {"UAV_LAUNCH_BATTERY_FRACTION": 0.5} for B, {} for A, C, D and unknown keys. The ONE
-    place evaluate_scenarios, the harness and the dashboard read a preset's extra
-    parameters from, so a scenario cannot mean one thing to one runner and another to
-    the next.
+    {"UAV_LAUNCH_BATTERY_FRACTION": 0.5} for B and 1.0 for A, C, D and unknown keys -
+    stated for EVERY scenario, because apply_scenario_config never resets a parameter:
+    a process that ran B and then A would otherwise run A at half charge. The ONE place
+    evaluate_scenarios, the harness and the dashboard read a preset's extra parameters
+    from, so a scenario cannot mean one thing to one runner and another to the next.
     """
     preset = BUILTIN_SCENARIOS.get(str(scenario), {}) or {}
-    return {k: v for k, v in preset.items() if k not in _PRESET_NON_PARAM_KEYS}
+    extra = {"UAV_LAUNCH_BATTERY_FRACTION": 1.0}
+    extra.update({k: v for k, v in preset.items() if k not in _PRESET_NON_PARAM_KEYS})
+    return extra
 
 
 def scenarios_payload() -> dict:
@@ -432,6 +435,7 @@ def _build_evaluation(model, terminal_step, steps, params):
     geographically_isolated = never_detected = horizon_unresolved = unreachable_other = 0
     no_firefighter_available = 0
     long_undetected = long_undetected_detected = long_undetected_rescued = 0
+    end_of_run_never_detected = 0
     # fix1 item 4 (ruling D-4a): with the write-off fix on, a victim still undetected when
     # the run ENDS is counted here as unreachable / never_detected - "not detected by the
     # end of the run", for any horizon - and never_detected stays its own sub-count. The
@@ -469,6 +473,7 @@ def _build_evaluation(model, terminal_step, steps, params):
         elif end_of_run_undetected and not _victim_ever_detected(st, markers.get(vid)):
             unreachable += 1
             never_detected += 1
+            end_of_run_never_detected += 1
             cause_parts.append("%s:never_detected" % vid)
         else:
             candidate += 1
@@ -491,7 +496,11 @@ def _build_evaluation(model, terminal_step, steps, params):
             "unreachable_causes": ";".join(sorted(cause_parts)),
             "total_victims": rescued + dead + unreachable + candidate, "firefighter_deaths": ff_dead,
             "burnt_cells": burnt, "steps_run": steps, "terminal_step": terminal_step,
-            "all_terminal": candidate == 0, "rescue_rate": round(100.0 * rescued / total_v, 1),
+            # fix1 item 4 (review): a victim classified never_detected only at the END was
+            # never terminal in the run, so it does not make the run all-terminal (else
+            # all_terminal True would sit beside terminal_step None).
+            "all_terminal": candidate == 0 and end_of_run_never_detected == 0,
+            "rescue_rate": round(100.0 * rescued / total_v, 1),
             "wind": params["WIND_DIRECTION"],
             "scenario": "%dUAV/%dV/%dFF" % (params["NUM_AGENTS"], params["NUM_VICTIMS"], params["NUM_FIREFIGHTERS"])}
 
@@ -833,7 +842,10 @@ async function doStep(){
   if(finished)return;
   let res;
   try{res=await(await fetch('/step')).json();}catch(e){stopPlaying();showErr('step failed: '+e);return;}
-  if(res.error){stopPlaying();showErr(res.error);return;}
+  // fix1 item 1 (review): a failed step ends the run - no Step/Resume into a partial run.
+  if(res.error){finished=true;stopPlaying();document.getElementById('pause').disabled=true;
+    document.getElementById('stepbtn').disabled=true;document.getElementById('run').disabled=false;
+    showErr(res.error);return;}
   curFrame=res.frame;render(curFrame);
   if(!res.running){finished=true;stopPlaying();
     document.getElementById('pause').disabled=true;document.getElementById('stepbtn').disabled=true;

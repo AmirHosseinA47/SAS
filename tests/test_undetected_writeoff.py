@@ -188,6 +188,7 @@ def test_end_of_run_never_detected_is_counted_inside_unreachable() -> None:
     _sweep(model, 250)
     ev = _build_evaluation(model, None, 250, PARAMS)
     assert ev["never_detected"] == 1 and ev["unreachable"] == 1 and ev["candidate"] == 0
+    assert ev["all_terminal"] is False  # never terminal in the run (review, risk 2)
     assert "victim_0:never_detected" in ev["unreachable_causes"]
     assert ev["long_undetected"] == 1 and ev["long_undetected_detected"] == 0
     assert ev["rescued"] + ev["dead"] + ev["unreachable"] + ev["candidate"] == ev["total_victims"]
