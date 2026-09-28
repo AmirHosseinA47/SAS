@@ -71,6 +71,7 @@ from src_extension.planning.rescue_planner import (
     select_rescue_assignment,
     unreachable_escape_victims,
     UNREACHABLE_CAUSE_GEOGRAPHIC,
+    UNREACHABLE_CAUSE_NO_FIREFIGHTER,
     UNREACHABLE_CAUSE_UNDETECTED,
 )
 from src_extension.execution.failsafe_modes import FailSafeMode
@@ -390,6 +391,8 @@ class WildFireModel(mesa.Model):
         self._blocked_replacement_attempted: set[tuple[str, str]] = set()
         self._unreachable_geo_streak: dict[str, int] = {}
         self._unreachable_undetected_streak: dict[str, int] = {}
+        # fix1 item 5: per victim, the no-rescuer steps in its current isolation streak.
+        self._unreachable_nostart_streak: dict[str, int] = {}
         self._ff_victim_distances: dict[tuple[str, str], int] = {}
         self._unreachable_escape_log: list[dict[str, Any]] = []
         self._firefighter_sync_mismatch_logged: set[str] = set()
@@ -5121,6 +5124,12 @@ class WildFireModel(mesa.Model):
                 if held is not None:
                     starts.append(held)
         reachable_cells = self._safe_path_reachable_cells(starts, burning)
+        # fix1 item 5: no free rescuer this step - no living, on-grid, non-exiting
+        # firefighter. A HOLD carrier's cell (above) is a start for its OWN victim only
+        # and is deliberately not counted: it cannot serve anyone else. A streak made
+        # only of such steps is written off as no_firefighter_available, not
+        # geographically_isolated.
+        no_rescuer_start = not living
         # Carrying-leg D3: the victims in a live carrier's custody, which count as
         # served (agents.ff_exit_leg_served() 1: SERVED 1 AND MODE >= 1 - the accessor
         # is 0 whenever MODE is 0, ruling S2). Empty at 0, so no flag below gains a key.
@@ -5194,6 +5203,8 @@ class WildFireModel(mesa.Model):
             }
             if vid_s in custody:
                 flags[vid_s]["in_custody"] = True
+            if no_rescuer_start:
+                flags[vid_s]["no_rescuer_start"] = True
 
         self._ff_victim_distances = new_dists
         geo_streaks = getattr(self, "_unreachable_geo_streak", None)
@@ -5202,10 +5213,15 @@ class WildFireModel(mesa.Model):
         undetected_streaks = getattr(self, "_unreachable_undetected_streak", None)
         if not isinstance(undetected_streaks, dict):
             undetected_streaks = {}
+        nostart_streaks = getattr(self, "_unreachable_nostart_streak", None)
+        if not isinstance(nostart_streaks, dict):
+            nostart_streaks = {}
+            self._unreachable_nostart_streak = nostart_streaks
         marked, geo_streaks, undetected_streaks = unreachable_escape_victims(
             flags,
             geo_streaks,
             undetected_streaks,
+            nostart_streaks=nostart_streaks,
         )
         self._unreachable_geo_streak = geo_streaks
         self._unreachable_undetected_streak = undetected_streaks
@@ -5231,21 +5247,29 @@ class WildFireModel(mesa.Model):
                         metadata={},
                     )
                 )
-            if cause == UNREACHABLE_CAUSE_GEOGRAPHIC:
+            if cause in (UNREACHABLE_CAUSE_GEOGRAPHIC, UNREACHABLE_CAUSE_NO_FIREFIGHTER):
                 streak = int(geo_streaks.get(vid, 0) or 0)
             elif cause == UNREACHABLE_CAUSE_UNDETECTED:
                 streak = int(undetected_streaks.get(vid, 0) or 0)
             else:
                 streak = 0
-            log.append(
-                {
-                    "step": step,
-                    "victim_id": vid,
-                    "reason": cause or "unreachable_escape",
-                    "cause": cause,
-                    "streak": streak,
-                }
-            )
+            entry = {
+                "step": step,
+                "victim_id": vid,
+                "reason": cause or "unreachable_escape",
+                "cause": cause,
+                "streak": streak,
+            }
+            if cause == UNREACHABLE_CAUSE_NO_FIREFIGHTER:
+                # Separates "no firefighter alive" from "all alive ones busy"
+                # (carrying / off the grid) without a third cause.
+                entry["firefighters_alive"] = sum(
+                    1
+                    for m in ff_markers.values()
+                    if not getattr(m, "dead", False)
+                    and str(getattr(m, "status", "") or "").strip().lower() != "dead"
+                )
+            log.append(entry)
             self._mark_victim_unreachable(
                 vid, marker, reason=cause or "unreachable_escape", cause=cause
             )

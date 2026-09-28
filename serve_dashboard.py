@@ -384,6 +384,7 @@ def _build_evaluation(model, terminal_step, steps, params):
     mv = getattr(model, "managed_victims", {}) or {}
     rescued = dead = unreachable = candidate = 0
     geographically_isolated = never_detected = horizon_unresolved = unreachable_other = 0
+    no_firefighter_available = 0
     cause_parts = []
     for vid, st in mv.items():
         s = str(getattr(st, "status", "")).lower()
@@ -401,6 +402,9 @@ def _build_evaluation(model, terminal_step, steps, params):
                 never_detected += 1
             elif cause == "horizon_unresolved":
                 horizon_unresolved += 1
+            elif cause == "no_firefighter_available":
+                # fix1 item 5: written off with no rescuer at all - its own cause
+                no_firefighter_available += 1
             else:
                 unreachable_other += 1
         else:
@@ -416,6 +420,7 @@ def _build_evaluation(model, terminal_step, steps, params):
             "geographically_isolated": geographically_isolated,
             "never_detected": never_detected,
             "horizon_unresolved": horizon_unresolved,
+            "no_firefighter_available": no_firefighter_available,
             "unreachable_other": unreachable_other,
             "unreachable_causes": ";".join(sorted(cause_parts)),
             "total_victims": rescued + dead + unreachable + candidate, "firefighter_deaths": ff_dead,

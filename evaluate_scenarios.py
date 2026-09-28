@@ -42,6 +42,7 @@ METRIC_KEYS = (
     "geographically_isolated",
     "never_detected",
     "horizon_unresolved",
+    "no_firefighter_available",
     "unreachable_other",
     "candidate",
     "rescue_rate",
@@ -330,7 +331,7 @@ def main(argv: list[str] | None = None) -> int:
             continue
         rows.append(row)
         print(
-            "seed=%-10d rescued=%d dead=%d unreachable=%d geo=%d never_detected=%d horizon=%d other=%d unresolved=%d rate=%.1f%% ff_deaths=%d burnt=%d terminal=%s all_terminal=%s"
+            "seed=%-10d rescued=%d dead=%d unreachable=%d geo=%d never_detected=%d horizon=%d no_ff=%d other=%d unresolved=%d rate=%.1f%% ff_deaths=%d burnt=%d terminal=%s all_terminal=%s"
             % (
                 seed,
                 row["rescued"],
@@ -339,6 +340,7 @@ def main(argv: list[str] | None = None) -> int:
                 row.get("geographically_isolated", 0),
                 row.get("never_detected", 0),
                 row.get("horizon_unresolved", 0),
+                row.get("no_firefighter_available", 0),
                 row.get("unreachable_other", 0),
                 row["candidate"],
                 row["rescue_rate"],

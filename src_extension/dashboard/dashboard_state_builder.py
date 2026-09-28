@@ -119,6 +119,7 @@ class DashboardStateBuilder:
         managed = getattr(model, "managed_victims", None) or {}
         rescued = dead = unreachable = 0
         geographically_isolated = never_detected = horizon_unresolved = 0
+        no_firefighter_available = 0
         all_terminal = bool(managed)
         for _, state in managed.items():
             status = str(getattr(state, "status", "") or "").strip().lower()
@@ -135,6 +136,8 @@ class DashboardStateBuilder:
                     never_detected += 1
                 elif cause == "horizon_unresolved":
                     horizon_unresolved += 1
+                elif cause == "no_firefighter_available":
+                    no_firefighter_available += 1
             if status not in _TERMINAL_VICTIM and not bool(getattr(state, "rescued", False)):
                 all_terminal = False
 
@@ -175,6 +178,7 @@ class DashboardStateBuilder:
             "geographically_isolated_count": geographically_isolated,
             "never_detected_count": never_detected,
             "horizon_unresolved_count": horizon_unresolved,
+            "no_firefighter_available_count": no_firefighter_available,
             "unresolved_victim_count": unresolved,
             "all_victims_terminal": all_terminal and len(managed) > 0,
         }

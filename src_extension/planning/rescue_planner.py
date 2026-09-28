@@ -52,6 +52,9 @@ UNREACHABLE_STREAK_STEPS = 30
 UNDETECTED_STREAK_STEPS = 210
 UNREACHABLE_CAUSE_GEOGRAPHIC = "geographically_isolated"
 UNREACHABLE_CAUSE_UNDETECTED = "never_detected"
+# fix1 item 5: the isolation streak ran with NO free rescuer - every firefighter dead,
+# carrying or off the grid on every step of it - so no fire geometry was involved.
+UNREACHABLE_CAUSE_NO_FIREFIGHTER = "no_firefighter_available"
 _UNREACHABLE_ESCAPE_TERMINAL = frozenset({"rescued", "dead", "unreachable", "cancelled"})
 
 
@@ -469,11 +472,18 @@ def unreachable_escape_victims(
     *,
     geo_threshold: int = UNREACHABLE_STREAK_STEPS,
     undetected_threshold: int = UNDETECTED_STREAK_STEPS,
+    nostart_streaks: dict[str, int] | None = None,
 ) -> tuple[list[tuple[str, str]], dict[str, int], dict[str, int]]:
     """Return ``(victim_id, cause)`` pairs whose consecutive streak reached a threshold.
 
     Causes:
     - ``geographically_isolated``: no safe BFS path for ``geo_threshold`` steps
+    - ``no_firefighter_available``: the same streak, when ``nostart_streaks`` is given
+      and EVERY step of it had no free rescuer (the flag ``no_rescuer_start``: no
+      living, on-grid, non-exiting firefighter) - so fire isolation was not the cause
+      (fix1 item 5). ``nostart_streaks`` is updated in place: the count of no-start
+      steps in each victim's current streak. Without it (None) the cause is always
+      geographic, as before.
     - ``never_detected``: never confirmed and unserved for ``undetected_threshold``
 
     Geographic isolation is preferred when both geo and never-detected would fire.
@@ -498,6 +508,8 @@ def unreachable_escape_victims(
         if _is_terminal_flags(entry):
             geo_streaks[vid_s] = 0
             undetected_streaks[vid_s] = 0
+            if nostart_streaks is not None:
+                nostart_streaks[vid_s] = 0
             continue
         served = _is_productively_served(entry)
         geo_reachable = bool(entry.get("geo_reachable", entry.get("reachable", False)))
@@ -505,8 +517,12 @@ def unreachable_escape_victims(
 
         if (not served) and (not geo_reachable):
             geo_streaks[vid_s] = int(geo_streaks.get(vid_s, 0) or 0) + 1
+            if nostart_streaks is not None and bool(entry.get("no_rescuer_start", False)):
+                nostart_streaks[vid_s] = int(nostart_streaks.get(vid_s, 0) or 0) + 1
         else:
             geo_streaks[vid_s] = 0
+            if nostart_streaks is not None:
+                nostart_streaks[vid_s] = 0
 
         if (not served) and (not assigned) and _is_never_confirmed(entry):
             undetected_streaks[vid_s] = int(undetected_streaks.get(vid_s, 0) or 0) + 1
@@ -514,7 +530,13 @@ def unreachable_escape_victims(
             undetected_streaks[vid_s] = 0
 
         if geo_streaks[vid_s] >= geo_limit:
-            marked.append((vid_s, UNREACHABLE_CAUSE_GEOGRAPHIC))
+            no_rescuer = (
+                nostart_streaks is not None
+                and int(nostart_streaks.get(vid_s, 0) or 0) >= geo_streaks[vid_s]
+            )
+            marked.append(
+                (vid_s, UNREACHABLE_CAUSE_NO_FIREFIGHTER if no_rescuer else UNREACHABLE_CAUSE_GEOGRAPHIC)
+            )
         elif undetected_streaks[vid_s] >= und_limit:
             marked.append((vid_s, UNREACHABLE_CAUSE_UNDETECTED))
     for vid in list(geo_streaks.keys()):
@@ -523,6 +545,10 @@ def unreachable_escape_victims(
     for vid in list(undetected_streaks.keys()):
         if vid not in seen:
             undetected_streaks.pop(vid, None)
+    if nostart_streaks is not None:
+        for vid in list(nostart_streaks.keys()):
+            if vid not in seen:
+                nostart_streaks.pop(vid, None)
     marked.sort(key=lambda item: item[0])
     return marked, geo_streaks, undetected_streaks
 

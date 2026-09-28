@@ -1206,7 +1206,10 @@ def test_a_carried_victim_is_written_off_at_thirty_only_at_served_zero(mode, ser
         assert not getattr(state, "unreachable", False)
     else:
         assert streaks == list(range(1, 31))
-        assert [(e["cause"], e["streak"]) for e in log] == [("geographically_isolated", 30)]
+        # fix1 item 5: the lone carrier is not a reachability start and every other unit is
+        # dead, so no step of this streak had a rescuer - the cause is no_firefighter_available
+        # (it was geographically_isolated, on a fire-free map). The write-off itself is unchanged.
+        assert [(e["cause"], e["streak"]) for e in log] == [("no_firefighter_available", 30)]
         assert ff.assigned is False and ff.rescued_victim is None and ff.exiting is False
         assert state.unreachable is True and state.cancelled is True
         assert str(marker.status).lower() == "unreachable"
@@ -1251,7 +1254,8 @@ def test_served_is_not_suppressed_when_mode_is_not_exactly_zero(monkeypatch, mod
 
 def test_at_mode_zero_served_one_writes_the_carry_off_like_served_zero() -> None:
     """The model level: at MODE 0 a lone carrier with SERVED 1 is written off at 30 exactly as
-    at SERVED 0 (streak 1..30, one geographically_isolated escape, the carrier released) -
+    at SERVED 0 (streak 1..30, one escape - no_firefighter_available since fix1 item 5 - the
+    carrier released) -
     the escape hatch from the D1 livelock is kept. At MODE 1 the same board serves."""
     results = {}
     for mode, served in ((0, 0), (0, 1), (1, 1)):
@@ -1264,7 +1268,8 @@ def test_at_mode_zero_served_one_writes_the_carry_off_like_served_zero() -> None
                if e["victim_id"] == V0]
         results[(mode, served)] = (streaks, log, ff.exiting, ff.rescued_victim is marker)
     assert results[(0, 1)] == results[(0, 0)]
-    assert results[(0, 1)] == (list(range(1, 31)), [("geographically_isolated", 30)], False, False)
+    # fix1 item 5: no rescuer start on any step of the streak -> no_firefighter_available.
+    assert results[(0, 1)] == (list(range(1, 31)), [("no_firefighter_available", 30)], False, False)
     assert results[(1, 1)] == ([0] * 30, [], True, True)
 
 
