@@ -48,8 +48,13 @@ def test_resolve_victim_searcher_role_lookup_three_uavs() -> None:
     assert len(resolve_victim_searcher_uav_ids(WildFireModel())) == 1
 
 
-def test_resolve_victim_searcher_role_lookup_five_uavs() -> None:
+def test_resolve_victim_searcher_role_lookup_five_uavs(monkeypatch) -> None:
+    # fix1 item 3: with no split given a 5-UAV team is split by the maintainer's rule,
+    # searchers = max(1, 5 // 2) = 2 (scenario C: 3T+2S). The legacy default - n-1
+    # trackers + 1 searcher, which this test used to pin - is ROLE_SPLIT_HALF_RULE 0.
     _patch(NUM_AGENTS=5, NUM_VICTIMS=3, NUM_FIREFIGHTERS=3)
+    assert len(resolve_victim_searcher_uav_ids(WildFireModel())) == 2
+    monkeypatch.setattr(cfv, "ROLE_SPLIT_HALF_RULE", 0)
     assert len(resolve_victim_searcher_uav_ids(WildFireModel())) == 1
 
 
