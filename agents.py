@@ -1521,6 +1521,29 @@ def rtb_trigger_level_at(uav, cell) -> float:
     return max(uav_return_to_base_reserve(), per_move * best + base_station_return_margin())
 
 
+# --- fix2 (session 2): behaviour fixes, each on its own switch (outputs/fix2_part1.txt) ------
+# Every fix2 switch SHIPS 1 (ruling D-1) and is off only on an EXACT integral zero (the
+# _exact_integer rule of fix1); missing or junk -> on. All fix2 switches at 0 is c08456b.
+
+def _fix2_switch(name: str) -> bool:
+    value = _exact_integer(getattr(cfv, name, 1))
+    if value is None:
+        return True
+    return value != 0
+
+
+def global_analyzer_fire_source_fix() -> bool:
+    """GLOBAL_ANALYZER_FIRE_SOURCE_FIX - fix2 row (B). Shipped 1.
+
+    On: the global analyzer reads the fire picture where it lives - FireRuntimeModel.belief
+    (probability / confidence maps, last observation times, the estimated front, the predicted
+    front map and spread bias) - and, when the global snapshot carries no fire_state_summary,
+    the belief's estimated burning / front cells. Off: the top-level attributes it read
+    before, which do not exist, so every fire trigger of the global layer stayed silent.
+    """
+    return _fix2_switch("GLOBAL_ANALYZER_FIRE_SOURCE_FIX")
+
+
 # Mode 2's search order: +x, -x, +y, -y. Its OWN constant, deliberately not
 # ORTHOGONAL_OFFSETS below, which is documented as the victim-flee tie-break - a future
 # flee change must not move the carrier's path (pinned by a test).

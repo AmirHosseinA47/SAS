@@ -42,6 +42,25 @@ def _default_critical_battery_threshold() -> float:
     return _agents.battery_critical_threshold()
 
 
+def _fire_source(fire_model: Any) -> Any:
+    """Where the fire picture is read from (fix2 row B).
+
+    FireRuntimeModel keeps its maps, front cells and spread bias on ``.belief``; this analyzer
+    read them as top-level attributes, which do not exist, so every fire trigger of the global
+    layer was silent. With GLOBAL_ANALYZER_FIRE_SOURCE_FIX on (shipped) the reads go to
+    ``.belief``; an object without one (a test stand-in) is read directly, as before. Off: the
+    object itself - exactly the old reads.
+    """
+    if fire_model is None:
+        return None
+    import agents as _agents  # lazy: agents is a root module
+
+    if not _agents.global_analyzer_fire_source_fix():
+        return fire_model
+    belief = getattr(fire_model, "belief", None)
+    return belief if belief is not None else fire_model
+
+
 @dataclass
 class GlobalAnalyzer:
     """Interpretation step: fused knowledge → ``GlobalAnalysisResult`` (no execution)."""
@@ -273,7 +292,7 @@ class GlobalAnalyzer:
         prob: dict[str, float] = {}
         conf: dict[str, float] = {}
         last_obs: dict[str, float] = {}
-        fr = runtime_models.get("fire_runtime_model")
+        fr = _fire_source(runtime_models.get("fire_runtime_model"))
         if fr is not None:
             prob.update(self._coerce_float_map(getattr(fr, "fire_probability_map", None)))
             conf.update(self._coerce_float_map(getattr(fr, "fire_confidence_map", None)))
@@ -568,6 +587,17 @@ class GlobalAnalyzer:
         high_belief = any(p >= self.fire_probability_threshold for p in prob.values())
         state_inner = self._unwrap_summary_layer(global_snapshot.get("fire_state_summary"))
         burning = state_inner.get("estimated_burning_cells")
+        if burning is None and "fire_state_summary" not in global_snapshot:
+            # fix2 row B: the global monitor produces no fire_state_summary; the estimated
+            # burning set lives on the fire belief. (With it, this test still cannot fire: the
+            # set is empty exactly when no cell reaches fire_probability_threshold, the negation
+            # of high_belief - outputs/fix2_part1.txt 1d. Item 1's FLEET_FIRE_LOST is the test
+            # that can.)
+            source = _fire_source(runtime_models.get("fire_runtime_model"))
+            if source is not None and source is not runtime_models.get("fire_runtime_model"):
+                cells = getattr(source, "estimated_burning_cells", None)
+                if isinstance(cells, (set, frozenset, list, tuple)):
+                    burning = [list(c) for c in cells]
         visible_empty = isinstance(burning, list) and len(burning) == 0
         fb_inner = self._unwrap_summary_layer(global_snapshot.get("fire_belief_summary"))
         confirmed = fb_inner.get("confirmed_fire_cells")
@@ -1065,7 +1095,7 @@ class GlobalAnalyzer:
         timestamp: float,
     ) -> list[StructuredTrigger]:
         triggers: list[StructuredTrigger] = []
-        fr = runtime_models.get("fire_runtime_model")
+        fr = _fire_source(runtime_models.get("fire_runtime_model"))
         if fr is None:
             return triggers
 
@@ -1581,7 +1611,7 @@ class GlobalAnalyzer:
 
     @staticmethod
     def _trend_fire_front_count(runtime_models: dict[str, Any]) -> int | None:
-        fr = runtime_models.get("fire_runtime_model")
+        fr = _fire_source(runtime_models.get("fire_runtime_model"))
         if fr is None:
             return None
         cells = getattr(fr, "estimated_fire_front_cells", None)

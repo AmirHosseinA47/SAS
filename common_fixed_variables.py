@@ -104,6 +104,13 @@ UNDETECTED_WRITEOFF_FIX = 1
 # names say; they were counted per CALL (2-8x per step). SHIPPED 1 (ruling D-1); only an
 # exact integral 0 restores per-call counting (agents.searcher_counters_per_step).
 SEARCHER_COUNTERS_PER_STEP = 1
+
+# ---- fix2 (session 2): behaviour fixes (outputs/fix2_part1.txt). Every switch SHIPS 1
+# (ruling D-1); only an exact integral 0 turns one off; all of them at 0 is c08456b. ----------
+# Row (B). The global analyzer reads the fire picture from FireRuntimeModel.belief, where it
+# lives (it read top-level attributes that do not exist, so its fire triggers never fired).
+# agents.global_analyzer_fire_source_fix.
+GLOBAL_ANALYZER_FIRE_SOURCE_FIX = 1
 # The ONE battery threshold pair (fix1 item 2), read at call time through
 # agents.battery_low_threshold() / battery_critical_threshold() by every reader: the UAV
 # labels, both analyzers, the resource model, the global monitor, the dashboard alert and
