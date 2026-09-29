@@ -364,6 +364,35 @@ def _observation(uid, drift):
         belief_confirmation_flags=[])
 
 
+@pytest.mark.parametrize("docked, level, status", [(True, 0.0, "low_drift"), (False, 0.6, "moderate_drift")])
+def test_docking_restarts_the_drift_window(switch, docked, level, status) -> None:
+    # Part 3 (check P3-3 v): three refusals on the approach to a berth, then the UAV docks. Without
+    # the restart its window still held them for the next steps, so DRIFT_TOO_HIGH named a docked
+    # UAV and put the fleet in safety_first (mf2ALL at 98ded8c, A/south, steps 280-282).
+    switch(1)
+    model = WildFireModel()
+    uid = sorted(model.local_observation_models)[0]
+    for t in (1.0, 2.0, 3.0):
+        model.uav_resource_model.update_drift(uid, 1.0, timestamp=t)
+    obs = _observation(uid, 0.0)
+    obs.task_context = {"role": None, "assigned_task": None, "docked": docked}
+    buf = MonitoringBuffer()
+    buf.add_local_observation(uid, obs)
+    model._apply_uav_resource_updates(buf, 4.0)
+    st = model.uav_resource_model.by_uav_id[uid]
+    assert st.drift_level == pytest.approx(level) and st.local_risk_status == status
+
+
+def test_the_monitor_reports_the_dock_state_only_when_on(switch) -> None:
+    model = WildFireModel()
+    uav = next(a for a in model.schedule.agents if type(a) is agents.UAV)
+    uav.rtb_docked = True
+    switch(1)
+    assert uav.local_monitor.collect_observation(uav, 1.0).task_context.get("docked") is True
+    switch(0)
+    assert "docked" not in uav.local_monitor.collect_observation(uav, 2.0).task_context
+
+
 @pytest.mark.parametrize("value", [1, 0])
 def test_a_refused_move_is_not_a_lost_message(switch, value) -> None:
     # every UAV refused (drift 1.0) for 50 steps, with the model's 3%-per-step delivery decay:

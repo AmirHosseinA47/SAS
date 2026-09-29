@@ -334,6 +334,12 @@ class LocalUAVMonitor:
         for cell in cells:
             self._prev_fov_cell_uncertain[cell] = self._is_visibility_uncertain(cell)
 
+        task_context = self._task_context()
+        if agents_module.failsafe_real_alarms():
+            # fix2 item 1: the dock state, so the resource model restarts a docked UAV's drift
+            # window (a UAV holding its berth is not drifting, whatever it was refused on the way)
+            task_context["docked"] = bool(getattr(uav, "rtb_docked", False))
+
         conf_meta = float(obs_confidence)
         return LocalObservation(
             uav_id=self.uav_id,
@@ -349,7 +355,7 @@ class LocalUAVMonitor:
             battery_status=batt_stat,
             communication_status=comm_stat,
             nearby_uavs=self._nearby_uav_ids(uav),
-            task_context=self._task_context(),
+            task_context=task_context,
             negative_observations=neg_typed,
             raw_information_gain=float(raw_ig),
             normalized_information_gain=float(norm_ig),

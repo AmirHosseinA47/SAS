@@ -1498,6 +1498,10 @@ class WildFireModel(mesa.Model):
             assigned = tc.get("assigned_task")
             role_s = None if role is None else (role if isinstance(role, str) else str(role))
             task_s = None if assigned is None else (assigned if isinstance(assigned, str) else str(assigned))
+            if tc.get("docked") and agents.failsafe_real_alarms():
+                # fix2 item 1: a docked UAV's window restarts, so refusals on its approach to the
+                # berth no longer name it (and set the fleet mode) for up to 4 steps after docking
+                self.uav_resource_model.reset_drift_window(uav_id)
             self.uav_resource_model.update_uav_state(
                 uav_id=uav_id,
                 timestamp=ts,

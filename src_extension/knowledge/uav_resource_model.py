@@ -203,6 +203,11 @@ class UAVResourceModel:
         state.provenance.source = src
         state.provenance.confidence = conf
 
+    def reset_drift_window(self, uav_id: str) -> None:
+        """fix2 item 1: forget a UAV's drift readings (it has docked - a UAV holding its berth is
+        not drifting). The next update_drift starts a fresh window."""
+        self._drift_windows.pop(uav_id, None)
+
     def update_drift(
         self,
         uav_id: str,
