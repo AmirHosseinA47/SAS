@@ -1,0 +1,39 @@
+================================================================================
+SESSION 3 - FIRST ITEM (ruled at the end of session 2, fix2): THE DEPOT-POCKET SEARCHER ROUTING
+================================================================================
+Fix this BEFORE the measurement round: it changes results.
+
+WHAT: a victim searcher's own escape routing - the BFS pocket escape ('victim_search_escape_bfs')
+alternating with 'victim_search_wind_aware_retarget_to_interior' - oscillates between two cells at a
+depot's edge or inside its footprint (the two 5x5 depots: NW x 0-4, y 45-49; SE x 45-49, y 0-4). No
+yield is involved: it is not the fail-safe yield of item 2 (outputs/fix2_report.txt FOLLOW-UP 3).
+
+EVIDENCE (outputs/fix2_report.txt, FOLLOW-UP 3 and SESSION 3; probe runs outputs/_sd_mf2*_*.json).
+Depot pocket = an airborne UAV within 5 cells of a depot cell staying on <= 2 cells for 10+ steps, before
+the run's terminal step; 16 configurations (A-D x N/S/E/W, seeds 9601-9616, 360 steps, GPM 0) per arm:
+  all fix2 switches off (c08456b)       1 episode,   91 UAV-steps (B/west, steps 270-360)
+  even staggered launch                11 episodes, 192
+  item 4 off (the shipped configuration before the yield fixes)   11, 360 - including a 119-step B/west
+                                                                    pocket identical in every item-4-off arm
+  item 4 off + STATIONARY_YIELD_FIX (THE SHIPPED CONFIGURATION)    11, 328
+  + YIELD_ONLY_WHEN_CONTENDING (not shipped)                        8, 283
+  the moving hold (UAV_HOLD_STATIONARY 0)                          11, 457
+Cases:
+  - A/north, shipped configuration (seed 9601; outputs/_sd_mf2rS_A_N.json): searcher 2502 oscillated at
+    (45,4)/(46,4)/(45,5) - inside the SE depot - for ~100 steps (256-357) while a victim went undetected;
+    the run never reached a terminal step (never_detected 1). The item-4-off arm without the yield fixes
+    finished that seed at step 281.
+  - C/south (seed 9610): searchers 2503 / 2504 oscillating at the NW depot's doorstep (3-4, 44-45), steps
+    231-275, before the terminal step (the run never finishes in these arms).
+  - D/north: two searchers stuck inside the SE depot at (46,3)/(46,4) after the terminal step.
+  - B/west: a 119-step pocket (steps 129-247) in every item-4-off arm.
+
+WHY IT MATTERS: a victim never detected and a run that never finishes are outcome changes caused by the
+routing, not by the scenario; present in every arm, all off included - so every measurement inherits it.
+
+WHERE TO START: src_extension/execution/uav_executor.py - the searcher pocket escape
+(_attempt_pathfinding_toward_target and the 'victim_search_escape_bfs' route, the grid-midpoint anchor),
+the retarget-to-interior branch of the wind-aware search, and how both treat depot cells (fireproof,
+never burning - a HYPOTHESIS to check, not a finding: the routing may treat a depot as a hazard-free
+pocket). The analyzer that measures it:
+outputs/_mf2_p3_analyze.py (depot pockets were computed ad hoc in session 2; add them as a section).

@@ -27,12 +27,22 @@ COMMITS (c08456b..HEAD)
   -- after the ruling "fix item 2 before merging" --
   09289553 item 2 follow-up: STATIONARY_YIELD_FIX (ships 1) - no edge escape and no drift on a yield
            step, step aside, no yield at a depot; the offered YIELD_ONLY_WHEN_CONTENDING (ships 0)
+  8462fec0 outputs: the item-2 follow-up record
+  -- after the rulings "adopt rule (4) on one condition; add the missing revert check; then merge" --
+  ded5280e rule (4) stays OFF by the maintainer's test (docs); the step aside's exemption from the
+           searcher gate is revert-checked (a test fails when it is removed)
   Items 1, 2, 3a, 3b and row B SHIP 1 (off only on an exact integral 0, D-1); item 4 SHIPS 0. All fix2
   switches at 0 == c08456b (P3-1; re-verified at 0a7801f). DEPOT_STANDOFF_FIX (item 5) NOT built.
 
 ================================================================================
-STATUS - READ FIRST (after FOLLOW-UP 3)
+STATUS - READ FIRST (final, before the merge)
 ================================================================================
+F. RULE (4) STAYS OFF (FOLLOW-UP 4): by the maintainer's condition it made rescued (45 -> 44) and dead
+   (8 -> 10) worse; the 9 flank-pair yield stalls are a KNOWN LIMITATION. The step aside's exemption from
+   the searcher gate is now revert-checked. SESSION 3's FIRST ITEM is the depot-pocket searcher routing
+   (section SESSION 3 below; outputs/session3_first_item.txt). The merge is ruled: after the final full
+   suite on this commit - fix2 pushed, main fast-forwarded to it (--ff-only), tag sysdebug-session2,
+   fix2 deleted locally and on origin.
 0. ITEM 2 FIXED AND KEPT ON (FOLLOW-UP 3): STATIONARY_YIELD_FIX removes the depot yield clusters (134
    near-depot pre-terminal yields -> 2; clusters >= 10 steps 6 -> 0) and every drift alarm caused by
    yield escapes (32 -> 0); by the ruled test ITEM 2 STAYS ON. ONE VALIDATION ITEM FAILS, as predicted
@@ -58,6 +68,59 @@ STATUS - READ FIRST (after FOLLOW-UP 3)
    defaults (611c2a4): 1,363 passed, failing NAME SET == {T5} - PASS
    (outputs/_mf2_c_fullsuite.log).
 5. STOP BEFORE MERGING (ruled). Nothing is merged.
+
+================================================================================
+FOLLOW-UP 4 - RULE (4) BY THE MAINTAINER'S CONDITION; THE MISSING REVERT CHECK
+================================================================================
+RULING: adopt "yield only when the partner's move this step can reach the yielder's cell or a
+neighbour" (YIELD_ONLY_WHEN_CONTENDING) shipping ON - iff, on the all-together arm with item 4 off and the
+pre-terminal window, none of rescued, dead, never_detected, the item-1 alarm checks and the
+normal-mode share gets worse with the rule on versus off; otherwise OFF, and the 9 flank-pair stalls
+are a known limitation. Measured on the existing arms (no new runs): mf2rC (on) vs mf2rS (off), 16
+seed-matched configurations at 09289553 (outputs/_mf2_rule4_decision.txt, analyzer section rule4).
+                                     rule OFF (mf2rS)       rule ON (mf2rC)
+  rescued / dead / never_detected       45 / 8 / 2             44 / 10 / 1        WORSE (rescued, dead)
+  item-1 checks (iii)-(vii), own
+    pre-terminal windows                0 violations           0 violations       not worse
+    (iv) collision names checked          1,178                  1,092
+    (v) drift names checked               234                    254
+  normal-mode share, own windows        70.44%                 71.64%             not worse
+                      common windows    70.01%                 72.83%
+  per configuration: A/north (rescued, dead, never_detected) (3, 1, 1) -> (3, 2, 0); C/north
+  (3, 0, 0) -> (2, 1, 0).
+  => RULE (4) SHIPS OFF (YIELD_ONLY_WHEN_CONTENDING = 0, as committed); documented in ded5280e.
+  KNOWN LIMITATION: the flank-pair yield stalls - 9 stalls >= 10 steps before the terminal step (the
+  longest 21), all 13+ cells from any depot, two fire trackers flying the flank together (~1.5 cells
+  apart, the partner mostly moving) with the higher id yielding 3 steps in every 4 (one: a searcher
+  behind a tracker). They slow the yielding UAV; they are not a freeze.
+THE MISSING REVERT CHECK (ruled before merging): tests/test_fix2_yield_fix.py
+  test_the_step_aside_is_not_overridden_by_the_searcher_gate - a searcher yields with its partner moving
+  into its cell and a burning cell 4 north (inside the gate's near field): the step aside goes to
+  (21, 21); with the exemption removed in memory the searcher gate replaces it with its retreat
+  (direction 0) and the test FAILS (verified). 37 tests in the file, 8 reverts, each caught.
+
+================================================================================
+SESSION 3 - FIRST ITEM (ruled): THE DEPOT-POCKET SEARCHER ROUTING - fix before the measurement round
+================================================================================
+WHAT: a searcher's own escape routing - the BFS pocket escape ('victim_search_escape_bfs') alternating
+  with 'victim_search_wind_aware_retarget_to_interior' - oscillates between two cells at a depot's edge
+  or inside its footprint. No yield is involved; it is not an item-2 behaviour.
+EVIDENCE (depot pocket = an airborne UAV within 5 cells of a depot on <= 2 cells for 10+ steps, before
+  the terminal step; FOLLOW-UP 3; 16 configurations per arm):
+  all fix2 switches off (c08456b)  1 episode,  91 UAV-steps (B/west 270-360)
+  even stagger                    11 episodes, 192
+  item 4 off                      11,          360 (a 119-step B/west pocket, identical in every
+                                                    item-4-off arm)
+  item 4 off + yield fixes        11,          328
+  + rule (4)                       8,          283
+  the moving hold                 11,          457
+  A/north with the yield fixes (the shipped configuration, seed 9601): searcher 2502 oscillated at
+  (45,4)/(46,4)/(45,5) - inside the SE depot - for ~100 steps (256-357) while a victim went undetected;
+  the run never reached a terminal step (never_detected 1; with item 4 off and no fix: finished at 281).
+  C/south: searchers 2503 / 2504 oscillating at the NW depot's doorstep (3-4, 44-45), steps 231-275.
+  D/north: two searchers stuck inside the SE depot (after the terminal step).
+WHY FIRST: it changes results (a victim never detected, a run that does not finish) and is present in
+  every arm, all off included - so it must be fixed before the measurement round.
 
 ================================================================================
 FOLLOW-UP 3 - THE STATIONARY-YIELD FIXES (maintainer ruling after FOLLOW-UP 2; amendment 4; runs at
@@ -87,9 +150,9 @@ the item-2 behaviour of 611c2a4 exactly - identity mf2rX == mf2cX 16/16):
      COLLISION_RISK still fires there (a real condition) but no longer holds anyone. SYMMETRIC on
      purpose: the literal "does not hold another UAV" (the partner side) would still let a UAV inside
      the area stop for one outside, and a stop inside the area is the obstacle.
-  Tests: tests/test_fix2_yield_fix.py, 36; each rule fails its tests when reverted in memory (7
-  reverts); the step aside's exemption from the searcher gate / final safety pass is NOT
-  revert-checked (a test would need a hazard within 6 cells).
+  Tests: tests/test_fix2_yield_fix.py, 37; each rule fails its tests when reverted in memory (8
+  reverts) - including, since ded5280e, the step aside's exemption from the searcher gate (a searcher
+  steps aside with a burning cell 4 away; without the exemption the gate turns it into its own retreat).
 PROVENANCE AND IDENTITY: every run of this follow-up at 09289553, source hashes equal to the files at
   that commit, switches as the arm table (outputs/_mf2_r_an_final.txt). All fix2 switches 0 (mf2rZ) ==
   mf2Z == c08456b 16/16; STATIONARY_YIELD_FIX 0 (mf2rX) == the item-4-off shipped arm mf2cX 16/16;
@@ -709,15 +772,22 @@ RECORDED PAPER FINDINGS (maintainer's list, with this round's evidence)
      contention shows as refused moves (147 near the depots, a 44-step run) and depot pockets (457
      UAV-steps) - present, but not visible as yields; with STATIONARY_YIELD_FIX the yield form is gone
      (2 near-depot yields, no cluster) while depot pockets from the searchers' own routing remain.
+  9. (RULED) The moving hold did not avoid the depot deadlock, it hid it: the same contention appeared
+     as refused moves (147 near the depots before the terminal step, one run of 44) and depot pockets.
+  10. (RULED) The staggered-launch result: both staggers (even and compact) close the no-searcher gap in
+     C and D but cost more searcher time than they save while victims remain, because most of the gap
+     falls after the terminal step and the extra returns fall before it.
+  11. (RULED) The item-2 follow-up (FOLLOW-UP 3) and rule (4) had NO independent review (the three review
+     agents were used); they rest on the pre-registration (amendment 4), the identity arms and the
+     revert-failing tests.
 
 ================================================================================
 OPEN / NEXT
 ================================================================================
-  - Item 2: fixes (1) edge escape, (3) partner blocking via step aside, and the depot freeze are BUILT
-    (FOLLOW-UP 3; (2), an occupancy term in the tracker escape, was not ruled and is not built). A ruling
-    is needed on the offered rule (4) for the remaining non-depot yield stalls.
-  - Depot pockets: searchers' BFS pocket escape / retarget-to-interior oscillating at depot edges
-    (every arm; the 119-step B/west pocket) - a searcher-routing round.
+  - SESSION 3, FIRST ITEM: the depot-pocket searcher routing (section SESSION 3 above).
+  - Known limitations of the shipped system: the flank-pair yield stalls (rule (4) OFF); the recharge
+    gap (item 4 OFF); the docking standoff (unfixed, not recurring on this sample); the tracker escape
+    has no UAV-occupancy term (FOLLOW-UP 1 proposal (2), not ruled).
   - The measurement round: results BY WIND DIRECTION (the 3b north-wind screen); the recharge gap and
     the (unfixed) docking standoff as limitations.
   - The bare int() cast class, the belief gap (session 3: do not touch region targeting here).

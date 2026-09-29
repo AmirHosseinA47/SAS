@@ -1190,6 +1190,88 @@ def sec_r(base="mf2cX", cand="mf2rS", others=("mf2rC", "mf2rM")):
           " yield-step refusals = 0 - %s" % ("PASS" if stall_ok else "FAIL", "PASS" if tot["drift_by_yield"] == 0 else "FAIL"))
 
 
+def sec_rule4(off_arm="mf2rS", on_arm="mf2rC"):
+    """The maintainer's condition on the offered rule (4): on the all-together arm with item 4 off, the
+    pre-terminal window - rescued, dead, never_detected, the item-1 alarm checks and the normal-mode
+    share, rule on vs off. Ship it ON iff none of them gets worse."""
+    P("=" * 100)
+    P("RULE (4) YIELD_ONLY_WHEN_CONTENDING - %s (off) vs %s (on), 16 seed-matched configurations" % (off_arm, on_arm))
+    A, B = probe_runs(off_arm), probe_runs(on_arm)
+    common = sorted(set(A) & set(B))
+
+    def item1(d, last_step):
+        """Item-1 checks (iii)-(vii) over steps 2 .. last_step (rows 1 .. last_step-1); violations."""
+        v = collections.Counter()
+        fleet = (d.get("mf2") or {}).get("fleet") or []
+        wins = refused_windows(d)
+        for t in range(1, min(len(d["rows_dec"]), last_step)):
+            if t >= len(fleet) or not isinstance(fleet[t], list) or len(fleet[t]) < 6:
+                v["no_record"] += 1
+                continue
+            counts, noop, named = fleet[t][3], fleet[t][4], fleet[t][5]
+            prev = {u[0]: u for u in d["rows_uav"][t - 1]}
+            real = airborne_close(d["rows_uav"][t - 1])
+            v["iv_named"] += len(named.get("COLLISION_RISK|local", ()))
+            v["iv"] += sum(1 for uid in named.get("COLLISION_RISK|local", ()) if uid not in real)
+            win = wins[t - 1] if t - 1 < len(wins) else {}
+            for key in ("DRIFT_TOO_HIGH|local", "DRIFT_TOO_HIGH|global"):
+                for uid in named.get(key, ()):
+                    v["v_named"] += 1
+                    v["v"] += int(win.get(uid, 0) < 2) + int(bool(prev.get(uid) and prev[uid][6]))
+            v["iii"] += int(bool(counts.get("CRITICAL_LINK_UNRELIABLE|global", 0) or counts.get("CRITICAL_LINK_UNRELIABLE|local", 0)))
+            why = d["rows_dec"][t].get("why") or ()
+            g = named.get("SEARCH_MODE_REQUIRED|global", ())
+            v["vi"] += int("search_mode_required" in why and "FLEET_FIRE_LOST" not in g)
+            if d["rows_dec"][t].get("mode") == "normal":
+                v["normal"] += 1
+                v["vii"] += int(noop != 1)
+            v["steps"] += 1
+        return v
+
+    tot = {off_arm: collections.Counter(), on_arm: collections.Counter()}
+    common_w = {off_arm: collections.Counter(), on_arm: collections.Counter()}
+    per = []
+    for c in common:
+        a, b = A[c], B[c]
+        ta, tb = _term(a), _term(b)
+        w = min(ta, tb)
+        for arm, d, t in ((off_arm, a, ta), (on_arm, b, tb)):
+            ev = d.get("eval") or {}
+            for k in ("rescued", "dead", "never_detected"):
+                tot[arm][k] += int(ev.get(k) or 0)
+            tot[arm] += item1(d, t)            # each run's own pre-terminal window
+            common_w[arm] += item1(d, w)       # the pair's common pre-terminal window
+        ea, eb = a.get("eval") or {}, b.get("eval") or {}
+        if any(ea.get(k) != eb.get(k) for k in ("rescued", "dead", "never_detected")):
+            per.append((c, tuple(ea.get(k) for k in ("rescued", "dead", "never_detected")),
+                        tuple(eb.get(k) for k in ("rescued", "dead", "never_detected"))))
+    worse = []
+    for arm in (off_arm, on_arm):
+        t, cw = tot[arm], common_w[arm]
+        P("  %-6s rescued %d dead %d never_detected %d | item-1 violations (own pre-terminal windows): (iii) %d (iv) %d"
+          " of %d (v) %d of %d (vi) %d (vii) %d | normal-mode share: own windows %.2f%% (%d of %d steps),"
+          " common windows %.2f%%" % (
+              arm, t["rescued"], t["dead"], t["never_detected"], t["iii"], t["iv"], t["iv_named"], t["v"],
+              t["v_named"], t["vi"], t["vii"], 100.0 * t["normal"] / max(1, t["steps"]), t["normal"], t["steps"],
+              100.0 * cw["normal"] / max(1, cw["steps"])))
+    o, n = tot[off_arm], tot[on_arm]
+    oc, nc = common_w[off_arm], common_w[on_arm]
+    if n["rescued"] < o["rescued"]:
+        worse.append("rescued %d -> %d" % (o["rescued"], n["rescued"]))
+    if n["dead"] > o["dead"]:
+        worse.append("dead %d -> %d" % (o["dead"], n["dead"]))
+    if n["never_detected"] > o["never_detected"]:
+        worse.append("never_detected %d -> %d" % (o["never_detected"], n["never_detected"]))
+    for k in ("iii", "iv", "v", "vi", "vii"):
+        if n[k] > o[k]:
+            worse.append("item-1 (%s) %d -> %d" % (k, o[k], n[k]))
+    if nc["normal"] / max(1, nc["steps"]) < oc["normal"] / max(1, oc["steps"]):
+        worse.append("normal share (common windows) %.2f%% -> %.2f%%" % (
+            100.0 * oc["normal"] / max(1, oc["steps"]), 100.0 * nc["normal"] / max(1, nc["steps"])))
+    P("  per-configuration outcome differences (rescued, dead, never_detected) off -> on: %s" % per)
+    P("  => %s" % ("SHIP RULE (4) ON - nothing got worse" if not worse else "SHIP RULE (4) OFF - worse: %s" % "; ".join(worse)))
+
+
 def sec_provc():
     """Amendment 3: provenance and identity of the compact-stagger arms."""
     import runpy
@@ -1320,7 +1402,7 @@ def sec_d9c(pairs=(("mf2Z", "mf2cK", "DECISIVE: item 4 compact alone vs all off"
 
 SECTIONS = {"prov": None, "ident": sec_ident, "item1": sec_item1, "fire": sec_fire, "item2": sec_item2,
             "item3": sec_item3, "osc": sec_osc, "item4": sec_item4, "d9": sec_d9, "exposure": sec_exposure,
-            "rbgate": sec_rbgate, "crn": sec_crn, "outcomes": sec_outcomes, "d9c": sec_d9c, "provc": sec_provc, "yfix": sec_yfix, "r": sec_r}
+            "rbgate": sec_rbgate, "crn": sec_crn, "outcomes": sec_outcomes, "d9c": sec_d9c, "provc": sec_provc, "yfix": sec_yfix, "r": sec_r, "rule4": sec_rule4}
 
 
 def main():
