@@ -279,6 +279,9 @@ class UAV(mesa.Agent):
         # fix2 item 2: the executor's STAY - a committed 'hold' leaves the UAV on its cell
         # (UAV_HOLD_STATIONARY); cleared every step and by a return leg.
         self.execution_stay = False
+        # fix2 item 2 follow-up (STATIONARY_YIELD_FIX): this step is a YIELD - the executor sets it,
+        # the step start clears it; a yield step intends its own cell (no drift sample).
+        self.execution_yield = False
         # Managed operational battery (observed by Step 5 monitoring). At
         # BASE_STATION_MODE >= 2 - the shipped default is 3 - it also drives
         # movement: the return-to-base trigger in _apply_return_to_base reads it.
@@ -888,6 +891,11 @@ class UAV(mesa.Agent):
         if not moved and self._stays_this_step():
             # fix2 item 2: a hold intends its own cell - owned by this switch, so a stationary
             # hold cannot create a drift sample even with FAILSAFE_REAL_ALARMS off.
+            intended_delta = (0, 0)
+        if not moved and getattr(self, "execution_yield", False) and stationary_yield_fix():
+            # fix2 item 2 follow-up: a YIELD step is right-of-way coordination, not the UAV's own
+            # course - a refused step aside or backstop escape is not a drift (COLLISION_RISK
+            # already reports the pair), so the step intends its own cell.
             intended_delta = (0, 0)
         self._update_battery_after_step(moved)
         if self.local_monitor is not None:
@@ -1707,6 +1715,82 @@ def uav_hold_stationary() -> bool:
     heading, and SAFETY_FIRST rewrites every non-exempt path to that moving hold.
     """
     return _fix2_switch("UAV_HOLD_STATIONARY")
+
+
+# fix2 item 2 follow-up (maintainer ruling after the D-9 follow-up; outputs/fix2_part3_prereg.txt
+# amendment 4). The DEPOT APPROACH AREA is every cell within this Manhattan distance of a depot cell:
+# the depot's doorstep ring (1) plus the collision radius (2) - every UAV that can be in a collision
+# pair with a UAV on the doorstep. A launch leg (berth -> first cell outside the area) lies inside it.
+DEPOT_APPROACH_RADIUS = COLLISION_RISK_RADIUS + 1
+
+
+def stationary_yield_fix() -> bool:
+    """STATIONARY_YIELD_FIX - fix2 item 2 follow-up. Shipped 1 (off only on an exact integral 0);
+    read only while UAV_HOLD_STATIONARY is on - it refines the stationary yield.
+
+    On: (1) a yield never escapes for standing on the grid's outer ring or for a committed direction
+    that leaves the grid (a stay cannot leave the grid); the fire-tracker hazard escape and the
+    stuck-count escape (the backstop) stay; a yield step intends its own cell, so a refused move on it
+    records no drift. (2) A yielder whose cell is the cell a partner needs STEPS ASIDE. (3) No yield
+    when either UAV of the pair is on a return leg, docked, or in the depot approach area
+    (DEPOT_APPROACH_RADIUS). Off: the stationary yield of 611c2a4 exactly.
+    """
+    return uav_hold_stationary() and _fix2_switch("STATIONARY_YIELD_FIX")
+
+
+def yield_only_when_contending() -> bool:
+    """YIELD_ONLY_WHEN_CONTENDING - OFFERED rule (4), SHIPS 0: on only on an exact integral 1, and
+    read only while STATIONARY_YIELD_FIX is on. On: a UAV yields only if some eligible partner can
+    contend with it this step - the partner's committed target (its own cell without a commit or
+    when it stays) is within Manhattan 1 of the yielder's cell. A pair moving apart yields nothing."""
+    return stationary_yield_fix() and _exact_integer(getattr(cfv, "YIELD_ONLY_WHEN_CONTENDING", 0)) == 1
+
+
+_MOVE_DELTAS = ((1, 0), (0, -1), (-1, 0), (0, 1))   # selected_dir 0..3, exactly as UAV.move
+
+
+def uav_committed_target(uav):
+    """The cell `uav`'s committed move of THIS step targets, or None - no commit this step (the flags
+    are cleared at every step start), a committed stay, docked, or off the grid. PURE."""
+    if uav is None or getattr(uav, "pos", None) is None or bool(getattr(uav, "rtb_docked", False)):
+        return None
+    if not getattr(uav, "execution_direction_applied", False) or getattr(uav, "execution_stay", False):
+        return None
+    dx, dy = _MOVE_DELTAS[int(getattr(uav, "selected_dir", 0) or 0) % 4]
+    return (int(uav.pos[0]) + dx, int(uav.pos[1]) + dy)
+
+
+def uav_last_refused_target(uav):
+    """The target of `uav`'s LAST move if that move was refused (it intended a cell and stayed put),
+    else None. Read from the monitor's per-step record (finalize_step_after_move). PURE."""
+    if uav is None or getattr(uav, "pos", None) is None:
+        return None
+    intended = getattr(uav, "_monitor_prev_intended_delta", None)
+    actual = getattr(uav, "_monitor_prev_actual_delta", None)
+    if intended is None or actual is None or tuple(intended) == (0, 0) or tuple(actual) != (0, 0):
+        return None
+    return (int(uav.pos[0]) + int(intended[0]), int(uav.pos[1]) + int(intended[1]))
+
+
+def in_depot_approach_area(model, cell) -> bool:
+    """True when `cell` is within DEPOT_APPROACH_RADIUS (Manhattan) of any depot cell. No depot (no
+    base station) -> False. The cell set is computed once per model and cached on it."""
+    if model is None or cell is None:
+        return False
+    area = getattr(model, "_fix2_depot_approach_area", None)
+    if area is None:
+        station = getattr(model, "base_station", None) or {}
+        depot_cells = station.get("cells") if isinstance(station, dict) else None
+        area = set()
+        r = int(DEPOT_APPROACH_RADIUS)
+        for (dx, dy) in (depot_cells or ()):
+            for ox in range(-r, r + 1):
+                span = r - abs(ox)
+                for oy in range(-span, span + 1):
+                    area.add((int(dx) + ox, int(dy) + oy))
+        area = frozenset(area)
+        model._fix2_depot_approach_area = area
+    return (int(cell[0]), int(cell[1])) in area
 
 
 def searcher_wind_coverage_fix() -> bool:

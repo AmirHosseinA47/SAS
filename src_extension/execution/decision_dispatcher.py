@@ -71,6 +71,8 @@ class DecisionDispatcher:
         self._uav_executors: dict[str, UAVExecutor] = {}
         # fix2 item 2: per UAV (step, consecutive yield steps, yielded this step).
         self._yield_streaks: dict[str, tuple[int, int, bool]] = {}
+        # fix2 item 2 follow-up: per yielding UAV (step, the partner ids it yields to).
+        self._yield_partners: dict[str, tuple[int, tuple[str, ...]]] = {}
 
     def _must_yield(self, uav_id: str) -> bool:
         """fix2 item 2 - does this UAV yield (hold) under the fail-safe hold this step?
@@ -109,19 +111,41 @@ class DecisionDispatcher:
             # the partner must be airborne AND not on a return leg: a returning UAV flies a fixed
             # leg to its berth, and a UAV held in front of it would block that leg for as long
             # as the geometry lasts (the cap only restarts the streak) - review R3.
-            lower_close = any(
-                a is not me and getattr(a, "pos", None) is not None
+            partners = [
+                a for a in uavs
+                if a is not me and getattr(a, "pos", None) is not None
                 and not bool(getattr(a, "rtb_docked", False))
                 and not bool(getattr(a, "rtb_active", False))
                 and int(a.unique_id) < int(me.unique_id)
                 and abs(int(a.pos[0]) - mx) + abs(int(a.pos[1]) - my)
                 <= agents_module.COLLISION_RISK_RADIUS
-                for a in uavs
-            )
-            verdict = named and lower_close and prior < agents_module.FAILSAFE_YIELD_MAX_STEPS
+            ]
+            if agents_module.stationary_yield_fix():
+                # rule 3 (amendment 4): no yield at a depot - neither the yielder nor a partner may
+                # stand in the depot approach area; there a stationary UAV blocks the only lanes in
+                # and out of the berths, and UAVs that launched together would hold each other.
+                if agents_module.in_depot_approach_area(model, (mx, my)):
+                    partners = []
+                else:
+                    partners = [a for a in partners if not agents_module.in_depot_approach_area(
+                        model, (int(a.pos[0]), int(a.pos[1])))]
+                if agents_module.yield_only_when_contending():
+                    # offered rule (4), ships 0: only a partner that can reach a cell next to (or on)
+                    # the yielder this step can contend with it
+                    partners = [a for a in partners if _contends(a, (mx, my))]
+            verdict = named and bool(partners) and prior < agents_module.FAILSAFE_YIELD_MAX_STEPS
+            if verdict:
+                self._yield_partners[uav_id] = (step, tuple(str(a.unique_id) for a in partners))
         count = prior + 1 if verdict else 0
         self._yield_streaks[uav_id] = (step, count, verdict)
         return verdict
+
+    def yield_partners(self, uav_id: str) -> tuple[str, ...]:
+        """The partners `uav_id` yields to THIS step (empty when it does not yield)."""
+        model = self._model
+        step = int(getattr(model, "evaluation_timesteps_counter", 0) or 0) if model is not None else 0
+        rec = self._yield_partners.get(uav_id)
+        return rec[1] if rec is not None and rec[0] == step else ()
 
     @property
     def rescue_executor(self) -> RescueExecutor:
@@ -342,6 +366,11 @@ class DecisionDispatcher:
                 # freeze the fleet and never clear the pair's own alarm.
                 if self._must_yield(uav_id):
                     path_to_execute = replace(decision, next_action="hold", selected_option_id="")
+                    if _stationary_yield_fix():
+                        # amendment 4: the executor needs the partners (step aside, rule 2)
+                        ctx = dict(getattr(decision, "uncertainty_context", None) or {})
+                        ctx["fix2_yield_partners"] = list(self.yield_partners(uav_id))
+                        path_to_execute = replace(path_to_execute, uncertainty_context=ctx)
                 else:
                     path_to_execute = decision
             if not execute_path or path_to_execute is None:
@@ -546,6 +575,23 @@ def _hold_stationary() -> bool:
     import agents as agents_module  # lazy: agents is a root module
 
     return agents_module.uav_hold_stationary()
+
+
+def _stationary_yield_fix() -> bool:
+    import agents as agents_module  # lazy: agents is a root module
+
+    return agents_module.stationary_yield_fix()
+
+
+def _contends(partner: Any, cell: tuple[int, int]) -> bool:
+    """Offered rule (4): can `partner` contend with a UAV on `cell` this step - is its committed
+    target (its own cell without a commit or when it stays) within Manhattan 1 of `cell`?"""
+    import agents as agents_module  # lazy: agents is a root module
+
+    target = agents_module.uav_committed_target(partner)
+    if target is None:
+        target = (int(partner.pos[0]), int(partner.pos[1]))
+    return abs(target[0] - cell[0]) + abs(target[1] - cell[1]) <= 1
 
 
 def _classified_fail_safe_mode(decision: FailSafeDecision | None) -> str:

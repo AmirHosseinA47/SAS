@@ -96,6 +96,12 @@ def _is_planner_intentional_hold(decision: PathDecision | None) -> bool:
     return any(marker in selected_id for marker in _HOLD_PATH_MARKERS)
 
 
+def _stationary_yield_fix() -> bool:
+    import agents as agents_module  # lazy: agents is a root module
+
+    return agents_module.stationary_yield_fix()
+
+
 def _is_fail_safe_hold_decision(
     decision: PathDecision | None,
     fail_safe_decision: FailSafeDecision | None,
@@ -412,7 +418,8 @@ class UAVExecutor:
                         "victim_search_wind_aware",
                     )
                 else:
-                    chosen_dir, action = self._execute_hold(agent, chosen_dir)
+                    partners = ctx.get("fix2_yield_partners") if isinstance(ctx, dict) else None
+                    chosen_dir, action = self._execute_hold(agent, chosen_dir, yield_partners=partners)
         else:
             chosen_dir, action = self._resolve_direction_intent(
                 agent, decision, role_kind, action
@@ -432,6 +439,11 @@ class UAVExecutor:
         # probability and smoke-obscured cells and is untouched here.
         base_return_leg = action == "rtb_waypoint"
         if base_return_leg:
+            pass
+        elif action == "yield_step_aside":
+            # fix2 item 2 follow-up (amendment 4, rule 2): the step aside already excludes
+            # burning / smoke / off-grid / occupied cells and the partners' cells; the gate's retreat
+            # or the boundary push could turn it back into the cell the partner needs.
             pass
         elif self._role_is_victim_searcher(role) and action != "hold":
             pathfinding_routed = (
@@ -553,13 +565,103 @@ class UAVExecutor:
             "role_preserving_search": True,
         }
 
-    def _execute_hold(self, agent: Any, current_dir: int) -> tuple[int, str]:
+    def _execute_hold(
+        self, agent: Any, current_dir: int, yield_partners: list[str] | None = None,
+    ) -> tuple[int, str]:
+        if yield_partners is not None and _stationary_yield_fix():
+            return self._execute_yield(agent, current_dir, yield_partners)
         if not self._hold_needs_escape(agent, current_dir):
             return current_dir, "hold"
         escape_dir = self._hold_escape_direction(agent)
         if escape_dir is None:
             return current_dir, "hold"
         return escape_dir, "hold_escape"
+
+    def _execute_yield(
+        self, agent: Any, current_dir: int, partner_ids: list[str],
+    ) -> tuple[int, str]:
+        """fix2 item 2 follow-up (STATIONARY_YIELD_FIX, amendment 4) - one yield step, in order:
+        a fire tracker on / too near fire or smoke escapes (safety overrides a yield); a yielder on
+        the cell a partner needs STEPS ASIDE (rule 2); the stuck-count escape (the backstop); else it
+        stays. Never an escape for the grid edge or an off-grid heading (rule 1): a stay cannot leave
+        the grid. The step is marked a yield, so a refused move on it records no drift."""
+        agent.execution_yield = True
+        role = str(self._read_uav_role() or "").strip().lower()
+        if role == "fire_tracker" and self._fire_tracker_hold_needs_escape(agent):
+            escape_dir = self._hold_escape_direction(agent)
+            if escape_dir is not None:
+                return escape_dir, "hold_escape"
+        partners = self._resolve_partner_agents(agent, partner_ids)
+        pos = getattr(agent, "pos", None)
+        if pos is not None and partners:
+            here = (int(pos[0]), int(pos[1]))
+            needed = self._partner_needed_cells(partners)
+            if here in needed:
+                aside = self._step_aside_direction(agent, partners, needed)
+                if aside is not None:
+                    return aside, "yield_step_aside"
+        if self._uav_stuck_count(agent) >= 3:
+            escape_dir = self._hold_escape_direction(agent)
+            if escape_dir is not None:
+                return escape_dir, "hold_escape"
+        return current_dir, "hold"
+
+    def _resolve_partner_agents(self, agent: Any, partner_ids: list[str]) -> list[Any]:
+        model = self._resolve_model(agent)
+        schedule = getattr(model, "schedule", None) if model is not None else None
+        wanted = {str(p) for p in (partner_ids or ())}
+        return [a for a in (getattr(schedule, "agents", ()) or ())
+                if type(a).__name__ == "UAV" and str(getattr(a, "unique_id", "")) in wanted]
+
+    @staticmethod
+    def _partner_needed_cells(partners: list[Any]) -> set[tuple[int, int]]:
+        """Each partner's needed cell: the target of its committed move of THIS step (partners
+        have lower ids and are dispatched first), else the target of its last move if refused."""
+        import agents as agents_module  # lazy: agents is a root module
+
+        cells = set()
+        for p in partners:
+            target = agents_module.uav_committed_target(p)
+            if target is None:
+                target = agents_module.uav_last_refused_target(p)
+            if target is not None:
+                cells.add(target)
+        return cells
+
+    def _step_aside_direction(
+        self, agent: Any, partners: list[Any], needed: set[tuple[int, int]],
+    ) -> int | None:
+        """The 4-neighbour to step onto: in bounds, no UAV on it, not a partner's cell or needed
+        cell, not a depot cell, strict hazard level 0; farthest from the needed cells, then from the
+        partners, then from the grid edge, then the lowest direction index. None if there is none."""
+        model = self._resolve_model(agent)
+        if model is None or getattr(agent, "pos", None) is None:
+            return None
+        x, y = int(agent.pos[0]), int(agent.pos[1])
+        occupied = {
+            (int(a.pos[0]), int(a.pos[1]))
+            for a in (getattr(getattr(model, "schedule", None), "agents", ()) or ())
+            if type(a).__name__ == "UAV" and a is not agent and getattr(a, "pos", None) is not None
+        }
+        partner_cells = {(int(p.pos[0]), int(p.pos[1])) for p in partners if getattr(p, "pos", None) is not None}
+        station = getattr(model, "base_station", None)
+        depot_cells = station.get("cells", ()) if isinstance(station, dict) else ()
+        best = None
+        for direction, (dx, dy) in enumerate(((1, 0), (0, -1), (-1, 0), (0, 1))):
+            cell = (x + dx, y + dy)
+            if self._strict_victim_hazard_level(cell) != 0:     # off the grid (3), burning (2), smoke (1)
+                continue
+            if cell in occupied or cell in partner_cells or cell in needed or cell in depot_cells:
+                continue
+            score = (
+                min((abs(cell[0] - a) + abs(cell[1] - b) for a, b in needed), default=0),
+                min((abs(cell[0] - a) + abs(cell[1] - b) for a, b in partner_cells), default=0),
+                self._distance_from_boundary(cell[0], cell[1], model),
+                -direction,
+            )
+            if best is None or score > best[0]:
+                best = (score, direction)
+        return None if best is None else best[1]
 
     def _uav_stuck_count(self, agent: Any) -> int:
         model = self._resolve_model(agent)

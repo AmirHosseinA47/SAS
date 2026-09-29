@@ -2530,6 +2530,7 @@ class WildFireModel(mesa.Model):
                 agent.execution_direction_applied = False
                 agent.execution_action = None
                 agent.execution_stay = False  # fix2 item 2: a stay lasts one step
+                agent.execution_yield = False  # fix2 item 2 follow-up: so does a yield
 
     def _prepare_uav_directions_for_step(self) -> None:
         """Set movement intent for this step; never random when extension pipeline is active."""
