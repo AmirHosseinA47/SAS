@@ -61,7 +61,8 @@ def test_off_only_on_an_exact_integral_zero(monkeypatch, value, expected) -> Non
     ([S], [100.0]),                                        # one UAV: nothing to stagger
     ([T, T], [100.0, 67.0]),                               # no searcher: trackers ranks 0, 1
 ])
-def test_the_rule(roles, expected) -> None:
+def test_the_rule(monkeypatch, roles, expected) -> None:
+    monkeypatch.setattr(cfv, "STAGGER_COMPACT", 0)       # the EVEN stagger over the whole cycle
     assert agents.staggered_launch_bases(roles) == pytest.approx(expected)
 
 
@@ -70,7 +71,9 @@ def test_off_is_full_charge(monkeypatch) -> None:
     assert agents.staggered_launch_bases([T, T, S, S]) == [100.0] * 4
 
 
-def test_every_launch_is_above_the_berth_trigger() -> None:
+@pytest.mark.parametrize("compact", [0, 1])
+def test_every_launch_is_above_the_berth_trigger(monkeypatch, compact) -> None:
+    monkeypatch.setattr(cfv, "STAGGER_COMPACT", compact)
     for n in range(2, 9):
         roles = [T] * (n - max(1, n // 2)) + [S] * max(1, n // 2)
         assert min(agents.staggered_launch_bases(roles)) > 39.23
@@ -83,12 +86,65 @@ def _launch(**params):
     return [round(u.battery_level, 6) for u in uavs]
 
 
-def test_model_scenario_d_launches_staggered() -> None:
+def test_model_scenario_d_launches_staggered(monkeypatch) -> None:
+    monkeypatch.setattr(cfv, "STAGGER_COMPACT", 0)
     assert _launch(NUM_AGENTS=4) == pytest.approx([83.5, 50.5, 100.0, 67.0])
 
 
-def test_model_scenario_b_composes_with_the_fraction() -> None:
+def test_model_scenario_b_composes_with_the_fraction(monkeypatch) -> None:
+    monkeypatch.setattr(cfv, "STAGGER_COMPACT", 0)
     assert _launch(NUM_AGENTS=3, UAV_LAUNCH_BATTERY_FRACTION=0.5) == pytest.approx([39.0, 28.0, 50.0])
+
+
+# --------------------------------------------------------------------------- the compact stagger
+# (maintainer ruling on D-9; outputs/fix2_part3_prereg.txt amendment 3)
+
+def test_compact_shipped_on_while_measured() -> None:
+    assert cfv.STAGGER_COMPACT == 1 and agents.stagger_compact() is True
+
+
+@pytest.mark.parametrize("value, expected", [(0, False), ("0", False), (0.0, False), (1, True),
+                                             (0.5, True), (None, True)])
+def test_compact_off_only_on_an_exact_integral_zero(monkeypatch, value, expected) -> None:
+    monkeypatch.setattr(cfv, "STAGGER_COMPACT", value, raising=False)
+    assert agents.stagger_compact() is expected
+
+
+@pytest.mark.parametrize("roles, expected", [
+    ([T, T, S], [83.5, 67.0, 100.0]),                     # A / B: the searcher at full charge
+    ([T, T, S, S], [89.0, 78.0, 100.0, 67.0]),            # D: searchers at the half-cycle's ends
+    ([T, T, T, S, S], [91.75, 83.5, 75.25, 100.0, 67.0]),  # C
+    ([S, S], [100.0, 67.0]),                               # two searchers, half a cycle apart
+    ([T, T], [100.0, 67.0]),                               # no searcher: positions 0, 1
+    ([S], [100.0]),                                        # one UAV: nothing to stagger
+    ([S, T, S, T, S], [100.0, 91.75, 83.5, 75.25, 67.0]),  # three searchers: ends and middle
+])
+def test_the_compact_rule(monkeypatch, roles, expected) -> None:
+    monkeypatch.setattr(cfv, "STAGGER_COMPACT", 1)
+    assert agents.staggered_launch_bases(roles) == pytest.approx(expected)
+
+
+def test_compact_spans_half_the_cycle(monkeypatch) -> None:
+    monkeypatch.setattr(cfv, "STAGGER_COMPACT", 1)
+    half = agents.FLIGHT_DRAIN_PER_STEP * agents.UAV_STAGGER_CYCLE_STEPS / 2.0
+    for n in range(2, 9):
+        roles = [T] * (n - 2) + [S, S] if n >= 2 else [S]
+        bases = agents.staggered_launch_bases(roles)
+        assert max(bases) == pytest.approx(100.0) and min(bases) == pytest.approx(100.0 - half)
+        s_bases = [b for b, r in zip(bases, roles) if r == S]
+        assert max(s_bases) - min(s_bases) == pytest.approx(half)   # searchers half a cycle apart
+
+
+def test_compact_is_read_only_while_the_stagger_is_on(monkeypatch) -> None:
+    monkeypatch.setattr(cfv, "STAGGERED_LAUNCH_BATTERY", 0)
+    monkeypatch.setattr(cfv, "STAGGER_COMPACT", 1)
+    assert agents.staggered_launch_bases([T, T, S, S]) == [100.0] * 4
+
+
+def test_model_scenario_c_and_b_launch_compact(monkeypatch) -> None:
+    monkeypatch.setattr(cfv, "STAGGER_COMPACT", 1)
+    assert _launch(NUM_AGENTS=5) == pytest.approx([91.75, 83.5, 75.25, 100.0, 67.0])
+    assert _launch(NUM_AGENTS=3, UAV_LAUNCH_BATTERY_FRACTION=0.5) == pytest.approx([41.75, 33.5, 50.0])
 
 
 def test_model_off_is_c08456b(monkeypatch) -> None:

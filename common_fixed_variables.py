@@ -127,6 +127,11 @@ UAV_HOLD_STATIONARY = 1
 # searcher is meant to be flying at all times (the design's prediction; outputs/fix2_report.txt has
 # the measurement). Scenario B stays a multiplier: 0.5 x L_i. agents.staggered_launch_bases.
 STAGGERED_LAUNCH_BATTERY = 1
+# Item 4, the compact variant (maintainer ruling on D-9 after the even stagger's Part 3 STOP): the
+# launch phases lie on HALF the battery cycle, the two searchers at its ends (half a cycle apart), the
+# trackers between them - fewer early tracker returns, returns less spread. Read only while
+# STAGGERED_LAUNCH_BATTERY is on; 0 = the even stagger over the whole cycle. agents.stagger_compact.
+STAGGER_COMPACT = 1
 # Item 3a. The victim searcher's coverage y-commit follows the wind (downwind strip first under
 # north/south wind; disjoint camping bands under east/west). agents.searcher_wind_coverage_fix.
 SEARCHER_WIND_COVERAGE_FIX = 1

@@ -1546,13 +1546,50 @@ def staggered_launch_battery() -> bool:
     return _fix2_switch("STAGGERED_LAUNCH_BATTERY")
 
 
+def stagger_compact() -> bool:
+    """STAGGER_COMPACT - fix2 item 4, the COMPACT stagger (maintainer ruling on D-9 after the even
+    stagger's Part 3 STOP; outputs/fix2_part3_prereg.txt amendment 3). Read only while
+    STAGGERED_LAUNCH_BATTERY is on.
+
+    On: the n launch phases lie on HALF the battery cycle, [0, P/2], P = UAV_STAGGER_CYCLE_STEPS -
+    position j = 0..n-1 at an offset of (P/2) j / (n-1) steps, L = 100 - FLIGHT_DRAIN_PER_STEP x
+    offset. The s searchers take the most widely separated positions, j = floor(k (n-1) / (s-1)) -
+    both ends, exactly half a cycle apart, for s = 2; the full-charge end for s = 1 - and the
+    trackers the remaining positions in unique-id order. Off: the even stagger over the whole cycle.
+    """
+    return _fix2_switch("STAGGER_COMPACT")
+
+
+def _compact_launch_bases(roles: list[str]) -> list[float]:
+    n = len(roles)
+    searchers = [i for i, r in enumerate(roles) if r == "victim_searcher"]
+    s = len(searchers)
+    position: dict[int, int] = {}
+    if s == 1:
+        position[searchers[0]] = 0
+    elif s >= 2:
+        for k, idx in enumerate(searchers):
+            position[idx] = (k * (n - 1)) // (s - 1)
+    taken = set(position.values())
+    free = [j for j in range(n) if j not in taken]
+    for idx in range(n):
+        if idx not in position:
+            position[idx] = free.pop(0)
+    half = UAV_STAGGER_CYCLE_STEPS / 2.0
+    return [UAV_FULL_LAUNCH_BATTERY - FLIGHT_DRAIN_PER_STEP * half * position[i] / float(n - 1)
+            for i in range(n)]
+
+
 def staggered_launch_bases(roles) -> list[float]:
     """L_i for each UAV in unique-id order, given the role of each ('victim_searcher' or a
-    tracker role). All UAV_FULL_LAUNCH_BATTERY when the switch is off or the fleet has one UAV."""
+    tracker role). All UAV_FULL_LAUNCH_BATTERY when the switch is off or the fleet has one UAV;
+    the compact stagger when STAGGER_COMPACT is on, else the even stagger."""
     roles = [str(r) for r in roles]
     n = len(roles)
     if n <= 1 or not staggered_launch_battery():
         return [UAV_FULL_LAUNCH_BATTERY] * n
+    if stagger_compact():
+        return _compact_launch_bases(roles)
     searchers = [i for i, r in enumerate(roles) if r == "victim_searcher"]
     s = len(searchers)
     rank: dict[int, int] = {}
