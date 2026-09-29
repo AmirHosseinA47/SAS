@@ -1739,10 +1739,13 @@ def stationary_yield_fix() -> bool:
 
 
 def yield_only_when_contending() -> bool:
-    """YIELD_ONLY_WHEN_CONTENDING - OFFERED rule (4), SHIPS 0: on only on an exact integral 1, and
-    read only while STATIONARY_YIELD_FIX is on. On: a UAV yields only if some eligible partner can
-    contend with it this step - the partner's committed target (its own cell without a commit or
-    when it stays) is within Manhattan 1 of the yielder's cell. A pair moving apart yields nothing."""
+    """YIELD_ONLY_WHEN_CONTENDING - rule (4), SHIPS 0: on only on an exact integral 1, and read only
+    while STATIONARY_YIELD_FIX is on. On: a UAV yields only if some eligible partner can contend with
+    it this step - the partner's committed target (its own cell without a commit or when it stays) is
+    within Manhattan 1 of the yielder's cell. A pair moving apart yields nothing.
+    OFF by the maintainer's test (outputs/fix2_report.txt FOLLOW-UP 4): on the all-together arm with item
+    4 off it cut the non-depot yield stalls 9 -> 1 but rescued fell 45 -> 44 and deaths rose 8 -> 10;
+    the flank-pair yield stalls are a recorded limitation."""
     return stationary_yield_fix() and _exact_integer(getattr(cfv, "YIELD_ONLY_WHEN_CONTENDING", 0)) == 1
 
 

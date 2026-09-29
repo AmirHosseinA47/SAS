@@ -270,6 +270,37 @@ def test_the_step_aside_is_exempt_from_the_post_filters(fix) -> None:
     assert u[2].execution_stay is False
 
 
+def _burn(model, cell):
+    fire = next(a for a in model.grid.get_cell_list_contents([cell]) if type(a).__name__ == "Fire")
+    fire.burning = True
+    return fire
+
+
+def test_the_step_aside_is_not_overridden_by_the_searcher_gate(fix) -> None:
+    # the maintainer's missing revert check: a searcher's step aside near fire. Without the exemption
+    # the near-field searcher gate (a strict hazard within 6) replaces the step aside with its own
+    # hazard retreat; with it, the step aside stands - it already excludes burning / smoke / off-grid /
+    # occupied cells and the partners' cells.
+    fix(1)
+    model, u = _model([(20, 20), (40, 40), (21, 20)])
+    y, p = u[2], u[0]
+    assert str(y.current_role) == "victim_searcher"
+    p.execution_direction_applied, p.execution_stay, p.selected_dir = True, False, 0   # (20,20) -> (21,20)
+    _burn(model, (21, 24))                                  # 4 north of the yielder: inside the gate's near field
+    ex = _yielder_executor(model, y)
+    assert ex._min_strict_hazard_distance((21, 20), ex._collect_strict_active_fire_cells(model),
+                                          ex._collect_strict_smoke_cells(model)) <= agents.SEARCHER_GATE_NEAR_RANGE
+    decision = PathDecision(decision_id="y", uav_id=str(y.unique_id), selected_option_id="", next_action="hold",
+                            uncertainty_context={"fix2_yield_partners": [str(p.unique_id)]})
+    fs = FailSafeDecision(decision_id="fs", selected_option_id="safety-hold", fail_safe_action="safe_hold",
+                          mission_mode="safety_first", uncertainty_context={"fail_safe_mode": "safety_first"})
+    result = ex.execute(decision, 30.0, fail_safe_decision=fs)
+    assert result["action"] == "yield_step_aside"
+    assert result["selected_dir"] == 3                      # (21, 21): the step aside's own choice
+    dx, dy = agents._MOVE_DELTAS[result["selected_dir"]]
+    assert ex._strict_victim_hazard_level((21 + dx, 20 + dy)) == 0     # never onto fire or smoke
+
+
 # --------------------------------------------------------------------------- rule 1: no drift on a yield
 
 @pytest.mark.parametrize("value, drift", [(1, 0.0), (0, 1.0)])

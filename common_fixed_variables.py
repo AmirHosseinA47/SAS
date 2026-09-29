@@ -128,8 +128,9 @@ UAV_HOLD_STATIONARY = 1
 # drift; (2) a yielder on the cell its partner needs steps aside; (3) no yield when either UAV is on a
 # return leg, docked, or within agents.DEPOT_APPROACH_RADIUS (3) of a depot. agents.stationary_yield_fix.
 STATIONARY_YIELD_FIX = 1
-# Offered rule (4), SHIPS 0 (on only on an exact integral 1): yield only when a partner's move can
-# contend (its target within 1 of the yielder). agents.yield_only_when_contending.
+# Rule (4), SHIPS 0 (on only on an exact integral 1): yield only when a partner's move can contend (its
+# target within 1 of the yielder). OFF by the maintainer's test: it cut the non-depot yield stalls 9 -> 1
+# but rescued 45 -> 44 and dead 8 -> 10 (outputs/fix2_report.txt). agents.yield_only_when_contending.
 YIELD_ONLY_WHEN_CONTENDING = 0
 # Item 4. Staggered launch batteries (the variant: STAGGER_COMPACT below). With STAGGER_COMPACT 0,
 # the EVEN stagger: L_i = 100 - 0.3 * 220 / n * rank_i, the searchers spread
