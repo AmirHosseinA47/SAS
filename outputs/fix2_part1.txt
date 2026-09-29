@@ -1,0 +1,761 @@
+================================================================================
+FIX2 - SESSION 2 OF 3: BEHAVIOUR FIXES - PART 1: RE-VERIFICATION AND DESIGN      outputs/fix2_part1.txt
+================================================================================
+NO SOURCE FILE WAS CHANGED. Every item below was re-verified at c08456b by reading the code and by
+runs whose instrumentation is proven pass-through. Part 2 (implementation) waits for the maintainer's
+confirmation of the decisions in section 8. Session 3 territory (region targeting, target_regions) was
+not touched.
+
+START-OF-SESSION STATE (as instructed)
+  - Confirmed: branch main, HEAD c08456b, tag sysdebug-session1. Cut branch fix2 from it. Tracked tree
+    clean (git status --porcelain -uno: empty); no python / pool process running (Win32_Process scan);
+    one worktree (E:/Projects/SAS).
+  - ENVIRONMENT: sys.version = 3.10.11 (tags/v3.10.11:7d4cc5a, Apr 5 2023, 00:38:17) [MSC v.1929 64 bit
+    (AMD64)]; mesa.__version__ = 1.2.1; interpreter E:\Projects\SAS\.venv\Scripts\python.exe.
+  - THE c08456b BASELINE IS ALREADY ON DISK. fix1's 16 shipped-default invariant runs
+    (outputs/_sd_mf1P_*: scenarios A-D x winds N/S/E/W, seeds 9601-9616, 360 steps, GPM 0) and its 6
+    mf1X runs executed exactly the c08456b source: the 11 source-file hashes each run recorded equal
+    HEAD's files 22/22 (outputs/_mf2_p1_provenance.py). They are this session's "before".
+    HOUSEKEEPING FINDING: the working tree's LINE ENDINGS changed with the fix1 merge (wildfire_model.py
+    and utility_evaluation.py are CRLF now, LF when fix1 hashed them; the index is LF). Raw-byte hashes
+    therefore differ while the content does not; the provenance check compares LF-normalised content.
+    Part 2 patch scripts must detect each file's own ending (memory: windows-bash-tool-gotchas).
+
+RUNS IN PART 1 (all DIAGNOSTIC; stated before launch; tag mf2, checked unused: 0 files, 0 tracked)
+  mf2H  16 alarm-attribution runs (outputs/_mf2_p1_hooks.py) on the 16 mf1P configurations:
+        16/16 VALUE-IDENTICAL to their mf1P twins on every recorded field (all per-step rows, eval,
+        terminal step, stdout sha256, stdout tags) - the hooks are pass-through.
+  mf2D  4 hold-origin runs (outputs/_mf2_p1_holds.py; A/S, C/N, D/E, D/W - identical to their twins)
+        + 1 B/west sweep trace (outputs/_mf2_p1_sweep.py, 300 steps; rows identical to the twin's).
+  mf2S  8 strip / y-commit runs (outputs/_mf2_p1_strips.py; A-D x east, south).
+  plus  the T7/T8 fixtures replayed with a wind-state trace (outputs/_mf2_p1_traj.py ->
+        _mf2_p1_traj_head.txt); in-process PROTOTYPES of the wind fix judged by the tests' own
+        assertions (outputs/_mf2_p1_proto3.py -> _mf2_p1_proto3_*.txt, 10 variants); a gate-range sweep
+        over the two searcher-exposure fixtures (outputs/_mf2_p1_krange.py, K = 99/6/8/10/12, with and
+        without 3a and the route rule) and two exposure traces (outputs/_mf2_p1_exposure_trace.py); the
+        final prototype as a pytest plugin over 10 searcher/wind test files, beside a stock run of the
+        same files (outputs/_mf2_p1_proto_plugin.py).
+  29 probe runs (pool) + the replays / prototypes above (single processes); 0 crashes, 0 pool failures
+  (outputs/_mf2_pool_p1*.log). The prototypes are MONKEYPATCHES in their own process - no source edit.
+  Analyses: outputs/_mf2_p1_rows_mf1P.txt (items 1, 2, 4, 5 from the mf1P rows), _mf2_p1_alarms.txt
+  (item 1 attribution).
+  AGENTS: 0 of the allowed 3 - all three are kept for the Part 2 / Part 3 reviews.
+  QUARANTINE: my recursive searches were scoped to src_extension/, tests/ and named root files, with
+  --exclude-dir=_firemech_rewound_20260914; git status only with -uno; git ls-files reads the index
+  only. Non-recursive `ls outputs | grep` listings (tag checks) and python glob patterns of the form
+  outputs/_sd_mf1P_*.json read outputs/'s own entry names, which include the quarantined directory's
+  NAME; nothing inside it was listed, opened or traversed.
+
+VERDICT SUMMARY
+  #  item                         switch (proposed; all ship 1,       behaviour change
+                                  off only on an exact integral 0)
+  1  false alarms -> real         FAILSAFE_REAL_ALARMS                every scenario: the fail-safe mode
+     conditions                                                       (static preview: normal 0.3% ->
+                                                                      ~72% of steps)
+  1B global analyzer fire source  GLOBAL_ANALYZER_FIRE_SOURCE_FIX     3 of the 14 dead trigger types fire;
+                                                                      no named consumer at GPM 0
+  2  hold is stationary           UAV_HOLD_STATIONARY                 trackers under a real collision
+     (+ the fail-safe hold scope)                                     risk; the rare own-cell flank hold
+  3a wind-aware y-commit          SEARCHER_WIND_COVERAGE_FIX          searcher targets under N/S wind
+                                                                      (and the E/W camping bands)
+  3b hazard gate keeps the        SEARCHER_GATE_NEAR_FIELD            searcher paths wherever no fire or
+     searcher's own direction                                         smoke is within 6 cells; the
+     far from fire; near-field                                        pathfinding route near a front
+     rule on the pathfinding route
+  4  staggered launch batteries   STAGGERED_LAUNCH_BATTERY            every scenario (launch charge,
+                                                                      hence return timing)
+  5  depot standoff               DEPOT_STANDOFF_FIX - CONDITIONAL:   return legs / UAVs near a depot
+                                  built only if the Part 2 checkpoint
+                                  still finds standoffs after item 4
+
+================================================================================
+1. ITEM 1 - THE FALSE ALARMS DRIVING THE FAIL-SAFE MODE - RE-VERIFIED, HOLDS
+================================================================================
+RE-VERIFIED AT c08456b (outputs/_mf2_p1_rows_mf1P.txt; 16 runs, 5,760 steps)
+  The mode leaves 'normal' at step 2 in 16/16 runs. information_recovery 84.8% of steps, safety_first
+  14.9%, normal 0.3% (step 1 only), degraded 0. safety_first steps carry ONLY artifact reasons
+  (collision_risk / extreme_drift / critical_communication) on 857/857; information_recovery carries
+  search_mode_required on 4,887/4,887. (sysdebug at 5a6dea6: 78.1 / 20.3 / 1.4 / 0.3 - fix1 moved the
+  split, not the finding.) Mapping: safety_checker.py:18-28 (trigger -> reason), :67-97 (reasons ->
+  mode, no hysteresis), fleet-wide, recomputed every step from the same step's triggers
+  (mode_manager.py:23-70; fail_safe_planner.py:93-104).
+
+1a. COLLISION_RISK (local) - ARTIFACT CONFIRMED
+  ARTIFACT  LocalUAVMonitor._nearby_uav_ids returns EVERY other UAV in the schedule, with no distance
+    (local_uav_monitor.py:229-235); congestion = min(1, n/3) (wildfire_model.py:1854-1858); any
+    congestion > 0 fires (local_uav_analyzer.py:296-319). Measured: 94.7% of UAV-steps from step 20
+    (before step 20 the grace filter strips it, wildfire_model.py:2069-2075).
+  REAL CONDITION  another AIRBORNE UAV within Manhattan distance 2 of this airborne UAV.
+  THRESHOLD  2 cells. congestion = min(1, n_close / 3) as today (severity HIGH at >= 2 close UAVs).
+  WHY  UAVs move one cell per step on the 4-neighbourhood. Two UAVs can claim the same cell on the next
+    step only if they are at most 2 apart; at 3 or more no single-step conflict exists. A DOCKED UAV
+    sits on its berth and never moves - it is an obstacle the move rule already refuses entry to
+    (agents.py:390-396), not a collision partner - so docked UAVs are excluded on both sides.
+  MEASURED (mf2H, offline)  real condition on 9.4% of UAV-steps (step >= 20); >= 1 real pair on 15.6%
+    of steps; 40% of those UAV-steps within 3 cells of a depot and 35% on a return leg; adjacent
+    (distance 1) alone 5.2% of UAV-steps (decision D-3).
+  WHERE  the congestion input of the path-context refresh (wildfire_model.py:1854-1858), under the
+    switch. The monitor's nearby_uavs field (read by the local observation model and two tests) is left
+    as it is. The GLOBAL COLLISION_RISK (global_analyzer.py:868-890: two UAVs < 1 cell apart = the same
+    cell) is already a real condition; it never fires because the move rule makes it impossible.
+
+1b. DRIFT_TOO_HIGH (local AND global) - ARTIFACT CONFIRMED, AND WIDER THAN RECORDED
+  ARTIFACTS  (i) THE LATCH: UAVResourceModel.update_drift sets local_risk_status 'high_drift' when the
+    reading exceeds 0.7 and never clears it (it writes 'low_drift' only when the status is None,
+    uav_resource_model.py:204-226). (ii) THE MEASURE: the drift of a step is the distance between the
+    commanded cell (position + selected_dir's delta) and the cell reached (agents.py:857-874,
+    local_uav_monitor.py:358-373); a DOCKED UAV holding its berth is scored 1.0 on every recharge step,
+    because its selected_dir still points somewhere. (iii) THERE IS NO DRIFT PROCESS IN THIS MODEL:
+    move() either reaches the commanded cell or refuses it, so a step's drift is 0 or 1.
+    NEW: the GLOBAL analyzer raises its own per-UAV DRIFT_TOO_HIGH from the same resource-model fields
+    (global_analyzer.py:842-866; a reading of 1.0 is CRITICAL there) - on 79.8% of steps. And the local
+    analyzer NEVER sees the observation's drift_error (None on 21,600/21,600 analysis calls); both
+    analyzers read only the resource model.
+  MEASURED (mf2H)  local DRIFT_TOO_HIGH on 67.4% of UAV-steps: 90.4% latch only (current reading 0.0),
+    6.4% a docked berth-hold (reading 1.0), 3.2% a refused move (reading 1.0).
+  REAL CONDITION  the UAV is persistently failing to reach the cell it was commanded to - a sustained
+    deviation from its track. In this model the only deviation is a REFUSED move (another UAV holds the
+    target cell, or the target is off the grid). A deliberate stay - a docked UAV on its berth, the
+    stationary hold of item 2, a step with no managed direction - is not a deviation.
+  THRESHOLD  drift_level = the share of the UAV's last 5 steps on which its commanded move was refused
+    (deliberate stays count as on-target); local_risk_status recomputed from it on every update (no
+    latch) with the resource model's own bands: > 0.7 high_drift, > 0.3 moderate_drift, else low_drift.
+    The analyzers are unchanged, so DRIFT_TOO_HIGH fires at >= 2 refused moves in 5 steps (0.4 >= their
+    0.3 band), HIGH at >= 4 of 5, and the global CRITICAL at 5 of 5.
+  WHY  one refusal (0.2) is the collision-avoidance rule working once and must never fire; a UAV
+    refused on 2 or more of its last 5 steps is being held off its track. 5 is the shortest window in
+    which one refusal stays under the analyzers' lowest band, and it flags a block within 2 steps.
+  MEASURED (offline, same runs)  >= 2 of the last 5 refused: 2.22% of UAV-steps; >= 4 of 5: 1.56%.
+    Refusals are BIMODAL: 329 isolated single refusals against 300 UAV-steps in fully blocked
+    5-windows. The blocked ones are the depot standoffs (C/W: 2502 25 steps, 2501 13, 2504 15) and
+    two head-on TRACKER DEADLOCKS (C/N: 2502 and 2503 refused ~128 steps in a row, steps ~219-347;
+    B/E: 2501 and 2502 6-8 steps) - each UAV refused a move into the other's cell (sysdebug Part 5's
+    after-terminal family; here before the horizon). So the fixed alarm names real, persistent blocks.
+  WHERE  the drift measure (a deliberate stay's intended delta is (0,0) - item 2's switch owns that
+    part for the hold) and UAVResourceModel.update_drift (windowed level, no latch), under the switch.
+
+1c. CRITICAL_LINK_UNRELIABLE (global) - ARTIFACT CONFIRMED, THREE SOURCES
+  ARTIFACTS  (i) CommunicationModel._compute_critical_reliability = delivered / max(1, queue length):
+    0.0 when no critical message was ever sent (communication_model.py:260-268). The critical queue was
+    EMPTY on every measured step (5,744/5,744) -> reliability 0.0 < 0.125 -> the alarm at CRITICAL.
+    (ii) CommunicationExecutor._delivery_status scores any action whose NAME contains "fail" as a failed
+    delivery (communication_executor.py:189-196): the fail-safe communication action
+    'prioritize_failsafe_messages', issued on every non-normal step, was scored a failure 5,728 times in
+    16 runs -> failed_messages >= 3 on 99% of steps. (iii) Telemetry delivery status is derived from
+    POSITION DRIFT (wildfire_model.py:1561-1566: drift > 1.0 'failed', > 0.5 'delayed') and
+    delivery_confidence is averaged with 1 - mean drift (:1580-1589).
+  MEASURED (mf2H)  fires on 99.7% of steps; on 100% of them reliability is 0.0 over an empty queue,
+    plus failed >= 3 on 99%, delivery < 0.25 on 5%.
+  REAL CONDITION  messages that were actually sent are not being delivered.
+  THRESHOLD  the analyzer's own (critical-link reliability < 0.25, or delivery confidence < 0.25, or
+    >= 3 failed messages; global_analyzer.py:1141-1185), over REAL delivery outcomes: reliability is
+    None - no evidence - while no critical message has been sent; an action's name is not its delivery
+    outcome (a delivery failure is recorded only from a delivery result, and this simulation's executor
+    has no message-loss process, so every sent message is delivered); telemetry delivery is not derived
+    from a refused move.
+  WHY  the absence of critical traffic is not evidence of a bad link; "fail" in "failsafe" is a
+    substring, not a failure; a refused move is not a lost message.
+  CONSEQUENCE  with the switch on this alarm cannot fire in the current simulation - there is no
+    communication-loss model. It stays wired and would fire on real losses.
+
+1d. THE FOURTH TRIGGER - SEARCH_MODE_REQUIRED (local): AN ARTIFACT AS THE FLEET'S MODE DRIVER
+  WHAT IT TESTS (local_uav_analyzer.py:685-707): no fire in THIS UAV's window AND (smoke, uncertain
+    cells or negative observations in it). The second clause is always true - every window has
+    uncertain or negative cells - so it reduces to "no fire in my window". Any one UAV raising it puts
+    the WHOLE FLEET in information_recovery (safety_checker.py:25, :77-81).
+  EVIDENCE (mf2H, 21,600 UAV analysis calls, 5,760 steps)
+    raised on 55.9% of UAV-steps: by victim searchers 5,067 (the fire-AVOIDING role, whose normal state
+    is "no fire in view"), trackers 4,593, UAVs on a return leg 1,542, docked UAVs 874.
+    On the 4,887 steps it set the fleet's mode:
+      57.4%  another UAV had fire in its window - the fleet had the fire in view
+      26.5%  no fire was burning anywhere
+      15.8%  no UAV saw fire while the fleet's belief held a burning cell (p >= 0.7) - the fleet had
+             LOST SIGHT of the fire
+       0.3%  a fire burned that nobody had yet seen
+  VERDICT  ARTIFACT as the driver of the fleet's mode: a per-UAV hint that is true by construction for
+    searchers, docked and returning UAVs becomes the whole fleet's mode, and on 57% of those steps the
+    fleet had the fire in view. The GENUINE condition its name describes is FLEET-LEVEL - fire is
+    believed to be burning and no UAV currently sees it - which held on 18.6% of all steps.
+  DESIGN  the local trigger stays (it is a local planner input: trigger_input.py:14,
+    fail_safe_planner.py:23) but no longer supplies the fail-safe reason. The reason
+    search_mode_required comes from a fleet-level test in the global analyzer, emitted as the global
+    SEARCH_MODE_REQUIRED the safety checker already maps:
+      FLEET_FIRE_LOST = the fire belief holds at least one cell with probability >= 0.7
+                        AND no UAV's latest local observation contains a fire cell (the same
+                        observations this step's analysis reads - the evidence above used exactly this).
+    The model hands the analyzer the fleet's visible-fire count with the snapshot (under the switch);
+    the analyzer does not read agents.
+  THRESHOLDS / WHY  0.7 is the model's own definition of an estimated burning cell
+    (fire_runtime_model.py:266-276) and the analyzer's fire_probability_threshold; "latest observation"
+    because a UAV either has fire in its window now or it does not. Genuine adaptation: when the fleet has
+    no fire in view the trackers search (the existing information-recovery behaviour); the mode ends
+    when a UAV sees fire again or the belief decays below 0.7. A fire that burns out keeps the fleet in
+    information_recovery for up to ~60 steps (a cell last seen at p = 1.0 decays at 0.005/step,
+    fire_runtime_model.py:209-232) - reported, not changed.
+  NOTE  the existing global SEARCH_MODE_REQUIRED test (global_analyzer.py:567-596, "visible_empty and
+    high_belief") cannot fire even with its fire source fixed: its "visible" input is the estimated-
+    burning set, which is empty exactly when no cell reaches 0.7 - the negation of high_belief at the
+    same threshold (shadow analyzer, section 1f: 0 of 5,760 steps). FLEET_FIRE_LOST replaces that input
+    with the latest observations.
+
+1d'. A CONSUMER PATH THAT WOULD UNDO 1a-1d (code-traced; part of the same switch)
+  THE PLANNING ECHO. With no fail-safe reason the planner still selects an option - max of
+    (preference bonus, score) over options that all score 0 (fail_safe_planner.py:150-153, :311-332) -
+    and the preference prefers a SEARCH option whenever any trigger is named SEARCH_MODE_REQUIRED
+    (:23, :259). The local trigger stays (1d), so on almost every normal step the planner would pick
+    'info-search' with search_mode_active = True, and the mode manager reads that flag - and the text
+    'activate_search_mode' - back as the reason search_mode_required (safety_checker.py:141-145, :44):
+    the fleet would be back in information_recovery on nearly every step. (At c08456b the only normal
+    step is step 1, where the same list-order selection picks 'failsafe_uav_return_to_base'.)
+    DESIGN: with no fail-safe reason the planner returns its existing no-op decision ("maintain current
+    fail-safe state", fail_safe_planner.py:156-161) - no action, no search flag. No reason, no action.
+  CHECKED, NOT A DEFECT: the dispatcher cancels an override when the model's fail-safe state is normal
+    (decision_dispatcher.py:91-103); the mode manager runs BEFORE execution in the same cycle
+    (adaptation_manager.py:114-124), so that state is this step's - an episode is enforced from its
+    first step. Its execution-derived reasons are always empty (sysdebug F-b), so no lag enters there.
+
+1e. WHAT THE MODE BECOMES - A STATIC PREVIEW, NOT A PREDICTION (no feedback: the runs are the shipped
+  system, recomputed with the real conditions): normal 71.9%, information_recovery 18.6%, safety_first
+  9.5% (today 0.3 / 84.8 / 14.9). CONSUMERS that then change (intended; Part 3 measures them): in
+  normal mode with no active rescue the mission phase is 'exploration' or 'evacuation' instead of
+  'degraded_operation' (mission_goal_model.py:198-213) - victim-search and fire-perimeter priorities ON,
+  avoid_fire_entry only at fire severity >= 0.8 (so the move_toward_fire family can pass the filter;
+  sysdebug found it dominated when let through, 6/6 identical); the planners score with the normal
+  utility profile (utility_evaluation.py:64-152); the dispatcher's fail-safe override is off in normal
+  (decision_dispatcher.py:88-103). PAPER: the mode-switching becomes adaptation to named conditions
+  (UAVs in conflict, a UAV held off its track, the fleet losing the fire); every earlier mode frequency,
+  "safety-first engaged N times" and adaptive-mode narrative is superseded.
+
+1f. ROW (B) - THE GLOBAL ANALYZER'S FIRE SOURCE - RE-VERIFIED, HOLDS (own switch)
+  RE-VERIFIED  GlobalAnalyzer reads fire_probability_map / fire_confidence_map / last_observed_fire_time
+    (global_analyzer.py:278-280) and estimated_fire_front_cells / predicted_fire_front_map /
+    predicted_spread_bias (:1072-1081, :1587-1593) as top-level FireRuntimeModel attributes; they live
+    on FireRuntimeModel.belief (fire_runtime_model.py:25-40, :57). It also reads the snapshot key
+    fire_state_summary, which the global monitor does not produce (the SOP has it; the analyzer does
+    not read the SOP).
+  DESIGN (GLOBAL_ANALYZER_FIRE_SOURCE_FIX)  read the six from fr.belief (falling back to the attribute on
+    the object itself for stand-ins without .belief - how the unit tests drive it); when the snapshot
+    has no fire_state_summary, take the estimated burning / front cells from the belief. Snapshot maps
+    keep their precedence (tests/test_global_analysis.py:26-36 drives the analyzer through them).
+  MEASURED WITH A SHADOW ANALYZER (a copy of the model's analyzer, fed the belief each step; it cannot
+    touch the run - 16/16 runs value-identical):
+    never fired at c08456b in these 16 runs: 15 of 36 - CRITICAL_BATTERY, FIRE_DIRECTION_SHIFT,
+      FIRE_SPREAD_ACCELERATING, HIGH_PRIORITY_FIRE_REGION, INFORMATION_INSUFFICIENT,
+      INSTABILITY_DETECTED, LOCAL_PATH_UNRELIABLE, LOW_BATTERY, LOW_NAVIGATION_CONFIDENCE,
+      OSCILLATION_RISK, POOR_FIRE_COVERAGE, RESCUE_UNSAFE, STALE_HIGH_PRIORITY_REGION,
+      STALE_LOCAL_INFORMATION, UNSAFE_SYSTEM_STATE. (sysdebug's 14 came from 27 runs incl. GPM 1: here
+      RESOURCE_DEGRADING fired, 0.3%, and INSTABILITY_DETECTED / LOW_NAVIGATION_CONFIDENCE did not -
+      sample-dependent.)
+    THEN FIRE (3 of the 14): HIGH_PRIORITY_FIRE_REGION 82.1% of steps, STALE_HIGH_PRIORITY_REGION 80.0%,
+      FIRE_SPREAD_ACCELERATING 3.1%. TREND_WORSENING 94.8% -> 95.7% (its fire-front term now sees a
+      front), TREND_IMPROVING 4.7% -> 3.8%.
+    STILL SILENT: FIRE_DIRECTION_SHIFT (nothing writes belief.predicted_spread_bias - no writer in the
+      source), POOR_FIRE_COVERAGE, the global SEARCH_MODE_REQUIRED (dead by construction, 1d), and the
+      11 non-fire types (their causes: battery - never reached in flight, fix1; UNSAFE_SYSTEM_STATE -
+      inputs never produced, sysdebug Part 6; the rest outside this item).
+  CONSUMERS  none of the three maps to a fail-safe reason; no module outside the analyzer names them
+    (grep); the global families that would act on them cannot act at GLOBAL_PLANNER_MODE 0. They do
+    enter the trigger lists the planners receive, whose averaged confidence feeds option confidence
+    (trigger_input.adaptation_trigger_metadata) - so the fix is not guaranteed decision-neutral; Part 3
+    measures it on its own arm.
+  PAPER  the global layer's fire awareness exists after the fix for three triggers, which nothing
+    consumes in the shipped configuration (GPM 0): do not claim it drives any adaptation.
+
+================================================================================
+2. ITEM 2 - "HOLD" THAT DOES NOT HOLD - RE-VERIFIED, HOLDS, AND SMALLER THAN IT LOOKED
+================================================================================
+RE-VERIFIED  UAV.move has no stay action (agents.py:819-856): only rtb_docked and a missing managed
+  direction stop it; the executor's 'hold' re-commits the previous heading (_execute_hold,
+  uav_executor.py:539-545) and skips both post-filters (:419, :428). c08456b rows (16 runs): 'hold'
+  1,472 steps, moved 1,465 (99.5%); 'fire_flank_hold' 1,278, moved 1,274 (99.7%); 'hold_escape' 377,
+  moved 377 (an escape by design).
+WHERE THE HOLDS COME FROM (mf2D, 4 runs, value-identical to their twins)
+  - Every executor 'hold' is the FAIL-SAFE safe_hold: 167/167 in SAFETY_FIRST steps, 0 planner holds,
+    trackers only. In all 16 runs 'hold' occurs only in safety_first steps (1,472/1,472) - so item 1
+    removes almost every 'hold'. Searchers never hold: under SAFETY_FIRST the executor receives no
+    fail-safe decision (decision_dispatcher.py:519-535), so a searcher's rewritten hold looks like a
+    planner hold and is re-routed to the wind-aware search (uav_executor.py:346-363).
+  - 'fire_flank_hold' is NOT a hold in 652 of 653 cases: the flank layer aims at a LATERAL neighbour -
+    a tangential patrol step at standoff distance (_fire_tracker_lateral_hold_target,
+    uav_executor.py:3526-3568, scores sideways steps up and radial steps down). Only once did it
+    target the tracker's own cell. It occurs in information_recovery steps (1,278/1,278), i.e. it is
+    the trackers' ordinary flank behaviour, not a fail-safe response.
+DESIGN (UAV_HOLD_STATIONARY)
+  (a) A STAY ACTION. The executor commits a stay flag with the direction (agent.execution_stay) for
+      'hold' and for a 'fire_flank_hold' whose target is the tracker's own cell; UAV.move returns
+      without moving when it is set (after the docked and no-direction checks, which already stay).
+      'hold_escape' and the lateral flank step keep moving.
+  (b) A STAY IS INTENDED: the step's intended delta is (0, 0), so the drift measure scores it 0 - owned
+      by this switch, because a stationary hold would otherwise create a new drift sample (1.0) with
+      item 1 off.
+  (c) RETURN LEGS WIN: _apply_return_to_base runs first in advance() (agents.py:858); when it steers a
+      leg or docks it clears the stay flag. A docked UAV already stays (agents.py:830-832).
+  (d) BATTERY: a staying UAV drains 0.1 per step - the model's existing rule for a UAV that did not
+      move (agents.py:371-386), as a refused move does today. Reported, not changed.
+  (e) THE FAIL-SAFE HOLD SCOPE - DESIGNED WITH ITEM 1. Today SAFETY_FIRST rewrites EVERY non-exempt
+      path to 'hold' (decision_dispatcher.py:483-516). With a stationary hold that would (i) stop every
+      tracker whenever two UAVs anywhere are within 2 cells - 15.6% of steps under item 1's real
+      condition - and (ii) hold BOTH members of a close pair, so the pair stays close, the alarm never
+      clears and the fleet freezes for good. So under the switch the dispatcher rewrites to 'hold' only
+      a UAV that must YIELD:
+        airborne, not on a return leg, named by its own COLLISION_RISK (the local trigger names the UAV
+        itself), and another airborne UAV with a LOWER unique_id within Manhattan 2 (right of way to
+        the lower id);
+        and not after 3 consecutive yield steps - a UAV that has yielded 3 steps in a row proceeds on
+        the next step, so no pair can freeze (3 = BASE_STATION_RETURN_STALL_LIMIT and the analyzer's
+        UAV_STUCK threshold).
+      Every other UAV keeps its own path under SAFETY_FIRST (the mode still sets the mission phase and
+      the utility profile). The yield applies to searchers too - a collision risk is role-blind: the
+      dispatcher marks the rewritten path as a fail-safe yield, so the executor holds it instead of
+      re-routing it. EMERGENCY (unreachable after item 1: it needs a critical battery or a critical
+      link plus another reason) keeps today's rewrite.
+      WHY a scoped yield and not a fleet-wide stop: stopping is a remedy only for the UAVs in the
+      conflict; right of way prevents the mutual freeze; the cap bounds the case holding cannot solve -
+      a head-on block where the right-of-way UAV's own move is into the yielding UAV's cell (item 5's
+      class; the tracker deadlocks of 1b).
+      With the switch off the dispatcher is exactly today's (fleet-wide rewrite, moving hold).
+  PAPER  "hold" and "safe hold" become stationary and are now issued only to the UAV that yields in a
+    close pair; "fire_flank_hold" must be described as a lateral patrol at standoff (decision D-4).
+    Before this fix no "hold" in any recorded run was stationary.
+
+================================================================================
+3. ITEM 3 - NORTH/SOUTH WIND SEARCH, THE B/WEST LOOP, THE STRIP ORDER - RE-VERIFIED; THE CAUSE IS TWO-SIDED
+================================================================================
+RE-VERIFIED: THE T7/T8 FIXTURES REPLAYED AT c08456b (per-step counters; outputs/_mf2_p1_traj_head.txt)
+  - The FIRST wind-aware targets are wind-driven (downwind): north (2,44), south (2,5), east (44,47),
+    west (5,47).
+  - The searcher's POSITIONS ARE IDENTICAL UNDER ALL FOUR WINDS for all 40 steps ((24,26) west to
+    (6,26), then up to y 29 and east to (22,29)). The victim-searcher hazard gate at range 99 replaces
+    the chosen direction on ~half of its calls (20-26 of 40-51) with the neighbour furthest from the
+    nearest fire or smoke - a GLOBAL, target-blind repulsion: _min_strict_hazard_distance has no range
+    cap (uav_executor.py:2277-2294). Under east wind the target is (44,47) and the searcher flies WEST
+    for 13 steps.
+  - At step 15 the y-commit latches 'north' in ALL FOUR winds: the searcher sat at y = 26 for its 15
+    samples; 26 lies in the OVERLAP of the two camping bands ('lower' = all < 31, 'upper' = all >= 25)
+    and 'north' is tested first (local_adaptation_generator.py:834-856, :887-914). From then on the
+    targets coincide, and all four runs end on (24, 45): the pocket escape to the grid midpoint,
+    moved north by the commit.
+  - T7 and T8 therefore fail on BOTH counts: final targets equal AND positions equal. (fix1 moved the
+    latch from ~3 steps to the nominal 15; the defect is unchanged.)
+THE B/WEST LOOP - EXPLAINED (mf2D sweep trace; identical to the recorded run)
+  No fire ever burns in this seed (0 burnt cells), so the wind-aware option is never generated (it
+  needs fire) and the searcher runs the executor's lawnmower sweep; its sweep target is (41, 0). At
+  x = 45 it chooses south; the hazard gate at range 99 replaces that with EAST - with no fire or smoke
+  anywhere every neighbour's hazard distance is 99, the retreat's scores tie, and the first direction
+  in 0..3 order, east, wins (uav_executor.py _retreat_to_safe_interior_direction). At x = 46 east is
+  edge-blocked (margin 3) and the westward choice passes. So it cycles 45 <-> 46 at y = 26 from step
+  113 to its return (~229), and again at (45-46, 4) from step 272 to the horizon, while the victim stays
+  undetected. It is identical with every fix1 switch at 0 because the gate predates fix1. The same tie
+  explains the after-terminal "searcher sweep loops at x 44-46" of sysdebug Part 5 and fix1 section 7:
+  a searcher with nothing to retreat from is driven east until the edge filter stops it.
+  => The B/west loop and T7/T8's identical positions have ONE root: the always-retreat gate.
+THE STRIP ORDER ("strip inversion") AND THE Y-COMMIT - MEASURED (mf2S, 8 runs A-D x east/south, each
+  value-identical to its mf1P twin; the hook separates the strip pull from the interior clamp, the
+  defect of sysdebug's hook; outputs/_mf2_p1_strips_summary.txt)
+  X-STRIP PULLS that moved a target: east wind - east 280, west 113 (west only in C and D, the
+  searcher homed at the SE depot); south wind - east 175, west 0 (C and D run x-lanes under N/S wind,
+  which suppress the pull). THE ORDER NEVER DECIDES ANYTHING AT THE SHIPPED DEFAULT: every searcher
+  spawns on a corner depot berth (x <= 4 or >= 45), so its first sample marks the NEAR strip reached and
+  the only pending strip is the far one, whatever the order (local_adaptation_generator.py:176-195).
+  The code's west-first order would matter only at a centre spawn (BASE_STATION_MODE 0) with unresolved
+  victims - a configuration no measured run and neither trajectory test exercises (the tests resolve
+  every victim, so coverage mode is off there). VERDICT: same function as the y-commit, but inert at the
+  shipped default -> NOT changed (decision D-8); PAPER: the x sweep goes from the spawn depot's side to
+  the far side, not by wind.
+  Y-COMMIT moves of the target: south wind - toward north (upwind) 642, toward south 570; east wind -
+  south 309, north 38. Not every upwind commit is a defect: a searcher homed in the downwind corner has
+  covered the downwind half when camping sends it upwind - the intended order. The DEFECTS are the
+  two cases 3a changes: a searcher in the overlap band (y 25-30) is always sent north, whatever the
+  wind; and an 'upper camping' searcher under north wind is sent south before it has reached the
+  north (downwind) strip. The per-call counts cannot separate those from the legitimate second-half
+  sweeps; P3-5(c) tests the invariant directly.
+PROTOTYPES (monkeypatches in one process, judged by the tests' own assertions; _mf2_p1_proto3_*.txt)
+  variant                         T7 N/S   T8 E/W   what the searcher does
+  stock                           FAIL     FAIL     reproduced
+  y-commit only (3a)              PASS     FAIL     positions still identical - the gate dominates
+  gate range 6 only (3b)          PASS     PASS     RIGHT RESULT, WRONG REASON: later targets are still
+                                                    upwind (north wind ends at (14,4), south at (41,45))
+  3a + 3b                         PASS     PASS     downwind first in every wind: north ends at
+                                                    (24,45), south (24,23), east (23,4), west (41,4);
+                                                    gate replaces 0-8 of 50-78 calls
+  3a + "approach-only" gate       PASS     PASS     same as 3a + 3b
+  3a + 3b FINAL (gate range 6 +   PASS     PASS     downwind half first in every wind (south: reaches
+  the near-field rule on the                        y 5 by step 40, then commits north); gate replaces
+  pathfinding route, below)                         0 of 50-59 calls
+  The tests cannot tell 3b alone from 3a + 3b; only the target trace can. Hence two switches.
+THE EXPOSURE TRAP - FOUND BY THE PROTOTYPE, FIXED IN THE DESIGN (outputs/_mf2_p1_krange*.txt,
+  _mf2_p1_exposure_trace_K*.txt)
+  The first prototype (gate range 6 only) failed tests/test_victim_searcher_scenario_matrix.py::
+  test_no_crash_zero_victims - the searcher's steps on a fire/smoke cell must be <= 2 - with 7, the same
+  test the interior-hazard round broke when it removed the always-retreat. Swept: 7 at every range
+  K = 6, 8, 10, 12, with or without 3a; 0 at 99. So it is not a range question. THE TRACE: from step 25
+  the searcher is on the POCKET ESCAPE, whose target is anchored on the grid midpoint
+  (_gradual_escape_target) and which is routed by _attempt_pathfinding_toward_target - a greedy step
+  with a one-cell lookahead and no hazard buffer, EXEMPT from the gate (uav_executor.py:1251-1283,
+  :419-426). It walked the searcher from 14 cells to 1 cell of the fire front (steps 30-38); the front
+  spread onto it (39, 42), and the on-cell retreat then fled NORTH - downwind, with the spread (43-50;
+  the retreat scores hazard distance only). At range 99 the far-field repulsion had kept the same seed on
+  a different path from step 1 - the only protection that route had.
+  With the same near-field rule applied to that route (within 6 cells, a routed move that brings the
+  searcher closer to a strict hazard is replaced by the gate's retreat): 0 strict steps at K = 6 and 8,
+  scenario A's bounds unchanged (strict 0, camping 4, 50 unique cells), T7 and T8 still PASS.
+PROTOTYPE vs THE DIRECTLY AFFECTED TEST FILES (the final 3a + 3b prototype as a pytest plugin, one file
+  per process; outputs/_mf2_p1_proto_pytest_final_*.log)
+  test_wind_aware_trajectory_regression   4/4 PASS - T7 and T8 PASS; the all-cardinals and known-victim
+                                          tests still pass
+  test_y_sweep_commit                     4/4 PASS (incl. the slow "reaches y >= 40" run)
+  test_victim_searcher_scenario_matrix    8/8 PASS - test_no_crash_zero_victims and the camping bound hold
+  test_victim_searcher_offgrid_guard     88/88 PASS
+  test_victim_searcher_hazard_retreat     7/10 - 3 FAIL, all expected: test_range_reads_the_module_at_
+                                          call_time fails only because the plugin patched the range
+                                          accessor (the design leaves it alone and acts in the gate);
+                                          test_range_always_retreats_away_from_the_fire and test_retarget_
+                                          label_is_kept_when_the_retreat_fires pin "99 = retreat from a
+                                          fire 10 cells away" - Part 2 runs them with SEARCHER_GATE_NEAR_
+                                          FIELD = 0 (the switch-off pin) and adds switch-on tests; listed
+                                          as changed tests.
+  Baseline for these files: fix1's final full suite on 7c39a8b (== c08456b source) - only T7 and T8
+  fail; a stock run of the same files, stopped at 34 tests, agreed (FF + 32 passed;
+  _mf2_p1_proto_pytest_stock_partial.log). The long coverage / corridor files (test_unresolved_victim_
+  coverage, test_wind_aware_corridor_search / _planning / _victim_search, test_searcher_counters_per_
+  step) were not run under the prototype - Part 3's full suite covers them.
+  (The superseded first prototype - range 6 alone, stopped part-way,
+  _mf2_p1_proto_pytest_ycommit_near6_nopath_partial.log - failed the same 3 unit tests and
+  test_no_crash_zero_victims: the trap above.)
+DESIGN
+  3a SEARCHER_WIND_COVERAGE_FIX - the y-commit follows the wind.
+     Y-COMMIT (local_adaptation_generator._update_coverage_y_commit): one-way y-strip latches
+     (north strip reached: y >= y_max - 6; south: y <= y_min + 6 - the commit's existing penetration
+     margin). Under NORTH/SOUTH wind a camping detection commits the searcher to the DOWNWIND strip
+     (north wind -> north, south wind -> south; "north wind" spreads fire toward +y, agents.py:252-266)
+     until it has been reached, then to the upwind strip, then the ordinary anti-camping rule. Under
+     EAST/WEST wind (no y preference) the camping bands are DISJOINT: 'lower' = the last 15 samples
+     all in the lower half, 'upper' = all in the upper half; a searcher straddling or on the midline is
+     not camping. Lanes (y-lane searchers) keep today's rule.
+     X-STRIP ORDER: unchanged (measured inert at the shipped default - decision D-8).
+     WHY  the searcher's first targets are downwind (the corridor scores (cell - fire centroid) . wind,
+     local_adaptation_generator.py:3842); the coverage override must not reverse that order before the
+     downwind side has been visited. The overlap made the direction depend on which test runs first.
+  3b SEARCHER_GATE_NEAR_FIELD - two parts, one switch:
+     (i) at the always-retreat setting (VICTIM_SEARCHER_HAZARD_RETREAT_RANGE >= 99, shipped 99) the gate
+     retreats only when a strict fire/smoke cell is within 6 cells - the existing K semantics of the
+     same gate (range 1..98, uav_executor.py:2098-2111, :2416-2434); the knob keeps its meaning for
+     every other value;
+     (ii) the gate-bypassing pathfinding route (_attempt_pathfinding_toward_target: the pocket escape
+     and the retarget fallback) gets the same near-field rule: within 6 cells of a strict hazard, a
+     routed move that brings the searcher closer to it is replaced by the gate's retreat.
+     Part (ii) is what the far-field repulsion was silently doing for that route (the trap above);
+     without it the narrowing trades the wind fix for fire exposure.
+     WHY 6  the interior-hazard round's evaluated alternative (its secondary arm K = 6); in the
+     prototypes it restored the searcher's own direction on 90-100% of gated calls while keeping the
+     retreat inside 6 cells of fire; 6 is half the corridor's minimum waypoint distance from the fire
+     front (WIND_FIRE_FRONT_MIN_DISTANCE 12), so a searcher heading for a corridor target meets the
+     gate only near a front. With no fire on the map the retreat never runs (distance 99 > 6), so the
+     B/west tie cannot occur.
+     RISK  searcher fire exposure: the interior-hazard round measured that removing the always-retreat
+     raised searcher burning-cell exposure (2.08% -> 3.22% on its sample) and broke
+     test_no_crash_zero_victims; the first prototype reproduced exactly that, and part (ii) removed it
+     in the fixture (7 -> 0). One fixture is not a sample: Part 3 bounds exposure on every arm (P3-8).
+  EXPECTED  T7 and T8 PASS with 3a + 3b on; with 3a alone T8 still fails; with both off both fail.
+  PAPER  "wind-aware victim search" becomes wind-aware in its north/south coverage order (downwind half
+    first), not only in its first targets; and the searcher follows its own target except within 6
+    cells of fire/smoke, where it retreats (on every route). Earlier searcher trajectories (every
+    recorded run) were dominated by a target-blind repulsion from the nearest fire whenever the gate ran,
+    and drifted east when no fire was on the map.
+
+================================================================================
+4. ITEM 4 - STAGGERED LAUNCH BATTERIES - RE-VERIFIED, HOLDS
+================================================================================
+RE-VERIFIED (c08456b rows, 16 runs; gap step = no victim searcher flying, i.e. every searcher on a
+  return leg or docked; "alive undetected" = not rescued / dead / written off and no [Victim Detection]
+  event yet)
+  run      gap blocks              gap steps  with an alive undetected victim
+  A_E      173-219                     47       0
+  A_N      179-217                     39       0
+  A_S      169-220                     52       0
+  A_W      181-217                     37       0
+  B_E      19-49, 232-267              67      67
+  B_N      19-49, 214-267              85      31
+  B_S      19-49, 231-266              67      31
+  B_W      19-49, 230-266              68      68
+  C_E      179-218                     40       0
+  C_N      175-217                     43       0
+  C_S      198-217                     20       0
+  C_W      189-217                     29       0
+  D_E      175-218                     44       0
+  D_N      171-217                     47       0
+  D_S      176-217                     42       0
+  D_W      186-217                     32       0
+  TOTAL 759 gap steps; 197 with an alive undetected victim (all in B); a gap opens with victims
+  outstanding in 7/16 runs; an alive undetected victim is on the map during a gap in 4/16 (all four B
+  runs, in B's early block). A, C, D: exactly ONE block per run, steps 169-220, 20-52 steps. First
+  returns at full charge: median step 173 (158-206), spread within a run median 13.5 steps (0-40).
+  (The brief's 13/43 and 3/43 are another 43-run sample; on these 16 c08456b runs the same counts read
+  7/16 and 4/16.)
+MECHANISM  every UAV launches at 100 (x B's 0.5) and drains 0.3 per flying step (agents.py:283-285); the
+  return rule 0.3 d + 39.23 (agents.py:415-433) turns every UAV home at 40-53% (median 48.2), so the
+  first returns fall in one window; a UAV is out (trigger to relaunch) a median 46 steps (16-80).
+THE STAGGER RULE (STAGGERED_LAUNCH_BATTERY; it replaces L_i in agents.uav_launch_battery - fix1's
+  documented hook, agents.py:1482-1494)
+    L_i = 100 - delta * r_i,   delta = 0.3 * P / n,   P = 220 steps,   n = fleet size
+    r_i = the UAV's RETURN RANK: the s searchers take ranks floor(k * n / s), k = 0..s-1 (evenly spread
+    over the cycle, the first searcher at rank 0 = full charge); the trackers take the remaining ranks
+    in unique-id order. Roles come from the one role mapping (wildfire_model._uav_role_for_index).
+  WHY  a UAV's charge is a PHASE on a common battery cycle: launch at 100 -> first return at median step
+    173 -> relaunch at 100 a median 46 steps later, so P = 173 + 46 = 219 ~ 220 steps (measured on the
+    48 A/C/D UAVs). 0.3 per step converts a phase offset in steps into battery. Spreading the n phases
+    evenly over the cycle puts consecutive returns ~P/n apart (55 steps for n = 4) - longer than a
+    median out-window - so returns stop coinciding, and the offsets persist because every relaunch is
+    at 100. The searchers take the most widely separated phases (half a cycle for two), so their
+    out-windows cannot overlap even with the observed +-24-step jitter of the trigger step. The first
+    searcher launches full: its return comes as late as possible.
+  VALUES (L_i; x 0.5 in B)
+    A (2T+1S)  S 100 | T 78.0 | T 56.0
+    B (2T+1S)  S 50.0 | T 39.0 | T 28.0          (= 0.5 x A)
+    C (3T+2S)  S 100 | T 86.8 | S 73.6 | T 60.4 | T 47.2
+    D (2T+2S)  S 100 | T 83.5 | S 67.0 | T 50.5
+    Every A/C/D launch is above the trigger level at the berth (39.23): every UAV launches.
+  PREDICTED (to be measured, P3-6)  C and D: the searchers' out-windows are about [85,131], [173,219],
+    [304,350] (C) and [63,109], [173,219], [282,328] (D) - disjoint, so at least one searcher flies at
+    every step. A and B: ONE searcher - its own out-window is a gap by construction; no battery rule can
+    close it ("where battery allows" does not hold); its first return stays at ~173 (A) and 19 (B).
+    Whole-fleet-out steps -> 0 in A/C/D. COST: the lower-charged UAVs make a second return inside 360
+    steps - returns per run A 3 -> 5, C 5 -> 9, D 4 -> 7 (estimate), ~45 non-flying steps each; the
+    lowest-ranked tracker is away early (C ~13-40, D ~19-50, A ~26-72).
+  COMPOSITION WITH B (launch_i = 0.5 x L_i, fix1 ruling)  B's trackers launch at 39.0 and 28.0, below
+    the trigger at the berth, so they dock in place at step 1 (28.0 also raises LOW on the berth - inert,
+    no consumer) and relaunch FULL at ~14 and ~16; the searcher launches at 50 and returns at 19 as
+    today. The in-place recharge to 100 ERASES most of the trackers' stagger in B (both relaunch full two
+    steps apart), so B's trackers return together again (~187-189); predicted brief whole-fleet overlap
+    around 222-233. Reported, not designed around: B is battery-constrained by its definition, and the
+    composition is the ruled one.
+  PAPER  the recharge gap is a coordination artefact of identical launch charges; staggering closes it
+    wherever two searchers exist (C, D) at a cost of extra returns; with one searcher (A, B) the gap is
+    the searcher's own recharge and only a second searcher or a role hand-off could cover it (out of
+    scope).
+
+================================================================================
+5. ITEM 5 - THE DOCKING STANDOFF - RE-VERIFIED, HOLDS; MEASURE AFTER ITEM 4, FIX IF IT REMAINS
+================================================================================
+RE-VERIFIED (c08456b rows, 72 return legs in 16 runs; excess = leg duration - Manhattan distance)
+  excess 1: 46 legs, 2: 19, 3-5: 5, 11-20: 1 (D/E 2502, 13), > 20: 1 (C/W 2502, 30 - a 25-step wait one
+  cell outside the NW depot).
+  C/W FRAME BY FRAME: four UAVs converged on the NW depot within ~4 steps (triggers 168-189). 2502
+  (berth (3,46)) reached (3,44) at step 207 with 2501 docked on (3,45), the cell in front of its berth.
+  2501 was RELEASED at step 220 but stayed on (3,45) until 232: a flying TRACKER whose chosen move was
+  into 2502's cell - both refused every step (head-on). 2502 docked at 235.
+  Causes on record (dcd4 round): the dock-fix recovery re-latches only when its latched cell is reached
+  or occupied, never when the PATH to it is blocked (agents.py:580-637); the searcher hazard gate has no
+  UAV-occupancy term. NEW here: the blocker was a released TRACKER, whose direction choice has no
+  occupancy term either - the same class. Item 4 predicts the convoy away: returns ~P/n apart.
+PLAN (as instructed: measure after staggering, fix only if it remains)
+  CHECKPOINT P2-5 (in Part 2, right after item 4 is implemented, before any item-5 code): the 16 mf1P
+  configurations with STAGGERED_LAUNCH_BATTERY = 1 and every other fix2 switch 0 (tag mf2K). A STANDOFF
+  REMAINS if any return leg has excess >= 10 or a stationary wait >= 5 steps one cell outside a depot.
+  If none remains: item 5 is reported fixed by item 4 and not built. If any remains: build the fix
+  below on DEPOT_STANDOFF_FIX, and Part 3 measures it (P3-7).
+CONDITIONAL FIX DESIGN (DEPOT_STANDOFF_FIX)
+  5a RECOVERY RE-PICKS WHEN BLOCKED: in _rtb_recovery_berth, if the leg keeps stalling while steering
+     to the latched cell (rtb_stall_steps >= the stall limit with a latch held and not reached), the
+     latch is dropped into a per-trip tried set and the nearest free depot cell NOT in that set whose
+     first greedy step from here is free is latched. The set only grows within a trip (at most 25
+     depot cells), so re-picking terminates; _rtb_direction stays memoryless and distance-monotone (its
+     load-bearing comment is untouched).
+  5b YIELD TO RETURNING TRAFFIC: a UAV that is not on a return leg never commits a move into a cell
+     occupied by a UAV that is returning or docked; it takes the best free neighbour instead (the
+     searcher gate's re-rank and the tracker's final safety pass both skip occupied cells). Right of
+     way goes to the return leg because its battery rule outranks a search or flank step.
+
+================================================================================
+6. HOW THE FIVE ITEMS INTERACT
+================================================================================
+  1 x 2  THE CENTRAL ONE. Item 1 makes SAFETY_FIRST rare but REAL (a close pair 15.6% of steps, a
+         blocked UAV 2.2% of UAV-steps); item 2 makes the resulting hold REAL (stationary). A fleet-wide
+         stationary hold would then freeze every tracker for a proximity event anywhere and never clear
+         for the pair itself - hence the scoped yield with right of way and a 3-step cap (2e). Item 2
+         also owns the (0,0) intended delta, so its stays cannot re-create item 1's drift artifact.
+         Order: with item 2 on and item 1 off the artifact SAFETY_FIRST (14.9%) still exists, but the
+         yield test is geometric (a lower-id airborne UAV within 2), so only real close pairs hold.
+  1 x 4  staggering lowers some launch charges: B's 28.0 raises LOW_BATTERY on the berth at step 2 (no
+         consumer); no stagger value reaches CRITICAL (<= 15, would need launch <= 10.1), so the
+         EMERGENCY path stays unreachable.
+  1 x 5  a standoff is exactly what the fixed drift alarm names (a UAV refused on >= 2 of 5 steps):
+         with item 1 on, a standoff puts the fleet in SAFETY_FIRST; with item 2's scope that holds
+         nobody extra (a returning UAV is never held; the blocker is only held if it yields to a
+         lower-id airborne UAV within 2 - and its cap releases it).
+  2 x 5  a yielding (stationary) UAV next to a depot approach could block a return leg for up to 3
+         steps; 5b gives the return leg right of way over non-returning UAVs.
+  3b x 5 the always-retreat gate pushed searchers east whenever no fire was near; near the NW depot
+         that pushes them across the depot approach (the dcd4 round's head-on standoffs with a flying
+         searcher). 3b removes that push; item 5 is measured with 3b on in the all-together arm.
+  3 x 4  with staggering one of C/D's two searchers is out for ~46 steps early (D ~63-109, C ~85-131)
+         while the other flies; cross-wind lanes (two searchers) leave the out searcher's lane
+         uncovered for that window. Reported in P3-5 / P3-6.
+  1 x 3  under information_recovery searchers are exempt from the override (unchanged); item 1 makes
+         the mode normal most of the time, which switches victim-search priority ON in the utility
+         profile - searcher option ranking can change (measured).
+  4 x 5  item 4 is expected to remove the synchronised convoys that produce most standoffs; item 5 is
+         built only if the checkpoint says so.
+  1B x 1 FLEET_FIRE_LOST reads the fire belief directly (its own path), so item 1 does not depend on
+         the fire-source switch, and the fire-source switch does not change the fail-safe reasons.
+
+================================================================================
+7. OBSERVATIONS OUTSIDE THIS SESSION'S SCOPE (flagged, not fixed)
+================================================================================
+  O-1 Head-on TRACKER DEADLOCKS before the horizon: C/N 2502/2503 blocked ~128 steps (steps ~219-347),
+      each refusing a move into the other's cell - no direction choice in the executor has a UAV-
+      occupancy term. Item 5b covers only moves into a RETURNING/docked UAV's cell. With item 1 on these
+      raise real drift alarms (SAFETY_FIRST) for their duration.
+  O-2 A fire that burns out keeps FLEET_FIRE_LOST true until the belief decays below 0.7 (~60 steps).
+  O-3 FIRE_DIRECTION_SHIFT can never fire: nothing writes belief.predicted_spread_bias.
+  O-4 In B the in-place recharge at launch erases the stagger of UAVs launched below the berth trigger
+      level (section 4).
+  O-5 A staying UAV drains 0.1/step against 0.3 when flying - the model's rule; hovering is modelled
+      as cheaper than flight.
+  O-6 The searcher's on-cell retreat scores hazard distance only, so on a wind-driven front it can
+      flee DOWNWIND, with the spread (the exposure fixture, steps 43-50). Not changed here.
+  O-7 The pocket escape anchors on the grid midpoint (_gradual_escape_target) - wind- and fire-blind;
+      under a centre fire it aims the searcher at the fire (the exposure trap; T7/T8's common final
+      target). 3b(ii) bounds its approach; the anchor itself is not changed.
+
+================================================================================
+8. DECISIONS FOR THE MAINTAINER (Part 2 waits for these)
+================================================================================
+  D-1 SHIPPING DEFAULTS. RECOMMENDED: every fix2 switch ships ON (1), off only on an exact integral 0,
+      like fix1 - the measurement round after session 3 measures the final system. The all-zero setting
+      is c08456b's behaviour. Alternative: ship OFF (enabled only on an exact 1) until that round.
+  D-2 ITEM 1 AS ONE SWITCH (RECOMMENDED; the four alarms are one item and one Part 3 arm) vs four
+      sub-switches (collision / drift / link / search) for per-alarm attribution at 4x the arm cost.
+  D-3 COLLISION RADIUS: Manhattan 2 (RECOMMENDED; the single-step conflict distance) vs 1 (adjacent
+      only; 5.2% of UAV-steps instead of 9.4%).
+  D-4 'fire_flank_hold': keep the label and describe it as a lateral patrol step (RECOMMENDED; no
+      ripple into T6 and the tools that count the label) vs relabel the lateral case
+      'fire_flank_patrol' (T6's asserted label changes). Either way only the own-cell case stays.
+  D-5 THE FAIL-SAFE HOLD SCOPE: yield by right of way (lower id proceeds) with a 3-step cap
+      (RECOMMENDED) vs today's fleet-wide rewrite made stationary (freezes; not recommended) vs no
+      fail-safe hold at all (SAFETY_FIRST then changes only the phase / profile).
+  D-6 ITEM 3 AS TWO SWITCHES, 3a coverage order and 3b gate (RECOMMENDED - the tests cannot separate
+      them) vs one switch.
+  D-7 THE GATE RANGE for 3b: 6 (RECOMMENDED; 6-12 behaved identically on both fixtures) vs another K;
+      and part (ii), the same rule on the pathfinding route (RECOMMENDED - required: without it the
+      exposure test fails, 7 > 2). Part (i) alone could be expressed by shipping
+      VICTIM_SEARCHER_HAZARD_RETREAT_RANGE = 6, but that knob is ordinal (0 means edge-only) and does
+      not reach the route, so a boolean switch owns both parts under the exact-zero rule.
+  D-8 THE X-STRIP ORDER: leave it (RECOMMENDED - measured inert at the shipped default: the spawn depot
+      marks the near strip, so the far strip is the only pending one) vs make it downwind-first under
+      east/west wind for consistency (would act only at a centre spawn with coverage active).
+  D-9 THE STAGGER RULE: phases evenly over the whole cycle (RECOMMENDED: every return spread, searchers
+      half a cycle apart) vs a compact stagger spanning only the searchers' half-cycle (fewer early
+      returns for trackers, returns less spread).
+  D-10 ITEM 5 PROCEDURE: the Part 2 checkpoint P2-5 decides whether DEPOT_STANDOFF_FIX is built
+      (RECOMMENDED, as instructed) vs build it regardless and ship it OFF if not needed.
+
+================================================================================
+9. PRE-REGISTERED PART 3 CHECKS (lighter than a measurement round; 360 steps unless stated)
+================================================================================
+TAGS  run prefix mf2 (checked unused before every wave: 0 files, 0 tracked paths; no tag a prefix of
+  another). Probe arms: mf2Z (every fix2 switch 0), mf2A1 (item 1 alone), mf2FS (fire source alone),
+  mf2A2, mf2A3a, mf2A3b, mf2A4, mf2A5 (items 4 + 5, only if item 5 is built), mf2ALL (shipped).
+  Harness: mf2hR (c08456b worktree reference) / mf2hZ. rbgate: mf2gR / mf2gZ / mf2gS.
+INSTRUMENT  outputs/_mf2_probe.py = outputs/_sd_probe.py plus PURE READS: per UAV per step the stay
+  flag, a fail-safe-yield flag, the burning / smoke state of its cell (the harness --uav-actions
+  definitions), per step FLEET_FIRE_LOST and the trigger counts by scope, per searcher the y-commit and
+  strip latches. Its common fields are _sd_probe's, so an all-off run is compared field by field with
+  the recorded mf1P twin. Its pass-through is proven by P3-1(a) itself.
+SAMPLE  the 16 mf1P configurations (A-D x N/S/E/W, seeds 9601-9616, GPM 0) for mf2Z and mf2ALL; the
+  8 of them under south and east wind (A-D x S/E) for each single-fix arm. 32 + 6 x 8 = 80 probe runs
+  (+ 8 for mf2A5 if built). Outcomes (rescued, dead, never_detected, completion step, firefighter
+  deaths) are REPORTED per arm, never gated (canonical-13 rule).
+P3-0 PROVENANCE  sys.version and mesa.__version__ stated; every JSON's head / repo / LF-normalised source
+  hashes and the switch values it ran with are checked against the arm table before any comparison (the
+  pool validator does not do this).
+P3-1 ALL SWITCHES OFF == c08456b
+  (a) probe: mf2Z vs the recorded mf1P runs (c08456b), 16 configurations: every recorded field equal
+      (rows_uav, rows_ff, rows_vic, rows_dec, rows_trig, eval, terminal step, stdout sha256, stdout
+      tags). PASS 16/16.
+  (b) harness, fix1's canonical sample: C13 (D; east/half 101-505, south/half 101-505, east/default
+      101-303) + A/west/9501, B/north/9502, C/south/9503 with --roles default - 16 tuples, mf2hZ (fix2,
+      all switches 0) vs mf2hR (a c08456b worktree, the SAME fix2 harness file, getattr-guarded; no
+      .venv junction, or one unlinked with `cmd /c rmdir` before `git worktree remove`, the real .venv
+      re-checked). PASS 16/16 on every field but tag / repo / wall_s.
+  (c) rbgate all-off shards == c08456b reference (P3-10).
+P3-2 EACH FIX ALONE, AND ALL TOGETHER  every single-fix arm must change what it claims (P3-3 .. P3-7) and
+  nothing it does not claim: a single-fix arm whose first differing row is not explained by its item is
+  a finding. mf2ALL is the shipped system.
+P3-3 ITEM 1 (mf2Z / mf2A1 / mf2ALL)  mode shares; reasons and how often; instances of COLLISION_RISK,
+  DRIFT_TOO_HIGH (local and global), CRITICAL_LINK_UNRELIABLE, SEARCH_MODE_REQUIRED (local, global).
+  PASS  (i) mf2Z reproduces c08456b (normal 0.3%); (ii) normal share >= 50% of steps in mf2A1;
+  (iii) CRITICAL_LINK_UNRELIABLE on 0 steps in mf2A1; (iv) every COLLISION_RISK in mf2A1 names an
+  airborne UAV with another airborne UAV within Manhattan 2 (0 violations, from positions); (v) every
+  DRIFT_TOO_HIGH (local and global) in mf2A1 names a UAV refused on >= 2 of its last 5 steps and none
+  names a UAV docked on its berth (0 violations); (vi) the reason search_mode_required appears only on
+  steps where FLEET_FIRE_LOST holds (0 violations); (vii) on every normal step the fail-safe decision
+  is the no-op (no action, search_mode_active False) - the planning echo of 1d' is closed.
+P3-3B FIRE SOURCE (mf2Z / mf2FS)  which of the 14 never-fired types now fire. PASS: HIGH_PRIORITY_FIRE_
+  REGION, STALE_HIGH_PRIORITY_REGION and FIRE_SPREAD_ACCELERATING fire in mf2FS and not in mf2Z (the
+  shadow predicted 82.1 / 80.0 / 3.1% of steps); the fail-safe mode per step is identical in mf2FS and
+  mf2Z (none of them maps to a reason). Decision changes reported (option confidence is fed by trigger
+  confidences).
+P3-4 ITEM 2 (mf2Z / mf2A2 / mf2ALL)  stay steps ('hold', own-cell 'fire_flank_hold') with movement,
+  return legs excluded. PASS: 0 in mf2A2 and mf2ALL (99.5% of 'hold' moved at c08456b); every fail-safe
+  hold is a yield (airborne, not on a return leg, a lower-id airborne UAV within 2) and no UAV yields
+  more than 3 consecutive steps - 0 violations; the lateral flank step still moves; no NEW stuck /
+  livelock / oscillation episode kind before the terminal step against mf2Z (_sd_analyze.py episodes +
+  the cycle / oscillation / distance-progress tests of outputs/_dcd4_analyze.py - a positional gate
+  cannot see a livelock).
+P3-5 ITEM 3
+  (a) T7 and T8 PASS at the shipped switches (P3-11); switch causality in one pytest run per setting:
+      3a = 3b = 0 -> both FAIL; 3a = 1, 3b = 0 -> T8 FAILS.
+  (b) THE B/WEST LOOP (B/west/9608): no searcher 2-cycle at the east edge (30-step window <= 3 cells,
+      >= 8 changes) before the horizon in mf2A3b and mf2ALL -> reported FIXED; if it persists,
+      explained with the same trace tool.
+  (c) under north/south wind no searcher is committed UPWIND before its downwind strip latch is set
+      (mf2A3a / mf2ALL: 0 violations; mf2Z's count of such commits reported - the defect's size).
+  (d) THE X-STRIP ORDER (not changed, D-8): pull counts by wind reported for mf2Z / mf2ALL.
+  (e) the gate never replaces a searcher's direction when no strict fire/smoke cell is within 6 cells
+      (mf2A3b / mf2ALL: 0).
+  Reported: first-detection step per victim, cells covered by searchers, per arm.
+P3-6 ITEM 4 (mf2Z / mf2A4 / mf2ALL)  per run: steps with no searcher flying, those with an alive
+  undetected victim on the map, gap blocks, whole-fleet-out steps, returns per UAV, flying UAV-steps,
+  launch charges. PASS: every UAV launches at (B: 0.5 x) L_i of section 4; C and D: no-searcher steps
+  = 0 in >= 7 of the 8 C/D runs of mf2ALL (any residual block reported with the out-window that caused
+  it); A/C/D: whole-fleet-out steps = 0; A and B: reported (one searcher - the gap is its own
+  out-window; its first return within +-5 steps of mf2Z's). The cost (extra returns, flying steps lost)
+  is reported beside the gain.
+P3-7 ITEM 5  standoff = a return leg with excess >= 10, or a stationary wait >= 5 steps one cell outside
+  a depot. (a) THE CHECKPOINT (Part 2, before any item-5 code): mf2K = the 16 configurations with item 4
+  only - count against c08456b's 2 legs (excess 13 and 30). (b) If built: 0 standoffs in mf2A5 and
+  mf2ALL; distance-progress, cycle and oscillation 0 new; recovery re-picks counted.
+P3-8 DRONE STEPS IN FIRE  per arm, UAV-steps on a burning cell (and in smoke, separately), searcher-only
+  and all-UAV. PASS: mf2ALL and mf2A3b searcher burning-cell share <= mf2Z's + 1.0 percentage point and
+  all-UAV <= mf2Z's + 0.5 point; above that it is a FINDING for a decision, not accepted silently.
+P3-9 INVARIANTS  sysdebug Part 5 (outputs/_sd_analyze.py, unchanged) on mf2ALL, 4 scenarios x 4 winds:
+  no agent off grid / out of bounds; victim counts add up, statuses in vocabulary; rescued / dead never
+  revert; no rescue without contact; no victim bound to two units at the end; no drone at 0 battery;
+  every return arrives; no depot cell burns; 0 diagnostic failure tags; stuck / livelock episodes
+  reported against mf2Z's (none new before the terminal step). Plus: a staying UAV's cell is unchanged
+  that step.
+P3-10 ROUTE_BLOCKED GATE (outputs/_rblatch_campaign2.py, 18 seeds, 4 shards, 240 steps, D)  mf2gZ ==
+  mf2gR on every key but tag / wall_s; mf2gS vs mf2gZ: no seed loses a rescue outside the known four
+  (east/707, south/101, south/202, south/404) - a loss elsewhere is a NEW failure, reported and
+  attributed with single-switch shards; recoveries > 0; 0 units latched at the end.
+P3-11 FULL SUITE at shipped defaults  failing NAME SET == {T5}; T7 and T8 PASS; every new test passes;
+  every changed pre-existing test listed with its reason (candidates: tests that pin the latched drift
+  status or a 0.0 link reliability; T6 only if D-4 relabels).
+COST  80 probe runs (+8), 32 harness, 12 rbgate shards, one suite (~75 min); memory-checked pool at most
+  ~10-13 processes; waves checked every 20-30 minutes.
+
+================================================================================
+10. PART 2 ORDER (after confirmation)
+================================================================================
+  One commit per item, each with its unit tests; switches in common_fixed_variables with the house
+  comment block, accessors in agents.py on _exact_integer (ship 1: off only on an exact integral 0);
+  patch scripts detect each file's line ending.
+    1. item 1B (fire source) - independent and smallest
+    2. item 1 (the four alarms; FLEET_FIRE_LOST)
+    3. item 2 (stay action, intended (0,0), the scoped yield)
+    4. item 4 (stagger) -> CHECKPOINT P2-5 (mf2K, 16 runs): decides item 5
+    5. items 3a and 3b; the two trajectory tests run
+    6. item 5 only if the checkpoint found a standoff
+    7. probe / harness instrumentation (getattr-guarded, so they still run against c08456b)
+  Then one independent adversarial review of the Part 2 diff (agent 1 of 3) before Part 3.
