@@ -367,7 +367,14 @@ def test_search_mode_fail_safe_steers_selected_dir_via_uav_executor() -> None:
     assert agent.pos == (5, 5)
 
 
-def test_safe_hold_converts_local_path_to_hold() -> None:
+def test_safe_hold_converts_local_path_to_hold(monkeypatch) -> None:
+    # fix2 item 2: this pins the fleet-wide fail-safe hold rewrite, which is UAV_HOLD_STATIONARY = 0;
+    # with the switch on (shipped, ruling D-5) the hold goes only to the UAV that must yield in a
+    # close pair, and a lone UAV keeps its own path (tests/test_fix2_hold.py::
+    # test_dispatch_holds_only_the_yielding_uav / test_dispatch_off_rewrites_every_path).
+    import common_fixed_variables as cfv
+
+    monkeypatch.setattr(cfv, "UAV_HOLD_STATIONARY", 0, raising=False)
     agent = _FakeAgent(unique_id=0, pos=(5, 5), selected_dir=2)
     dispatcher = DecisionDispatcher(model=_dispatcher_model(agent))
     planning_result = {

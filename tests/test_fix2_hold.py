@@ -55,6 +55,9 @@ def _uavs(model):
 def _airborne_model(cells):
     """A model with the depot off, so no UAV is docked or returning; UAVs placed on `cells`."""
     cfv.BASE_STATION_MODE = 0
+    # the default fleet, pinned: other test modules call apply_scenario_config (e.g. NUM_AGENTS=2)
+    # and leave it set; the autouse fixture restores whatever it found, so pin what these tests need
+    cfv.NUM_AGENTS = wf.NUM_AGENTS = 3
     model = WildFireModel()
     uavs = _uavs(model)
     for uav, cell in zip(uavs, cells):

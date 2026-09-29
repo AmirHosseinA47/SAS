@@ -78,6 +78,9 @@ def test_off_only_on_an_exact_integral_zero(switch, value, expected) -> None:
 # --------------------------------------------------------------------------- 1a collision
 
 def _model_with_uavs(cells, docked=()):
+    # the default fleet, pinned: other test modules call apply_scenario_config (e.g. NUM_AGENTS=2)
+    # and leave it set; the autouse fixture restores whatever it found, so pin what these tests need
+    cfv.NUM_AGENTS = wf.NUM_AGENTS = 3
     model = WildFireModel()
     uavs = sorted((a for a in model.schedule.agents if type(a) is agents.UAV), key=lambda a: a.unique_id)
     placed = []
