@@ -37,15 +37,21 @@ def pct(a, b):
 _CACHE = {}
 
 
+ALIAS = {}   # --alias mf2ALL=mf2cX: the PROBE sections read that arm's files under the aliased name
+            # (probe_runs only; rbgate / CRN arms are named explicitly; do not run 'prov' with an alias -
+            # use 'provc', which checks the explicit switch map)
+
+
 def probe_runs(arm):
     if arm in _CACHE:
         return _CACHE[arm]
+    tag = ALIAS.get(arm, arm)
     runs = {}
-    for f in sorted(glob.glob(os.path.join(OUT, "_sd_%s_*.json" % arm))):
+    for f in sorted(glob.glob(os.path.join(OUT, "_sd_%s_*.json" % tag))):
         base = os.path.basename(f)
         if ".json." in base:
             continue
-        cfg = base[len("_sd_%s_" % arm):-5]
+        cfg = base[len("_sd_%s_" % tag):-5]
         if not re.fullmatch(r"[ABCD]_[ENSW]", cfg):
             continue
         d = json.load(open(f, encoding="utf-8"))
@@ -679,7 +685,8 @@ def standoffs(d):
     return n_legs, worst
 
 
-def sec_item4(pairs=(("mf1P", "mf2K"), ("mf2Z", "mf2A4"), ("mf2Z", "mf2ALL"))):
+def sec_item4(pairs=(("mf1P", "mf2K"), ("mf2Z", "mf2A4"), ("mf2Z", "mf2ALL"), ("mf2Z", "mf2cK"),
+                    ("mf2Z", "mf2cX"), ("mf2cX", "mf2cS"))):
     P("=" * 100)
     P("P3-6 ITEM 4 - THE NO-SEARCHER GAP (per scenario, summed over its runs) and P3-7 ITEM 5 standoffs")
     for base, arm in pairs:
@@ -784,13 +791,21 @@ def sec_exposure():
 
 
 # ------------------------------------------------------------------------------ P3-10 rbgate
-def sec_rbgate():
+def sec_rbgate(arms=(("mf2gS", "all on, EVEN stagger (b8581db)"), ("mf2gC", "all on, COMPACT stagger"),
+                     ("mf2gX", "all on but item 4"))):
+    for arm, label in arms:
+        _rbgate_arm(arm, label)
+
+
+def _rbgate_arm(arm, label):
     P("=" * 100)
-    P("P3-10 ROUTE_BLOCKED GATE - mf2gS (shipped) vs mf2gZ (all off); known losses east/707, south/101, 202, 404")
+    P("P3-10 ROUTE_BLOCKED GATE - %s (%s) vs mf2gZ (all off); known losses east/707, south/101, 202, 404" % (arm, label))
+    pooled = collections.Counter()
     for sh, w in (("a", "east"), ("b", "east"), ("c", "east"), ("s", "south")):
         fz = os.path.join(OUT, "_rblatch_camp2_mf2gZ%s_D_%s.json" % (sh, w))
-        fs = os.path.join(OUT, "_rblatch_camp2_mf2gS%s_D_%s.json" % (sh, w))
+        fs = os.path.join(OUT, "_rblatch_camp2_%s%s_D_%s.json" % (arm, sh, w))
         if not (os.path.exists(fz) and os.path.exists(fs)):
+            P("  shard %s %-5s MISSING" % (sh, w))
             continue
         z, s = json.load(open(fz, encoding="utf-8")), json.load(open(fs, encoding="utf-8"))
         ez = {int(e["seed"]): e for e in (z.get("evals") or [])}
@@ -811,9 +826,17 @@ def sec_rbgate():
           " losses %s | recoveries off %d shipped %d | latched at end shipped %d  %s" % (
               sh, w, sorted(es), sum(e["rescued"] for e in ez.values()), sum(e["rescued"] for e in es.values()),
               dz, ds, loss, gain, new or "none", len(z.get("recoveries") or []), len(s.get("recoveries") or []),
-              len(s.get("latched") or []),
-              "FAIL" if (new or not (s.get("recoveries") or []) and (z.get("recoveries") or [])
-                         or (s.get("latched") or [])) else "ok"))
+              len(s.get("latched") or []), "NEW LOSS" if new else ("LATCHED" if (s.get("latched") or []) else "ok")))
+        pooled["new"] += len(new)
+        pooled["rec_off"] += len(z.get("recoveries") or [])
+        pooled["rec_on"] += len(s.get("recoveries") or [])
+        pooled["latched"] += len(s.get("latched") or [])
+        pooled["resc_off"] += sum(e["rescued"] for e in ez.values())
+        pooled["resc_on"] += sum(e["rescued"] for e in es.values())
+    # the pre-registered P3-10 rule, pooled over the 18 seeds: no NEW loss, recoveries > 0, 0 latched
+    P("  POOLED: rescued %d -> %d | NEW losses %d | recoveries %d -> %d (> 0 required) | latched at end %d  => %s" % (
+        pooled["resc_off"], pooled["resc_on"], pooled["new"], pooled["rec_off"], pooled["rec_on"], pooled["latched"],
+        "PASS" if (pooled["new"] == 0 and pooled["rec_on"] > 0 and pooled["latched"] == 0) else "FAIL"))
 
 
 # ------------------------------------------------------------------------------ P3-12 CRN D-7
@@ -921,13 +944,166 @@ def sec_outcomes():
         P("    %-7s %s" % (arm, dict(sorted(c.items()))))
 
 
+def _term(d):
+    t = d.get("terminal_step")
+    return 361 if t is None else int(t)
+
+
+def _window(d, last_step):
+    """(no-searcher steps, searcher flying UAV-steps) over steps 1 .. last_step (rows 0 .. last_step-1)."""
+    gap = fly = 0
+    for row in d["rows_uav"][:max(0, last_step)]:
+        s = [u for u in row if u[3] == "victim_searcher"]
+        f = [u for u in s if not u[5] and not u[6]]
+        if s and not f:
+            gap += 1
+        fly += len(f)
+    return gap, fly
+
+
+def sec_provc():
+    """Amendment 3: provenance and identity of the compact-stagger arms."""
+    import runpy
+    q = runpy.run_path(os.path.join(OUT, "_mf2_c_queue.py"), run_name="mf2_c_queue")
+    P("=" * 100)
+    P("AMENDMENT 3 - PROVENANCE (head, source hashes vs the files AT THE RUN'S OWN COMMIT, recorded switches) AND IDENTITY")
+    import subprocess
+
+    at_head = {}
+
+    def head_shas(head, path):
+        """The file as committed at the run's own head, in either line ending (the probe hashes the
+        raw working-tree bytes; the working tree mixes CRLF and LF)."""
+        key = (head, path)
+        if key not in at_head:
+            blob = subprocess.run(["git", "-C", REPO, "show", "%s:%s" % (head, path.replace("\\", "/"))],
+                                  capture_output=True).stdout
+            lf = blob.replace(b"\r\n", b"\n")
+            at_head[key] = {hashlib.sha256(lf).hexdigest()[:16],
+                            hashlib.sha256(lf.replace(b"\n", b"\r\n")).hexdigest()[:16]}
+        return at_head[key]
+
+    for arm, want in q["ARMS"].items():
+        runs = probe_runs(arm)
+        if not runs:
+            P("  %-6s no runs" % arm)
+            continue
+        heads = collections.Counter(str(d.get("head"))[:7] for d in runs.values())
+        bad = []
+        for cfg, d in runs.items():
+            ss = d.get("src_sha") or {}
+            if any(ss[k] not in head_shas(str(d.get("head")), k) for k in ss):
+                bad.append(cfg + ":src")
+            ex = d.get("extra_params") or {}
+            for s, v in want.items():
+                if ex.get(s) != v:
+                    bad.append("%s:%s=%s" % (cfg, s, ex.get(s)))
+            if not d.get("complete"):
+                bad.append(cfg + ":incomplete")
+        P("  %-6s %2d runs heads %s  %s" % (arm, len(runs), dict(heads), "OK" if not bad else "MISMATCH %s" % bad[:6]))
+    for new, old in (("mf2cZ", "mf2Z"), ("mf2cZ", "mf1P"), ("mf2cE", "mf2A4")):
+        a, b = probe_runs(new), probe_runs(old)
+        if a and b:
+            r = compare_probe(a, b)
+            ok = sum(1 for v in r.values() if not v)
+            P("  identity %s == %s: %d/%d identical on every _sd_probe field %s" % (
+                new, old, ok, len(r), "" if ok == len(r) else {k: v for k, v in r.items() if v}))
+
+
+def sec_d9c(pairs=(("mf2Z", "mf2cK", "DECISIVE: item 4 compact alone vs all off"),
+                   ("mf2Z", "mf2A4", "reference: item 4 EVEN alone vs all off (8 configs)"),
+                   ("mf1P", "mf2K", "reference: item 4 EVEN alone vs c08456b (16 configs)"),
+                   ("mf2cX", "mf2cS", "in-system: all on with compact vs all on but item 4"))):
+    """Amendment 3: the compact stagger judged on the pre-terminal window (the maintainer's refinement
+    of D-9) - steps both runs of a pair have victims left: 1 .. min(T_off, T_on) - 1."""
+    P("=" * 100)
+    P("D-9 (amendment 3) - THE STAGGER ON THE PRE-TERMINAL WINDOW; SHIP COMPACT ON iff in BOTH C and D"
+      " C_pre <= G_pre and never_detected does not rise (decisive pair only)")
+    for off_arm, on_arm, label in pairs:
+        A, B = probe_runs(off_arm), probe_runs(on_arm)
+        common = sorted(set(A) & set(B))
+        if not common:
+            continue
+        P("  %s  (%s -> %s, %d pairs)" % (label, off_arm, on_arm, len(common)))
+        verdict = {}
+        for sc in "ABCD":
+            cfgs = [c for c in common if c.startswith(sc)]
+            if not cfgs:
+                continue
+            acc = collections.Counter()
+            for c in cfgs:
+                a, b = A[c], B[c]
+                ta, tb = _term(a), _term(b)
+                w = min(ta, tb) - 1
+                ga, fa = _window(a, w)
+                gb, fb = _window(b, w)
+                acc["G_pre"] += ga - gb
+                acc["C_pre"] += fa - fb
+                ga0, fa0 = _window(a, ta - 1)
+                gb0, fb0 = _window(b, ta - 1)
+                acc["G_offwin"] += ga0 - gb0
+                acc["C_offwin"] += fa0 - fb0
+                gbo, fbo = _window(b, tb - 1)
+                acc["G_own"] += ga0 - gbo
+                acc["C_own"] += fa0 - fbo
+                gA, fA = _window(a, 360)
+                gB, fB = _window(b, 360)
+                acc["G_360"] += gA - gB
+                acc["C_360"] += fA - fB
+                acc["nd_off"] += int((a.get("eval") or {}).get("never_detected") or 0)
+                acc["nd_on"] += int((b.get("eval") or {}).get("never_detected") or 0)
+                acc["resc_off"] += int((a.get("eval") or {}).get("rescued") or 0)
+                acc["resc_on"] += int((b.get("eval") or {}).get("rescued") or 0)
+                acc["dead_off"] += int((a.get("eval") or {}).get("dead") or 0)
+                acc["dead_on"] += int((b.get("eval") or {}).get("dead") or 0)
+                acc["win"] += w
+            ok = acc["C_pre"] <= acc["G_pre"] and acc["nd_on"] <= acc["nd_off"]
+            if sc in "CD":
+                verdict[sc] = ok
+            P("    %s  PRE (common window, %d steps over %d runs): G %4d  C %4d  -> %s | off-run window: G %4d"
+              " C %4d | own windows: G %4d C %4d | FULL 360: G %4d C %4d | never_detected %d -> %d |"
+              " rescued %d -> %d | dead %d -> %d" % (
+                  sc, acc["win"], len(cfgs), acc["G_pre"], acc["C_pre"],
+                  ("PASS" if ok else "FAIL") if sc in "CD" else "(A/B: reported)",
+                  acc["G_offwin"], acc["C_offwin"], acc["G_own"], acc["C_own"], acc["G_360"], acc["C_360"],
+                  acc["nd_off"], acc["nd_on"], acc["resc_off"], acc["resc_on"], acc["dead_off"], acc["dead_on"]))
+        if on_arm == "mf2cK":
+            # review (compact reviewer R1): a decision only from a complete decisive sample - both
+            # scenarios' four configurations, every run complete, uncrashed, with an eval, seed-matched
+            problems = []
+            for sc in "CD":
+                cf = [c for c in common if c.startswith(sc)]
+                if len(cf) != 4:
+                    problems.append("%s has %d pairs, not 4" % (sc, len(cf)))
+                for c in cf:
+                    for nm, d in ((off_arm, A[c]), (on_arm, B[c])):
+                        if not d.get("complete") or d.get("crashed") or not d.get("eval"):
+                            problems.append("%s %s incomplete/crashed/no eval" % (nm, c))
+                    if A[c].get("seed") != B[c].get("seed"):
+                        problems.append("%s seed mismatch" % c)
+            if problems:
+                P("    => NO DECISION (incomplete decisive sample): %s" % problems[:6])
+            else:
+                P("    => DECISION: %s" % ("SHIP COMPACT ON (C and D both pass)" if verdict.get("C") and verdict.get("D")
+                                            else "SHIP ITEM 4 OFF (%s)" % ", ".join(
+                                                "%s %s" % (k, "pass" if v else "FAIL") for k, v in sorted(verdict.items()))))
+
+
 SECTIONS = {"prov": None, "ident": sec_ident, "item1": sec_item1, "fire": sec_fire, "item2": sec_item2,
             "item3": sec_item3, "osc": sec_osc, "item4": sec_item4, "d9": sec_d9, "exposure": sec_exposure,
-            "rbgate": sec_rbgate, "crn": sec_crn, "outcomes": sec_outcomes}
+            "rbgate": sec_rbgate, "crn": sec_crn, "outcomes": sec_outcomes, "d9c": sec_d9c, "provc": sec_provc}
 
 
 def main():
-    want = sys.argv[1:] or list(SECTIONS)
+    args = sys.argv[1:]
+    while "--alias" in args:
+        i = args.index("--alias")
+        k, v = args[i + 1].split("=", 1)
+        ALIAS[k] = v
+        del args[i:i + 2]
+    for k, v in ALIAS.items():
+        P("ALIAS: every '%s' below is the arm %s" % (k, v))
+    want = args or list(SECTIONS)
     arms = {"mf2Z": {s: 0 for s in SW}, "mf2ALL": {}}
     for arm, s in (("mf2A1", "FAILSAFE_REAL_ALARMS"), ("mf2FS", "GLOBAL_ANALYZER_FIRE_SOURCE_FIX"),
                    ("mf2A2", "UAV_HOLD_STATIONARY"), ("mf2A3a", "SEARCHER_WIND_COVERAGE_FIX"),
