@@ -127,11 +127,16 @@ UAV_HOLD_STATIONARY = 1
 # evenly over the ~220-step battery cycle, so returns stop coinciding and (with two searchers) one
 # searcher is meant to be flying at all times (the design's prediction; outputs/fix2_report.txt has
 # the measurement). Scenario B stays a multiplier: 0.5 x L_i. agents.staggered_launch_bases.
-STAGGERED_LAUNCH_BATTERY = 1
+# SHIPS OFF (on only on an exact integral 1): the even stagger (Part 3) and the compact stagger (the
+# maintainer's follow-up ruling) both failed the D-9 test - before the terminal step the searcher time
+# lost exceeds the no-searcher gap closed in C and D (outputs/fix2_report.txt). Off, the no-searcher gap
+# and the depot-area contention of simultaneous returns are recorded limitations.
+STAGGERED_LAUNCH_BATTERY = 0
 # Item 4, the compact variant (maintainer ruling on D-9 after the even stagger's Part 3 STOP): the
 # launch phases lie on HALF the battery cycle, the two searchers at its ends (half a cycle apart), the
 # trackers between them - fewer early tracker returns, returns less spread. Read only while
-# STAGGERED_LAUNCH_BATTERY is on; 0 = the even stagger over the whole cycle. agents.stagger_compact.
+# STAGGERED_LAUNCH_BATTERY is on (so inert as shipped); 0 = the even stagger over the whole cycle.
+# agents.stagger_compact.
 STAGGER_COMPACT = 1
 # Item 3a. The victim searcher's coverage y-commit follows the wind (downwind strip first under
 # north/south wind; disjoint camping bands under east/west). agents.searcher_wind_coverage_fix.

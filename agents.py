@@ -1532,7 +1532,11 @@ FLIGHT_DRAIN_PER_STEP = 0.3
 
 
 def staggered_launch_battery() -> bool:
-    """STAGGERED_LAUNCH_BATTERY - fix2 item 4. Shipped 1.
+    """STAGGERED_LAUNCH_BATTERY - fix2 item 4. SHIPPED 0 (OFF) - on only on an exact integral 1.
+
+    Both staggers failed the maintainer's D-9 test (outputs/fix2_report.txt, D-9 follow-up): before
+    the terminal step the searcher time they cost exceeds the no-searcher gap they close in C and D.
+    Off, the no-searcher gap and the depot-area contention of simultaneous returns are LIMITATIONS.
 
     On: staggered launch charges - the COMPACT stagger while STAGGER_COMPACT is on (stagger_compact;
     phases on half the cycle). With STAGGER_COMPACT 0, the EVEN stagger:
@@ -1545,7 +1549,7 @@ def staggered_launch_battery() -> bool:
     0.5 x L_i. Off: every UAV
     launches at 100 (x f), all returning in one window (c08456b).
     """
-    return _fix2_switch("STAGGERED_LAUNCH_BATTERY")
+    return _exact_integer(getattr(cfv, "STAGGERED_LAUNCH_BATTERY", 0)) == 1
 
 
 def stagger_compact() -> bool:

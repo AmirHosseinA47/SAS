@@ -1,6 +1,7 @@
 """fix2 item 4: staggered launch batteries (outputs/fix2_part1.txt section 4, ruling D-9).
 
-STAGGERED_LAUNCH_BATTERY (shipped 1; off only on an exact integral 0). The variant is STAGGER_COMPACT.
+STAGGERED_LAUNCH_BATTERY (SHIPPED 0 after both staggers failed the D-9 test; on only on an exact
+  integral 1). The variant is STAGGER_COMPACT.
   EVEN (STAGGER_COMPACT 0): L_i = 100 - delta * r_i, delta = 0.3 * 220 / n, r_i = the UAV's return rank -
   the s searchers at floor(k * n / s), the trackers on the remaining ranks in unique-id order.
   COMPACT (STAGGER_COMPACT 1): the phases on half the cycle, position j at 110 j / (n-1) steps, the
@@ -38,9 +39,15 @@ def _restore_module_config():
     agents.random = saved_random
 
 
-def test_shipped_on() -> None:
-    assert cfv.STAGGERED_LAUNCH_BATTERY == 1 and agents.staggered_launch_battery() is True
+def test_shipped_off() -> None:
+    # both staggers failed the maintainer's D-9 test (outputs/fix2_report.txt): item 4 ships OFF
+    assert cfv.STAGGERED_LAUNCH_BATTERY == 0 and agents.staggered_launch_battery() is False
     assert agents.UAV_STAGGER_CYCLE_STEPS == 220
+
+
+@pytest.fixture
+def stagger_on(monkeypatch):
+    monkeypatch.setattr(cfv, "STAGGERED_LAUNCH_BATTERY", 1)
 
 
 def test_flight_drain_matches_the_uav() -> None:
@@ -49,9 +56,10 @@ def test_flight_drain_matches_the_uav() -> None:
     assert agents.FLIGHT_DRAIN_PER_STEP == pytest.approx(uav.battery_drain_per_step + uav.battery_drain_per_move)
 
 
-@pytest.mark.parametrize("value, expected", [(0, False), ("0", False), (0.0, False), (1, True),
-                                             (0.5, True), (None, True)])
-def test_off_only_on_an_exact_integral_zero(monkeypatch, value, expected) -> None:
+@pytest.mark.parametrize("value, expected", [(1, True), ("1", True), (1.0, True), (True, True), (0, False),
+                                             (0.5, False), (None, False), ("no", False), (2, False), ("", False)])
+def test_on_only_on_an_exact_integral_one(monkeypatch, value, expected) -> None:
+    # a switch that ships OFF enables only on an exact 1 (house rule)
     monkeypatch.setattr(cfv, "STAGGERED_LAUNCH_BATTERY", value, raising=False)
     assert agents.staggered_launch_battery() is expected
 
@@ -63,7 +71,7 @@ def test_off_only_on_an_exact_integral_zero(monkeypatch, value, expected) -> Non
     ([S], [100.0]),                                        # one UAV: nothing to stagger
     ([T, T], [100.0, 67.0]),                               # no searcher: trackers ranks 0, 1
 ])
-def test_the_rule(monkeypatch, roles, expected) -> None:
+def test_the_rule(monkeypatch, stagger_on, roles, expected) -> None:
     monkeypatch.setattr(cfv, "STAGGER_COMPACT", 0)       # the EVEN stagger over the whole cycle
     assert agents.staggered_launch_bases(roles) == pytest.approx(expected)
 
@@ -74,7 +82,7 @@ def test_off_is_full_charge(monkeypatch) -> None:
 
 
 @pytest.mark.parametrize("compact", [0, 1])
-def test_every_launch_is_above_the_berth_trigger(monkeypatch, compact) -> None:
+def test_every_launch_is_above_the_berth_trigger(monkeypatch, stagger_on, compact) -> None:
     monkeypatch.setattr(cfv, "STAGGER_COMPACT", compact)
     for n in range(2, 9):
         roles = [T] * (n - max(1, n // 2)) + [S] * max(1, n // 2)
@@ -88,12 +96,12 @@ def _launch(**params):
     return [round(u.battery_level, 6) for u in uavs]
 
 
-def test_model_scenario_d_launches_staggered(monkeypatch) -> None:
+def test_model_scenario_d_launches_staggered(monkeypatch, stagger_on) -> None:
     monkeypatch.setattr(cfv, "STAGGER_COMPACT", 0)
     assert _launch(NUM_AGENTS=4) == pytest.approx([83.5, 50.5, 100.0, 67.0])
 
 
-def test_model_scenario_b_composes_with_the_fraction(monkeypatch) -> None:
+def test_model_scenario_b_composes_with_the_fraction(monkeypatch, stagger_on) -> None:
     monkeypatch.setattr(cfv, "STAGGER_COMPACT", 0)
     assert _launch(NUM_AGENTS=3, UAV_LAUNCH_BATTERY_FRACTION=0.5) == pytest.approx([39.0, 28.0, 50.0])
 
@@ -101,7 +109,8 @@ def test_model_scenario_b_composes_with_the_fraction(monkeypatch) -> None:
 # --------------------------------------------------------------------------- the compact stagger
 # (maintainer ruling on D-9; outputs/fix2_part3_prereg.txt amendment 3)
 
-def test_compact_shipped_on_while_measured() -> None:
+def test_compact_is_the_default_variant() -> None:
+    # the last ruled variant; inert while STAGGERED_LAUNCH_BATTERY ships 0
     assert cfv.STAGGER_COMPACT == 1 and agents.stagger_compact() is True
 
 
@@ -121,12 +130,12 @@ def test_compact_off_only_on_an_exact_integral_zero(monkeypatch, value, expected
     ([S], [100.0]),                                        # one UAV: nothing to stagger
     ([S, T, S, T, S], [100.0, 91.75, 83.5, 75.25, 67.0]),  # three searchers: ends and middle
 ])
-def test_the_compact_rule(monkeypatch, roles, expected) -> None:
+def test_the_compact_rule(monkeypatch, stagger_on, roles, expected) -> None:
     monkeypatch.setattr(cfv, "STAGGER_COMPACT", 1)
     assert agents.staggered_launch_bases(roles) == pytest.approx(expected)
 
 
-def test_compact_spans_half_the_cycle(monkeypatch) -> None:
+def test_compact_spans_half_the_cycle(monkeypatch, stagger_on) -> None:
     monkeypatch.setattr(cfv, "STAGGER_COMPACT", 1)
     half = agents.FLIGHT_DRAIN_PER_STEP * agents.UAV_STAGGER_CYCLE_STEPS / 2.0
     for n in range(2, 9):
@@ -143,7 +152,7 @@ def test_compact_is_read_only_while_the_stagger_is_on(monkeypatch) -> None:
     assert agents.staggered_launch_bases([T, T, S, S]) == [100.0] * 4
 
 
-def test_model_scenario_c_and_b_launch_compact(monkeypatch) -> None:
+def test_model_scenario_c_and_b_launch_compact(monkeypatch, stagger_on) -> None:
     monkeypatch.setattr(cfv, "STAGGER_COMPACT", 1)
     assert _launch(NUM_AGENTS=5) == pytest.approx([91.75, 83.5, 75.25, 100.0, 67.0])
     assert _launch(NUM_AGENTS=3, UAV_LAUNCH_BATTERY_FRACTION=0.5) == pytest.approx([41.75, 33.5, 50.0])
