@@ -792,7 +792,8 @@ def sec_exposure():
 
 # ------------------------------------------------------------------------------ P3-10 rbgate
 def sec_rbgate(arms=(("mf2gS", "all on, EVEN stagger (b8581db)"), ("mf2gC", "all on, COMPACT stagger"),
-                     ("mf2gX", "all on but item 4"))):
+                     ("mf2gX", "all on but item 4"), ("mf2gY", "all on but item 4, STATIONARY_YIELD_FIX"),
+                     ("mf2gM", "all on but items 4 and 2 (the moving hold)"))):
     for arm, label in arms:
         _rbgate_arm(arm, label)
 
@@ -961,6 +962,234 @@ def _window(d, last_step):
     return gap, fly
 
 
+def _depot_dist_fn(d):
+    cells = [tuple(c) for c in ((d.get("depots") or {}).get("cells") or [])]
+    cache = {}
+
+    def dist(x, y):
+        if x is None or not cells:
+            return 99
+        k = (x, y)
+        if k not in cache:
+            cache[k] = min(abs(x - a) + abs(y - b) for a, b in cells)
+        return cache[k]
+    return dist
+
+
+def _merge(steps, gap):
+    """Maximal intervals over sorted step numbers, merging neighbours at most `gap` apart."""
+    out = []
+    for s in sorted(set(steps)):
+        if out and s - out[-1][1] <= gap:
+            out[-1][1] = s
+        else:
+            out.append([s, s])
+    return [(a, b, b - a + 1) for a, b in out]
+
+
+def yield_metrics(d):
+    """Amendment 4 metrics for one probe run (steps are 1-based; row i = after step i+1).
+      depot_yields_pre   yield steps by UAVs within 5 cells of a depot (at the start of the step)
+                         before the run's terminal step
+      depot_clusters     maximal intervals of steps in which such a yield occurs, merging gaps <= 3
+      stalls             per UAV, maximal intervals of its yield steps, merging gaps <= 2 (the cap's
+                         free step), with the steps it spans
+      drift_by_yield     DRIFT_TOO_HIGH (local) names whose last-5-move window has >= 2 refusals only
+                         because refusals made ON YIELD STEPS are counted
+    """
+    m = (d.get("mf2") or {})
+    mu, fleet, R = m.get("uav") or [], m.get("fleet") or [], d["rows_uav"]
+    term = d.get("terminal_step") or 361
+    dist = _depot_dist_fn(d)
+    depot_steps, per_uav = [], collections.defaultdict(list)
+    out = collections.Counter()
+    hist = collections.defaultdict(list)       # uid -> [(refused, on_yield_step)]
+    for t in range(len(mu)):
+        step = t + 1
+        before = {u[0]: u for u in (R[t - 1] if t >= 1 else R[0])}
+        for u in mu[t]:
+            uid = u[0]
+            refused = u[3] in ("refused_occupied", "refused_oob")
+            hist[uid].append((refused, bool(u[9])))
+            if u[9]:
+                per_uav[uid].append(step)
+                p = before.get(uid)
+                if p is not None and dist(p[1], p[2]) <= 5:
+                    depot_steps.append(step)
+                    if step < term:
+                        out["depot_yields_pre"] += 1
+                if step < term:
+                    out["yields_pre"] += 1
+                out["yields"] += 1
+        if 1 <= t < len(fleet) and isinstance(fleet[t], list) and len(fleet[t]) >= 6:
+            for uid in fleet[t][5].get("DRIFT_TOO_HIGH|local", ()):
+                win = hist[uid][max(0, t - 5):t]   # the moves of steps t-4 .. t (rows t-5 .. t-1)
+                total = sum(1 for r, y in win if r)
+                non_yield = sum(1 for r, y in win if r and not y)
+                out["drift_named"] += 1
+                if total >= 2 and non_yield < 2:
+                    out["drift_by_yield"] += 1
+    # clipped to the pre-terminal window - the steps while a victim remains (amendment 4)
+    clusters = [(a, min(b, term - 1), min(b, term - 1) - a + 1) for a, b, n in _merge(depot_steps, 3) if a < term]
+    stalls = []
+    for uid, st in per_uav.items():
+        for a, b, n in _merge(st, 2):
+            if a < term:
+                stalls.append((min(b, term - 1) - a + 1, uid, a, min(b, term - 1)))
+    return out, clusters, sorted(stalls, reverse=True), term
+
+
+def sec_yfix(arms=("mf2cX", "mf2ALL", "mf2cS", "mf2rX", "mf2rS", "mf2rC", "mf2rM")):
+    """Amendment 4 - the stationary-yield fixes (maintainer ruling after FOLLOW-UP 2)."""
+    P("=" * 100)
+    P("AMENDMENT 4 - YIELD METRICS (pre-terminal; depot = within 5 cells of a depot cell)")
+    for arm in arms:
+        runs = probe_runs(arm)
+        if not runs:
+            continue
+        tot = collections.Counter()
+        all_cl, all_st = [], []
+        for cfg, d in sorted(runs.items()):
+            o, cl, st, term = yield_metrics(d)
+            tot += o
+            all_cl += [(n, cfg, a, b) for a, b, n in cl]
+            all_st += [(n, cfg, uid, a, b) for n, uid, a, b in st]
+        all_cl.sort(reverse=True)
+        all_st.sort(reverse=True)
+        long_cl = [c for c in all_cl if c[0] >= 10]
+        long_st = [s for s in all_st if s[0] >= 10]
+        P("  %-7s yields %d (pre-terminal %d) | DEPOT yields pre-terminal %d | depot clusters >= 10 steps: %d,"
+          " longest %s | yield stalls >= 10 steps: %d, longest %s | drift alarms caused by yield-step"
+          " refusals %d of %d named" % (
+              arm, tot["yields"], tot["yields_pre"], tot["depot_yields_pre"], len(long_cl),
+              all_cl[0] if all_cl else None, len(long_st), all_st[0] if all_st else None,
+              tot["drift_by_yield"], tot["drift_named"]))
+        if long_cl:
+            P("          depot clusters >= 10: %s" % long_cl[:8])
+        if long_st:
+            P("          yield stalls >= 10: %s" % long_st[:8])
+
+
+def sec_r(base="mf2cX", cand="mf2rS", others=("mf2rC", "mf2rM")):
+    """Amendment 4 - provenance, identity, the ruled decision and the validation list."""
+    import runpy
+    import subprocess
+    q = runpy.run_path(os.path.join(OUT, "_mf2_r_queue.py"), run_name="mf2_r_queue")
+    P("=" * 100)
+    P("AMENDMENT 4 - PROVENANCE (source hashes vs the files AT THE RUN'S OWN COMMIT, switches) AND IDENTITY")
+    at_head = {}
+
+    def head_shas(head, path):
+        key = (head, path)
+        if key not in at_head:
+            blob = subprocess.run(["git", "-C", REPO, "show", "%s:%s" % (head, path.replace("\\", "/"))],
+                                  capture_output=True).stdout
+            lf = blob.replace(b"\r\n", b"\n")
+            at_head[key] = {hashlib.sha256(lf).hexdigest()[:16],
+                            hashlib.sha256(lf.replace(b"\n", b"\r\n")).hexdigest()[:16]}
+        return at_head[key]
+
+    for arm, want in q["ARMS"].items():
+        runs = probe_runs(arm)
+        if not runs:
+            P("  %-6s no runs" % arm)
+            continue
+        bad = []
+        for cfg, d in runs.items():
+            ss = d.get("src_sha") or {}
+            if any(ss[k] not in head_shas(str(d.get("head")), k) for k in ss):
+                bad.append(cfg + ":src")
+            ex = d.get("extra_params") or {}
+            bad += ["%s:%s=%s" % (cfg, s, ex.get(s)) for s, v in want.items() if ex.get(s) != v]
+            if not d.get("complete") or d.get("crashed"):
+                bad.append(cfg + ":incomplete")
+        heads = collections.Counter(str(d.get("head"))[:7] for d in runs.values())
+        P("  %-6s %2d runs heads %s  %s" % (arm, len(runs), dict(heads), "OK" if not bad else "MISMATCH %s" % bad[:6]))
+    for new, old in (("mf2rX", "mf2cX"), ("mf2rZ", "mf2Z"), ("mf2rZ", "mf1P")):
+        a, b = probe_runs(new), probe_runs(old)
+        if a and b:
+            r = compare_probe(a, b)
+            ok = sum(1 for v in r.values() if not v)
+            P("  identity %s == %s: %d/%d identical on every _sd_probe field %s" % (
+                new, old, ok, len(r), "" if ok == len(r) else {k: v for k, v in r.items() if v}))
+
+    def summary(arm):
+        runs = probe_runs(arm)
+        tot = collections.Counter()
+        cl_all, st_all, near_refusal_runs = [], [], []
+        for cfg, d in sorted(runs.items()):
+            o, cl, st, term = yield_metrics(d)
+            tot += o
+            cl_all += [(n, cfg, a, b) for a, b, n in cl]
+            st_all += [(n, cfg, uid, a, b) for n, uid, a, b in st]
+            ev = d.get("eval") or {}
+            for k in ("rescued", "dead", "never_detected", "firefighter_deaths", "unreachable"):
+                tot[k] += int(ev.get(k) or 0)
+            tot["no_terminal"] += int(d.get("terminal_step") is None)
+            for r in d["rows_dec"]:
+                tot["steps"] += 1
+                tot["normal"] += int(r.get("mode") == "normal")
+            dist = _depot_dist_fn(d)
+            R, mu = d["rows_uav"], (d.get("mf2") or {}).get("uav") or []
+            run = collections.Counter()
+            for t in range(1, len(mu)):
+                prev = {u[0]: u for u in R[t - 1]}
+                cur = {u[0]: u for u in R[t]}
+                for u in mu[t]:
+                    uid = u[0]
+                    p = prev.get(uid)
+                    if u[9]:
+                        continue
+                    if p is None or p[5] or p[6] or cur[uid][5] or cur[uid][6] or t + 1 >= _term(d):
+                        run[uid] = 0
+                        continue
+                    if dist(p[1], p[2]) <= 5 and u[3] in ("refused_occupied", "refused_oob"):
+                        tot["near_depot_refusals_pre"] += 1
+                        run[uid] += 1
+                        near_refusal_runs.append((run[uid], cfg, uid, t + 1))
+                    else:
+                        run[uid] = 0
+                act = {u[0]: u[8] for u in R[t]}
+                tot["step_aside"] += sum(1 for v in act.values() if v == "yield_step_aside")
+                tot["hold_escape"] += sum(1 for v in act.values() if v == "hold_escape")
+        cl_all.sort(reverse=True)
+        st_all.sort(reverse=True)
+        near_refusal_runs.sort(reverse=True)
+        return tot, cl_all, st_all, near_refusal_runs
+
+    P("=" * 100)
+    P("AMENDMENT 4 - THE VALIDATION (pre-terminal; depot = within 5 cells of a depot cell)")
+    rows = {}
+    for arm in (base, cand) + tuple(others):
+        if probe_runs(arm):
+            rows[arm] = summary(arm)
+    for arm, (tot, cl, st, nr) in rows.items():
+        P("  %-6s depot yields pre %4d | depot clusters >=10: %d (longest %s) | stalls >=10: %d (longest %s) |"
+          " drift by yield-step refusals %d of %d | step asides %d, hold_escapes %d | near-depot refusals pre %d,"
+          " longest near-depot refusal run %s | normal %.2f%% | rescued %d dead %d never_detected %d ff deaths %d"
+          " unreachable %d no-terminal %d" % (
+              arm, tot["depot_yields_pre"], sum(1 for c in cl if c[0] >= 10), cl[0] if cl else None,
+              sum(1 for s in st if s[0] >= 10), st[0] if st else None, tot["drift_by_yield"], tot["drift_named"],
+              tot["step_aside"], tot["hold_escape"], tot["near_depot_refusals_pre"], nr[0] if nr else None,
+              100.0 * tot["normal"] / max(1, tot["steps"]), tot["rescued"], tot["dead"], tot["never_detected"],
+              tot["firefighter_deaths"], tot["unreachable"], tot["no_terminal"]))
+        long_st = [s for s in st if s[0] >= 10]
+        if long_st:
+            P("         stalls >= 10: %s" % long_st[:10])
+        long_cl = [c for c in cl if c[0] >= 10]
+        if long_cl:
+            P("         depot clusters >= 10: %s" % long_cl[:10])
+    if cand in rows:
+        tot, cl, st, nr = rows[cand]
+        long_cl = [c for c in cl if c[0] >= 10]
+        P("  => DECISION (the ruling): %s" % (
+            "ITEM 2 STAYS ON with STATIONARY_YIELD_FIX - no depot cluster >= 10 steps before the terminal step"
+            if not long_cl else "SHIP ITEM 2 OFF - %d depot cluster(s) >= 10 steps remain: %s" % (len(long_cl), long_cl[:4])))
+        stall_ok = not any(s[0] >= 10 for s in st)
+        P("     validation: no yield stall >= 10 steps before the terminal step - %s; drift alarms caused by"
+          " yield-step refusals = 0 - %s" % ("PASS" if stall_ok else "FAIL", "PASS" if tot["drift_by_yield"] == 0 else "FAIL"))
+
+
 def sec_provc():
     """Amendment 3: provenance and identity of the compact-stagger arms."""
     import runpy
@@ -1091,7 +1320,7 @@ def sec_d9c(pairs=(("mf2Z", "mf2cK", "DECISIVE: item 4 compact alone vs all off"
 
 SECTIONS = {"prov": None, "ident": sec_ident, "item1": sec_item1, "fire": sec_fire, "item2": sec_item2,
             "item3": sec_item3, "osc": sec_osc, "item4": sec_item4, "d9": sec_d9, "exposure": sec_exposure,
-            "rbgate": sec_rbgate, "crn": sec_crn, "outcomes": sec_outcomes, "d9c": sec_d9c, "provc": sec_provc}
+            "rbgate": sec_rbgate, "crn": sec_crn, "outcomes": sec_outcomes, "d9c": sec_d9c, "provc": sec_provc, "yfix": sec_yfix, "r": sec_r}
 
 
 def main():

@@ -23,12 +23,23 @@ COMMITS (c08456b..HEAD)
   0a7801f  docs only (review NIT) - every follow-up run is at 0a7801f
   611c2a4  item 4 SHIPS OFF: both staggers failed the maintainer's D-9 test; STAGGERED_LAUNCH_BATTERY = 0,
            enabled only on an exact integral 1 (the ships-OFF rule); STAGGER_COMPACT 1 (inert)
+  3132ffd3 outputs: the D-9 / escaped-yield follow-up record
+  -- after the ruling "fix item 2 before merging" --
+  09289553 item 2 follow-up: STATIONARY_YIELD_FIX (ships 1) - no edge escape and no drift on a yield
+           step, step aside, no yield at a depot; the offered YIELD_ONLY_WHEN_CONTENDING (ships 0)
   Items 1, 2, 3a, 3b and row B SHIP 1 (off only on an exact integral 0, D-1); item 4 SHIPS 0. All fix2
   switches at 0 == c08456b (P3-1; re-verified at 0a7801f). DEPOT_STANDOFF_FIX (item 5) NOT built.
 
 ================================================================================
-STATUS - READ FIRST (after the follow-up)
+STATUS - READ FIRST (after FOLLOW-UP 3)
 ================================================================================
+0. ITEM 2 FIXED AND KEPT ON (FOLLOW-UP 3): STATIONARY_YIELD_FIX removes the depot yield clusters (134
+   near-depot pre-terminal yields -> 2; clusters >= 10 steps 6 -> 0) and every drift alarm caused by
+   yield escapes (32 -> 0); by the ruled test ITEM 2 STAYS ON. ONE VALIDATION ITEM FAILS, as predicted
+   in amendment 4: 9 yield stalls >= 10 steps remain while victims remain - all away from depots, pairs
+   of trackers flying together; the offered rule (4), measured but not shipped, would leave 1 (11 steps).
+   DEPOT POCKETS (searchers' own routing stalling at depot edges) remain in every arm, the moving hold
+   included - a limitation for a later round. NOT MERGED (ruled).
 1. D-9 FOLLOW-UP DECIDED BY THE RULED TEST: the COMPACT stagger FAILS (before the terminal step the
    searcher time lost exceeds the no-searcher gap closed - C 166 vs 15, D 71 vs 42), so ITEM 4 SHIPS
    OFF (611c2a4). The shipped system is the measured arm mf2cX (every fix on but item 4), identical to
@@ -47,6 +58,104 @@ STATUS - READ FIRST (after the follow-up)
    defaults (611c2a4): 1,363 passed, failing NAME SET == {T5} - PASS
    (outputs/_mf2_c_fullsuite.log).
 5. STOP BEFORE MERGING (ruled). Nothing is merged.
+
+================================================================================
+FOLLOW-UP 3 - THE STATIONARY-YIELD FIXES (maintainer ruling after FOLLOW-UP 2; amendment 4; runs at
+09289553; NO independent review - all 3 review agents were used)
+================================================================================
+THE RULES (STATIONARY_YIELD_FIX, one switch, ships 1; read only while UAV_HOLD_STATIONARY is on; 0 =
+the item-2 behaviour of 611c2a4 exactly - identity mf2rX == mf2cX 16/16):
+  1. NO EDGE ESCAPE: a yield no longer escapes for standing on the grid's outer ring or for an off-grid
+     heading (a stay cannot leave the grid). The tracker hazard escape and the stuck-count escape (the
+     ruled backstop) remain. A YIELD STEP RECORDS NO DRIFT: a refused move on a yield step (a step
+     aside or backstop escape into a cell that got taken) is right-of-way coordination, which
+     COLLISION_RISK already reports - not a deviation from the UAV's own course.
+  2. STEP ASIDE: a yielder whose cell is the cell a partner needs - the target of the partner's
+     committed move of this step (partners have lower ids and are dispatched first), else the target of
+     its last move if that was refused - moves to an in-bounds, UAV-free, hazard-free (not burning, not
+     smoke), non-depot neighbour that is not a partner's cell or needed cell (farthest from the needed
+     cells, then from the partners, then from the grid edge). None -> it stays (the backstop remains).
+     Order of a yield step: tracker hazard escape > step aside > stuck-count escape > stay.
+  3. NO YIELD AT A DEPOT - the exact rule: a pair produces no yield when EITHER UAV is on a return leg,
+     docked, or stands in the DEPOT APPROACH AREA = every cell within Manhattan 3 of a depot cell. 3 =
+     the depot's doorstep ring (1) + the collision radius (2): every UAV that can be in a collision pair
+     with a UAV on the doorstep. A launch leg (berth -> first cell outside the area) lies inside the
+     area, so it is covered. WHY: returns and launches converge on a few fixed cells (the berths sit at
+     each depot's inner corner); a stationary UAV there is an obstacle on the only lanes in and out,
+     and UAVs that launched together held each other in place (the C/south freeze). Near a depot the
+     move rule (one UAV per cell) and the depot's own berth / dock-fix logic sequence the traffic;
+     COLLISION_RISK still fires there (a real condition) but no longer holds anyone. SYMMETRIC on
+     purpose: the literal "does not hold another UAV" (the partner side) would still let a UAV inside
+     the area stop for one outside, and a stop inside the area is the obstacle.
+  Tests: tests/test_fix2_yield_fix.py, 36; each rule fails its tests when reverted in memory (7
+  reverts); the step aside's exemption from the searcher gate / final safety pass is NOT
+  revert-checked (a test would need a hazard within 6 cells).
+PROVENANCE AND IDENTITY: every run of this follow-up at 09289553, source hashes equal to the files at
+  that commit, switches as the arm table (outputs/_mf2_r_an_final.txt). All fix2 switches 0 (mf2rZ) ==
+  mf2Z == c08456b 16/16; STATIONARY_YIELD_FIX 0 (mf2rX) == the item-4-off shipped arm mf2cX 16/16;
+  shipped defaults at 09289553 == mf2rS: 4/4 value-identical on every _sd_probe field (A/north,
+  B/north, C/south, D/south run with NO fix2 --set, tag mf2vdflt).
+RESULTS (16 configurations, pre-terminal = the steps while a victim remains; depot = within 5 cells of
+  a depot cell; the baseline is the item-4-off shipped arm of 611c2a4, mf2cX)
+                                           mf2cX (before)     mf2rS (the fixes)   mf2rM (moving hold)
+  depot yields, pre-terminal                  134                  2                  0 (no yields)
+  depot yield clusters >= 10 steps            6 (longest 24)       0 (longest 2)       -
+  yield stalls >= 10 steps, pre-terminal      15 (longest 23)      9 (longest 21)      -
+  drift alarms caused by yield-step refusals  32 of 279 named      0 of 432            0
+  step asides / backstop+hazard escapes       0 / 59               36 / 22             - / 524 (moving)
+  near-depot refused moves, pre-terminal      73 (longest run 10)  54 (longest run 5)  147 (longest run 44)
+  depot pockets (airborne, within 5 of a
+    depot, <= 2 cells per 10 steps), pre-
+    terminal UAV-steps / episodes >= 20      360 / 8              328 / 6             457 / 7
+  normal mode share                           70.61%               68.35%              67.27%
+  rescued / dead / never_detected             44 / 9 / 1           45 / 8 / 2          44 / 8 / 3
+  firefighter deaths / runs with no terminal  2 / 2                1 / 3               2 / 4
+  => DECISION (the ruling: item 2 stays on iff no depot yield cluster >= 10 steps remains):
+     ITEM 2 STAYS ON with STATIONARY_YIELD_FIX (committed 09289553; the shipped default).
+VALIDATION (item by item):
+  - depot yields and the longest depot cluster vs 134 / 24 (+15): 2 / 2 steps. PASS.
+  - no yield stall >= 10 steps while a victim remains: FAIL - 9 remain (PREDICTED in amendment 4). All 9
+    are 13+ cells from any depot; in 8 both UAVs are fire trackers flying the flank together (mean
+    distance ~1.5, the partner MOVING on most steps) and the higher id yields 3 steps in every 4; one is a
+    searcher behind a tracker. No rule of 1-3 addresses a pair that travels together.
+  - drift alarms caused by yield escapes: 0 (32 before). PASS.
+  - item-1 checks (iii)-(vii): 0 violations (2,312 collision names, 864 drift names, 0 docked; 1,025
+    search-reason steps; 3,921 normal steps); normal-mode share 68.35%. PASS.
+  - item 2: 388 holds, 0 moved; 446 yields, 0 violations, none > 3 in a row. Item 3 unchanged (gate never
+    beyond 6 cells, B/west loop 0). Exposure: searcher 0.41%, all-UAV 0.44% (bounds held).
+  - rescued / dead / never_detected vs mf2cX: 45 / 8 / 2 vs 44 / 9 / 1 (reported; four configurations
+    differ, each by one run - A/north: a victim never detected while the searcher sat ~100 steps in a
+    pocket of the SE depot (the moving-hold arm shows the same outcome there); D/south: one more
+    rescue; a screen, not a result).
+  - all-off identity (16/16), rbgate mf2gY (pooled: rescued 57 -> 59, 0 new losses, recoveries 9 -> 6,
+    0 latched) PASS; full suite at 09289553: 1,399 passed, failing
+    NAME SET == {T5} (outputs/_mf2_r_fullsuite.log). PASS.
+  - invariants (outputs/_mf2_r_sd_mf2rS.txt): no new UAV episode kind against mf2Z; I2_uav_livelock 21
+    (mf2Z 25); I2_uav_stuck only in D/north, after the terminal step (two searchers in the SE depot).
+    The 10-frame oscillation windows that are not flank patrol rise to 50 (mf2cX 41, mf2Z 26): searchers'
+    own BFS escape routing oscillating at a depot's edge (C/south at the NW doorstep; A/north inside the
+    SE depot) - the depot pockets below, not yields.
+WHAT THE FIXES DID NOT REMOVE - DEPOT POCKETS. The yield clusters are gone, but UAVs still stall at depot
+  edges without yielding: searchers whose own routing (the BFS pocket escape, retarget-to-interior)
+  oscillates between two cells at a depot's doorstep or inside its footprint. They exist in EVERY arm -
+  all off (1 episode, 91 steps), the even stagger (11 episodes, 192 UAV-steps), item 4 off (360), the
+  fixes (328), rule 4 (283), the moving hold (457) - and are not an item-2 behaviour: a SEARCHER-ROUTING
+  and depot-geometry issue for a later round (it includes the 119-step B/west pocket, identical in every
+  item-4-off arm).
+THE MOVING HOLD (the fallback, measured as mf2rM): it produces no yields, so no yield cluster - but the
+  same depot contention appears as refused moves (147 near the depots before the terminal step, one run
+  of 44 in C/south) and depot pockets (457 UAV-steps, the most of any arm). The moving hold did not
+  avoid the clusters; it hid them from the yield metric.
+THE OFFERED RULE (4) - YIELD_ONLY_WHEN_CONTENDING (ships 0; measured as mf2rC, for a ruling): with it the
+  pre-terminal yield stalls >= 10 steps fall 9 -> 1 (11 steps, C/north) and depot clusters stay 0;
+  drift by yield 0; normal 70.80%; rescued / dead / never_detected 44 / 10 / 1 (C/north loses a rescue:
+  a screen). It would make the "no stall >= 10" validation item nearly pass; it is NOT shipped.
+PAPER (recorded as ruled): making the fail-safe hold genuinely stationary exposed a depot coordination
+  deadlock that the old moving hold had masked - with the moving hold the same contention is present as
+  refused moves and depot pockets (it is not avoided, only not visible as yields); with a stationary
+  yield it appeared as mutual yields at the depot (134 near-depot yields, clusters of up to 24 steps);
+  the fix removes the yield form of it (2 near-depot yields, no cluster), and depot pockets from the
+  searchers' own routing remain a limitation.
 
 ================================================================================
 FOLLOW-UP 2 - D-9: THE COMPACT STAGGER, AND ITEM 4 OFF (amendment 3; all runs at 0a7801f)
@@ -536,10 +645,13 @@ ITEM 1 - REAL ALARMS (FAILSAFE_REAL_ALARMS). The fail-safe mode is now driven by
 ITEM 2 - A HOLD HOLDS (UAV_HOLD_STATIONARY). 'hold' was a moving step produced by false alarms; it is
   now a stationary right-of-way yield of the higher-id UAV in a close airborne pair, at most 3 steps in
   a row, never in front of a return leg. The paper's fail-safe "safe hold" means this yield, with its
-  measured exceptions (FOLLOW-UP 1): a fire hazard, a return leg, 3 steps without movement, and a
-  low-rate defect on the grid's edge; a stationary yield can also block the partner it yields to (19% of
-  stays) and, when returns coincide, cluster UAVs at the depot (FOLLOW-UP 2). The 'fire_flank_hold'
-  label is a lateral patrol step, not a hold.
+  measured exceptions (FOLLOW-UP 1): a fire hazard, a return leg, 3 steps without movement. With
+  STATIONARY_YIELD_FIX (FOLLOW-UP 3) it never escapes for the grid edge, records no drift, steps aside
+  when it stands on the cell its partner needs, and does not happen at a depot; the yield clusters at
+  the depot (FOLLOW-UP 2) are gone. A pair that travels together still slows the higher id (yield
+  stalls away from depots). The 'fire_flank_hold' label is a lateral patrol step, not a hold.
+  PAPER FINDING (recorded as ruled): making the fail-safe hold genuinely stationary exposed a depot
+  coordination deadlock that the old moving hold had masked.
 
 ITEM 3a - WIND-AWARE Y-COMMIT (SEARCHER_WIND_COVERAGE_FIX). Correct and tested (T7), but inert on the
   evaluated configurations (value-identical to off): no outcome may be attributed to it.
@@ -591,12 +703,21 @@ RECORDED PAPER FINDINGS (maintainer's list, with this round's evidence)
      after the even stagger's results); item 4 ships off, and the recharge gap is a limitation.
   7. The 3b north-wind screen (-2 rescued, +1 never_detected on 4 CRN seeds) is open; the
      measurement round reports by wind direction.
+  8. (RULED) Making the fail-safe hold genuinely stationary exposed a depot coordination deadlock that
+     the old moving hold had masked. Evidence (FOLLOW-UP 3): with a stationary yield and simultaneous
+     returns, 134 near-depot yields and clusters of up to 24 steps; with the moving hold the same
+     contention shows as refused moves (147 near the depots, a 44-step run) and depot pockets (457
+     UAV-steps) - present, but not visible as yields; with STATIONARY_YIELD_FIX the yield form is gone
+     (2 near-depot yields, no cluster) while depot pockets from the searchers' own routing remain.
 
 ================================================================================
 OPEN / NEXT
 ================================================================================
-  - Item 2 (needs a ruling): the boundary-escape defect and the partner-blocking gap of the stationary
-    yield (FOLLOW-UP 1, proposed fixes (1)-(3)); with item 4 off the latter clusters UAVs at the depot.
+  - Item 2: fixes (1) edge escape, (3) partner blocking via step aside, and the depot freeze are BUILT
+    (FOLLOW-UP 3; (2), an occupancy term in the tracker escape, was not ruled and is not built). A ruling
+    is needed on the offered rule (4) for the remaining non-depot yield stalls.
+  - Depot pockets: searchers' BFS pocket escape / retarget-to-interior oscillating at depot edges
+    (every arm; the 119-step B/west pocket) - a searcher-routing round.
   - The measurement round: results BY WIND DIRECTION (the 3b north-wind screen); the recharge gap and
     the (unfixed) docking standoff as limitations.
   - The bare int() cast class, the belief gap (session 3: do not touch region targeting here).

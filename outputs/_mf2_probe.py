@@ -8,7 +8,8 @@ usage: _mf2_probe.py -- <_sd_probe.py args ...>
 
 Adds d["mf2"] to the probe JSON:
   uav    per step, per UAV: [uid, role, stay, moved_class, burning, smoke, fire_dist, drift_level,
-         risk_status, yielded]
+         risk_status, yielded, selected_dir]  (selected_dir: the direction this step used; added for
+         the item-2 follow-up - earlier runs have 10 fields)
          moved_class = moved / stay / docked_hold / nodir_hold / refused_occupied / refused_oob;
          burning = a burning Fire agent on its cell; smoke = the cell is visibility smoke-obscured or
          holds an active smoke (the harness --uav-actions definitions); fire_dist = Manhattan to the
@@ -200,7 +201,8 @@ def main() -> int:
                             int(cell in burning) if cell else 0, int(cell in smoke) if cell else 0, int(fd),
                             (round(float(st.drift_level), 3) if st is not None and st.drift_level is not None else None),
                             (str(st.local_risk_status) if st is not None else None),
-                            int(bool(ys is not None and ys[0] == int(self.evaluation_timesteps_counter) and ys[2]))])
+                            int(bool(ys is not None and ys[0] == int(self.evaluation_timesteps_counter) and ys[2])),
+                            int(getattr(a, "selected_dir", 0) or 0)])
             UAV_ROWS.append(row)
             visible = sum(len(getattr(lom, "visible_fire_cells", ()) or ())
                           for lom in (getattr(self, "local_observation_models", {}) or {}).values())

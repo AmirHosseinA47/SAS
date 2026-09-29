@@ -1,0 +1,1 @@
+Start-Process -FilePath "E:\Projects\SAS\.venv\Scripts\python.exe" -ArgumentList @("E:\Projects\SAS\outputs\_mf2_pool.py","E:\Projects\SAS\outputs\_mf2_q_r.jsonl","E:\Projects\SAS\outputs\_mf2_pool_r.log","--maxpar","10","--min-free-gb","2.5") -WorkingDirectory "E:\Projects\SAS" -WindowStyle Hidden

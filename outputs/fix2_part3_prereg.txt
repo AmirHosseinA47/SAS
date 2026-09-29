@@ -162,3 +162,88 @@ THE ESCAPED YIELDS (maintainer: explain the yields that escaped and moved, and w
   records which of its conditions held (stuck count >= 3, the grid's outer ring, committed direction
   off the grid, fire-tracker hazard) - replays the five mf2ALL configurations with moved yields (A_S,
   C_N, C_W, D_S, D_W) at b8581db source (value identity with the recorded mf2ALL runs is its check).
+
+================================================================================
+AMENDMENT 4 - THE STATIONARY-YIELD FIXES (maintainer ruling after FOLLOW-UP 2; written BEFORE any
+code or run of this follow-up)
+================================================================================
+RULING: item 4 OFF accepted. Fix item 2 before merging, one switch; validate on the all-together arm
+(item 4 off) with the pre-terminal window throughout; if the fixes do not remove the long depot
+clusters, SHIP ITEM 2 OFF ('hold' reverts to the old moving hold) and record both the moving hold and
+the clusters it avoided. Record as a paper finding: making the fail-safe hold genuinely stationary
+exposed a depot coordination deadlock that the old moving hold had masked.
+Review agents: 3 of 3 used - this follow-up has NO independent review; it relies on revert-checked
+tests, identity arms and this pre-registration.
+
+THE RULES (switch STATIONARY_YIELD_FIX; ships 1, off only on an exact integral 0; read only while
+UAV_HOLD_STATIONARY is on; 0 = the item-2 behaviour of 611c2a4 exactly)
+  1. NO EDGE ESCAPE FOR A STATIONARY YIELD. A yield (the fail-safe hold the dispatcher gives the UAV
+     that must yield) no longer escapes on the grid's outer ring or on a committed direction that
+     leaves the grid: a stay cannot leave the grid and move() already refuses off-grid targets. The
+     fire-tracker hazard escape stays (safety overrides a yield), and so does the stuck-count escape
+     (the ruled backstop). A YIELD STEP RECORDS NO DRIFT: whatever the yield commits (stay, step
+     aside, backstop escape), a refused move on a yield step is not a deviation from the UAV's own
+     intent - it is right-of-way coordination, which COLLISION_RISK already reports - so the step
+     intends its own cell (drift 0).
+  2. STEP ASIDE. A yielder whose cell is the cell a partner needs moves off it instead of staying.
+     The partner's needed cell: the cell its committed move of THIS step targets (partners have lower
+     ids and are dispatched first, so their commit is known), or, without a commit this step, the
+     target of its last move if that move was refused. The step-aside cell: an in-bounds 4-neighbour
+     with no UAV on it, not a partner's cell or needed cell, not a depot cell, strict hazard level 0
+     (not burning, not smoke); the one farthest from the partners' needed cells, then from the
+     partners, then from the grid edge, then the lowest direction index. None -> stay (the backstop
+     remains). The step aside is exempt from the searcher gate and the final direction safety pass,
+     both of which could turn it back into the partner's cell; its own filter excludes the hazards
+     they guard against.
+     Order of a yield step: tracker hazard escape > step aside > stuck-count escape > stay.
+  3. NO YIELD AT A DEPOT. A pair produces no yield when EITHER UAV is on a return leg or docked, or
+     stands in the DEPOT APPROACH AREA: every cell within Manhattan DEPOT_APPROACH_RADIUS = 3 of a
+     depot cell (the depot's doorstep ring, 1, plus the collision radius, 2: every UAV that can be in
+     a collision pair with a UAV on the doorstep). A UAV's launch leg - from its berth until it first
+     stands outside the area - lies inside the area, so the rule covers it. WHY: returns and launches
+     converge on a few fixed cells (the berths sit at each depot's inner corner); a stationary UAV
+     there is an obstacle on the only lanes in and out, and mutual right-of-way among UAVs that all
+     launched together is exactly the ~55-step freeze of C/south. Near a depot the move rule (no two
+     UAVs on a cell) and the depot's own berth / dock-fix logic sequence the traffic; COLLISION_RISK
+     still fires there (a real condition), but it no longer holds anyone in place. Symmetric on
+     purpose: the literal "does not hold another UAV" (the partner side) would still let a UAV inside
+     the area stop for one outside, and a stop inside the area is the obstacle.
+  (4) OFFERED, NOT SHIPPED - YIELD_ONLY_WHEN_CONTENDING (ships 0; on only on an exact integral 1; read
+     only while STATIONARY_YIELD_FIX is on). A UAV yields only if some eligible partner can contend
+     with it this step: the partner's committed target (its current cell when it has no commit or
+     stays) is within Manhattan 1 of the yielder's cell. A partner whose move keeps it >= 2 away
+     cannot enter the yielder's cell and cannot take the cell the yielder moves to. WHY OFFERED: in
+     the current shipped arm 7 of the 15 yield stalls >= 10 steps are AWAY from depots (depot distance
+     12-36) with a partner that mostly MOVES (a pair travelling together; the higher id yields 3 steps
+     in every 4) - no rule of 1-3 touches them, so the validation item "no yield stall >= 10 steps
+     while a victim remains" is PREDICTED TO FAIL under rules 1-3 alone. Measured as a separate arm for
+     a ruling; it does not change the shipped system.
+
+METRICS (outputs/_mf2_p3_analyze.py section yfix; pre-terminal = steps before the run's terminal step)
+  depot yields      yield steps by UAVs within 5 cells of a depot cell (the maintainer's 134)
+  depot cluster     maximal interval of steps with such a yield, merging gaps <= 3 steps
+  yield stall       per UAV, maximal interval of its yield steps, merging gaps <= 2 (the cap's free step)
+  drift by yield    DRIFT_TOO_HIGH (local) names whose last-5-move window reaches 2 refusals only by
+                    counting refusals made on yield steps
+  BASELINE (mf2cX, the shipped arm of 611c2a4, 16 configs): yields 507 (pre-terminal 333); depot yields
+  pre-terminal 134; depot clusters >= 10 steps: 6, longest 24 (C/south 229-252; the "~55-step" episode
+  is two clusters, 24 and 15, split by a gap); yield stalls >= 10 steps: 15, longest 23 (B/north,
+  inside the depot footprint); drift alarms by yield-step refusals 32 of 279 named.
+DECISION (the ruling): ITEM 2 STAYS ON with STATIONARY_YIELD_FIX iff mf2rS has NO depot cluster >= 10
+  steps before the terminal step; otherwise UAV_HOLD_STATIONARY ships 0 (on only on an exact 1) - the
+  moving hold - and both it and the clusters it avoided are recorded.
+VALIDATION (reported beside the decision; any failure is flagged for the maintainer before merge):
+  depot yields pre-terminal and the longest depot cluster vs 134 / 24 (+15); no yield stall >= 10
+  steps before the terminal step (PREDICTED FAIL, see (4)); drift alarms caused by yield-step refusals
+  = 0; item-1 checks (iii)-(vii) 0 violations and normal-mode share >= 50%; rescued, dead,
+  never_detected vs mf2cX (reported); all-off identity; rbgate no NEW loss (pooled rule); full suite
+  failing set == {T5}.
+ARMS (outputs/_mf2_probe.py, 360 steps, GPM 0, the mf1P argv, every switch set explicitly; tags checked
+  unused and prefix-free: mf2r*, mf2gY, mf2gM)
+  mf2rS  every switch 1 except STAGGERED_LAUNCH_BATTERY 0; STATIONARY_YIELD_FIX 1   16  the candidate
+  mf2rX  as mf2rS with STATIONARY_YIELD_FIX 0                                         16  == mf2cX (identity)
+  mf2rZ  every fix2 switch 0                                                          16  == mf2Z (identity)
+  mf2rM  as mf2rS with UAV_HOLD_STATIONARY 0 (the moving-hold fallback)               16
+  mf2rC  as mf2rS with YIELD_ONLY_WHEN_CONTENDING 1 (the offered rule 4)              16
+  rbgate mf2gY (= mf2rS settings), mf2gM (= mf2rM settings), vs mf2gZ, P3-10 pooled rule.
+  The probe also records each UAV's committed direction (a pure read) so partner targets can be audited.
