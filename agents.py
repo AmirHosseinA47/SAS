@@ -1534,7 +1534,9 @@ FLIGHT_DRAIN_PER_STEP = 0.3
 def staggered_launch_battery() -> bool:
     """STAGGERED_LAUNCH_BATTERY - fix2 item 4. Shipped 1.
 
-    On: UAV i launches with L_i = 100 - delta * r_i, delta = FLIGHT_DRAIN_PER_STEP *
+    On: staggered launch charges - the COMPACT stagger while STAGGER_COMPACT is on (stagger_compact;
+    phases on half the cycle). With STAGGER_COMPACT 0, the EVEN stagger:
+    UAV i launches with L_i = 100 - delta * r_i, delta = FLIGHT_DRAIN_PER_STEP *
     UAV_STAGGER_CYCLE_STEPS / n (n = fleet size), r_i its RETURN RANK - the s searchers take ranks
     floor(k * n / s) (evenly spread over the cycle, the first at full charge), the trackers the
     remaining ranks in unique-id order - so consecutive returns are DESIGNED to come ~P / n steps

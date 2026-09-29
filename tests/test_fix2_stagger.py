@@ -1,9 +1,11 @@
 """fix2 item 4: staggered launch batteries (outputs/fix2_part1.txt section 4, ruling D-9).
 
-STAGGERED_LAUNCH_BATTERY (shipped 1; off only on an exact integral 0):
-  L_i = 100 - delta * r_i,  delta = 0.3 * 220 / n,  r_i = the UAV's return rank - the s searchers at
-  floor(k * n / s), the trackers on the remaining ranks in unique-id order. Scenario B multiplies:
-  launch = 0.5 x L_i (fix1's composition).
+STAGGERED_LAUNCH_BATTERY (shipped 1; off only on an exact integral 0). The variant is STAGGER_COMPACT.
+  EVEN (STAGGER_COMPACT 0): L_i = 100 - delta * r_i, delta = 0.3 * 220 / n, r_i = the UAV's return rank -
+  the s searchers at floor(k * n / s), the trackers on the remaining ranks in unique-id order.
+  COMPACT (STAGGER_COMPACT 1): the phases on half the cycle, position j at 110 j / (n-1) steps, the
+  searchers at floor(k (n-1) / (s-1)). Scenario B multiplies: launch = 0.5 x L_i (fix1's composition);
+  the berth-trigger bound below is for f = 1 - B's lowest trackers launch under it and recharge in place.
 """
 
 from __future__ import annotations

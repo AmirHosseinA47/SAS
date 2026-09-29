@@ -122,7 +122,8 @@ FAILSAFE_REAL_ALARMS = 1
 # to the lower unique_id, never to a UAV on a return leg, at most 3 consecutive steps). A return
 # leg never stays. agents.uav_hold_stationary.
 UAV_HOLD_STATIONARY = 1
-# Item 4. Staggered launch batteries: L_i = 100 - 0.3 * 220 / n * rank_i, the searchers spread
+# Item 4. Staggered launch batteries (the variant: STAGGER_COMPACT below). With STAGGER_COMPACT 0,
+# the EVEN stagger: L_i = 100 - 0.3 * 220 / n * rank_i, the searchers spread
 # evenly over the ~220-step battery cycle, so returns stop coinciding and (with two searchers) one
 # searcher is meant to be flying at all times (the design's prediction; outputs/fix2_report.txt has
 # the measurement). Scenario B stays a multiplier: 0.5 x L_i. agents.staggered_launch_bases.
