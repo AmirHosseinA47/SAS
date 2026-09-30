@@ -69,3 +69,45 @@ AMENDMENT 2 - (O) ATTRIBUTION (written after the Part 2 smoke runs, BEFORE any P
   hold / hold_escape / yield_step_aside), ROUTING (none), MIXED (the share of yield steps stated). If (O) is
   non-zero in an A1-containing arm, Part 3 STOPS and reports before merging - with the attribution - and the
   maintainer rules; no episode is excluded from the gate by this amendment.
+
+AMENDMENT 3 - THE REVIEW OF PART 2 (written after the review, BEFORE any Part 3 run)
+  One review agent (1 of the 3 allowed) read the Part 2 diff at 8497449a. Its findings and what was done:
+  1  DEFECT, A1-R STILL CYCLES IN A STATIC FIRE. Only the steps inside the near field planned with the
+     clearance; at d0 = 7 the unchanged planner stepped straight back to 6 and undid the BFS detour
+     (repro: searcher (25, 19), fire (25, 25), target (25, 40) - a two-cell livelock), and inside the
+     field the greedy step and the pocket-escape cells (which change every step) allowed contour cycles.
+     FIXED - THE FIRE-MODE LATCH (uav_executor._route_within_fire_field): once a burning cell is within 6
+     on a route, the route stays in fire mode, latched on its target (wind state "fire_route_target"),
+     until the target changes or is reached (Manhattan <= 2). Fire mode plans ONLY by a BFS over a fixed
+     admissible set - burning distance >= T = min(d0, 6), no fire, no smoke (a second pass plans through
+     smoke, never steps into it), no other UAV; no greedy step, no pocket cells. In a static fire with
+     static UAVs T never decreases and each step shortens the path in a fixed set: no cycle. No path:
+     inside the near field a strictly-farther retreat, else a wait (outside it, a latched route waits -
+     it does not walk away one cell per step). The dock-fix lesson again: a recovery that engages only
+     where it is needed hands the steer back to the rule that undoes it.
+     THIS IS A NEW RULE, NOT PROTOTYPED: the Part 2 transcription check (fx3t == fx3pV) validated the
+     pre-latch rule. Part 3's (N) / (O) gates on the A1-containing arms are its validation.
+  2  With UAV_HOLD_STATIONARY = 0 the fire wait was selected_dir under a wait label - a BLIND move.
+     FIXED: without the stay action the wait is the legal neighbour farthest from the fire, labelled a
+     retreat (the shipped item 2 = 1 is unaffected).
+  3  A2's re-pick looked only inside the latched depot. FIXED: no UAV-free path to any free cell of it
+     -> the nearest free cell of any depot by the same path (the target depot follows).
+  4  Mechanism 1 (BASE_STATION_RETURN_MECHANISM != 2) never re-picked a taken cell. FIXED: the
+     Manhattan-nearest free cell of the same depot (mechanism 1 is not shipped; tests only).
+  5  NIT (boxed relies on the pipeline's no-direction hold) - recorded, unchanged.
+  6  B2 ignored REDUCED_LAUNCH_BATTERY and skipped the fraction's validation. FIXED: B2 applies only
+     while REDUCED_LAUNCH_BATTERY is on (B2 replaces the reduced launch); a junk fraction still raises.
+  7  B3 same-step order / allowance - by design (the later searcher waits); now pinned by a test.
+  8  Two B readers outside the resolver. FIXED: outputs/_rblatch_campaign2.py reads scenario_preset and
+     applies the preset's extra parameters that differ from the tree default (scenario-D shards stay
+     bit-identical); tests/victim_searcher_scenario_validation.py SCENARIO_B -> 4 / 4 / 3 (Part 1 5.1).
+  9  evaluate_scenarios printed "launch charge x0.5" for B under B2. FIXED: it prints the B2 charges.
+  10 TEST GAPS. Added 13 tests (67 in tests/test_fix3a.py): the review's repro and a fire wall, driven
+     step by step (no revisit, no alternation, arrives, keeps the clearance); a latched route beyond the
+     near field waits; a new target releases the latch; the hold-off wait; trigger_level_at with the
+     nearest cell taken; the other-depot fallback; mechanism 1's re-pick; the tie-break; B2 off without
+     the reduced launch and a junk fraction; A after B in one process; B3 same-step; B3's floor measured
+     to the free cell, not the berth. Revert check (outputs/_fx3_revert_check.txt): every switch has
+     failing tests at 0; the two driven route tests also FAIL against the pre-latch executor (8497449a).
+  THE GATES ARE UNCHANGED. fx3Z (every new switch 0) must still reproduce fx3v exactly (P3-1): no fix
+  above runs with its switch at 0.

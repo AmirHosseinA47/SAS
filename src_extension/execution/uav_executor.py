@@ -2136,14 +2136,20 @@ class UAVExecutor:
 
         d0 = the searcher's Manhattan distance to the nearest BURNING cell (smoke stays impassable - the
         planner never steps into a fire or smoke cell - but no longer repels at range).
-          d0 > SEARCHER_GATE_NEAR_RANGE: the existing planner (_forced_progress_direction), no veto.
-          inside it: greedy and BFS keep a burning distance >= T = min(d0, SEARCHER_ROUTE_CLEARANCE) on
-            every cell, so no planned step can be vetoed;
-          no admissible step: the legal neighbour (in bounds, not edge-blocked, not fire / smoke, no UAV)
-            with the largest burning distance if it is strictly larger than d0 (FIRE_RETREAT_LABEL), else
-            a WAIT on the cell (FIRE_WAIT_LABEL, a stay).
-        In a static fire the burning distance of the searcher's cell never decreases inside the near field,
-        so the route cannot oscillate against a guard (the 3b(ii) livelock of the depot pockets).
+          d0 > SEARCHER_GATE_NEAR_RANGE and the route not latched: the existing planner
+            (_forced_progress_direction), no veto.
+          otherwise FIRE MODE, latched on the route target (wind state "fire_route_target") until the
+            target changes or is reached (Manhattan <= 2): a BFS over the cells with burning distance
+            >= T = min(d0, SEARCHER_ROUTE_CLEARANCE), no fire, no smoke (a second pass plans through smoke
+            but never steps into it), no other UAV - so no planned step can be vetoed;
+          no admissible path: inside the near field, the legal neighbour (in bounds, not edge-blocked, not
+            fire / smoke, no UAV) with the largest burning distance if it is strictly larger than d0
+            (FIRE_RETREAT_LABEL); else a WAIT on the cell (FIRE_WAIT_LABEL, a stay; with
+            UAV_HOLD_STATIONARY off there is no stay, and the wait is the legal neighbour with the largest
+            burning distance).
+        In a static fire with static UAVs T never decreases and every BFS step strictly shortens the path
+        in a fixed admissible set, so the route cannot cycle (the 3b(ii) livelock of the depot pockets,
+        and the review's greedy-undoes-the-detour cycle at d0 = 6 / 7).
         """
         import agents as agents_module  # lazy: agents is a root module
 
@@ -2177,7 +2183,22 @@ class UAVExecutor:
             return dist.get((int(cell[0]), int(cell[1])), 99)
 
         d0 = fire_distance(here)
-        if d0 > near:
+        goal = (int(round(float(target[0]))), int(round(float(target[1]))))
+        # THE FIRE-MODE LATCH (fix3a review finding 1): once a burning cell has come within the near range on
+        # this route, the route stays in FIRE MODE - planned only by the admissible BFS below - until its
+        # target changes or is reached. Without the latch the unchanged greedy planner at d0 = 7 walked
+        # straight back to 6 (Manhattan progress, first direction wins) and undid the BFS detour: a two-cell
+        # livelock in a STATIC fire. The latch owns the steer on every step, not only on the steps inside
+        # the near field (the dock-fix round's lesson: a recovery engaged only when stalled ping-pongs).
+        ws = _wind_search_state(model, self.uav_id) if model is not None else {}
+        latched = ws.get("fire_route_target")
+        if isinstance(latched, (list, tuple)) and len(latched) >= 2:
+            if (int(latched[0]), int(latched[1])) != goal:
+                latched = None          # a new route target is a new route
+                ws["fire_route_target"] = None
+        else:
+            latched = None
+        if latched is None and d0 > near:
             forced = self._forced_progress_direction(agent, target)
             if forced is None:
                 return None
@@ -2188,61 +2209,100 @@ class UAVExecutor:
             if prefer_bfs_action_label and method.startswith("bfs"):
                 return forced, "victim_search_escape_bfs"
             return forced, action_label
+        if abs(goal[0] - here[0]) + abs(goal[1] - here[1]) <= 2:
+            ws["fire_route_target"] = None       # the route target is reached: the route is over
+            return None
+        ws["fire_route_target"] = [goal[0], goal[1]]
+        # FIRE MODE. The admissible set: burning distance >= T = min(d0, SEARCHER_ROUTE_CLEARANCE), no fire,
+        # no smoke (a second pass may plan THROUGH smoke, never step into it), no other UAV. No greedy step
+        # and no pocket-escape cells (they change every step): a BFS over a set that is fixed while the fire
+        # and the UAVs are - each step strictly shortens the BFS distance to the goal, and T never decreases
+        # (every step keeps >= T, a retreat strictly raises it) - so no cycle is possible in a static fire.
         clearance = min(d0, int(agents_module.SEARCHER_ROUTE_CLEARANCE))
         self._last_escape_method = None
-        goal = (int(round(float(target[0]))), int(round(float(target[1]))))
-        pocket = self._pocket_blocked_cells_for_escape(agent, here)
-        current = abs(goal[0] - here[0]) + abs(goal[1] - here[1])
-        best: int | None = None
-        best_progress = 0
-        for d in range(4):
-            cell = (here[0] + _MOVE_X[d], here[1] + _MOVE_Y[d])
-            if not self._cell_in_bounds(cell) or self._strict_victim_hazard_level(cell) > 0:
-                continue
-            if (not self._strict_path_lookahead_safe(agent, d, depth=1)
-                    or fire_distance(cell) < clearance or cell in pocket):
-                continue
-            progress = current - (abs(goal[0] - cell[0]) + abs(goal[1] - cell[1]))
-            if progress > best_progress:
-                best, best_progress = d, progress
-        method = "greedy"
-        if best is None:
-            inside = {cell for cell, value in dist.items() if value < clearance}
-            max_depth = self._bfs_escape_max_depth(agent)
-            best = self._bfs_escape_direction(
-                agent, target, avoid_smoke=True, max_depth=max_depth, extra_blocked=inside)
-            method = "bfs_smoke_safe"
-            if best is None:
-                best = self._bfs_escape_direction(
-                    agent, target, avoid_smoke=False, max_depth=max_depth, extra_blocked=inside)
-                method = "bfs_fire_only"
-        if best is not None:
-            next_cell = (here[0] + _MOVE_X[best], here[1] + _MOVE_Y[best])
-            if self._strict_victim_hazard_level(next_cell) == 0:
-                self._last_escape_method = method
-                if prefer_bfs_action_label and method.startswith("bfs"):
-                    return best, "victim_search_escape_bfs"
-                return best, action_label
-        # No admissible step toward the target: strictly away from the fire, else wait.
         occupied = set()
         schedule = getattr(model, "schedule", None) if model is not None else None
         for item in (getattr(schedule, "agents", ()) or ()):
             if type(item).__name__ == "UAV" and item is not agent and getattr(item, "pos", None) is not None:
                 occupied.add((int(item.pos[0]), int(item.pos[1])))
-        away, away_distance = None, d0
+        inside = {cell for cell, value in dist.items() if value < clearance}
+        smoke = self._collect_strict_smoke_cells(model)
+        max_depth = self._bfs_escape_max_depth(agent)
+        for method, blocked in (("bfs_fire_field", set(fire) | smoke | inside | occupied),
+                                ("bfs_fire_field_through_smoke", set(fire) | inside | occupied)):
+            best = self._fire_field_bfs_direction(here, goal, blocked, max_depth)
+            if best is None:
+                continue
+            next_cell = (here[0] + _MOVE_X[best], here[1] + _MOVE_Y[best])
+            if self._strict_victim_hazard_level(next_cell) != 0:
+                break                       # the path's first step would enter smoke: never taken
+            self._last_escape_method = method
+            if prefer_bfs_action_label:
+                return best, "victim_search_escape_bfs"
+            return best, action_label
+        # No admissible step toward the target: strictly away from the fire, else wait.
+        legal = []
         for d in range(4):
             cell = (here[0] + _MOVE_X[d], here[1] + _MOVE_Y[d])
             if not self._cell_in_bounds(cell) or self._strict_victim_hazard_level(cell) > 0 or cell in occupied:
                 continue
             if self._victim_edge_blocked_direction(agent, d):
                 continue
-            if fire_distance(cell) > away_distance:
-                away, away_distance = d, fire_distance(cell)
-        if away is not None:
+            legal.append((d, fire_distance(cell)))
+        away, away_distance = None, d0
+        for d, value in legal:
+            if value > away_distance:
+                away, away_distance = d, value
+        if away is not None and d0 <= near:
+            # Only inside the near field: a latched route beyond it with no path waits instead of walking
+            # away from its target one cell per step to the band.
             self._last_escape_method = "fire_retreat"
             return away, self.FIRE_RETREAT_LABEL
+        if not agents_module.uav_hold_stationary() and legal:
+            # Without item 2's stay action there is no wait (review finding 2): the least-bad legal step.
+            self._last_escape_method = "fire_retreat"
+            return max(legal, key=lambda item: item[1])[0], self.FIRE_RETREAT_LABEL
         self._last_escape_method = "fire_wait"
         return int(getattr(agent, "selected_dir", 0) or 0), self.FIRE_WAIT_LABEL
+
+    def _fire_field_bfs_direction(
+        self,
+        start: tuple[int, int],
+        goal: tuple[int, int],
+        blocked: set[tuple[int, int]],
+        max_depth: int,
+    ) -> int | None:
+        """fix3a A1-R: the first direction of a shortest 4-neighbour path from `start` to within Manhattan 2
+        of `goal` avoiding `blocked` (the _bfs_escape_direction search - level order, directions 0..3, goal
+        radius 2 - over a GIVEN set, without the pocket escape's per-step cells). None: no path, or start
+        already within the goal radius."""
+        from collections import deque
+
+        if abs(start[0] - goal[0]) + abs(start[1] - goal[1]) <= 2:
+            return None
+        visited: dict[tuple[int, int], tuple[int, int] | None] = {start: None}
+        parent_dir: dict[tuple[int, int], int] = {}
+        queue: deque[tuple[int, int]] = deque([start])
+        depth = 0
+        while queue:
+            if depth > max_depth:
+                break
+            for _ in range(len(queue)):
+                cell = queue.popleft()
+                for direction in range(4):
+                    nxt = (cell[0] + _MOVE_X[direction], cell[1] + _MOVE_Y[direction])
+                    if nxt in visited or not self._cell_in_bounds(nxt) or nxt in blocked:
+                        continue
+                    visited[nxt] = cell
+                    parent_dir[nxt] = direction
+                    if abs(nxt[0] - goal[0]) + abs(nxt[1] - goal[1]) <= 2:
+                        cur = nxt
+                        while visited[cur] is not None and visited[cur] != start:
+                            cur = visited[cur]  # type: ignore[assignment]
+                        return parent_dir[cur]
+                    queue.append(nxt)
+            depth += 1
+        return None
 
     def _apply_retarget_with_pathfinding_fallback(
         self,

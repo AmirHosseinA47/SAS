@@ -26,7 +26,9 @@ EDGE_MARGIN = 2
 WINDS = ("north", "south", "east", "west")
 
 SCENARIO_A = {"NUM_AGENTS": 2, "NUM_VICTIMS": 3, "NUM_FIREFIGHTERS": 3}
-SCENARIO_B = {"NUM_AGENTS": 3, "NUM_VICTIMS": 2, "NUM_FIREFIGHTERS": 2}
+# fix3a B1: the new B team (serve_dashboard.BUILTIN_SCENARIOS["B"]); the team counts only - this matrix
+# checks searcher movement, not the battery scenario.
+SCENARIO_B = {"NUM_AGENTS": 4, "NUM_VICTIMS": 4, "NUM_FIREFIGHTERS": 3}
 SCENARIO_C = {"NUM_AGENTS": 5, "NUM_VICTIMS": 3, "NUM_FIREFIGHTERS": 3}
 SCENARIO_D = {"NUM_AGENTS": 4, "NUM_VICTIMS": 4, "NUM_FIREFIGHTERS": 2}
 EDGE_CASES = [{"NUM_AGENTS": 1, "NUM_VICTIMS": 0, "NUM_FIREFIGHTERS": 0}]

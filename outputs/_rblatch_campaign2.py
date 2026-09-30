@@ -237,13 +237,30 @@ def main():
                     help="extra apply_scenario_config parameter; same coercion "
                          "ladder as outputs/_ffr_harness.py")
     a = ap.parse_args()
-    preset = BUILTIN_SCENARIOS[a.scenario]
+    overrides = {}
+    for item in a.set:
+        if "=" in item:
+            k, v = item.split("=", 1)
+            overrides[k.strip()] = _parse_value(v)
+    # fix3a review finding 8: scenario B's team follows SCENARIO_B_TEAM (the one resolver), and its
+    # extra model parameters (launch fraction, BATTERY_SCENARIO) are applied - only those that differ
+    # from the tree default, so a scenario-D shard's params dict stays bit-identical.
+    try:
+        from serve_dashboard import scenario_preset, scenario_extra_params
+    except ImportError:
+        scenario_preset = scenario_extra_params = None
+    preset = (scenario_preset(a.scenario, overrides) if scenario_preset is not None
+              else BUILTIN_SCENARIOS[a.scenario])
     n = preset["NUM_AGENTS"]
     ft = n // 2 or 1
     params = {"NUM_AGENTS": n, "NUM_VICTIMS": preset["NUM_VICTIMS"],
               "NUM_FIREFIGHTERS": preset["NUM_FIREFIGHTERS"], "WIND_DIRECTION": a.wind,
               "BATCH_SIZE": 300, "FIRE_SPREAD_MULTIPLIER": 0.75, "PROBABILITY_MAP": False,
               "NUM_FIRE_TRACKERS": ft, "NUM_VICTIM_SEARCHERS": n - ft}
+    if scenario_extra_params is not None:
+        for k, v in scenario_extra_params(a.scenario).items():
+            if v != getattr(cfv, k, None):
+                params[k] = v
     # Depot-cost round. With no --set this loop does nothing and `params` is
     # bit-identical to what it was before the flag existed. That kept the e703861
     # reference shards (tag `rbc`) comparable while the shipped default was mode 0;

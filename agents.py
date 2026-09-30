@@ -974,20 +974,34 @@ class UAV(mesa.Agent):
                 self.rtb_log[-1]["dock_cell"] = here
             return
         self.rtb_return_steps += 1
-        if base_station_return_mechanism() != 2:
-            return
         depot = 0 if self.rtb_target_depot is None else int(self.rtb_target_depot)
         cells = depots[depot]["cells"] if depot < len(depots) else ()
         free = {c for c in cells if c not in occupied}
         target = self.rtb_target_berth
+        if base_station_return_mechanism() != 2:
+            # Mechanism 1 steers greedily toward the latched cell elsewhere; it RE-PICKS too (review
+            # finding 4): a taken cell is replaced by the Manhattan-nearest free cell of the same depot.
+            if target not in free and free:
+                pick = self._nearest_free_dock_cell([{"cells": free}], occupied)
+                if pick is not None:
+                    self.rtb_target_berth = pick[0]
+                    self._count_repick()
+            return
         route = self._dock_path({target}, occupied) if target in free else None
         if route is None:
             # RE-PICK within the latched depot: the latched cell is taken, or no UAV-free path to it.
             route = self._dock_path(free, occupied)
+            if route is None:
+                # ... and, with no UAV-free path to ANY free cell of it, the other depots (review finding
+                # 3): the nearest free cell of any depot by the same path.
+                others = {c for i, dep in enumerate(depots) if i != depot
+                          for c in dep["cells"] if c not in occupied}
+                route = self._dock_path(others, occupied) if others else None
+                if route is not None:
+                    self.rtb_target_depot = next(i for i, dep in enumerate(depots) if route[0] in dep["cells"])
             if route is not None:
                 self.rtb_target_berth = route[0]
-                if self.rtb_log:
-                    self.rtb_log[-1]["repicks"] = int(self.rtb_log[-1].get("repicks", 0)) + 1
+                self._count_repick()
         self.rtb_last_pos = here
         self.execution_action = "rtb_return"
         self.execution_stay = False  # fix2 item 2: a return leg never stays
@@ -1001,6 +1015,10 @@ class UAV(mesa.Agent):
             return
         self.selected_dir = route[1]
         self.execution_direction_applied = True
+
+    def _count_repick(self) -> None:
+        if self.rtb_log:
+            self.rtb_log[-1]["repicks"] = int(self.rtb_log[-1].get("repicks", 0)) + 1
 
     def _return_delay_applies(self, target, level, step) -> bool:
         """fix3a B3 (SCENARIO_B_RETURN_DELAY, the battery scenario only). Called only when the return
@@ -2164,10 +2182,13 @@ def _launch_spread(ends, k, count):
 
 def battery_scenario_launch_charges(roles):
     """B2: the launch charge of each UAV (unique-id order) given its role, or None when B2 does not apply
-    (switch off or not the battery scenario). Searchers 85 .. 65, trackers 78 .. 72, spread linearly for
-    other team sizes; the scenario's UAV_LAUNCH_BATTERY_FRACTION is NOT applied on top."""
-    if not (scenario_b_staggered_launch() and battery_scenario()):
+    (switch off, not the battery scenario, or REDUCED_LAUNCH_BATTERY off - B2 REPLACES the scenario's
+    reduced launch, so without it B is the pre-fix1 full-charge B). Searchers 85 .. 65, trackers 78 .. 72,
+    spread linearly for other team sizes; the scenario's UAV_LAUNCH_BATTERY_FRACTION is NOT applied on top,
+    but it is still validated (a junk fraction raises, as it does without B2)."""
+    if not (scenario_b_staggered_launch() and battery_scenario() and reduced_launch_battery()):
         return None
+    uav_launch_battery_fraction()  # validation only (review finding 6)
     roles = [str(r) for r in roles]
     searchers = [i for i, r in enumerate(roles) if r == "victim_searcher"]
     trackers = [i for i, r in enumerate(roles) if r != "victim_searcher"]

@@ -223,6 +223,99 @@ def test_a_routed_step_through_the_near_field_of_smoke_never_enters_the_smoke(mo
     assert nxt not in {(19, 20), (19, 21), (19, 19)}
 
 
+def _route_drive(ex, agent, target, steps):
+    """Route step by step in a STATIC fire (the route only - no pocket, gate or sweep machinery).
+    Returns (trail, labels); stops at a wait (static: it would wait forever) or when the route ends."""
+    trail, labels = [tuple(agent.pos)], []
+    for _ in range(steps):
+        routed = ex._attempt_pathfinding_toward_target(agent, target, action_label="lbl")
+        if routed is None:
+            break
+        direction, label = routed
+        labels.append(label)
+        if label == UAVExecutor.FIRE_WAIT_LABEL:
+            break
+        agent.pos = (agent.pos[0] + MX[direction], agent.pos[1] + MY[direction])
+        trail.append(tuple(agent.pos))
+    return trail, labels
+
+
+def _two_cell_alternations(trail):
+    return sum(1 for i in range(2, len(trail)) if trail[i] == trail[i - 2] and trail[i] != trail[i - 1])
+
+
+def test_the_route_does_not_undo_its_own_detour(monkeypatch):
+    """The review's repro: a burning cell 6 north of the searcher, the target beyond it. Unlatched, the
+    BFS detour to distance 7 was undone by the ordinary planner stepping straight back to 6 - a two-cell
+    livelock in a STATIC fire. Latched, the route goes round and arrives, never closer than 6."""
+    _near_field_setting(monkeypatch)
+    fire = {(25, 25)}
+    ex, agent = _searcher((25, 19), fire_cells=fire)
+    trail, labels = _route_drive(ex, agent, (25.0, 40.0), 80)
+    assert _two_cell_alternations(trail) == 0, trail
+    assert len(set(trail)) == len(trail), trail
+    assert abs(trail[-1][0] - 25) + abs(trail[-1][1] - 40) <= 2, trail
+    assert min(_manhattan_to(fire, cell) for cell in trail) >= 6
+    assert UAVExecutor.FIRE_WAIT_LABEL not in labels
+    assert ex._model._wind_search_target_state  # the latch lives in the wind state ...
+    assert _wind_state(ex).get("fire_route_target") is None  # ... and is released on arrival
+
+
+def _wind_state(ex):
+    from src_extension.adaptation.local_adaptation_generator import _wind_search_state
+    return _wind_search_state(ex._model, ex.uav_id)
+
+
+def test_the_route_goes_round_a_fire_wall_without_cycling(monkeypatch):
+    """A wall of fire (x 15, y 10-30) between the searcher and its target: the route keeps its clearance
+    on every step and reaches the target round the wall's end, with no cell visited twice."""
+    _near_field_setting(monkeypatch)
+    wall = {(15, y) for y in range(10, 31)}
+    ex, agent = _searcher((20, 20), fire_cells=wall)
+    trail, _labels = _route_drive(ex, agent, (5.0, 20.0), 120)
+    assert _two_cell_alternations(trail) == 0, trail
+    assert len(set(trail)) == len(trail), trail
+    assert abs(trail[-1][0] - 5) + abs(trail[-1][1] - 20) <= 2, trail
+    assert min(_manhattan_to(wall, cell) for cell in trail) >= 5
+
+
+def test_a_latched_route_beyond_the_near_field_waits_instead_of_walking_away(monkeypatch):
+    """Latched on a target behind a full-height wall of fire, 10 from the wall: no admissible path, and
+    outside the near field there is no retreat - it waits (it does not walk away one cell per step)."""
+    _near_field_setting(monkeypatch)
+    wall = {(10, y) for y in range(W)}
+    ex, agent = _searcher((20, 25), fire_cells=wall)
+    _wind_state(ex)["fire_route_target"] = [5, 25]
+    _direction, label = ex._attempt_pathfinding_toward_target(agent, (5.0, 25.0), action_label="lbl")
+    assert label == UAVExecutor.FIRE_WAIT_LABEL
+
+
+def test_a_new_target_releases_the_latch(monkeypatch):
+    """Far from the fire and latched on an OLD target: the new target is a new route - the ordinary
+    planner, straight toward it (not the fire mode's wait)."""
+    _near_field_setting(monkeypatch)
+    wall = {(10, y) for y in range(W)}
+    ex, agent = _searcher((20, 25), fire_cells=wall)
+    _wind_state(ex)["fire_route_target"] = [5, 25]
+    direction, label = ex._attempt_pathfinding_toward_target(agent, (40.0, 25.0), action_label="lbl")
+    assert (direction, label) == (EAST, "lbl")
+    assert _wind_state(ex).get("fire_route_target") is None
+
+
+def test_without_the_stay_action_the_fire_wait_is_never_a_blind_move(monkeypatch):
+    """UAV_HOLD_STATIONARY = 0 has no stay: the enclosed searcher takes the legal neighbour farthest from
+    the fire (never fire, smoke or a UAV), labelled a retreat - not selected_dir with a wait label."""
+    _near_field_setting(monkeypatch)
+    monkeypatch.setattr(cfv, "UAV_HOLD_STATIONARY", 0, raising=False)
+    ring = {(25 + dx, 25 + dy) for dx in range(-2, 3) for dy in range(-2, 3) if abs(dx) + abs(dy) == 2}
+    ex, agent = _searcher((25, 25), fire_cells=ring, others=[(26, 25)])
+    agent.selected_dir = EAST
+    direction, label = ex._attempt_pathfinding_toward_target(agent, (5.0, 5.0), action_label="lbl")
+    assert label == UAVExecutor.FIRE_RETREAT_LABEL
+    nxt = (25 + MX[direction], 25 + MY[direction])
+    assert nxt not in ring and nxt != (26, 25)
+
+
 # ============================================================================ A2 helpers
 class _Grid:
     def __init__(self):
@@ -426,9 +519,50 @@ def test_with_the_switch_off_a_leg_steers_to_its_berth(_mode3, monkeypatch):
 
 
 def test_trigger_level_at_follows_the_free_cell(_mode3):
+    """(4, 45) is both the nearest footprint cell and the nearest berth; with a UAV on it the level
+    follows the next free cell, 12 away (the berth code would still say 11)."""
     world = _World()
     uav = _uav(world, (10, 40), 2500)
     assert agents.rtb_trigger_level_at(uav, (10, 40)) == pytest.approx(0.3 * 11 + 39.23)
+    _uav(world, (4, 45), 2501)
+    assert agents.rtb_trigger_level_at(uav, (10, 40)) == pytest.approx(0.3 * 12 + 39.23)
+
+
+def test_a_depot_walled_off_by_uavs_sends_the_return_to_the_other_depot(_mode3):
+    """Latched on the NW depot, whose every approach cell (x 5, y 45-49 and y 44, x 0-4) holds a UAV: no
+    UAV-free path to any of its free cells, so the re-pick falls back to the SE depot."""
+    world = _World()
+    for i, cell in enumerate([(5, y) for y in range(45, 50)] + [(x, 44) for x in range(5)]):
+        _uav(world, cell, 2600 + i)
+    uav = _uav(world, (10, 40), 2500)
+    _start_leg(uav, (4, 45), 0)
+    uav._apply_return_to_base()
+    assert uav.rtb_target_depot == 1 and world.base_station_contains(uav.rtb_target_berth, 1)
+    assert uav.execution_direction_applied is True and uav.rtb_log[-1]["repicks"] == 1
+
+
+def test_mechanism_1_re_picks_a_taken_cell(_mode3, monkeypatch):
+    monkeypatch.setattr(cfv, "BASE_STATION_RETURN_MECHANISM", 1, raising=False)
+    world = _World()
+    uav = _uav(world, (8, 42), 2500)
+    _start_leg(uav, (4, 45), 0)
+    _uav(world, (4, 45), 2501)
+    uav._apply_return_to_base()
+    assert uav.rtb_target_berth != (4, 45) and world.base_station_contains(uav.rtb_target_berth, 0)
+    assert uav.rtb_log[-1]["repicks"] == 1
+
+
+def test_the_nearest_free_cell_tie_breaks(_mode3):
+    """(25, 25) is 41 from both (4, 45) and (45, 4): the lower depot index wins - unless the first step
+    toward it is blocked by a UAV and the other's is not."""
+    world = _World()
+    uav = _uav(world, (25, 25), 2500)
+    depots = world.base_station["depots"]
+    assert uav._nearest_free_dock_cell(depots, set()) == ((4, 45), 0)
+    d_nw, d_se = uav._rtb_direction((4, 45), False), uav._rtb_direction((45, 4), False)
+    assert d_nw != d_se
+    blocker = (25 + MX[d_nw], 25 + MY[d_nw])
+    assert uav._nearest_free_dock_cell(depots, {blocker}) == ((45, 4), 1)
 
 
 # ============================================================================ B1
@@ -474,6 +608,34 @@ def test_the_battery_scenario_launch_charges(monkeypatch):
 
 def test_no_launch_charges_outside_the_battery_scenario(monkeypatch):
     monkeypatch.setattr(cfv, "BATTERY_SCENARIO", 0, raising=False)
+    assert agents.battery_scenario_launch_charges(ROLES) is None
+
+
+def test_no_launch_charges_without_the_reduced_launch(monkeypatch):
+    """REDUCED_LAUNCH_BATTERY = 0 is the pre-fix1 full-charge B: B2 replaces the reduced launch, so it
+    does not apply either."""
+    monkeypatch.setattr(cfv, "BATTERY_SCENARIO", 1, raising=False)
+    monkeypatch.setattr(cfv, "REDUCED_LAUNCH_BATTERY", 0, raising=False)
+    assert agents.battery_scenario_launch_charges(ROLES) is None
+
+
+def test_a_junk_launch_fraction_still_raises_under_b2(monkeypatch):
+    monkeypatch.setattr(cfv, "BATTERY_SCENARIO", 1, raising=False)
+    monkeypatch.setattr(cfv, "UAV_LAUNCH_BATTERY_FRACTION", 0.0, raising=False)
+    with pytest.raises(ValueError):
+        agents.battery_scenario_launch_charges(ROLES)
+
+
+def test_a_scenario_run_after_b_is_not_the_battery_scenario(monkeypatch):
+    """apply_scenario_config never resets a parameter: A's stated marker 0 undoes B's 1 in one process."""
+    import wildfire_model as wf
+    from src_extension.adaptation.local_adaptation_generator import apply_scenario_config
+    for mod in (cfv, wf):
+        monkeypatch.setattr(mod, "BATTERY_SCENARIO", 0, raising=False)
+        monkeypatch.setattr(mod, "UAV_LAUNCH_BATTERY_FRACTION", 1.0, raising=False)
+    apply_scenario_config(cfv, wf, **sd.scenario_extra_params("B"))
+    assert agents.battery_scenario_launch_charges(ROLES) is not None
+    apply_scenario_config(cfv, wf, **sd.scenario_extra_params("A"))
     assert agents.battery_scenario_launch_charges(ROLES) is None
 
 
@@ -574,6 +736,37 @@ def test_the_wait_applies_on_the_berth_path_too(_battery_scenario, monkeypatch):
     me.battery_level = 0.3 * (abs(20 - 4) + abs(30 - 45)) + 39.23 - 0.1   # berth (4, 45)
     me._apply_return_to_base()
     assert not me.rtb_active and me.rtb_delay_steps == 1
+
+
+def test_two_searchers_triggering_on_one_step_do_not_both_wait(_battery_scenario):
+    """Both at the trigger on the same step: the first to act starts its return (the other is flying),
+    the second then sees it away and waits - never both waiting, never both gone."""
+    world = _World()
+    first = _uav(world, (20, 30), 2502, role="victim_searcher")
+    second = _uav(world, (22, 30), 2503, role="victim_searcher")
+    first.battery_level, second.battery_level = _trigger(first) - 0.1, _trigger(second) - 0.1
+    first._apply_return_to_base()
+    second._apply_return_to_base()
+    assert first.rtb_active and not second.rtb_active and second.rtb_delay_steps == 1
+
+
+def test_the_floor_measures_to_the_free_cell_not_the_berth(_battery_scenario):
+    """With a UAV on (4, 45) - the berth and the nearest footprint cell, d = 11 from (10, 40) - the trigger
+    aims at a free cell 12 away and the floor is 0.3 * 12 + 32.30 = 35.90: at 35.80 the return starts
+    (measured to the berth, 35.60, it would have waited)."""
+    world = _World()
+    _uav(world, (4, 45), 2600)
+    other = _uav(world, (30, 30), 2503, role="victim_searcher", active=True)
+    assert other.rtb_active
+    me = _uav(world, (10, 40), 2502, role="victim_searcher", battery=35.8)
+    me._apply_return_to_base()
+    assert me.rtb_active and me.rtb_delay_steps == 0
+    me2_world = _World()
+    _uav(me2_world, (4, 45), 2600)
+    _uav(me2_world, (30, 30), 2503, role="victim_searcher", active=True)
+    me2 = _uav(me2_world, (10, 40), 2502, role="victim_searcher", battery=36.0)
+    me2._apply_return_to_base()
+    assert not me2.rtb_active and me2.rtb_delay_log[-1]["floor"] == pytest.approx(0.3 * 12 + 32.30)
 
 
 def test_the_floor_keeps_the_arrival_above_low():

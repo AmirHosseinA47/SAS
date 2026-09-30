@@ -311,6 +311,15 @@ def main(argv: list[str] | None = None) -> int:
     rows: list[dict] = []
 
     launch = params.get("UAV_LAUNCH_BATTERY_FRACTION")
+    if (am._exact_integer(params.get("BATTERY_SCENARIO", 0)) == 1 and am.scenario_b_staggered_launch()
+            and am.reduced_launch_battery()):
+        # fix3a B2 replaces the scenario's launch fraction with the staggered charges.
+        launch_note = " | launch charges S %g-%g T %g-%g (B2)" % (
+            am.BATTERY_SCENARIO_SEARCHER_LAUNCH + am.BATTERY_SCENARIO_TRACKER_LAUNCH)
+    elif launch in (None, 1, 1.0):
+        launch_note = ""
+    else:
+        launch_note = " | launch charge x%g" % launch
     if params["NUM_FIRE_TRACKERS"] is None and params["NUM_VICTIM_SEARCHERS"] is None:
         roles = am.default_role_split(params["NUM_AGENTS"])  # what the model will use
     else:
@@ -325,7 +334,7 @@ def main(argv: list[str] | None = None) -> int:
             roles[1],
             params["NUM_VICTIMS"],
             params["NUM_FIREFIGHTERS"],
-            "" if launch in (None, 1, 1.0) else " | launch charge x%g" % launch,
+            launch_note,
             args.steps,
             args.n,
         )
