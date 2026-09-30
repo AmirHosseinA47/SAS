@@ -1,0 +1,204 @@
+SUMMARY
+Scope: the targets a victim-searcher step steers toward, and how a target can be dropped. Searches stayed inside src_extension/, tests/ and named files, with one exception: a Grep for 'force_wind_retarget' was rooted at E:\Projects\SAS with glob *.py. That breaks the quarantine rule. Its hits were wildfire_model.py:1963, src_extension files, tests/ and outputs\_fx3_probe.py. Nothing under _firemech_rewound_20260914 came back or was opened.
+
+HOW TARGETS ARE CHOSEN IN THE SHIPPED CONFIG
+1. Coverage mode is effectively always on. _coverage_mode_active (local_adaptation_generator.py:811-826) returns True whenever unresolved_victim_count > 0; every branch after that ends in `return True`. managed_victims holds every victim from init (wildfire_model.py:920-946), so the count is > 0 until every victim is resolved.
+2. Each _compute_wind_aware_search_target call applies _apply_unresolved_coverage_mode (:4028, :1360-1370). That sets force_coverage_escape, force_interior_retarget and coverage_priority 0.9, and clears force_sweep.
+3. The target is then _pick_global_coverage_escape_target (:4030-4059 or :4164-4198), passed through _finalize_coverage_target and the COMMIT HOLD (_apply_target_hold, :1130-1194).
+   - The hold returns the same held target T on every call and step until one of four releases fires (:1095-1127): arrival (Euclidean distance <= 2), unsafe (T itself burning or in smoke), stalled (12 steps with no new best distance; COMMIT_PROGRESS_WINDOW = WIND_FIRE_FRONT_MIN_DISTANCE, :92) or timeout (held steps > 2 x the initial distance).
+   - _corridor_diversity_failure (:792-808) is true whenever the last 20 x-positions span 18 cells or less (CORRIDOR_NARROW_X_SPAN = 18), which is nearly always. So branch :4030 usually runs and also writes wind_state.escape_target = held T (:4052).
+4. The planner (local_uav_path_planner.py:138-213) always sets needs_new_wind_target when coverage is active, so the executor ignores the decision target (:1367-1372, :1413, :4267).
+5. The executor then routes as follows:
+   - If escape_target is set, it steers there first (uav_executor.py:1374-1405, via _attempt_pathfinding_toward_target with the BFS label).
+   - Otherwise force_coverage is true (:1439-1457). It recomputes _wind_aware_victim_search_target (:1458; the generator's second call this step returns the same held T) and routes through _apply_retarget_with_pathfinding_fallback (:1466-1469).
+   - Both routed paths reach _route_within_fire_field, whose latch is keyed on the rounded goal (:2186, :2193-2215).
+
+IS THE TARGET THE SAME ON CONSECUTIVE STEPS?
+Mostly yes, so a latch keyed on the target would hold in the main regime. The exceptions:
+- the one-call release gap (a released hold returns that call's freshly computed target, :1180-1181);
+- a switch between a stale escape_target and the held target;
+- flapping between two roughly equidistant known victims (_nearest_target, :4757-4772);
+- a route that ends within Manhattan distance 2 of its goal (:2212-2214). The fallback there is the memoryless path: _choose_best_direction plus the hazard gate.
+
+WHICH STEPS ARE STILL MEMORYLESS (NOT ROUTED)
+The route is reached from only two call sites: :1389 and :2313 (via :1467 and :1492). Every other searcher branch uses _choose_best_direction plus _apply_victim_searcher_hazard_gate, and then execute() may gate the result a second time (:452-460):
+- the planner wind target (:1418-1437);
+- the non-forced executor wind target (:1470-1477);
+- the lawnmower sweep (:1591-1602);
+- the escape and retarget fallbacks (:1397-1405, :2321-2325);
+- the known-victim branch (:1071-1333; no gate inside it, only the post-gate in execute());
+- hold_escape (:373-426 then :452-460).
+The fail-safe role-preserving search (:501-537) uses _apply_final_direction_safety (:1955-1965) instead of the searcher gate. It is a separate memoryless override that can also rewrite a routed step's label. For example, a fire-wait with '_hazard_escape' appended no longer matches FIRE_WAIT_LABEL, so the stay at :168-171 is lost.
+Separately, execute() decides a step was routed from self._last_escape_method (:453-456). That attribute persists on the cached executor (decision_dispatcher.py:216-223) and is not reset when the route returns None at :2212-2214. A fallback step can therefore be exempted from the post-gate on a stale value. It has already been gated once inside the fallback.
+
+EXISTING WAYS TO DROP OR EXCLUDE A TARGET
+- _blacklist_target_neighborhood (:1694-1704) writes a 5x5 box into saturated_until for 15 steps (WIND_TARGET_BLACKLIST_COOLDOWN). _is_saturated_cell (:635-663) also treats any cell within Manhattan 2 of a saturated cell as saturated.
+- Consumers of that blacklist are exactly four:
+  - _pick_global_coverage_escape_target (:3734);
+  - _generate_corridor_waypoints (:3870);
+  - the executor's check of the planner target, _wind_target_is_saturated (:1415, :4313-4323);
+  - the legacy target (:4406).
+- Not consumers:
+  - the commit hold (:1164-1176 returns the held target without checking saturation);
+  - escape_target in the executor (:1374) and the generator (:4092-4109);
+  - _gradual_escape_target (:1517-1544);
+  - the sweep (:4545);
+  - the known-victim branch (:1047);
+  - the route.
+- Blacklist callers:
+  - the same-target streak > 10 (:4068-4071, :1707-1715) blacklists the TARGET;
+  - hazard_retreat (:2946-2955) and pocket >= 20 (:1494-1500) blacklist the searcher's OWN cell, not its target.
+
+MINIMAL DETERMINISTIC GIVE-UP, PER TARGET SOURCE
+
+(1) Coverage held target (the dominant source)
+- Blacklisting alone is not enough, because the hold ignores saturation. Releasing alone is not enough either: the release returns a fresh argmax, T can win again (the recent-target penalty is only 5, or 2.75 within 3 cells, :666-677), and the next call re-arms the hold on it.
+- Even release plus blacklist can hand back T. _finalize_coverage_target moves the argmax afterwards (:1225-1285): the x-clamp, the west/east sweep pull to safe_x_min + 6 or safe_x_max - 6, and the y-commit clamp. The moved cell is checked only against fire and smoke (:1286-1291), never against saturation. The function's own docstring (:1017-1022) records 58 target breaks collapsing onto 2 distinct cells.
+- The all-excluded fallback, the grid midpoint (:3799-3814), is not checked against saturation either.
+- A robust give-up therefore needs four steps: _clear_target_hold; blacklist T; clear escape_target if it equals T; and a check on the finalized or armed target against the given-up T (at :1182-1184 or in the executor before routing).
+- A near-existing bound: in the main regime a no-progress wait should already end in about 12 steps. The same-target streak blacklists T at about 11 steps (:4068) and the stall release fires at 12 (:1120).
+
+(2) escape_target
+- Must be set to None explicitly. It is cleared only by:
+  - distance <= 2 in the executor (:1383-1387);
+  - distance <= 3 in the generator (:4094, :4110);
+  - leaving the pocket's 5x5 box (:1473-1476);
+  - pocket < 5 and more than 6 cells from the anchor (:1505-1512);
+  - a role change (wildfire_model.py:478-481).
+- A stationary waiting searcher keeps it indefinitely unless the diversity-failure branch rewrites it (:4052).
+- Outside coverage mode, _gradual_escape_target is a pure function of position (:1528-1544). From the same cell it returns the same T immediately (:4149-4153).
+
+(3) Planner wind target: a blacklist on T is enough for the executor to drop it (:1413-1417). But the recomputed target is the held T unless the hold is also released.
+
+(4) Corridor target (used only when no victim is unresolved): the existing _reset_corridor_on_same_target_streak pattern (blacklist, corridor cleared, force_interior) is enough. The regenerated corridor excludes T for 15 steps.
+
+(5) Sweep target (no blacklist consumer): advance the state the way the at-target branch does (:1570-1579), or change lane at the lane end (:1549-1569). T recurs if it is the clamped lane end (:1578, :4585, band clamp :4526-4527). Also, before step 20 (LAUNCH_GRACE_STEPS) the sector bounds are None: y_end is 0 or W-1 (:1541) but the sweep is clamped to the band [4, W-5], so the lane-end test can never pass and the target sits at the lane end. This is inferred from the code, not measured.
+
+(6) Known victim: no exclusion exists. The nearest unhandled victim (:1047, :1780-1806) is re-picked every step until its status changes (:1697-1778). A give-up needs a new per-UAV exclusion with an expiry. Abandoning a victim trades against detection and rescue.
+
+The retarget flags (force_interior_retarget, force_coverage_escape, needs_new_wind_target, force_wind_retarget) never produce a different target on their own. They only choose the routed branch, discard the decision target, or trigger corridor regeneration (a different target only outside coverage mode). blocked_backtrack_cells changes the path, not the target, and the route's BFS explicitly ignores it.
+
+PLANNER SIDE
+- The generator re-issues the held T every step (:2267-2277, :4371).
+- It re-issues live-victim targets every step (:2245-2266).
+- The planner derives its flags only from the wind_state snapshot (wildfire_model.py:1956-1978, copied at adaptation_manager.py:106 before generation at :111). fire_route_target is written and read only in uav_executor.py (:2194-2215). No planner code sees the route's no-path state.
+
+NATURAL W-COUNTER SITE: next to ws['fire_route_target']. Reset it at :2197-2198 (new target), :2213 (reached) and :2239-2242 (path found). Increment it on the no-path returns (:2259-2266), which also catch the smoke-first-step break at :2237-2238.
+
+ENTRIES
+
+- _resolve_direction_intent victim/wind branches (target source dispatch) @ src_extension/execution/uav_executor.py:1028-1602
+  WHAT: Order for a searcher: (i) base return :1042-1044 (gate-exempt, execute() :444-446). (ii) Known victim = _nearest_target(_victim_positions_from_runtime()) :1047, else the decision target if victim_id is unhandled :1049-1070. It goes through _choose_best_direction plus the escape memory (5-step committed dir :1111-1183) plus stuck escape :1194-1333. No gate inside; execute()'s post-gate :452-460 applies. (iii) Otherwise the wind branch :1334-1602: escape_target :1374-1405 -> force_sweep :1406-1410 -> planner target :1412-1437 -> executor wind target :1439-1477 -> force_sweep+coverage :1479-1496 -> lawnmower sweep :1498-1602. Every branch returns; lines :1604+ are never reached for role_kind 'victim'.
+  RELEVANCE: Complete list of the targets a searcher step steers toward. Only :1389 (escape) and :1467/:1492 (retarget fallback) reach the latched route. :1400, :1420, :1470, :1597, :2321 and the execute() post-gate are memoryless veto sites that (a) must convert.
+
+- execute() post-gate and hold branch @ src_extension/execution/uav_executor.py:373-469
+  WHAT: Searcher 'hold' decisions are re-resolved as victim_search_wind_aware (:377-391). A fail-safe hold goes to _execute_hold -> hold/hold_escape/yield (:572-611). After resolution, :452-460 applies _apply_victim_searcher_hazard_gate AGAIN unless action == 'victim_search_escape_bfs' or the step counts as routed: 'retarget_to_interior' in the label AND self._last_escape_method non-empty. Labels without that token are gated twice: victim_search_wind_aware, ..._retarget, ..._sweep, victim_search_hazard_retreat, computed_from_target, victim_escape_committed, victim_stuck_escape, hold_escape. The target is not available at this site.
+  RELEVANCE: (a) must own this second veto site too, which means threading the step's target to it. The routed test uses an instance attribute that is not reset per execute(); see _last_escape_method below.
+
+- _last_escape_method persistence @ src_extension/execution/uav_executor.py:453-456, 2212-2214, 2222, 2395; src_extension/execution/decision_dispatcher.py:216-223
+  WHAT: The executor is cached per uav_id. _last_escape_method is reset only inside _forced_progress_direction (:2395) and FIRE MODE (:2222), never at execute() start. When _route_within_fire_field returns None because the goal is within Manhattan 2 (:2212-2214), the method keeps the previous step's value. The fallback's 'retarget_to_interior' label, or the gate's relabel at :2793/:2837, can then be treated as routed and skip the post-gate.
+  RELEVANCE: Relevant to the 'no second memoryless steering path' requirement and to trace attribution: a step that looks routed can actually be the fallback gate step.
+
+- _route_within_fire_field latch (A1-R) @ src_extension/execution/uav_executor.py:2127-2266
+  WHAT: Latch key is goal = (round(tx), round(ty)) (:2186), stored in ws['fire_route_target'] (:2193-2215). It is released when the goal changes (:2196-2198) or is reached, Manhattan <= 2 (:2212-2214, returns None -> caller falls back to the memoryless gate). Unlatched with burning distance d0 > 6: greedy _forced_progress_direction (:2201-2211). FIRE MODE BFS: :2221-2242. No path: retreat strictly away if d0 <= near (:2256-2260), no-stay variant (:2261-2264), else FIRE_WAIT (:2265-2266). There is no step counter and no give-up. Only two callers: _attempt_pathfinding_toward_target (:2084-2085) from :1389 and :2313.
+  RELEVANCE: Home for (b)'s W counter. Increment on the :2259/:2263/:2265 returns, which also catch the smoke-first-step break at :2237-2238. Reset at :2197-2198, :2213 and on a found path at :2239-2242. d0 counts burning cells only, while the gate's near field counts fire OR smoke (:2825-2828), so a smoke-only near field reaches the memoryless gate through the fallback when greedy fails (:2203-2207).
+
+- _apply_retarget_with_pathfinding_fallback @ src_extension/execution/uav_executor.py:2307-2326
+  WHAT: Route first; if it returns None, _choose_best_direction(target) plus the hazard gate with the same label.
+  RELEVANCE: This is the executor path for coverage-mode wind targets (:1466-1469, :1492-1496). Its fallback is a memoryless veto site.
+
+- Coverage mode always on while any victim is unresolved @ src_extension/adaptation/local_adaptation_generator.py:811-826, 763-789, 1360-1370, 4022-4028; wildfire_model.py:920-946
+  WHAT: _coverage_mode_active returns True for any unresolved_victim_count > 0; every branch after the unresolved check returns True. managed_victims contains all victims from init. Every _compute_wind_aware_search_target call sets force_coverage_escape=True, force_interior_retarget=True, force_sweep=False and coverage_priority >= 0.9.
+  RELEVANCE: The coverage target path (commit hold) is the dominant target source near fire. force_sweep is effectively never set in coverage mode, so the sweep branch is rare there.
+
+- _compute_wind_aware_search_target (generator; called by planner and again by executor) @ src_extension/adaptation/local_adaptation_generator.py:3974-4349
+  WHAT: Order of work:
+- sync streaks (:4009, first call per step only)
+- coverage mode (:4028)
+- if diversity failure: global escape pick, sets escape_target/corridor, returns (:4030-4059)
+- force_sweep check (:4062-4066)
+- same_target_streak > 10: blacklist current_target (:4068-4071)
+- committed escape_target > 3 away: finalize and return (:4092-4109), else clear escape/pocket (:4110-4113)
+- coverage escape: gradual (non-coverage only, :4115-4163) or global pick (:4164-4198)
+- corridor: dwell (:4200-4216), (re)generate (:4218-4266), index (:4272-4277), force_interior candidate pick (:4278-4332), finalize (:4346-4349)
+Called from _try_generate_wind_aware_victim_search_option (:4371) and from the executor's _wind_aware_victim_search_target (uav_executor.py:4338).
+  RELEVANCE: Single source of wind targets for both planner and executor. In coverage mode it returns at :4059 or :4198 with the held target, and the corridor/dwell code (:4200+) is not reached.
+
+- Commit hold on coverage targets @ src_extension/adaptation/local_adaptation_generator.py:1044-1194 (release 1095-1127; constants 91-93)
+  WHAT: _apply_target_hold returns the held commit_target on every call while no release fires, with no saturation check (:1164-1176). Releases: arrival (Euclidean <= 2.0), unsafe (the held cell itself is fire or smoke), stalled (commit_no_progress >= 12), timeout (held_steps > 2.0 x initial Manhattan distance). Bookkeeping advances once per step (:1075-1077). On release, _clear_target_hold (:1044-1057) runs and this call's fresh 'final' is returned (:1180-1181). The next call arms a new hold on whatever it computes (:1182-1194).
+  RELEVANCE: This is what keeps T the same across steps, so a target-keyed latch holds. Existing implicit bound: 12 no-progress steps. To give T up: _clear_target_hold(ws, reason). Blacklisting alone has no effect while the hold stands.
+
+- _finalize_coverage_target relocation (can recreate T) @ src_extension/adaptation/local_adaptation_generator.py:1197-1302, 1002-1041
+  WHAT: After the pick, the target is relocated: x-clamp to [x_min+2, x_max-2] (:1227); west/east sweep pull to safe_x_min+6 / safe_x_max-6 (:1235-1273); y-commit forced_y (:1279-1285). The relocated cell is checked only against fire/smoke (_reject_relocation_into_hazard :1286-1291), never against saturated_until. The docstring (:1017-1022) records 58 breaks landing on only 2 distinct cells.
+  RELEVANCE: Even after release plus blacklist, the next armed target can be T again immediately. A give-up needs a check on the finalized or armed target, or in the executor before routing.
+
+- _pick_global_coverage_escape_target @ src_extension/adaptation/local_adaptation_generator.py:3648-3818
+  WHAT: Scans x in [x_min+1, x_max-1] and y in [y_min+1, y_max-1] (:3711-3712). Filters, in order: lane, corridor x-cap, coverage x/y-commit, parity, fire/smoke, SATURATED (:3734), min_escape_dist 14/20 (:3673-3679, :3737). Hybrid score includes the recent-target penalty (:1434). If nothing qualifies, falls back to the grid midpoint (:3799-3814), which is checked against fire/smoke only, not saturation. Result goes through _finalize_coverage_target (:3815).
+  RELEVANCE: Main consumer of the blacklist, so a blacklisted T is excluded from the argmax, but not from relocation or the midpoint fallback.
+
+- escape_target (sticky, executor precedence) @ src_extension/execution/uav_executor.py:1374-1405; src_extension/adaptation/local_adaptation_generator.py:4052, 4092-4113, 4153, 1473-1476, 1505-1512
+  WHAT: The executor steers to wind_state.escape_target before anything else. It is routed with prefer_bfs_action_label=True, with fallback _choose_best_direction plus the gate. It sets hazard_buffer_level=2 (:1376).
+Written by: the diversity-failure branch (:4052, = held T), gradual escape (:4153).
+Cleared by: executor distance <= 2 (:1383-1387), generator distance <= 3 (:4110), leaving the pocket's 5x5 box (:1476), pocket < 5 and > 6 from anchor (:1512), role change (wildfire_model.py:478-481).
+Never consulted: saturated_until or the commit-hold release.
+  RELEVANCE: A give-up must clear escape_target explicitly, or the executor keeps routing to T. A stationary waiting searcher never exits the box. _gradual_escape_target is pure arithmetic in position (:1517-1544), so outside coverage mode it re-issues the same T from the same cell.
+
+- _blacklist_target_neighborhood and its consumers @ src_extension/adaptation/local_adaptation_generator.py:1694-1704, 635-663, 68
+  WHAT: Writes saturated_until[(tx+dx, ty+dy)] = step + 15 for dx, dy in [-2, 2]. _is_saturated_cell also returns True for any cell within Manhattan 2 of a live entry (:654-660). Consumers: _pick_global_coverage_escape_target :3734, _generate_corridor_waypoints :3870, executor _wind_target_is_saturated :1415 / :4313-4323 (planner target only), legacy target :4406. Checked and not consumers: _apply_target_hold, escape_target paths, _gradual_escape_target, _safe_victim_sweep_target(_raw), the victim branch, _route_within_fire_field, _choose_best_direction.
+Callers: same_target_streak reset :1707-1715 via :4068 (blacklists the TARGET); hazard_retreat sync uav_executor.py:2946-2955 (blacklists the searcher's OWN cell); pocket >= 20 :1494-1500 (OWN cell).
+  RELEVANCE: The existing exclusion primitive. It covers only the generator's argmax and the planner-target check. Existing hazard-retreat blacklists never exclude the target the searcher was steering to.
+
+- _sync_wind_search_streaks / execution-state sync @ src_extension/adaptation/local_adaptation_generator.py:1718-1808; src_extension/execution/uav_executor.py:2885-2955
+  WHAT: Runs once per step (first call = the generator's, :1735). It recomputes force_interior_retarget from the edge/hold/same-target/wind-hold streaks OR force_coverage_escape (:1779-1785). same_target_streak counts the current_target (:1763-1774). _update_pocket_and_coverage_state (:1447-1514) tracks no-move, pocket, force_coverage_escape and own-cell blacklists.
+The executor sync appends the last 8 cells to blocked_backtrack_cells (:2914-2923). On any 'hazard_retreat' label it sets force_interior_retarget, clears the corridor and blacklists its own cell (:2946-2955). A sweep step clears force_sweep (:2944-2945).
+  RELEVANCE: force_interior_retarget set by the executor survives only into the next path-context snapshot (wildfire_model.py:1963) before the next generator call overwrites it. In coverage mode it is True anyway. None of these change the held target.
+
+- blocked_backtrack_cells consumer @ src_extension/execution/uav_executor.py:2025-2066, 2422, 2346, 2231-2232
+  WHAT: Used only by _pocket_blocked_cells_for_escape_base when pocket_active: pocket >= 4, force_coverage_escape (always True in coverage), or escape_target set. That feeds the greedy check in _forced_progress_direction (:2422) and _bfs_escape_direction (:2346). FIRE MODE deliberately does not use it (:2218-2219, :2231-2232).
+  RELEVANCE: Affects the path, not the target. It is not a give-up mechanism.
+
+- Planner wind target and retarget flags @ src_extension/planning/local_uav_path_planner.py:115-269; src_extension/execution/uav_executor.py:1367-1372, 1412-1437, 4254-4286
+  WHAT: The planner copies the generator's target into ctx target_position (:218-223). It sets needs_new_wind_target / force_wind_retarget / force_coverage_escape from the path-context snapshot, from distance <= 2, boundary/edge within 6, pocket >= 10, and coverage (:138-213). The executor uses the decision target only if none of the needs-retarget flags are set and it is not saturated (:1413-1417, :4267); otherwise it recomputes.
+  RELEVANCE: Planner-side re-issue: the same held T every step regardless of executor state. No planner code reads fire_route_target (checked: it appears only in uav_executor.py:2141-2215). The retarget flags only discard the decision target; recomputation returns the same held T.
+
+- Known-victim targets (planner and executor) @ src_extension/adaptation/local_adaptation_generator.py:2244-2266, 3380-3450, 4469-4523; src_extension/execution/uav_executor.py:1046-1333, 1697-1806, 4757-4772
+  WHAT: While any live victim exists, the generator issues move_toward_victim_candidate options every step. The planner rewrites next_action to a cardinal word (planner :149-157). The executor ignores that and targets the nearest unhandled runtime victim. The target changes only on status change (confirmed/assigned/rescued/dead/...) or when a different victim becomes nearest (possible flapping, which resets a target-keyed latch). No blacklist, timeout or exclusion exists. The only memory is a 5-step committed escape direction (:1111-1183).
+  RELEVANCE: A near-fire veto here is currently the execute() post-gate. Under (a) it needs a route toward the victim; under (b) a new per-UAV victim exclusion with an expiry would be required (none exists). Abandoning a victim target trades against detection and rescue.
+
+- Lawnmower sweep target @ src_extension/execution/uav_executor.py:1498-1602, 4432-4487, 4503-4597, 4665-4698
+  WHAT: State lives in model._victim_sweep_state[uid] (sweep_x, sweep_y, sweep_dir). It is re-initialised on a wind change (:1513-1527). It advances only when at the target (Chebyshev <= 1): the next lane (+8 x, flip, lane start) at the lane end (:1549-1569), else y += 8 (:1570-1579). An unapproachable waypoint is skipped along the lane (:4586-4594). The target is clamped to the band [4, dim-5] (:4519-4527). There is no timeout and no saturation check. Before step 20 the sector bounds are None, so y_end = 0 / W-1 (:1541) is unreachable under the band, and the lane never advances (inferred from the code).
+  RELEVANCE: The same target on every step until reached, so a latch would hold. Give-up = the deterministic state advance used by the at-target branch. T recurs if it is the clamped lane end, so use a lane change there.
+
+- Corridor targets and dwell saturation (non-coverage only) @ src_extension/adaptation/local_adaptation_generator.py:1577-1604, 1707-1715, 1819-1829, 3820-3972, 4200-4349
+  WHAT: Dwell: 2 steps within distance 2 saturate T for 12 steps (:1599-1603). _advance_corridor_index moves to the next waypoint, or sets force_sweep at the end. _reset_corridor_on_same_target_streak blacklists T, clears the corridor and sets force_interior. Regeneration excludes saturated cells (:3870).
+  RELEVANCE: A clean existing give-up pattern: blacklist, clear corridor, regenerate. It is reached only when no victim is unresolved, i.e. not in the near-fire regime with victims outstanding.
+
+- Fail-safe role-preserving search @ src_extension/execution/uav_executor.py:351-360, 501-537, 1934-1965, 164-171
+  WHAT: In fail-safe search mode the searcher's direction comes from _resolve_direction_intent and then passes through _apply_final_direction_safety (_safe_direction_or_escape), not the searcher gate. That filter can replace any direction, including a routed step, and appends '_hazard_escape' to the label. A relabelled FIRE_WAIT no longer matches FIRE_WAIT_LABEL, so the stay at :170 is lost.
+  RELEVANCE: A second memoryless steering path for searchers near fire outside the gate, which ruling (a) says must not remain.
+
+- Step-order plumbing @ src_extension/adaptation_manager.py:96-121; wildfire_model.py:1937-1979, 6103-6113
+  WHAT: Pre-move cycle: refresh path context (copies wind_state flags; force_interior_retarget becomes force_wind_retarget) -> analysis -> generation (first _compute call of the step) -> planning -> execution (second _compute call). Execution happens only in the pre-move cycle.
+  RELEVANCE: Tells where a give-up written by the executor at step t takes effect: the generator call at step t+1 sees it first. Within the same step the executor's own _wind_aware_victim_search_target call could already use it.
+
+- Relevant constants @ src_extension/adaptation/local_adaptation_generator.py:59-78, 91-93, 100-104; agents.py:2059-2084; common_fixed_variables.py:106, 157, 166-172, 288, 876-882
+  WHAT: WIND_SATURATE_DWELL_STEPS=2, WIND_SATURATE_COOLDOWN_STEPS=12, WIND_RECENT_TARGET_PENALTY=5, WIND_SAME_TARGET_RESET_STREAK=10, WIND_TARGET_BLACKLIST_COOLDOWN=15, WIND_POCKET_CAMP_THRESHOLD=20, WIND_SWEEP_NO_MOVE_ESCAPE=5, COMMIT_ARRIVAL_DIST=2.0, COMMIT_PROGRESS_WINDOW=12, COMMIT_TIMEOUT_MULTIPLIER=2.0, CORRIDOR_NARROW_X_SPAN=18 over 20 steps, SEARCHER_GATE_NEAR_RANGE=6, SEARCHER_EDGE_BAND=4, SEARCHER_ROUTE_CLEARANCE=6, SEARCHER_COUNTERS_PER_STEP=1, VICTIM_SEARCHER_HAZARD_RETREAT_RANGE=99, UAV_OBSERVATION_RADIUS=8 (Euclidean detection, wildfire_model.py:1419-1420), LAUNCH_GRACE_STEPS=20.
+  RELEVANCE: Needed to pre-register W against the existing implicit bounds (12-step stall release, 15-step blacklist) and the observed longest fire-wait of 39 steps.
+
+- Edge ring and targets (for the B/N 9671 question) @ src_extension/adaptation/local_adaptation_generator.py:3711-3712, 119-124, 3842-3875, 1537-1538; src_extension/execution/uav_executor.py:4519-4527, 4677-4685, 2552-2585, 2617-2623
+  WHAT: No target generator emits the outermost ring:
+- global pick x/y in [min+1, max-1];
+- coverage x clamp [2, max-2];
+- corridor inset 2, stride 3;
+- gradual escape inset 1;
+- sweep and sector clamped to band 4.
+The edge filter lets a searcher leave the band but not enter it (penetration rule). _victim_near_edge_escape_required at edge distance <= 5 forces interior retargeting. The FIRE MODE BFS blocked set (:2231-2232) has no edge-band cells, so a routed step can enter the band. Detection radius 8 from edge distance 4 still reaches the edge.
+  RELEVANCE: From the targets alone, the band does not by itself make an edge cell undetectable. A hole would come from no target ever leading near that edge segment (lanes, y-commit, x-clamp), which needs trace confirmation.
+
+OPEN QUESTIONS
+- The code suggests a no-progress fire-wait on a coverage-mode held target should already end in about 12 steps. The same-target streak blacklists T at about 11 steps (local_adaptation_generator.py:4068) and the stall release fires at 12 (:1120). What was the target source during the observed 39-step fire-wait? Candidates: a sticky escape_target no longer rewritten by the diversity branch, commit_best_dist improving intermittently, a hold re-armed on T through the _finalize_coverage_target relocation, or a non-coverage source such as the sweep, the planner target or a known victim. Trace data needed.
+- For (b), where should the searcher's new target come from once every wind or coverage candidate near T is excluded? The midpoint fallback (:3799-3814) is not checked against the blacklist. Should the lawnmower sweep serve as the deterministic alternative, and should the given-up T also be checked after _finalize_coverage_target's relocation (:1225-1291)?
+- Is a known victim (uav_executor.py:1047) meant to be given up under (b)? No exclusion mechanism exists for victim targets, and giving one up interacts with detection, confirmation and deaths.
+- Should fail-safe role-preserving search (uav_executor.py:501-537, _apply_final_direction_safety) count as a 'second memoryless steering path' under ruling (a)? It bypasses the searcher gate and can relabel or override a routed FIRE_WAIT.
+- Should a W counter increment once per model step or once per call? Today _route_within_fire_field is reached at most once per UAV per step (:1389 or :2313). A step-index guard like _first_call_this_step (local_adaptation_generator.py:427-450) would make it robust.
+- Quarantine note: one Grep for force_wind_retarget was rooted at E:\Projects\SAS (glob *.py), which the rule forbids. It returned no files from _firemech_rewound_20260914 and nothing there was opened; the caller may want to note this.

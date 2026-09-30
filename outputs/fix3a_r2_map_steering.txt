@@ -1,0 +1,157 @@
+SUMMARY
+This is an inventory of every code path that can set, override or re-filter a victim searcher's direction or stay for a hazard reason, at the shipped settings: VICTIM_SEARCHER_HAZARD_RETREAT_RANGE=99 (common_fixed_variables.py:288), SEARCHER_GATE_NEAR_FIELD=1 (:157), SEARCHER_ROUTE_FIRE_FIELD=1 (:166), UAV_HOLD_STATIONARY=1 (:124), STATIONARY_YIELD_FIX=1 (:130), BASE_STATION_RETURN_MECHANISM=2 (:692). All citations are to files under E:\Projects\SAS\. Nothing under outputs/ was opened.
+
+**Where the hazard steering actually happens.** It is all in src_extension/execution/uav_executor.py:
+- The searcher gate, _apply_victim_searcher_hazard_gate (2764-2883), has 5 veto branches and 2 off-grid guard sites.
+- It is called at 5 places inside _resolve_direction_intent / _apply_retarget_with_pathfinding_fallback (1400, 1420, 1470, 1597, 2321), and a second time in execute() at 458.
+- The memoryless retreat, _retreat_to_safe_interior_direction (2703-2762), has 4 live callers, all inside the gate (2775, 2790, 2834, 2873). A 5th caller (2105) is the fix2 3b(ii) veto, which is dead while A1-R is on.
+- The fix3a latched route, _route_within_fire_field (2127-2266), is reached only from 3 places: the pocket escape_target branch (1389) and the forced-coverage/interior retarget branches (1467 and 1492, via _apply_retarget_with_pathfinding_fallback 2313).
+- Every other searcher step gets its direction from the memoryless greedy _choose_best_direction and then goes through the gate, which has no memory. That covers the known-victim branch 1071-1333, the planner wind target 1418-1437, the unforced wind target 1470-1477 and the lawnmower sweep 1591-1602. So the latch owns only the retarget/escape steps, and only while it returns non-None.
+
+**Where the route hands the step back to the memoryless path.** It returns None in 3 cases, and each time the caller falls back to _choose_best_direction plus the gate (1397-1405, 2321-2325):
+- 2204: no greedy step while unlatched.
+- 2207: the greedy step would enter a hazard.
+- 2212-2214: the target is within Manhattan 2. The latch is also cleared here.
+
+It also drops the latch whenever the goal changes (2196-2198). Gate retreats force that, because any label containing "hazard_retreat" blacklists the area around the searcher and forces a retarget (2946-2955).
+
+**How the gate and the route measure hazard differently.**
+- The gate's near field measures distance to fire OR smoke: _min_strict_hazard_distance, 2827 → 2668-2685.
+- The route's d0 measures distance to burning cells only (2160, 2185).
+- So a veto caused by smoke within 6 would reach the route with d0 > 6, unlatched, and get the greedy planner.
+
+**What the fire-mode search does not plan within.** Its BFS blocks fire, smoke, cells inside the clearance and other UAVs (2231-2232). It does not apply the edge-band filter (_victim_edge_blocked_direction 2552-2585) or the lookahead hazard buffer (2587-2615). Only its no-path "legal neighbour" list applies the edge filter (2249). Routed steps are exempt from the gate, so this causes no veto conflict today. But if edge-blocked vetoes are sent to the route, the route itself could choose an edge-blocked step.
+
+**The FIRE_WAIT has no bound** (2265-2266). The only existing thing that ends one is an indirect target change: pocket_streak reaching 20 or sweep_no_move_streak reaching 5 sets force_coverage_escape (local_adaptation_generator.py:1490-1495), which can produce a new target and reset the latch.
+
+**Machinery that does not steer searchers for hazard reasons:**
+- safety_checker.py only classifies modes and reasons; it moves nothing.
+- UAV.move / advance in agents.py has no hazard logic. It refuses a move only for off-grid or occupied cells (1103). The return-to-base leg overrides selected_dir without looking at fire (651-842, 918-1017).
+- wildfire_model.py writes directions only when the pipeline is off (2539-2551).
+- The planner rewrites every searcher "hold" into a wind-aware search (local_uav_path_planner.py:200-213, 234-242).
+- _dispatch_fail_safe executes no UAV in practice: fail-safe params carry no uav_id key.
+- _apply_final_direction_safety is unreachable for searchers in practice.
+
+**Hold and yield steps.**
+- The only surviving searcher holds are the COLLISION_RISK yield and a non-emergency hold_position. They either stay without any hazard check (the gate is skipped for "hold" at 452) or produce hold_escape. hold_escape is memoryless and skips hazard cells, then passes through the gate.
+- yield_step_aside only steps onto hazard-free cells (656) and is exempt from the gate (447-451).
+
+**What change (a) must re-route through the latched planner:**
+1. All 5 gate veto branches, wherever the gate is called.
+2. The greedy fallbacks after the route returns None.
+3. The known-victim branch, including victim_escape_committed and victim_stuck_escape.
+4. The planner, unforced-wind and sweep branches.
+5. Possibly hold_escape and yield steps near fire, which are not hazard-triggered.
+
+ENTRIES
+
+- execute() - second gate pass and its exemptions @ src_extension/execution/uav_executor.py:340-469 (hold branch 373-426; post-filter 444-467; sync 468; commit 469)
+  WHAT: Every path decision for a searcher runs _resolve_direction_intent (386-391 / 418-423 / 428-430), then a SECOND call to _apply_victim_searcher_hazard_gate at 458. Exemptions: action=='rtb_waypoint' (444-446); action=='yield_step_aside' (447-451); action=='hold' (452: no gate, no final safety -> a stay); action=='victim_search_escape_bfs' (457); pathfinding_routed = 'retarget_to_interior' in action AND self._last_escape_method non-empty (453-456), which covers FIRE_RETREAT_LABEL/FIRE_WAIT_LABEL (2116-2117) and the unlatched routed labels. Non-searchers go to _apply_final_direction_safety instead (461-467).
+  RELEVANCE: MEMORYLESS post-filter that can veto ANY non-exempt searcher step, including already-gated ones (double gate on 1420/1470/1597 outputs) and the ungated known-victim branch. Latched route owns it only via the pathfinding_routed/escape_bfs exemption. Change (a) must replace this call. Note: _last_escape_method is an instance attribute (never initialised in __init__ 135-148). Executors are cached per UAV (decision_dispatcher.py:216-223), so the attribute persists across steps. It is not reset on the route-reached return (2212-2214), so a gate-fallback label containing 'retarget' can be exempted by a stale method value.
+
+- Gate branch G1 - searcher standing on a strict hazard cell (+ off-grid guard SITE A) @ src_extension/execution/uav_executor.py:2773-2787 (guard 2784-2786; _offgrid_guard_direction 2520-2550)
+  WHAT: If _strict_victim_hazard_level(current cell)>0 (burning, active smoke or smoke_obscured; 1967-1974), it returns the retreat direction labelled 'victim_search_hazard_retreat'. If there is no retreat, it keeps chosen_dir, flipped to its reverse if off-grid ('..._oob_oncell').
+  RELEVANCE: Trigger: hazard on the current cell. MEMORYLESS. The label contains 'hazard_retreat', which forces a retarget and a blacklist (2946-2955). Not owned by the latch. Must go through the route.
+
+- Gate branch G2 - edge-blocked chosen direction @ src_extension/execution/uav_executor.py:2789-2794; filter 2552-2585 (A1-D penetration rule 2564-2579, SEARCHER_EDGE_BAND=4 agents.py:2081)
+  WHAT: If the chosen direction goes deeper into the edge band, it is replaced by the retreat. The label is kept, or rewritten to 'victim_search_wind_aware_retarget_to_interior' if the action contains 'retarget'.
+  RELEVANCE: MEMORYLESS. It fires ANYWHERE in the edge band, not only near fire, and its retreat is scored by hazard distance at range 99. Not owned by the latch. The route's BFS does not enforce this filter (2231-2232). Only the route's no-path neighbour list does (2249).
+
+- Gate side effect - pocket escalation @ src_extension/execution/uav_executor.py:2796-2800
+  WHAT: If pocket_streak >= WIND_POCKET_CAMP_THRESHOLD (20; local_adaptation_generator.py:76), it writes hazard_buffer_level=2 and force_coverage_escape=True into the wind state.
+  RELEVANCE: This is a state write, not a direction. It drops the lookahead buffer to 0 (2444-2454) and forces the escape/retarget path on the next step. If the gate is bypassed by (a), this write must be kept or moved.
+
+- Gate branch G3 - near-field retreat (the 3b(i) rule) @ src_extension/execution/uav_executor.py:2802-2838 (near range 2818-2828; SEARCHER_GATE_NEAR_RANGE=6 agents.py:2059)
+  WHAT: At range >= 99 with the near field on, if _min_strict_hazard_distance(cell) <= 6 it replaces chosen_dir with the retreat. The retreat does not use the target. Label is kept, or rewritten to retarget_to_interior. The distance is to FIRE OR SMOKE (2668-2685 collects both).
+  RELEVANCE: This is the main memoryless near-fire steering path, and the direct twin of the 3b(ii) veto that A1-R replaced on the route only. It is triggered by smoke as well as fire, whereas the route latches only on BURNING distance (d0, 2160/2185). Must go through the route, and the trigger measure must be reconciled.
+
+- Gate branches G4/G5 - 3-cell lookahead pass-through / re-rank / final retreat (+ SITE B) @ src_extension/execution/uav_executor.py:2840-2883 (lookahead 2587-2615; buffer 2444-2454; guard 2880-2882)
+  WHAT: If chosen_dir passes _strict_path_lookahead_safe (edge-blocked, or any of 3 cells ahead off-grid, hazardous or within buffer 2/1/0 of fire or smoke), it is kept. Otherwise it re-ranks the safe directions by hazard distance (+0.5 for chosen) and labels them 'victim_search_hazard_retreat'. If none is safe it uses the retreat (2873-2875), else the guarded chosen_dir.
+  RELEVANCE: MEMORYLESS lookahead veto and re-rank, reachable when G3 has no retreat or when d>6 with an edge or buffer failure. Not owned by the latch. Must go through the route.
+
+- _retreat_to_safe_interior_direction - the memoryless retreat @ src_extension/execution/uav_executor.py:2703-2762; callers 2775, 2790, 2834, 2873 (gate) and 2105 (legacy 3b(ii) veto inside _attempt_pathfinding_toward_target, reached only when A1-R is OFF: 2084-2085 returns first)
+  WHAT: Pass 1 considers neighbours that are not edge-blocked, not hazardous, outside the buffer and lookahead-safe, scored hazard_dist*8 (plus boundary terms only at range 0). Pass 2 considers any non-edge-blocked, non-hazard neighbour, scored hazard_dist*6. It never looks at the target.
+  RELEVANCE: MEMORYLESS by construction: it depends only on the current fire/smoke field and position. No other caller exists in src_extension (grep checked). Once (a) lands it should have no live caller for searchers.
+
+- Gate call sites inside _resolve_direction_intent (wind-search branch) @ src_extension/execution/uav_executor.py:1397-1405 (escape_target fallback), 1418-1437 (planner wind target), 1470-1477 (unforced wind target), 1591-1602 (lawnmower sweep), 2321-2325 (_apply_retarget_with_pathfinding_fallback)
+  WHAT: Each computes chosen = _choose_best_direction(target, 'victim') and gates it. 1400 and 2321 run only after the route returned None. 1420, 1470 and 1597 never consult the route or the latch.
+  RELEVANCE: These are the 'ordinary search and sweep steps' named in the ruling: memoryless planner followed by a memoryless veto, and not owned by the latch. The label then passes the second gate at 458. 1420, 1470 and 1597 are not exempt; 1400 and 2321 may be exempt through pathfinding_routed. All 5 must go through the latched route when the gate would veto.
+
+- Known-victim branch (computed_from_target / victim_escape_committed / victim_stuck_escape) @ src_extension/execution/uav_executor.py:1046-1333 (target 1047-1070; greedy 1071-1075; escape memory 1078-1193, committed return 1111-1122, new escape 1123-1183; stuck escape 1194-1332)
+  WHAT: Used when any unhandled victim is in victim_runtime_model. The branch has 3 modes:
+- 'computed_from_target': greedy _choose_best_direction toward the victim.
+- 'victim_escape_committed': a 5-step committed direction stored in model._victim_escape_memory. It starts when progress stalls, prefers non-hazard cells (_cell_high_fire / _cell_smoke_obscured), and later committed steps check bounds only (1113).
+- 'victim_stuck_escape': used when _uav_stuck_counts >= 2. Candidates are hazard-scored (-8 fire, -4 smoke, lookahead penalties), and the pool prefers safe then improving directions.
+  RELEVANCE: None of these call the gate internally; all are gated ONCE by execute() at 458. victim_escape_committed is a latched planner vetoed by a memoryless gate, the same pattern A1 removed from the route. A fire-wait stay raises _uav_stuck_counts (wildfire_model.py:3252-3276) and can trigger victim_stuck_escape. Not owned by the latch. Must go through the route, with the victim position as the target.
+
+- _choose_best_direction / _exploration_fallback - planner hazard terms @ src_extension/execution/uav_executor.py:4774-4907 (victim filters 4822-4828; penalties 4837-4876; hard-safety pool 4901 via 1876-1893; improving preference 4902-4905); fallback 4909-4993 (victim filter 4935, near-hazard -10 at 4942-4943)
+  WHAT: Greedy one-step scorer. In victim mode it drops edge-blocked, lookahead-unsafe (3 cells, buffer) and strict-hazard candidates. It applies soft penalties for belief fire (prob >= 0.3, 5013-5020) and smoke tokens (5022-5055), plus 2-ahead penalties, visit and failed-direction penalties, and UAV separation. If nothing survives it falls back to _exploration_fallback.
+  RELEVANCE: This is a planner, but a MEMORYLESS one; its only memory is the visit counts (wildfire_model.py:1156-1157) and the last failed direction (1158-1162). It CAN alternate: when the lookahead removes the improving direction it takes the best non-improving one, and from the new cell the preferred direction can be admitted again, giving a two-cell cycle damped only by the 0.5 visit penalty. Its hazard definition (belief prob >= 0.3, obscured / low_visibility tokens) differs from the strict one used by the gate and route. Not owned by the latch.
+
+- _attempt_pathfinding_toward_target and the legacy 3b(ii) veto @ src_extension/execution/uav_executor.py:2076-2111 (A1-R dispatch 2084-2085; legacy veto 2092-2107); _route_fire_field_active 2119-2125
+  WHAT: With A1-R on it delegates to _route_within_fire_field. The legacy path (greedy _forced_progress_direction plus a near-field veto that swaps in the retreat) runs only when SEARCHER_ROUTE_FIRE_FIELD=0 or range<99 or the near field is off.
+  RELEVANCE: Dead in the shipped arm; keep it for the OFF arm. It is the original veto-against-planner livelock.
+
+- _route_within_fire_field - the fix3a A1-R latched route @ src_extension/execution/uav_executor.py:2127-2266 (fire distance 2169-2185; latch read/reset 2193-2200; unlatched greedy 2201-2211; reached 2212-2214; latch set 2215; BFS 2221-2242 via 2268-2305; no-path retreat/wait 2243-2266); callers 1389 (escape_target, prefer_bfs=True), 2313 (from 1467 and 1492)
+  WHAT: When d0 (distance to a BURNING cell) is <= 6 or the route is already latched, it runs a BFS over cells with burning distance >= min(d0, 6), with no fire, no smoke and no UAV (second pass through smoke). If there is no path: step strictly away from the fire while d0 <= 6 (FIRE_RETREAT_LABEL); else take the least-bad step if hold-stationary is off; else FIRE_WAIT (a stay, 165-171).
+  RELEVANCE: This is the only latched owner, and it does not own:
+- the None returns at 2204, 2207 and 2212-2214, which fall back to greedy plus gate;
+- goal changes, which drop the latch (2196-2198);
+- any wind, sweep or known-victim step (never called).
+The BFS blocked set lacks the edge filter and the hazard buffer. The wait is UNBOUNDED (2265-2266), which is where change (b)'s W counter goes. The latch lives only in wind_state['fire_route_target']; no other module reads or writes it (grep of src_extension).
+
+- Unlatched route internals - _forced_progress_direction / _bfs_escape_direction / pocket-blocked cells @ src_extension/execution/uav_executor.py:2392-2442, 2328-2390, 2006-2066 (A1-D UAV cells 2012-2022)
+  WHAT: Greedy first; the candidate must be strict-hazard-free and pass a depth-1 lookahead with buffer and the edge filter (2412). If the greedy step lands on a pocket-blocked cell, it tries a BFS avoiding fire+smoke+pocket cells, then fire+pocket cells. Pocket cells change every step (last position, blocked_backtrack_cells from 2915-2923).
+  RELEVANCE: Used when the route is unlatched and d0 > 6. Gate-exempt through pathfinding_routed. Its memory is a changing blocked set, so it is not monotone. A smoke-triggered gate veto sent to the route would land here, not in fire mode.
+
+- Hold / yield / hold_escape machinery @ src_extension/execution/uav_executor.py:105-129 (_is_fail_safe_hold_decision), 373-426, 572-582 (_execute_hold), 584-611 (_execute_yield), 635-668 (_step_aside_direction), 705-716 (_hold_needs_escape), 738-786 (_hold_escape_direction), 150-173 (stay flag); dispatcher yield rewrite decision_dispatcher.py:353-375
+  WHAT: A searcher holds only on a fail-safe hold:
+- the COLLISION_RISK yield (selected_option_id='' at decision_dispatcher.py:368), or
+- a non-emergency 'hold_position' fs action.
+The yield path steps aside onto a strict-hazard-free cell (656), uses the stuck>=3 hold_escape, or stays. _hold_needs_escape for searchers checks only stuck/boundary/off-grid, never hazard. _hold_escape_direction scores by boundary distance and skips cells with danger > 0 (755).
+  RELEVANCE: Nothing here is hazard-TRIGGERED for searchers. hold_escape is memoryless and re-gated at 458. yield_step_aside is exempt. A 'hold' stays even on or next to fire (gate skipped at 452). These are non-hazard, memoryless owners of near-fire steps: it is unclear whether (a) covers them.
+
+- Fail-safe dispatch paths @ src_extension/execution/decision_dispatcher.py:269-306 (_dispatch_fail_safe), 308-404 (_dispatch_local_paths), 503-524 (_is_victim_search_mode_exempt), 617-650, 653-669; fail_safe_planner.py:228; failsafe_adaptation_generator.py:125-150, 177-200
+  WHAT: _dispatch_fail_safe would call execute(..., fail_safe_decision) for each action carrying uav_id/target_entity. Fail-safe params never contain those keys, so it executes no UAV. EMERGENCY/SAFETY_FIRST holds keep selected_option_id (630/637) and pass fs=None (663-664). _is_fail_safe_hold_decision is then False (124-129), so the searcher runs wind-aware search, not a hold.
+  RELEVANCE: No hazard-reason steering here. The search-mode exemption (503-524) matches the non-None fs_for_execute condition (653-669) exactly. So searchers never reach _execute_role_preserving_search from local paths, and the fail-safe path is dormant.
+
+- _apply_final_direction_safety / _safe_direction_or_escape @ src_extension/execution/uav_executor.py:1934-1965; callers 465 (non-searchers), 534 (_execute_role_preserving_search 501-570), 896 and 950 (_execute_search_mode 874-983, role_kind 'general' only)
+  WHAT: A memoryless danger-level minimiser: off-grid 3, belief fire 2, smoke 1. It escapes to the lowest danger level, scored by boundary distance, and appends '_hazard_escape'.
+  RELEVANCE: Searchers can reach it only through _execute_role_preserving_search, which is unreachable in practice (see the fail-safe entry). Not a live searcher path, but it would be a second memoryless path if fail-safe params ever carried uav_id.
+
+- agents.py UAV.move / advance / return-to-base @ agents.py:1067-1107 (move: docked 1078-1080, no-direction 1089-1091, stay 1096-1097, refusal 1103), 1111-1143 (advance), 651-842 (_apply_return_to_base; mechanism-2 override 836-842), 918-1017 (free-cell leg), 1058-1064
+  WHAT: move refuses only off-grid or UAV-occupied cells; there is no fire/smoke test. advance runs _apply_return_to_base first; on a return leg it overwrites selected_dir (fire-blind, per the docstring at 1196) and clears execution_stay.
+  RELEVANCE: No hazard logic, checked. The return-to-base leg is a non-hazard last-writer override of the executor's (possibly latched) direction. A refused move feeds the stuck count and the failed direction.
+
+- wildfire_model.py direction writers and counters @ wildfire_model.py:2483-2490 and 2539-2551 (random dirs only when the pipeline is inactive), 2531-2537 (flag clear), 235 (init warmup), 1156-1162 (visit counts, uav_last_failed_dir), 3252-3276 (_uav_stuck_counts), 1758-1790 (_hazard_pressure_for_uav, reporting)
+  WHAT: There is no hazard-based move or refusal of UAVs in the model. The counters it keeps feed executor heuristics.
+  RELEVANCE: Checked, found nothing hazard-steering. Stuck counts rise during a FIRE_WAIT, which can trigger victim_stuck_escape (1199) and the hold escapes (706, 607).
+
+- safety_checker.py @ src_extension/execution/safety_checker.py:1-5, 53-117
+  WHAT: Extracts and classifies fail-safe reasons and modes: battery, drift, collision, communication, information, instability. There is no fire/smoke reason and it mutates nothing.
+  RELEVANCE: Checked, found nothing that moves or holds a searcher.
+
+- Local path planner hold rewrite @ src_extension/planning/local_uav_path_planner.py:200-213, 234-244
+  WHAT: Any searcher 'hold' becomes 'victim_search_wind_aware' with needs_new_wind_target / force_wind_retarget. The executor ignores non-hold next_action for role_kind victim, and the tail at uav_executor.py:1604-1643 is unreachable for searchers.
+  RELEVANCE: The planner cannot hold a searcher for a hazard reason. Upstream hazard handling is target selection only.
+
+- Pocket-escape machinery (pocket_streak, escape_target, force_coverage_escape, hazard_buffer_level) @ local_adaptation_generator.py:1447-1514 (pocket/no-move counters; escalation 1490-1500), 1517-1544 (_gradual_escape_target), 4061-4198 (escape selection; buffer=2 at 4157; decay 4195-4197), 1718-1795 (_sync_wind_search_streaks); uav_executor.py:1374-1405 (escape branch, buffer=2 at 1376), 1439-1457, 1479-1496, 2444-2454, 382-385
+  WHAT: Counters that trip at a pocket streak of 20 or 5 no-move steps set force_coverage_escape / force_interior_retarget and the hazard buffer level. The generator then picks a committed escape_target. The executor steers to it with _attempt_pathfinding_toward_target → _route_within_fire_field (prefer_bfs), falling back to greedy plus gate.
+  RELEVANCE: The planner used is the latched route, with a memoryless fallback when it returns None. hazard_buffer_level weakens the lookahead guards for gate, retreat and greedy, but not for the fire-field BFS. A FIRE_WAIT advances pocket_streak and sweep_no_move_streak, so these counters can already cut a wait short by changing the target. This interacts with (b)'s bound W.
+
+- _sync_wind_search_execution_state - relabel side effects @ src_extension/execution/uav_executor.py:2885-2955 (backtracks 2915-2923; hazard_retreat blacklist 2946-2955)
+  WHAT: Every label containing 'hazard_retreat' (G1, G4, G5) sets force_interior_retarget, clears the corridor and blacklists the 5x5 cells around the current position.
+  RELEVANCE: A memoryless veto becomes a forced target change, which resets the latch (2196-2198). FIRE_RETREAT_LABEL does not contain 'hazard_retreat', so a routed retreat does not trigger this.
+
+- Hazard-definition mismatch across guards @ uav_executor.py:1967-1974 and 2625-2666 (strict: burning Fire agents, active smoke, smoke_obscured); 5013-5055 (belief: fire prob >= 0.3, smoke tokens incl. obscured/low_visibility); 2160 and 2185 (route d0: burning only); 2827 → 2668-2685 (gate near field: fire+smoke)
+  WHAT: 4 different hazard measures are in use across the gate, the route, the planner and the fallback.
+  RELEVANCE: Routing gate vetoes into the route needs one trigger measure. Otherwise smoke-within-6 vetoes reach the route unlatched, and belief-fire cells can repel the greedy planner but not the route.
+
+OPEN QUESTIONS
+- Is the edge-blocked gate branch G2 (uav_executor.py:2789-2794) in scope for (a)? It fires anywhere in the edge band, not only near fire. The route's BFS (2231-2232) does not plan within the edge filter, so sending G2 vetoes to the route could produce steps the edge filter forbids.
+- Which measure should decide 'near fire' for (a): the gate's fire-or-smoke distance (2827) or the route's burning-only d0 (2185, ruling R-2)? With the current code, a veto triggered by smoke within 6 would reach the route unlatched and be planned greedily (2201-2211).
+- What target should the known-victim branch latch on? Its target is the victim position (1047-1070), and victim_escape_committed (1111-1183) is a second latched memory that the gate currently vetoes. Should it be replaced by the route, or kept?
+- Does (a) also cover the non-hazard memoryless steps a searcher can take near fire: hold_escape (579, 595, 608, then gated at 458), yield_step_aside (606, hazard-filtered and exempt) and the hazard-blind 'hold' stay (452)?
+- How do W and the existing counters interact during a FIRE_WAIT? The stay advances sweep_no_move_streak (>=5 sets force_coverage_escape at local_adaptation_generator.py:1490-1493), pocket_streak (>=20), and _uav_stuck_counts (>=2 sets victim_stuck_escape, >=3 sets hold_escape). Whether a committed escape_target survives those, and so how long a latched wait can actually last, needs a run trace, not code reading.
+- Stale _last_escape_method: it persists on the per-UAV cached executor (decision_dispatcher.py:216-223) and is not reset on the route-reached return (2212-2214). Could a gate-fallback label containing 'retarget' then skip the second gate at 453-457? It looks benign today (the first gate already ran), but it matters if (a) keys route ownership on this attribute.
+- _dispatch_fail_safe (decision_dispatcher.py:284-299) is dormant only because fail-safe params carry no uav_id or target_entity. I checked failsafe_adaptation_generator.py and fail_safe_planner.py only; any other producer of FailSafeDecision.actions would revive the searcher path to _apply_final_direction_safety (534).

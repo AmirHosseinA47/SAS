@@ -1,0 +1,174 @@
+================================================================================
+FIX3A ROUND 2 - ONE OWNER FOR NEAR-FIRE STEERING, AND A BOUNDED WAIT - DESIGN AND PRE-REGISTRATION
+                                                                         outputs/fix3a_r2_prereg.txt
+================================================================================
+Written BEFORE any source edit and before any run of this round. Branch fix3a, on top of 8b067395 (the
+Part 3 report, outputs/fix3a_report.txt). Run tag prefix fx3r (every tag checked unused before its wave).
+
+THE RULING (maintainer, after the Part 3 STOP): options (a) and (b) together, in one follow-up on fix3a,
+on the same sample. GATES UNCHANGED - (N) and (O) are not relaxed after the fact.
+  (a) ONE OWNER FOR NEAR-FIRE STEERING. When the searcher hazard gate would veto a step - including
+      ordinary search and sweep steps, not only the route - the step goes to the latched route instead
+      of the memoryless retreat. No second, memoryless steering path may remain for searchers near fire.
+  (b) A BOUNDED WAIT. A latched route with no path gives up its target after a fixed number of steps.
+      The bound is fixed here, before any run, with its reasoning; one alternative bound is reported as
+      a sensitivity result, not as a second chance.
+
+HOW THE STEERING WAS MAPPED (read-only; outputs/fix3a_r2_map_*.txt keep the four maps)
+  A read-only workflow of 4 mapping agents (lenses: steering paths, target sources, label consumers,
+  post-route guards), then my own reading. These are NOT review agents; 1 of the 3 review agents is used,
+  2 remain for the review of this round's code. One mapping agent rooted one Grep at the repo (glob *.py) -
+  a breach of the quarantine rule as written; ripgrep honours .git/info/exclude, which lists the
+  quarantined directory, and nothing from it was returned or opened. Recorded in the report.
+  What the map established (file:line in the maps):
+  - The memoryless retreat _retreat_to_safe_interior_direction has 4 live callers, all inside the searcher
+    hazard gate: on-cell hazard (G1), edge-blocked direction (G2), the near-field retreat within 6 of
+    FIRE OR SMOKE (G3, the 3b(i) rule - the twin of the 3b(ii) route veto A1-R removed), the lookahead
+    re-rank / final retreat (G4 / G5).
+  - The gate runs inline at 5 sites (planner wind target, unforced wind target, the lawnmower sweep, the
+    escape-target fallback, the retarget fallback) and AGAIN in execute() on the result; the known-victim
+    branch (computed_from_target / victim_escape_committed / victim_stuck_escape) and hold_escape are
+    gated only there. The latched route owns only the escape / forced-retarget steps.
+  - The route measures "near" by burning cells (d0); the gate by fire or smoke. The route's BFS does not
+    plan within the edge filter, and breaks to a wait when its first step meets true smoke the plan did
+    not see. A stale _last_escape_method (never reset per step) can exempt a fallback step from the
+    second gate pass.
+  - The fail-safe role-preserving search path (_execute_role_preserving_search) applies
+    _apply_final_direction_safety, a second memoryless hazard escape; it is dormant in practice (fail-safe
+    actions carry no uav_id) but reachable in code.
+  - Targets: in coverage mode (any victim unresolved) the dominant sources are the commit-hold target and
+    the pocket machinery's sticky escape_target; the generator's relocation (_finalize_coverage_target) can
+    re-issue a blacklisted cell; nothing consults the route's state. C/S 9610 (the Part 3 (N) run): the
+    long wait of searcher 2504 was a sticky escape_target, (45, 45) then (44, 45) - a one-cell shift that a
+    strictly target-keyed latch treats as a new route.
+  - Return-to-base legs are steered by agents.py (A2's dock path) and ignore the executor's direction.
+  - Session 3b's territory (the generator's target selection / region targeting) is NOT modified by this
+    design: the give-up CALLS the generator's existing helpers (_clear_target_hold,
+    _blacklist_target_neighborhood) and refuses targets on the executor side.
+
+================================================================================
+1. THE RULES (two new switches; every new behaviour only while its switch is on AND A1-R is active)
+================================================================================
+1.1 (a) SEARCHER_FIRE_ROUTE_OWNER (ships 1; off only on an exact zero)
+  a1 THE STEP TARGET. Each searcher step records the target it steers toward, at its source: the known
+     victim, the escape target, the planner / executor wind target, the sweep target, the retarget
+     target. Reset at the start of every execute() (with _last_escape_method).
+  a2 THE HAND-OFF. The searcher hazard gate (both invocations) first runs unchanged (its pocket state
+     write is kept). If the searcher is LATCHED on a route whose goal is within Manhattan 2 of this step's
+     target, or the gate took ANY branch other than its pass-through (G1-G5 - a veto, even one whose
+     retreat happens to equal the planner's direction), the step is planned by the latched route toward
+     the step's target, through _attempt_pathfinding_toward_target with the fire mode forced. With no
+     step target the route's current goal is used; with neither, the no-goal outcome (a4).
+  a3 THE ROUTE'S FIRE MODE is entered when forced (a2), when latched, or when the strict hazard distance
+     (fire OR smoke - the gate's own measure) is <= SEARCHER_GATE_NEAR_RANGE (6): one measure of "near".
+     The clearance T = min(burning distance, 6) and "smoke impassable" are unchanged (R-2, R-3).
+     LATCH IDENTITY: a goal within Manhattan 2 of the latched goal is the same route (the latch and its
+     counter survive a one-cell shift of the target); the stored goal follows it.
+  a4 NO PATH / NO GOAL: on a hazard cell -> the legal neighbour (in bounds, not edge-blocked, no hazard, no
+     UAV) with the largest burning distance; inside the near field -> a strictly farther legal neighbour
+     (FIRE_RETREAT); else a WAIT (FIRE_WAIT, a stay). A goal reached (Manhattan <= 2) is a no-goal step.
+  a5 PLANNED WITHIN THE EDGE GUARD: the fire-mode BFS applies the edge filter as a DIRECTED transition
+     constraint (the exact predicate of _victim_edge_blocked_direction on (cell, next cell), penetration
+     rule with SEARCHER_CORNER_ESCAPE on, margin rule off), so no guard can veto a route step.
+  a6 FIRST-STEP REPLAN: a BFS whose first step meets a hazard the plan did not see (true smoke) replans
+     with that cell blocked (at most 4 times) instead of breaking to a wait.
+  a7 ONE OWNER IN execute(): route-owned steps (labels ending "_fire_route", FIRE_RETREAT, FIRE_WAIT) are
+     exempt from the second gate pass; the exemption no longer depends on _last_escape_method.
+  a8 THE FAIL-SAFE SEARCH PATH: for a victim searcher, _execute_role_preserving_search applies the
+     searcher gate (with the hand-off) instead of _apply_final_direction_safety.
+  a9 LABELS: a handed-off moving step is labelled <origin>_fire_route for the origins
+     victim_search_wind_aware, ..._retarget, ..._retarget_to_interior, ..._sweep, computed_from_target,
+     victim_escape_committed, victim_stuck_escape; any other origin -> victim_search_fire_route (never
+     built on "hold" or "hazard_retreat"). No-path steps keep the canonical FIRE_RETREAT / FIRE_WAIT labels.
+     A route-owned sweep step clears force_sweep as a sweep step does.
+  NOT CHANGED, AND WHY: 'hold' stays and yield_step_aside (collision yields, not hazard steering; the step
+  aside already excludes hazard cells); return-to-base legs (A2's dock path owns them; fire-blind by the
+  base-station design, not a veto-over-planner pair).
+
+1.2 (b) SEARCHER_ROUTE_BOUNDED_WAIT (ships 1; off only on an exact zero) and
+    SEARCHER_ROUTE_WAIT_LIMIT = W (an integer >= 1; anything else RAISES - the fix1 fraction precedent)
+  b1 THE COUNT: per latch, the number of distinct model steps (a step-index guard - the executor can run
+     0, 1 or 2 times per step) on which the latched route produced no path (FIRE_RETREAT or FIRE_WAIT),
+     excluding steps on a return-to-base leg. CUMULATIVE over the latch - NOT reset by a routed step: in
+     C/S 9610 the waits came in runs of 15, 30 and 50 steps separated by 1-2 routed steps, which a
+     consecutive count would never bound. Reset when the latch is released (a new goal beyond Manhattan 2,
+     the goal reached) and on a give-up.
+  b2 THE GIVE-UP, on the W-th no-path step: record the goal as GIVEN UP until step + G; release the
+     generator's commit hold (_clear_target_hold, reason "route_give_up"); blacklist the goal's 5x5
+     neighbourhood (_blacklist_target_neighborhood - the generator's own exclusion, 15 steps); clear the
+     escape target if it is within Manhattan 2 of the goal; set force_coverage_escape and
+     force_interior_retarget (the next generator call re-picks); release the latch. The step itself is the
+     no-path outcome already computed.
+  b3 THE REFUSAL, while a give-up is live: a step target within Manhattan 2 of a given-up goal is refused at
+     its source - the escape target is cleared, a wind target is treated as absent (the searcher's own
+     lawnmower sweep, the executor's no-target fallback), the sweep advances to its next lane, a known
+     victim is skipped for the next nearest. The generator's relocation can re-issue a blacklisted cell
+     (its own docstring: 58 breaks onto 2 cells); this is the backstop.
+  G = WIND_TARGET_BLACKLIST_COOLDOWN = 15 steps: the refusal lasts exactly as long as the generator's own
+  blacklist - the executor enforces it on the sources that do not consult it, no longer.
+
+1.3 THE BOUND - W = 20 (fixed here, before any run). REASONING:
+  (i)   The anchor: the longest pre-latch fire-wait was 39 steps. W must bound every latched wait well
+        inside that: a latched searcher never idles on one target longer than the worst pre-latch case.
+  (ii)  The data (outputs/_fx3b_waitdist.py over the Part 3 A1 arms already on disk - no new run): 670
+        latched no-path episodes, median 6, p75 13, p90 34, p95 47, longest 104. 355 ended with the path to
+        the SAME target reopening (median 4 steps); 314 ended with the planner retargeting on its own.
+        Reopenings within W: 71% at 10, 81% at 15, 85% at 20, 87% at 25, 91% at 39. Idle steps in episodes
+        beyond W: <= 4002 at 10, 3050 at 15, 2415 at 20, 944 at 39.
+  (iii) The controller's own definition of a pocket: WIND_POCKET_CAMP_THRESHOLD = 20 stationary steps is
+        where the existing pocket machinery already declares a searcher camped and forces an escape. W =
+        20 makes the route's give-up agree with it.
+  W = 20 keeps 85% of the waits that would have reopened (the knee of the curve: 10 -> 20 recovers 14
+  points, 20 -> 39 only 6 more) and cuts the tail where the idle time is (105 episodes, <= 2415 steps).
+  THE SENSITIVITY BOUND: W = 39, the pre-latch longest - reported, never used to pass a gate.
+
+================================================================================
+2. PRE-REGISTERED ARMS (360 steps, GPM 0, the Part 3 seeds; outputs/_fx3_probe.py v3 --hazard)
+================================================================================
+  fx3rZ    every fix3a switch 0 (the 7 of Part 2 + the 2 new), set 1        == fx3v (a5a496db)   IDENTITY 1
+  fx3rX    the 2 new switches 0, the 7 on, set 1                             == fx3S (a1373935)   IDENTITY 2
+  fx3rS    shipped (W = 20), set 1         fx3rS2   shipped, set 2 (seeds 9621-9636)
+  fx3rSZ2  every switch 0, set 2 (re-measured reference)
+  fx3rA1   A1 + (a) + (b) only (A2, B1, B2, B3 = 0), set 1                   fx3rA2  A2 only, set 1
+  fx3rB0 / B2 / B3 / B23   scenario B, B1 + A1 + A2 + (a) + (b), (B2, B3) = (0,0) / (1,0) / (0,1) / (1,1)
+  fx3rW / fx3rW2   SENSITIVITY: shipped with W = 39, set 1 / set 2
+  harness fx3rhZ (every switch 0; == fx3hR) and fx3rhS (shipped), fix2's 16 canonical tuples
+  route_blocked (4 shards, 240 steps, D): fx3rgZ (== fx3gR), fx3rgS (shipped), fx3rgW (W = 39)
+  The probe v3 records (pass-through) the new wind-state keys fire_route_target, fire_route_nopath,
+  route_give_ups, route_refusals, route_given_up. Proven pass-through by IDENTITY 1 and 2.
+
+================================================================================
+3. PRE-REGISTERED CHECKS - reported for EVERY arm; the GATES bind every A1-containing arm (fx3rS, fx3rS2,
+   fx3rA1, fx3rB0, fx3rB2, fx3rB3, fx3rB23); fx3rW / fx3rW2 are reported only (sensitivity)
+================================================================================
+  GATE (N) runs that never finish = 0 (the maintainer: "must be 0 in the shipped arm").
+  GATE (O) searcher two-cell alternations, ALL kinds (the broad measure: <= 2 cells, >= 4 changes in 10
+       steps, and the pocket-style episode), count and longest = 0 (target 0; amendment 1's gate).
+  (W)  fire-waits: episodes, the longest, the longest CUMULATIVE per latched target (structural: must be
+       <= W), episodes overlapping a victim that later dies / is never detected.
+  (A)  ONE OWNER (structural): searcher steps within 6 of fire or smoke whose direction came from the
+       memoryless retreat (a gate veto NOT handed to the route; labels containing "hazard_retreat" or
+       "_hazard_escape") = 0; route-owned moves that break the edge filter = 0; routed steps closer than the
+       clearance = 0.
+  (B)  the give-ups and refusals per arm (count, per run); targets re-issued inside a refusal.
+  (C)  C/S 9610 in fx3rS: the step victim_0 is detected (a5a496db 344, pre-latch 188, latched 337) and
+       whether the run finishes.
+  (R)  route_blocked at 240 steps: NEW losses = 0 (the gate as pre-registered). Any loss is TRACED; if it
+       is only a victim found after step 240 that the 360-step harness run rescues, that is REPORTED as
+       such - the gate is not changed.
+  (P3) re-confirmed from Part 3: identity 1 and 2; A2's structural checks (0 docked / charged outside a
+       footprint, 0 shared cells, standoffs, outside waits, return-leg livelock gate); scenario B four ways
+       with the STOP rule (B23 vs B0, C <= G); session 1's B checks; drone steps in fire (bounds +1.0 /
+       +0.5 points); the sysdebug invariants (S vs Z); the yield rules; outcomes (rescued / dead /
+       never detected, a screen); the full test suite failing NAME SET == {T5}; revert checks for both new
+       switches.
+  (E)  THE EDGE-COVERAGE QUESTION (B/N 9671): outputs/_fx3b_edgecov.py on every arm - the share of the
+       outer ring (edge distance <= 3) ever within the observation radius 8 of a UAV, searcher time in the
+       ring, victims undetected in the ring, never-detected victims. Part 3 already answers it for the
+       a1373935 arms (in the report): the shipped arm observes MORE of the ring (94.5% vs 87.2% FULL)
+       with less than half the searcher time in it; every never-detected victim fled into the ring.
+  STOP BEFORE MERGING in every case (the ruling); if a gate fails, the report says so with the diagnosis.
+
+THE LESSON (ruled, to be recorded in the report): A1 removed one veto-against-planner livelock but left
+the same pattern on the steps the route does not control. The rule that follows: a guard must be planned
+within, everywhere it acts.
