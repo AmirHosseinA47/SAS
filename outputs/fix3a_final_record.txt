@@ -1,0 +1,156 @@
+================================================================================
+FIX3A - SESSION 3a - FINAL RECORD (the maintainer's decision and what ships)
+                                                                         outputs/fix3a_final_record.txt
+================================================================================
+THE DECISION (maintainer, after round 2): option (iii) + (iv). No further steering round.
+  - Ship the state MEASURED IN PART 3: fix3a Part 2 at a1373935. That is A1 as measured in Part 3, plus A2, B1,
+    B2 and B3. It is the best measured searcher.
+  - Round 2's (a) one owner and (b) bounded wait are REVERTED: HEAD's shipped source is byte-identical to
+    a1373935. The round-2 code stays in the history (cacc8463); its report is outputs/fix3a_r2_report.txt.
+  - The wind-trajectory tests set their own configuration.
+  THIS IS THE BEST MEASURED STATE, NOT A PASS OF THE (N) AND (O) GATES. Shipping it was the maintainer's
+  decision after two steering rounds each moved the oscillation elsewhere:
+  - fix3a Part 2's A1 removed the depot pockets and left the gate's veto on ordinary search steps;
+  - round 2 absorbed those vetoes into one owner and moved the oscillation into the route's own no-path rules,
+    with the target generator left blind.
+
+WHAT SHIPS (all fix3a switches ship 1 and turn off only on an exact zero; the BATTERY_SCENARIO marker ships 0
+and turns on only on an exact one)
+  A1-R SEARCHER_ROUTE_FIRE_FIELD   the searcher's route plans within its near-field guard over burning cells,
+                                   latched in fire mode; no admissible step -> a strictly-farther retreat,
+                                   else a wait (a stay)
+  A1-S SEARCHER_SWEEP_IN_BOUNDS    no sweep target in the edge band the edge filter forbids
+  A1-D SEARCHER_CORNER_ESCAPE      corner cells have an exit; escapes do not plan through UAVs
+  A2   FREE_CELL_DOCKING           the nearest free depot cell by a UAV-free path, re-picked; docked = inside a
+                                   footprint; charging only there
+  B1   SCENARIO_B_TEAM             B = 4 UAVs (2 + 2) / 3 firefighters / 4 victims
+  B2   SCENARIO_B_STAGGERED_LAUNCH  launch batteries 85 / 65 (searchers), 78 / 72 (trackers)
+  B3   SCENARIO_B_RETURN_DELAY     a searcher's return waits while the other searcher is away, never below
+                                   0.3 d + 32.30
+
+CONFIRMATION (value identity against Part 3's shipped runs; outputs/_fx3_q_merge.jsonl):
+  HEAD 00c0ded5 (shipped source byte-identical to a1373935: git diff a1373935 HEAD over agents.py,
+  common_fixed_variables.py, src_extension/, serve_dashboard.py, evaluate_scenarios.py, wildfire_model.py is
+  empty). 48 new probe runs at HEAD against Part 3's shipped runs, every fix3a switch at its source default:
+    fx3S   (set 1, A / C / D x 4 winds + B)       vs fx3mS    16 / 16 value-identical
+    fx3S2  (set 2)                                vs fx3mS2   16 / 16 value-identical
+    fx3B23 (scenario B, B2 + B3, 4 winds x 4 seeds) vs fx3mB23  16 / 16 value-identical
+    TOTAL 48 / 48. Fields: every per-step row (UAV, firefighter, victim, decision, trigger), the evaluation,
+    terminal step, steps done, crash flag, stdout hash and tags, inline violations, warning count, and every
+    mf2 section. Source hashes of all 48 runs equal this tree's. (outputs/_fx3m_check.py -> _fx3m_check.txt)
+  PAPER: the shipped defaults ARE Part 3's shipped arm - every Part 3 number for fx3S / fx3S2 / fx3B23 is a
+  number of the shipped system.
+FULL TEST SUITE on the final HEAD: HEAD 00c0ded5, 1 failed / 1468 passed (4651 s). Failing set EXACTLY {T5}:
+  tests/test_uav_sector_assignment.py::test_fire_tracker_uavs_receive_different_target_sets
+  (outputs/_fx3m_fullsuite.log / .head).
+  - The two wind-trajectory tests (tests/test_wind_aware_trajectory_regression.py) pass in suite order. They
+    now pin their own configuration from the source defaults through an autouse fixture.
+  - Under injected pollution (variable wind west -> east p 0.8, 2 UAVs, 3 victims, BATCH_SIZE 99999 - the
+    state the suite used to leave behind) they pass 4 / 4 and see no polluted value
+    (outputs/_fx3m_pollute_plugin.py -> _fx3m_isolation_seen.json).
+  PAPER: no test result depends on test order any more in that file; T5 is the known, explained failure.
+
+================================================================================
+KNOWN LIMITATIONS OF THE SHIPPED SYSTEM (with evidence; the best measured state, not a gate pass)
+================================================================================
+L1 ONE RUN NEVER FINISHES: C/S 9610 (scenario C, south wind, seed 9610; Part 3, fx3S).
+   - Searcher 2504 holds a route target behind a fire in latched fire-waits: no-path runs of 15, 30 and 50
+     steps between steps ~97 and ~199, about 95 steps in all. Its target is a sticky escape target, (45, 45)
+     then (44, 45).
+   - victim_0 at (46, 30) is found at step 337, where the pre-latch prototype found it at 188 and finished at
+     232. Its firefighter is still en route at step 360.
+   - A DELIBERATE WAIT, NOT A LIVELOCK: that run has no oscillation episode.
+   - Evidence: outputs/fix3a_report.txt 5.1, outputs/_sd_fx3S_C_S.json.
+L2 SHORT TWO-CELL OSCILLATIONS DURING ORDINARY SEARCH, NONE NEAR A DEPOT, 1-6 per arm (Part 3):
+   - Counts per 16-run arm (longest): fx3S 2 (33), fx3S2 3 (13), fx3A1 1 (10), fx3B0 6 (25), fx3B2 3 (33),
+     fx3B3 4 (33), fx3B23 3 (33). Depot-pocket kind: 0 in every arm.
+   - MECHANISM: the searcher hazard gate vetoes an ordinary search / sweep step toward a target the route
+     cannot reach; its memoryless retreat steps away and the planner draws the searcher back.
+   - Of 372 episode steps, 147 are gate vetoes and 154 the ordinary steps between them.
+   - One 25-step episode is a sweep / route alternation; a few mix in collision-yield steps.
+   - Evidence: outputs/fix3a_report.txt 5.2, outputs/_fx3_p3_analysis.txt.
+L3 TWO ROUTE_BLOCKED LOSSES AT THE 240-STEP HORIZON: D/east 606 (4 -> 3) and D/south 505 (3 -> 2), fx3gS vs
+   fx3gR.
+   - Latched units at the end: 0. Recoveries: 7.
+   - Both losses are an ALIVE victim not yet rescued at step 240, where the a5a496db reference had finished
+     every victim (terminal 228 and 115). No death and no firefighter death is involved.
+   - TRACED by the probe at 360 steps with the campaign's parameters (outputs/_sd_fx3mTe606.json,
+     outputs/_sd_fx3mTs505.json; outputs/_fx3m_check.txt, outputs/_fx3m_trace_v0.txt):
+     D/east 606 - SEARCH TIMING. The probe reproduces the campaign at step 240 (rescued 3, one alive, dead 0).
+       victim_0 fled from (40, 25) to the corner (49, 1) and was first detected at step 200. It was assigned at
+       200; both firefighters hit route_blocked at steps 204-205, and ff_unit_1 was re-dispatched at 207 from
+       (27, 15), 36 cells away. It reached the victim at 244 and completed the rescue at 245, five steps
+       past the horizon. Even without the 3-step route_blocked detour the rescue lands after 240: detection at
+       200 decides it. The reference finished every victim by step 228. Its detection step is not recorded: the
+       campaign stores evaluations only.
+     D/south 505 - SEARCH TIMING, AMPLIFIED BY DISPATCH ORDER. The probe reproduces the campaign at step 240
+       (rescued 2, dead 1, one alive).
+       - victim_0 at (40, 25) is detected at step 65 in BOTH the shipped run and the a5a496db reference
+         (harness fx3hS / fx3hR D/south/half/505: the same detection events). The difference is a different
+         victim.
+       - The shipped searcher UAV-2502 finds victim_1 at (25, 48) at step 21 instead of 16. So at step 16 only
+         victim_3 at (25, 3) is known, and first-come dispatch sends ff_unit_1, then at (2, 30), 50 cells to
+         victim_3 on the fire side. In the reference it went 41 cells to victim_1.
+       - victim_3's route closes (no safe route, about step 74). ff_unit_1 is re-dispatched from (17, 8) on
+         the fire side to victim_0 at step 75, and victim_3 dies in the fire, as it does in the reference.
+       - ff_unit_1's approach takes 180 steps (75 -> 254). It moves every step but visits only 74 distinct
+         cells (106 revisits), drifting around (12-25, 8-21), with one 12-step two-cell episode
+         (16, 15) <-> (17, 15) at steps 139-150. It reaches the victim, which had moved to (42, 25), at 257
+         and rescues at 266.
+       - Meanwhile ff_unit_0 is available from step 99 and is never reassigned: dispatch does not move an
+         assigned victim to an idle closer firefighter.
+       - In the reference ff_unit_1 came to victim_0 from victim_1's exit (39 cells) and finished at 115.
+     CORRECTION to outputs/fix3a_report.txt 3.9 / 3.12: Part 3 wrote "unassigned at step 240". At step 240 both
+       victims were ASSIGNED, and a firefighter was en route. The campaign's 'candidate' counts a detected,
+       unrescued victim (see the victim-candidate note). The root, search timing, stands. For 505 the detection
+       that moved is victim_1's, and the 240-step loss is a slow firefighter approach from the fire side.
+     PAPER: a 5-step change in one detection flips a first-come dispatch and costs another victim about 150
+       steps. Outcome at a fixed horizon is sensitive to dispatch order, not only to detection time.
+       - The firefighter's slow approach near fire (revisits, one two-cell episode) is firefighter movement.
+         fix3a does not change it, and the searcher (O) measure does not count it.
+       - Reassigning an assigned victim to an idle, closer firefighter is not in the model. That is a
+         dispatch question for a later round, not 3a's.
+
+================================================================================
+PAPER FINDINGS (session 3a)
+================================================================================
+  1. The depot pockets were a CONTROLLER defect, not a depot effect: a safety veto layered on a route planner
+     that could not see it produced a livelock. Burnable depots still showed it. A1 removed them: 0 depot-pocket
+     oscillations in every arm.
+  2. Every result at the session-2 defaults (a5a496db) includes 3 runs that never finish and must not be used.
+  3. B2 is the first launch stagger in this project that closes the no-searcher gap without extra returns.
+     Confirmed three times: 517 -> 0 (Part 3), 584 -> 0 (round 2), with searcher returns down (1.62-1.75).
+     B3 is a safety net: it does not fire on top of B2, and alone it never lets a delayed return arrive below
+     LOW.
+  4. With free-cell docking, docking and charging are positional, and doorstep standoffs no longer occur.
+  5. THE REMAINING NEAR-FIRE OSCILLATION COMES FROM TARGET SELECTION THAT CANNOT SEE REACHABILITY. Round 2
+     showed that absorbing the gate's vetoes silently makes the target generator keep choosing unreachable
+     targets: more give-ups, later detections, a victim never found. This is session 3b's first design
+     constraint (outputs/session3b_first_constraint.txt): 3b's target choice must be REACHABILITY-AWARE, and 3b's
+     gates must include runs that never finish and oscillation episodes of every kind.
+  6. THE EDGE-COVERAGE QUESTION: the edge filter does not create the hole. The detection radius (8, any UAV)
+     reaches the outer ring from the band's inner lane, and the shipped arm observes MORE of the ring than
+     a5a496db (94.5% vs 87.2% of ring cells) while its searchers spend less than half as long in it. The
+     never-detected victims had FLED into the ring. The B/N 9671 victim started at (40, 25) and reached (49, 20)
+     by step ~141; in round 2's B arms it was found at steps 64-68, before it got there. It is a search-order and
+     timing question, not a filter defect.
+  7. One owner for near-fire steering (round 2) is implementable exactly, with 0 memoryless steps and 0
+     edge-filter violations, where Part 2's route broke the edge filter about 300 times per 16 runs. It does not
+     remove oscillation on its own: an owner with two objectives livelocks, and a lower layer that absorbs a
+     refusal must tell the layer above.
+
+LESSONS (ruled and learned)
+  - Session 2's D-7 condition checked deaths and exposure but not livelock or unfinished runs. EVERY MOVEMENT FIX
+    IS GATED ON (N) AND (O) AS WELL.
+  - A1 removed one veto-against-planner livelock but left the same pattern on the steps the route does not
+    control. A GUARD MUST BE PLANNED WITHIN, EVERYWHERE IT ACTS - with one objective, and with the target
+    generator told what the guard refuses.
+  - A prototype screen must measure the gate it will be judged by. A fix from a review is a new rule and needs
+    its own screen.
+  - Tests must set their own configuration: two wind-trajectory tests passed or failed by test order until this
+    session.
+
+MERGE: main fast-forwarded (--ff-only) from a5a496db (tag sysdebug-session2) to the fix3a head that contains
+  this record, pushed. Annotated tag sysdebug-session3a on that commit, pushed. Branch fix3a deleted locally and
+  on origin (refs/heads/fix3a). The shipped source is a1373935's (see CONFIRMATION). Round 2 (cacc8463,
+  93d5de2a) and its revert (00c0ded5) stay in the history.
