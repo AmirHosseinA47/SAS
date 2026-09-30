@@ -721,7 +721,10 @@ def test_value_ranges():
 # the trigger-level helper (3.7)
 # ---------------------------------------------------------------------------
 
-def test_trigger_helper_equals_the_uav_trigger_at_its_own_cell():
+def test_trigger_helper_equals_the_uav_trigger_at_its_own_cell(monkeypatch):
+    """FREE_CELL_DOCKING = 0 (a5a496db): the berth trigger. fix3a A2 (shipped 1): the trigger measures to the
+    nearest free footprint cell (UAV._apply_return_to_base_free_cell) and so does the helper."""
+    monkeypatch.setattr(cfv, "FREE_CELL_DOCKING", 0, raising=False)
     model = _model()
     for uid in CELLS:
         agent = _uav(model, uid)
@@ -731,6 +734,18 @@ def test_trigger_helper_equals_the_uav_trigger_at_its_own_cell():
             agent.rtb_target_berth = None
             agent.rtb_target_depot = None
             assert agents.rtb_trigger_level_at(agent, cell) == agent._rtb_trigger_level(berth)
+
+
+def test_trigger_helper_equals_the_free_cell_trigger_at_its_own_cell(monkeypatch):
+    monkeypatch.setattr(cfv, "FREE_CELL_DOCKING", 1, raising=False)
+    model = _model()
+    for uid in CELLS:
+        agent = _uav(model, uid)
+        for cell in [(0, 0), (4, 45), (25, 25), (49, 49), (45, 4), (12, 37)]:
+            model.grid.move_agent(agent, cell)
+            depots = agent._free_cell_depots()
+            free_cell, _depot = agent._nearest_free_dock_cell(depots, agent._other_uav_cells())
+            assert agents.rtb_trigger_level_at(agent, cell) == agent._rtb_trigger_level(free_cell)
 
 
 def test_trigger_helper_is_pure():

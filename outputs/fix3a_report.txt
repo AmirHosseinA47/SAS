@@ -1,0 +1,359 @@
+================================================================================
+FIX3A - SESSION 3a: THE DEPOT AREA AND SCENARIO B - REPORT (PARTS 2 AND 3)
+                                                                         outputs/fix3a_report.txt
+================================================================================
+Branch fix3a (from main a5a496db, tag sysdebug-session2). Part 1: outputs/fix3a_part1.txt. Rulings and
+the Part 3 pre-registration with its three amendments: outputs/fix3a_part3_prereg.txt. Part 3 analysis:
+outputs/_fx3_p3_analysis.txt (outputs/_fx3_p3_analyze.py, read-only), invariants
+outputs/_fx3_p3_invariants_S.txt / _Z.txt, the B sections outputs/_fx3_p3_b.txt.
+
+ENVIRONMENT: sys.version = 3.10.11 (tags/v3.10.11:7d4cc5a, Apr  5 2023, 00:38:17) [MSC v.1929 64 bit
+(AMD64)]; mesa.__version__ = 1.2.1; interpreter E:\Projects\SAS\.venv\Scripts\python.exe. Every Part 3
+run records head a1373935, python 3.10.11, mesa 1.2.1, and source hashes equal to this tree (P3-0: 160
+probe runs, 0 differing).
+
+================================================================================
+VERDICT: STOP BEFORE MERGING - three pre-registered gates fail. Nothing is merged; the branch waits for
+the maintainer's ruling (section 6 lists the options).
+================================================================================
+  FAIL  AMENDMENT 1 (N) - runs that never finish, in an A1-containing arm: fx3S 1 (C/S 9610), fx3A1 1 (the
+        same run), fx3B3 1 (B/N 9671). Both causes are SEARCH TIME, not a livelock: the latched fire-waits
+        delay a detection past the horizon (C/S: victim_0 found at step 337; the pre-latch prototype found
+        it at 188 and finished at 232), and a search order that never brings a UAV within 8 of an edge
+        victim (B/N 9671, B3 alone).
+  FAIL  AMENDMENT 1 (O) - searcher two-cell alternations in every A1-containing arm: 1 to 6 episodes of
+        10-33 steps (fx3S 2, fx3S2 3, fx3A1 1, fx3B0 6, fx3B2 3, fx3B3 4, fx3B23 3). NONE is a depot pocket
+        (the pocket kind near a depot: 0 in every A1 arm, 9 at a5a496db). Mechanism: the searcher HAZARD
+        GATE's memoryless retreat against the ordinary search / sweep step (147 of 372 episode steps are
+        gate vetoes) - the veto-vs-planner livelock A1-R removed from the ROUTE, still present on the steps
+        the route does not own; one 25-step episode is the sweep and the route taking turns.
+  FAIL  P3-8 ROUTE_BLOCKED GATE - two NEW losses (D/east 606 4 -> 3, D/south 505 3 -> 2). Both are an ALIVE
+        victim still unassigned at the 240-step horizon where the a5a496db reference had finished every
+        victim (terminal 228 and 115): search timing again. 0 units latched, recoveries 7.
+  PASS  P3-1 identity (every new switch 0 == a5a496db: probe 16/16, harness 16/16, route_blocked 4/4);
+        A2's structural gates (0 docked or charged outside a footprint, 0 shared cells, 0 standoffs, longest
+        outside wait 4 -> 0); the A1 structural checks (0 depot-pocket oscillations, 0 head-on pairs, 0 sweep
+        targets in the edge band, 0 routed steps inside the clearance); scenario B four ways and its STOP rule
+        (B2 closes the gap 517 -> 0 with FEWER searcher returns; B3 never strands, never below LOW); session 1's
+        B checks; drone steps in fire; the yield rules; the invariants; the full test suite == {T5}.
+
+  WHAT THIS MEANS FOR THE PAPER (the headline): the depot pockets are fixed, but "the searchers no longer
+  livelock" is NOT yet a claim this branch can support. A1 removes the depot-pocket livelock (the three
+  never-finishing runs of a5a496db: two now finish, the third misses the horizon by search time), yet the
+  same controller pattern - a safety veto layered on a planner that cannot see it - still produces
+  10-33-step alternations on the search and sweep steps, and A1-R's cure for the route (wait instead of
+  oscillate) costs search time that shows up as late detections. Both are measurable, bounded, and present
+  (the gate episodes) at a5a496db too.
+
+================================================================================
+1. HOUSEKEEPING (as instructed)
+================================================================================
+  QUARANTINE: every recursive search of mine was scoped (src_extension/, tests/, named files, grep -r with
+    --exclude-dir=_firemech_rewound_20260914); one Grep-tool search rooted at the repo relied on ripgrep's
+    reading of .git/info/exclude, which lists /outputs/_firemech_rewound_20260914/ (so it was skipped) -
+    stated here because the rule asks for an explicit exclusion; later searches were path-scoped again.
+  TAG NAMES: every Part 3 tag checked unused before its wave (0 files on disk, 0 tracked paths for
+    fx3Z/S/S2/SZ2/A1/A2/B0/B2/B3/B23, fx3hZ/hS, fx3gZ/gS); the queue script refuses to overwrite.
+  WORKTREES: none used (one worktree, E:/Projects/SAS); the references ran on this tree at a5a496db in
+    Part 1.
+  SWITCHES: all seven fix3a switches ship ON and disable only on an exact zero (agents._fix2_switch);
+    BATTERY_SCENARIO (a marker, ships 0) enables only on an exact one - both pinned by tests.
+  AGENTS: 1 of 3 used (the Part 2 review, section 2.3). QUOTA: waves checked every 20-30 minutes.
+  SESSION 3b (belief gap, region targeting, target_regions): not touched.
+
+================================================================================
+2. PART 2 - WHAT WAS IMPLEMENTED (8497449a, then a1373935 after the review)
+================================================================================
+2.1 THE SWITCHES (common_fixed_variables.py; each item on its own switch, each ships 1)
+  A1-R SEARCHER_ROUTE_FIRE_FIELD   the escape / retarget route plans within its own near-field guard over
+                                   BURNING cells (K = 6, R-2); smoke impassable, no longer repelling (R-3);
+                                   after the review: the FIRE-MODE LATCH (2.3).
+  A1-S SEARCHER_SWEEP_IN_BOUNDS    a searcher's sector and every sweep target stay out of the 4-cell edge
+                                   band the edge filter forbids.
+  A1-D SEARCHER_CORNER_ESCAPE      the edge filter by penetration (a corner cell has an inward exit); the
+                                   pocket escape's BFS does not plan through another UAV.
+  A2   FREE_CELL_DOCKING           the return aims at the nearest free footprint cell by a UAV-avoiding
+                                   path, re-picks when it is taken or unreachable (after the review: any
+                                   depot; mechanism 1 too), docks on ANY footprint cell, charges only inside
+                                   a footprint (R-5).
+  B1   SCENARIO_B_TEAM             B = 4 UAV (2 trackers + 2 searchers) / 4 victims / 3 firefighters,
+                                   through one resolver (serve_dashboard.scenario_preset) read by
+                                   evaluate_scenarios, the harness, the probe, the dashboard, the rbgate
+                                   campaign and the validation matrix; BATTERY_SCENARIO = 1 marks B.
+  B2   SCENARIO_B_STAGGERED_LAUNCH  in the battery scenario: searchers 85 / 65, trackers 78 / 72, replacing
+                                   the 0.5 fraction (only while REDUCED_LAUNCH_BATTERY is on).
+  B3   SCENARIO_B_RETURN_DELAY     a searcher's return waits while the other searcher is away, never below
+                                   F(d) = 0.3 d + 32.30 (R-4), d measured to the cell the trigger aims at.
+  PAPER: each fix is separable - every result can be attributed to one switch (P3-11).
+
+2.2 WHAT HAPPENED TO THE OLD CODE (A2 on; everything kept for A2 = 0, as designed in Part 1 4.2)
+  Berths: kept as SPAWN cells (and for A2 = 0), no longer docking targets. The docking fallback and the
+  dock-fix recovery (_rtb_recovery_berth, DOCK_FIX 2): unreachable with A2 on - the path re-pick replaces
+  them (re-picks: 24-59 per arm, 0 boxed steps). Firefighter berths: unchanged (distinct spawn cells). The
+  global planner's rtb_trigger_level_at: measures to the nearest free footprint cell, as the UAV does.
+
+2.3 THE REVIEW (1 agent) AND AMENDMENT 3 (written before any Part 3 run)
+  DEFECT: A1-R as first written still cycled in a STATIC fire - only the steps inside the near field
+  planned with the clearance, and at distance 7 the unchanged planner stepped back to 6 and undid the BFS
+  detour. FIX: the fire-mode latch - once a burning cell is within 6 on a route, the route is planned only
+  by a BFS over a fixed admissible set until its target changes or is reached; no path -> a strictly-farther
+  retreat inside the near field, else a wait. Also fixed: the hold-off wait was a blind move; A2 re-pick
+  fallback to the other depot and for mechanism 1; B2's gating on REDUCED_LAUNCH_BATTERY and the fraction's
+  validation; the B readers outside the resolver; the evaluate header. 13 tests added (67 in
+  tests/test_fix3a.py); the driven route tests FAIL against the pre-latch executor.
+  PAPER: the latch was a NEW rule, not prototyped; Part 3 was its only validation - and Part 3 shows its
+  price (3.2 (W), section 5).
+
+2.4 TESTS
+  tests/test_fix3a.py 67 tests; revert check (outputs/_fx3_revert_check.txt): every switch forced to 0
+  fails its own tests (A1-R 9, A1-S 7, A1-D 6, A2 11, B1 3, B2 6, B3 6).
+  FULL SUITE at a1373935 (outputs/_fx3_fullsuite_final.log): 1466 passed, 2 failed -
+    tests/test_uav_sector_assignment.py::test_fire_tracker_uavs_receive_different_target_sets   (T5)
+    tests/test_global_role_planner.py::test_trigger_helper_equals_the_uav_trigger_at_its_own_cell
+  The second is a STALE TEST I missed in Part 2: it pinned the helper to the BERTH trigger, which A2
+  replaces by design (Part 1 4.2 specified the helper's A2 behaviour). Updated (uncommitted at the suite
+  run, committed with this report): the berth equality is pinned at FREE_CELL_DOCKING = 0 and a new test
+  pins the free-cell equality at 1 - 3 passed. Failing NAME SET after the update: {T5}  PASS.
+  PAPER: none (a test pinning the replaced behaviour).
+
+================================================================================
+3. PART 3 RESULTS (200 runs at a1373935, 0 FAIL in the pool; 360 steps; PRE = before the terminal step)
+================================================================================
+Arms: fx3Z (every new switch 0) / fx3S (shipped) on the 16 fx3v configurations; fx3SZ2 / fx3S2 on the
+second set (seeds 9621-9636); fx3A1 (A1 only), fx3A2 (A2 only); fx3B0 / B2 / B3 / B23 (scenario B, B1 + A1 +
+A2 on, (B2, B3) = (0,0) / (1,0) / (0,1) / (1,1), 16 runs each); harness fx3hZ / fx3hS (fix2's 16 canonical
+tuples); route_blocked fx3gZ / fx3gS (4 shards, 240 steps, D). All 16-run arms are SCREENS for outcomes.
+
+3.1 P3-1 EVERY NEW SWITCH 0 == a5a496db   PASS
+  (a) probe fx3Z vs fx3v: 16/16 identical on every behavioural field and every mf2 section;
+  (b) harness fx3hZ vs fx3hR: 16/16; (c) route_blocked fx3gZ vs fx3gR: 4/4 shards.
+  PAPER: every earlier result stays reproducible with the fix3a switches at 0.
+
+3.2 AMENDMENT 1 - (N) (O) (W), EVERY ARM (the gate binds the A1-containing arms)
+  arm      (N) never finish       (O) episodes FULL/PRE, longest | near a depot | (W) fire-waits, longest,
+                                                                                  overlapping a victim that
+                                                                                  later dies / goes undetected
+  fx3Z     3 [A/N B/E C/S]  rep.   27 / 12, 119 | 9            0
+  fx3SZ2   0                rep.   14 / 2, 124  | 2            0
+  fx3A2    2 [B/W C/S]      rep.   22 / 11, 119 | 6            0
+  fx3S     1 [C/S]          FAIL    2 / 1,  33  | 0   FAIL   140 episodes, longest 89, 31 / 4
+  fx3S2    0                PASS    3 / 1,  13  | 0   FAIL   106, longest 32, 14 / 5
+  fx3A1    1 [C/S]          FAIL    1 / 0,  10  | 0   FAIL   140, longest 89, 29 / 13
+  fx3B0    0                PASS    6 / 4,  25  | 0   FAIL   116, longest 68, 30 / 13
+  fx3B2    0                PASS    3 / 1,  33  | 0   FAIL   144, longest 64, 17 / 2
+  fx3B3    1 [B/N 9671]     FAIL    4 / 2,  33  | 0   FAIL   108, longest 68, 28 / 15
+  fx3B23   0                PASS    3 / 1,  33  | 0   FAIL   144, longest 64, 17 / 2
+  (W) counts EPISODES that overlap at least one such victim; an overlap is not a cause (a waiting searcher
+  is often far from the victim). The episode lists are in outputs/_fx3_p3_analysis.txt.
+  THE NAMED CASES (P3-2 e): A/N 9601 now finishes (terminal 323, no oscillation episode; its ~100-step SE
+  depot oscillation is gone); B/E 9607 finishes (88); C/S 9610 does NOT (section 5.1).
+  THE PRE-LATCH PROTOTYPE on the same 16 configurations (A1 alone, fx3pA1): (O) 3 episodes of 11-12 steps
+  (Part 1 counted only the depot-pocket kind, which was 0), fire-waits 66 episodes, longest 39, C/S finished
+  at 232. The latched A1 (fx3A1): (O) 1 episode, fire-waits 140, longest 89, C/S unfinished.
+  PAPER: see section 5.4 - the latch removed the route's cycle and doubled the waiting.
+
+3.3 P3-2 A1 - THE DEPOT POCKETS   structural checks PASS
+  searcher depot-pocket UAV-steps PRE (FULL), Z -> S: A 61 (61) -> 0 (0); B 148 (248) -> 0 (75, after the
+  terminal step); C 71 (71) -> 0 (0); D 0 (282) -> 0 (0) - total PRE 280 -> 0 (prediction <= ~30, all
+  fire-waits). Second set SZ2 -> S2: A 31 (155) -> 0; B 0 -> 11 (11); C 0 (143) -> 0; D 0 -> 0. A1 alone:
+  A 61 -> 15 (fire-waits). Tracker pockets move with the trajectories (C 18 -> 12 PRE; S2 B 0 -> 58 FULL,
+  after the terminal step), not predicted either way.
+  Pocket-kind oscillations near a depot: 0 in every A1 arm (Z 9, SZ2 2, A2 6). Head-on searcher pairs: 0
+  (Z 1). Sweep targets in the edge band: 0 of 1364-2476 per A1 arm (Z 1128 of 1139). Routed steps within
+  6 of fire that went closer than the clearance: 0 (Z 125 of 1017).
+  PAPER: finding 1 (ruled) CONFIRMED - with the controller fixed, no searcher pockets on a depot in any
+  arm, burnable (Part 1) or fireproof; the pockets were a controller defect, not a depot effect.
+
+3.4 P3-3 A2 - FREE-CELL DOCKING   PASS
+  every arm: docked outside a footprint 0, charged outside 0, two UAVs on one cell 0. Standoffs 1 -> 0
+  (Z -> S), longest stationary wait one cell outside a depot 4 -> 0, open legs not cut by the horizon 0,
+  boxed steps 0, re-picks 24-59 per arm, minimum arrival 37.0-38.6 (B3 alone: 31.7). Dock cells: almost all
+  footprint EDGE cells (S 75 of 76) - the first cell reached. The return-leg livelock gate: 10-frame
+  oscillations 0, 10-frame progress stalls 0; "cycles" 2-3 per A2 arm (prediction 0) - each is ONE
+  one-cell back-step (a re-pick next to a depot, e.g. (4, 25) -> (5, 25)) inside a leg that then completes
+  in 16-45 steps; B23 B/N 9661 has two at the grid edge. Not a livelock; reported against the prediction.
+  PAPER: "docked" now means inside a depot and charging is tied to position - the recharge model the
+  paper describes is now the one the code runs; the doorstep standoffs of earlier rounds are gone.
+
+3.5 P3-4 SCENARIO B, FOUR WAYS (B1, A1, A2 on in all; outputs/_fx3_p3_b.txt)   STOP RULE PASS
+  arm   no-searcher gap PRE/FULL  searcher flying PRE/FULL  returns/UAV T | S        B3 fired         lowest
+                                                                                                    return
+  B0    517 / 811                  4504 / 9224              2.00 | 2.00             0                37.3
+  B2      0 / 1                    3862 / 9722              2.00 | 1.62 (12x1,20x2) 0                37.8
+  B3    237 / 316                  4932 / 9083              2.00 | 2.00             450 UAV-steps,   31.7
+                                                                                    29 episodes,
+                                                                                    16 of 16 runs
+  B23     0 / 0                    3862 / 9724              2.00 | 1.59 (13x1,19x2) 2 UAV-steps,     37.8
+                                                                                    2 of 16 runs
+  THE STOP RULE, B23 vs B0 on the common pre-terminal window: gap closed G = 462, searcher flying time
+  LOST C = -265 (B23 flies MORE) -> C <= G, PASS (FULL: G 811, C -500). B3 never strands a drone: 0
+  strandings, every leg that did not arrive was started within its distance of the horizon (late), the
+  lowest arrival after a delay 31.7 > LOW 30. One B3 delay was logged at the floor to probe precision
+  (level 38.6, floor 38.6 - the probe rounds to 3 decimals; the rule is strict, the battery exceeded the
+  floor by float noise). Outcomes (screen): B0 54/10/0, B2 57/7/0, B3 55/8/1, B23 57/7/0 (rescued / dead /
+  never detected); runs with no terminal step: B3 1, others 0.
+  PAPER: finding 3 (ruled) CONFIRMED on 16 runs - B2 is the first launch stagger in this project that
+  closes the no-searcher gap (517 -> 0 PRE) WITHOUT extra returns: trackers keep 2.00 returns, searchers
+  drop to 1.62. Finding 4 (ruled) CONFIRMED - B3 is a safety net: on top of B2 it fired 2 UAV-steps in 2
+  of 16 runs; alone it fires in every run (450 UAV-steps) and closes about half of B0's gap (G 251).
+
+3.6 P3-5 SESSION 1's B CHECKS, THE NEW TEAM   PASS
+  battery after step 1: B0 49.7 for all; B23 84.7 / 64.7 (searchers), 77.7 / 71.7 (trackers). Returns:
+  B0 first returns from step 19 (level about 44.5), second returns 214-337; B23 first returns from step 53
+  (searchers) / 74 (trackers), second returns 274-358. Every trip arrives except legs started within their distance of the horizon (B0 1, B23 6).
+  Minimum in-flight battery 37.3 / 37.8; LOW / CRITICAL instances 0; battery fail-safe reasons 0;
+  emergency steps 0.
+  PAPER: scenario B is now a battery scenario in which the battery binds (two returns per UAV, staggered)
+  without any UAV reaching LOW.
+
+3.7 P3-6 DRONE STEPS IN FIRE   PASS (bounds searcher +1.0, all-UAV +0.5 points)
+  Z -> S: in fire searcher 0.41% -> 0.34%, all-UAV 0.44% -> 0.36%; smoke searcher 0.32% -> 0.47%.
+  SZ2 -> S2: fire +0.06 / +0.06; smoke searcher 0.20% -> 0.05%. A1 alone: fire -0.03 / -0.06; A2 alone:
+  -0.10 / -0.03.
+  PAPER: planning within the guard does not buy safety at the price of exposure - drone time on burning
+  cells is flat to lower; the searchers approach smoke a little more (smoke no longer repels) and never
+  enter it on a routed step.
+
+3.8 P3-7 THE SYSDEBUG PART-5 INVARIANTS (outputs/_sd_analyze.py unchanged; S = fx3S + fx3S2, 32 runs)
+  PASS - no hard invariant fails (no agent off grid, counts add up, statuses in vocabulary, no revert, no
+  rescue without contact, no UAV at battery 0, no depot cell burns, 0 diagnostic failure tags, staying
+  UAVs' cells unchanged). Episode classes, S vs Z (Z = fx3Z + fx3SZ2): I2_uav_livelock 12 in 11 runs vs 36 in
+  16 (down); I2_uav_stuck 14 in 10 runs vs 5 in 2 (UP - the fire-waits, 3.2 / 5.1); I1_dead_ff_on_grid 5
+  runs vs 2 (a pre-existing class: a dead firefighter's marker; firefighter deaths 6 vs 2, partly B's third
+  firefighter); I2_ff_livelock_approach 3 vs 2, I2_ff_no_progress_approach 1 vs 1 (firefighter classes
+  recorded since sysdebug; fix3a changes no firefighter code); I5_double_binding 2 vs 2 (the same D/W and
+  A/W victims); I6_rtb_leg_open_at_end 3 - all started within their distance of the horizon (triggered at
+  332 / 341 / 360, distances 41 / 31 / >= 11). No NEW UAV episode kind.
+  PAPER: no invariant the earlier rounds established is broken; the stuck-UAV count rises with the
+  deliberate waits.
+
+3.9 P3-8 ROUTE_BLOCKED GATE (fx3gS vs fx3gR, 18 seeds, 240 steps, D)   FAIL
+  shard a east 16 -> 16; b east 14 -> 14 (loss 606 4 -> 3, gain 707 3 -> 4 - 707 is a known loss seed);
+  c east 15 -> 15; s south 14 -> 13 (loss 505 3 -> 2). POOLED 59 -> 58, NEW losses 606 and 505, recoveries 7
+  (> 0), latched 0 at the end.
+  Both losses: one ALIVE victim still a candidate (unassigned) at step 240, never_detected 0, no death, no
+  firefighter death; the reference finished every victim (terminal 228 and 115). fx3gZ == fx3gR, so the
+  change is fix3a's.
+  PAPER: the route_blocked latch stays closed (0 latched); the two losses are search timing on a 240-step
+  horizon, the same mechanism as (N) - see section 5.
+
+3.10 P3-10 THE SESSION-2 YIELD RULES   PASS
+  violations 0 in Z, S, S2, B23; > 3 in a row 0; stays that moved 0 (S: 1205 stays - the waits).
+
+3.11 P3-11 EACH ITEM ALONE vs fx3Z
+  A1: the first differing row is a searcher route / escape row in all 16 configurations (steps 1-92).
+  A2: a return-leg row at the first return (B: step 19; A, C, D: steps 159-181; tracker or searcher).
+  B1 / B2 / B3: by construction (the B team in params; the step-1 batteries 84.7 / 64.7 / 77.7 / 71.7;
+  B3's delays logged at a searcher's trigger).
+  PAPER: each effect is attributable to its own switch.
+
+3.12 HARNESS fx3hS (shipped) vs fx3hR (a5a496db), fix2's 16 canonical tuples, 360 steps - reported, a
+  screen (outputs/_fx3_hs_compare.py; the pool finished 200/200, 0 FAIL)
+  rescued / dead / never detected / candidate / ff deaths: R 49/11/0/2/4, S 51/11/0/2/5; no terminal step
+  R 1, S 1 (the same tuple, D/south/half/404: two alive candidates at 360 at a5a496db too). The +2 rescued
+  is B/north/9502 (B1's 4 victims against the legacy 2 - not comparable). The other 15 tuples: identical
+  outcomes; terminal steps equal except D/south/half/303 115 -> 139, D/south/half/505 115 -> 266,
+  D/east/half/404 290 -> 291.
+  PAPER: D/south/505 is the route_blocked gate's new loss: it finishes at 266 in a 360-step run and so
+  loses a rescue at 240 - the timing mechanism of 3.9 / 5.3, measured directly.
+
+3.13 OUTCOMES (never gated; 16-run screens)  rescued / dead / never detected, no terminal, ff deaths
+  fx3Z 45/8/2 nt 3 ffd 1 | fx3S 52/11/0 nt 1 ffd 4 | fx3SZ2 50/6/0 nt 0 | fx3S2 59/5/0 nt 0 ffd 2 |
+  fx3A1 46/9/0 nt 1 | fx3A2 46/8/1 nt 2 | B0 54/10/0 | B2 57/7/0 | B3 55/8/1 nt 1 | B23 57/7/0.
+  (S's B runs have B1's 4 victims where Z's have 2 - the S vs Z totals are not a like-for-like comparison.)
+  PAPER: no outcome claim from these screens (the canonical-13 lesson: a screen is not evidence).
+
+================================================================================
+4. THE LESSON (ruled) AND WHAT PART 3 ADDS TO IT
+================================================================================
+  RULED: session 2's D-7 condition for 3b checked victim deaths and exposure but not livelock or unfinished
+  runs - which is how 3b(ii) merged with 3 runs that never finish. EVERY MOVEMENT FIX FROM HERE IS GATED
+  ON (N) AND (O) AS WELL.
+  ADDED BY THIS ROUND: (i) the gate caught exactly what it was written for - a movement fix that looked
+  clean on its own structural checks (0 pockets, 0 clearance violations) still fails (O) and (N); without
+  amendment 1 this branch would have merged. (ii) (N) is sensitive to SEARCH TIME as well as livelock: a
+  run can miss its terminal step because a detection came late; the gate cannot tell the two apart - the
+  cause has to be read per run (section 5). (iii) The broad (O) measure was never applied to the
+  prototypes in Part 1: its "0" was the depot-pocket kind. A prototype screen must measure the gate it
+  will be judged by.
+
+================================================================================
+5. THE STOP - DIAGNOSIS OF EACH FAILING GATE
+================================================================================
+5.1 (N) C/S 9610 (fx3S and fx3A1, the same run). victim_0 at (46, 30) is detected at step 337 (a5a496db
+  344, the pre-latch prototype 188). Searcher 2503 spends steps ~90-185 in latched fire-waits and retreats
+  around x 16-21 while its route target lies beyond the fire; in the prototype it had crossed east by
+  step 180. The firefighter is en route at step 360, 21 cells away. CAUSE: the latch's wait - it holds the
+  route's target instead of giving it up; the searcher is safe and not oscillating, but not searching.
+  (N) B/N 9671 (fx3B3 only): victim_0 moves to the grid edge ((49, 20)) and no UAV comes within the
+  observation radius 8 in 360 steps (B0 found it at 222, B2 / B23 at 57). CAUSE: search order in the arm
+  with B3 alone; not a livelock. A1-S does not create a coverage hole: from the band's inner lane (x = 45)
+  the observation radius reaches x = 49.
+5.2 (O) 22 episodes over the seven A1 arms (several are the same seed in B0 / B2 / B3 / B23). Steps by
+  owner: gate vetoes 147, ordinary (unvetoed) search / sweep steps 154, route steps 55, yield steps 16. MECHANISM: an ordinary (not routed) search or sweep step toward a target approaches a hazard
+  inside the near field; the searcher hazard gate replaces it with its memoryless retreat; next step the
+  unchanged target draws the searcher back. At the edge band (B/W 9608, 33 steps, in all four B arms) the
+  retreat steps into the band and the edge filter sends it back. One 25-step episode (B0 B/E 9673) has no
+  gate veto: the sweep step and the route alternate. The same shape as class R in Part 1 - a veto layered
+  on a planner that cannot see it - on the path A1-R does not own.
+5.3 P3-8: section 3.9 - two late-unassigned victims at 240 steps.
+5.4 THE COST OF THE LATCH: fire-waits 66 -> 140 episodes and longest 39 -> 89 (A1 alone vs its pre-latch
+  prototype, same configurations); episodes overlapping a victim that later dies: 29 in fx3A1. The latch
+  bought what it was for (the route no longer cycles; (O) 3 -> 1 on those configurations) with waiting.
+  PAPER: "livelock-free" is not "cost-free": a controller that waits instead of oscillating keeps the
+  drone safe and the run analysable, but the waiting is search time lost, and it shows in detection times.
+
+================================================================================
+6. OPTIONS FOR THE RULING (nothing below is implemented; each would need Part 1-style design + screen)
+================================================================================
+  (a) ONE OWNER FOR NEAR-FIRE STEERING: when the searcher hazard gate would veto an ordinary search /
+      sweep step, hand the step to the latched fire-mode route toward the same target instead of the
+      memoryless retreat (A1-R's rule, extended to the steps it does not own). Targets 5.2.
+  (b) A BOUNDED WAIT: a latched route with no admissible path for W steps gives up its target (the planner
+      retargets, the target is marked unreachable for a while) instead of waiting until the fire moves.
+      Targets 5.1 and 5.4. W would be pre-registered from the (W) distribution (median / longest).
+  (c) SHIP WHAT PASSES, HOLD WHAT FAILS: A2 and B (B1, B2, B3) pass every gate that concerns them; A1's
+      structural goal (no depot pockets) is met but its (N) / (O) gate is not. Shipping A2 + B with A1 at 0
+      keeps a5a496db's never-finishing runs (fx3A2: 2 of 16) - so this would also need the ruling on
+      whether (N) binds an arm without A1.
+  (d) RE-READ THE GATE: rule whether (N) should exclude runs whose only unresolved victim was detected
+      (search timing) - I recommend AGAINST changing the gate after the runs; (a) + (b) address the cause.
+  MY RECOMMENDATION: (a) + (b) as one round on the same Part 3 sample, the (N) / (O) gate unchanged, with
+  (W) given a pre-registered bound this time; B and A2 stay on the branch unchanged meanwhile.
+
+================================================================================
+7. PAPER FINDINGS (ruled, with their Part 3 status) AND NEW ONES
+================================================================================
+  1. The depot pockets were a CONTROLLER defect, not a depot effect: a safety veto layered on a route
+     planner that could not see it produced a livelock; burnable depots still showed it.   CONFIRMED -
+     0 depot-pocket oscillations in every A1 arm (both seed sets, B's four arms); searcher pocket steps PRE
+     280 -> 0.
+  2. Every result at the session-2 defaults (a5a496db) includes 3 runs that never finish and must not be
+     used.   RE-CONFIRMED - fx3Z reproduces a5a496db exactly (16/16) with the same 3 (A/N, B/E, C/S).
+  3. B2 is the first launch stagger in this project that closes the no-searcher gap without extra returns.
+     CONFIRMED on 16 runs - 517 -> 0 PRE; returns: trackers 2.00 -> 2.00, searchers 2.00 -> 1.62.
+  4. B3 is a safety net: it did not fire on top of B2.   CONFIRMED with a number - on top of B2 it fired
+     2 UAV-steps in 2 of 16 runs; alone, 450 UAV-steps in 16 of 16, never below LOW.
+  NEW (for the maintainer to rule on):
+  5. The near-field veto-vs-planner livelock is not confined to the escape route: the searcher hazard gate
+     produces 10-33-step two-cell alternations on ordinary search and sweep steps, at a5a496db and after
+     fix3a. A "livelock-free searcher" claim must count them.
+  6. Waiting instead of oscillating trades a livelock for search time: the latched route's fire-waits
+     doubled against its prototype and, in one run, pushed a detection past the horizon.
+  7. With free-cell docking, docking and charging are positional (inside a depot footprint), which the
+     berth code never enforced; the doorstep standoffs of earlier rounds do not occur (0 in the 710 return
+     legs of the seven A2 arms).
+
+================================================================================
+8. FILES
+================================================================================
+  code (a1373935): agents.py, src_extension/execution/uav_executor.py, common_fixed_variables.py,
+    serve_dashboard.py, evaluate_scenarios.py, wildfire_model.py; tests/test_fix3a.py (67) and the updated
+    test_base_station / test_launch_battery / test_role_split_rule / test_victim_searcher_offgrid_guard /
+    victim_searcher_scenario_validation / test_global_role_planner (the stale trigger test, this commit).
+  pre-registration: outputs/fix3a_part3_prereg.txt (rulings, amendments 1-3).
+  Part 3: outputs/_fx3_q_p3all.jsonl (200 runs), outputs/_fx3_pool_p3.log, outputs/_sd_fx3*_*.json,
+    outputs/_ffr_fx3h*_*.json, outputs/_rblatch_camp2_fx3g*_D_*.json; analysis outputs/_fx3_p3_analysis.txt,
+    outputs/_fx3_p3_b.txt, outputs/_fx3_p3_invariants_S.txt / _Z.txt; full suite
+    outputs/_fx3_fullsuite_final.log (head in outputs/_fx3_fullsuite_final.head); the routing test subset
+    outputs/_fx3_routetests.log.
