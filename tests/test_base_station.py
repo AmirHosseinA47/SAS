@@ -15,9 +15,19 @@ import os
 
 os.environ.setdefault("MPLBACKEND", "Agg")
 
+import pytest
+
 import agents
 import common_fixed_variables as cfv
 from common_fixed_variables import FIRE_COLORS, SMOKE_COLORS, VEGETATION_COLORS
+
+
+@pytest.fixture(autouse=True)
+def _berth_docking(monkeypatch):
+    """fix3a A2: FREE_CELL_DOCKING ships 1 and replaces berth docking. This module tests the BERTH code -
+    kept, unchanged, as the FREE_CELL_DOCKING = 0 path (and the recharge that path gates on rtb_docked
+    alone) - so every test here runs with the switch at 0. Free-cell docking: tests/test_fix3a.py."""
+    monkeypatch.setattr(cfv, "FREE_CELL_DOCKING", 0, raising=False)
 
 
 # --- configuration plumbing ---------------------------------------------------
@@ -1218,17 +1228,24 @@ def test_the_terminator_never_docks_outside_the_depot(monkeypatch) -> None:
 
 
 def test_recharge_still_has_no_positional_test() -> None:
-    """The premise of the test above, pinned so it cannot rot silently.
+    """The premise of the test above, pinned so it cannot rot silently - FOR THE BERTH PATH.
 
-    If a positional test is ever added to _update_battery_after_step, the
-    doorstep-dock alternative becomes safe and section 5b of
-    outputs/dockfix_part1.txt should be revisited.
+    fix3a A2 added the positional test (UAV._charge_position_ok), gated on FREE_CELL_DOCKING: with the
+    switch at 0 (this module) the recharge is gated on rtb_docked alone, exactly as the dock-fix round
+    left it, so the doorstep-dock alternative is still unsafe on the berth path. The positional guard
+    itself is pinned in tests/test_fix3a.py (test_a_uav_never_charges_outside_a_footprint).
     """
     import inspect
     src = inspect.getsource(agents.UAV._update_battery_after_step)
     assert "rtb_docked" in src
-    assert "base_station_contains" not in src
     assert "rtb_berth" not in src
+    assert "_charge_position_ok" in src
+    guard = inspect.getsource(agents.UAV._charge_position_ok)
+    assert "free_cell_docking()" in guard and "base_station_contains" in guard
+    uav = agents.UAV.__new__(agents.UAV)
+    uav.model = None
+    uav.pos = (20, 20)
+    assert uav._charge_position_ok() is True      # switch 0: no positional test
 
 
 # --- dock-fix round: the mechanism-1 planner waypoint -------------------------

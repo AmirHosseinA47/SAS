@@ -34,6 +34,7 @@ from serve_dashboard import (
     _resolve_role_count_params,
     _resolve_seed,
     scenario_extra_params,
+    scenario_preset,
 )
 
 METRIC_KEYS = (
@@ -83,7 +84,9 @@ def batch_size_error(batch_size: int | None, steps: int) -> str | None:
 
 
 def _scenario_params(args: argparse.Namespace) -> dict:
-    preset = BUILTIN_SCENARIOS.get(args.scenario, {})
+    # fix3a B1: the preset through the one resolver (scenario B's team follows SCENARIO_B_TEAM; a
+    # runner that parses --set values first passes them as args.preset_overrides).
+    preset = scenario_preset(args.scenario, getattr(args, "preset_overrides", None))
     num_agents = int(args.uavs if args.uavs is not None else preset.get("NUM_AGENTS", 3))
     fire_trackers, victim_searchers = _resolve_role_count_params(
         num_agents,

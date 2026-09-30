@@ -126,9 +126,10 @@ def test_resource_model_labels_come_from_the_same_source(level, label) -> None:
 def test_only_scenario_b_reduces_the_launch_fraction() -> None:
     """Every scenario states its fraction (A, C, D 1.0), so an in-process run of A after B
     cannot inherit B's 0.5 through the never-reset module globals (review, risk 4)."""
-    assert scenario_extra_params("B") == {"UAV_LAUNCH_BATTERY_FRACTION": 0.5}
+    # fix3a B1: every preset also states the battery-scenario marker (B 1, the rest 0), for the same reason.
+    assert scenario_extra_params("B") == {"UAV_LAUNCH_BATTERY_FRACTION": 0.5, "BATTERY_SCENARIO": 1}
     for key in ("A", "C", "D", "nope"):
-        assert scenario_extra_params(key) == {"UAV_LAUNCH_BATTERY_FRACTION": 1.0}
+        assert scenario_extra_params(key) == {"UAV_LAUNCH_BATTERY_FRACTION": 1.0, "BATTERY_SCENARIO": 0}
     assert "Battery-Constrained" in BUILTIN_SCENARIOS["B"]["label"]
 
 

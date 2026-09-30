@@ -155,6 +155,35 @@ SEARCHER_WIND_COVERAGE_FIX = 1
 # within 6 cells of a strict fire/smoke cell (it was a global repulsion on every gated step), and
 # the gate-bypassing pathfinding route gets the same near-field rule. agents.searcher_gate_near_field.
 SEARCHER_GATE_NEAR_FIELD = 1
+
+# ---- fix3a (session 3a): the depot area and scenario B (outputs/fix3a_part1.txt; rulings R-1..R-5 in
+# outputs/fix3a_part3_prereg.txt). Every switch SHIPS 1; only an exact integral 0 turns one off; all of
+# them at 0 is a5a496db. ------------------------------------------------------------------------------------
+# A1-R. The searcher's pathfinding route plans WITHIN its near-field guard over BURNING cells (smoke is
+# impassable, not repelling), with the clearance agents.SEARCHER_ROUTE_CLEARANCE (6); no admissible step ->
+# a step strictly away from the fire, else a wait. Replaces fix2 3b(ii)'s veto, which livelocked the
+# searcher at the depots (3 never-finishing runs). agents.searcher_route_fire_field.
+SEARCHER_ROUTE_FIRE_FIELD = 1
+# A1-S. A victim searcher's sector (and its lawnmower sweep) excludes the edge band it may not enter
+# (edge distance < agents.SEARCHER_EDGE_BAND, 4). agents.searcher_sweep_in_bounds.
+SEARCHER_SWEEP_IN_BOUNDS = 1
+# A1-D. The searcher edge filter measures the band's penetration per axis (a corner cell has an exit), and
+# the pocket escape does not plan through another UAV. agents.searcher_corner_escape.
+SEARCHER_CORNER_ESCAPE = 1
+# A2. Free-cell docking: the nearest free depot-footprint cell by a UAV-avoiding path, re-picked when taken
+# or unreachable; docked = inside a footprint; charging only inside one. agents.free_cell_docking.
+FREE_CELL_DOCKING = 1
+# B1. Scenario B's team: 4 UAV (2T + 2S) / 4 victims / 3 FF (0: 3 / 2 / 2). agents.scenario_b_team.
+SCENARIO_B_TEAM = 1
+# B2. In the battery scenario, launch charges 85 / 65 (searchers), 78 / 72 (trackers) replace the 0.5
+# fraction. agents.scenario_b_staggered_launch.
+SCENARIO_B_STAGGERED_LAUNCH = 1
+# B3. In the battery scenario, a searcher's return waits while the other searcher is away, never below
+# the floor 0.3 d + 32.30 (agents.return_delay_floor). agents.scenario_b_return_delay.
+SCENARIO_B_RETURN_DELAY = 1
+# The battery-scenario MARKER (a run parameter, not a switch): B's preset sets 1, every other preset 0
+# (serve_dashboard.scenario_extra_params). agents.battery_scenario.
+BATTERY_SCENARIO = 0
 # The ONE battery threshold pair (fix1 item 2), read at call time through
 # agents.battery_low_threshold() / battery_critical_threshold() by every reader: the UAV
 # labels, both analyzers, the resource model, the global monitor, the dashboard alert and
@@ -173,10 +202,13 @@ BATTERY_CRITICAL_THRESHOLD = 15.0
 UAV_LAUNCH_BATTERY_FRACTION = 1.0
 REDUCED_LAUNCH_BATTERY = 1
 
-# Scenario B — Battery-Constrained (fix1 item 2)
-# 3 UAV / 2 victims / 2 FF, every UAV launching at HALF charge (UAV_LAUNCH_BATTERY_FRACTION
-# 0.5, set by the preset). Expected: an early in-flight return (steps ~19-23 at ~43 %) and
-# a second one (~215-246) per UAV, against one (~160-202) in A, C and D. It is NOT a
+# Scenario B — Battery-Constrained (fix1 item 2; the team and launch charges are fix3a B1 / B2)
+# SINCE fix3a: 4 UAV (2 trackers + 2 searchers) / 4 victims / 3 FF (SCENARIO_B_TEAM; 0 = the old 3 / 2 / 2),
+# launching at 85 / 65 (searchers) and 78 / 72 (trackers) (SCENARIO_B_STAGGERED_LAUNCH; 0 = every UAV at
+# HALF charge, UAV_LAUNCH_BATTERY_FRACTION 0.5, set by the preset), with the searcher return delay B3
+# (SCENARIO_B_RETURN_DELAY). The preset is serve_dashboard.BUILTIN_SCENARIOS["B"] through
+# serve_dashboard.scenario_preset. At 0.5 (the fix1 definition, 3 UAVs): an early in-flight return (steps
+# ~19-23 at ~43 %) and a second one (~215-246) per UAV, against one (~160-202) in A, C and D. It is NOT a
 # "fail-safe on low battery" scenario: no battery trigger fires at this setting.
 # DO NOT revive the old `BATTERY_CRITICAL_THRESHOLD = 50.0` of this block: every return
 # leg arrives at ~39 %, so every trip would raise CRITICAL_BATTERY and - with the

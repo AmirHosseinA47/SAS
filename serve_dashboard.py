@@ -39,8 +39,11 @@ BUILTIN_SCENARIOS = {
     # fix1 item 2: B is a real battery scenario - every UAV launches at half charge
     # (early in-flight return + a second return per UAV). Renamed from "Battery Fail-Safe":
     # no battery trigger fires at this setting (outputs/fix1_part1.txt section 2).
-    "B": {"label": "B - Battery-Constrained", "NUM_AGENTS": 3, "NUM_VICTIMS": 2, "NUM_FIREFIGHTERS": 2,
-          "UAV_LAUNCH_BATTERY_FRACTION": 0.5},
+    # fix3a B1: 4 UAV (2 trackers + 2 searchers) / 4 victims / 3 FF - the old 3 / 2 / 2 team when
+    # SCENARIO_B_TEAM is an exact 0 (read it through scenario_preset, never directly). BATTERY_SCENARIO
+    # marks the battery scenario for B2 (the launch charges replace the 0.5 fraction) and B3.
+    "B": {"label": "B - Battery-Constrained", "NUM_AGENTS": 4, "NUM_VICTIMS": 4, "NUM_FIREFIGHTERS": 3,
+          "UAV_LAUNCH_BATTERY_FRACTION": 0.5, "BATTERY_SCENARIO": 1},
     "C": {"label": "C - Large Operation", "NUM_AGENTS": 5, "NUM_VICTIMS": 3, "NUM_FIREFIGHTERS": 3},
     "D": {"label": "D - Rescue Priority", "NUM_AGENTS": 4, "NUM_VICTIMS": 4, "NUM_FIREFIGHTERS": 2},
 }
@@ -49,18 +52,42 @@ BUILTIN_SCENARIOS = {
 # model parameter the runners pass through apply_scenario_config.
 _PRESET_NON_PARAM_KEYS = frozenset({"label", "NUM_AGENTS", "NUM_VICTIMS", "NUM_FIREFIGHTERS"})
 
+# fix3a B1: scenario B's team before fix3a, restored when SCENARIO_B_TEAM is an exact 0.
+_LEGACY_SCENARIO_B_TEAM = {"NUM_AGENTS": 3, "NUM_VICTIMS": 2, "NUM_FIREFIGHTERS": 2}
+
+
+def _scenario_b_team_on(overrides=None) -> bool:
+    """SCENARIO_B_TEAM from a runner's --set overrides when it carries one (the harness and the probe
+    resolve the preset BEFORE apply_scenario_config), else from common_fixed_variables."""
+    if overrides and "SCENARIO_B_TEAM" in overrides:
+        value = am._exact_integer(overrides["SCENARIO_B_TEAM"])
+        return value is None or value != 0
+    return am.scenario_b_team()
+
+
+def scenario_preset(scenario: str, overrides=None) -> dict:
+    """The preset a runner uses for `scenario` - a copy of BUILTIN_SCENARIOS[scenario] with scenario B's
+    team resolved by SCENARIO_B_TEAM (fix3a B1): 4 / 4 / 3 (shipped) or the legacy 3 / 2 / 2 at an exact
+    0. `overrides` = the runner's --set values (they win over the module). Unknown keys -> {}. The ONE
+    place evaluate_scenarios, the harness, the probe and the dashboard resolve a preset's team."""
+    preset = dict(BUILTIN_SCENARIOS.get(str(scenario), {}) or {})
+    if str(scenario) == "B" and not _scenario_b_team_on(overrides):
+        preset.update(_LEGACY_SCENARIO_B_TEAM)
+    return preset
+
 
 def scenario_extra_params(scenario: str) -> dict:
-    """A preset's model parameters beyond the team counts (fix1 item 2).
+    """A preset's model parameters beyond the team counts (fix1 item 2; fix3a B1).
 
-    {"UAV_LAUNCH_BATTERY_FRACTION": 0.5} for B and 1.0 for A, C, D and unknown keys -
-    stated for EVERY scenario, because apply_scenario_config never resets a parameter:
-    a process that ran B and then A would otherwise run A at half charge. The ONE place
-    evaluate_scenarios, the harness and the dashboard read a preset's extra parameters
-    from, so a scenario cannot mean one thing to one runner and another to the next.
+    {"UAV_LAUNCH_BATTERY_FRACTION": 0.5, "BATTERY_SCENARIO": 1} for B and 1.0 / 0 for A, C, D
+    and unknown keys - stated for EVERY scenario, because apply_scenario_config never resets a
+    parameter: a process that ran B and then A would otherwise run A at half charge, or as the
+    battery scenario. The ONE place evaluate_scenarios, the harness and the dashboard read a
+    preset's extra parameters from, so a scenario cannot mean one thing to one runner and another
+    to the next.
     """
     preset = BUILTIN_SCENARIOS.get(str(scenario), {}) or {}
-    extra = {"UAV_LAUNCH_BATTERY_FRACTION": 1.0}
+    extra = {"UAV_LAUNCH_BATTERY_FRACTION": 1.0, "BATTERY_SCENARIO": 0}
     extra.update({k: v for k, v in preset.items() if k not in _PRESET_NON_PARAM_KEYS})
     return extra
 
@@ -69,10 +96,12 @@ def scenarios_payload() -> dict:
     """BUILTIN_SCENARIOS as the page receives them, each with its role split (fix1 item 3).
 
     The split is agents.default_role_split - the same function the model uses when no
-    split is given - so the page no longer computes n-1 / 1 itself.
+    split is given - so the page no longer computes n-1 / 1 itself. The team is the resolved
+    one (scenario_preset; fix3a B1).
     """
     out = {}
-    for key, preset in BUILTIN_SCENARIOS.items():
+    for key in BUILTIN_SCENARIOS:
+        preset = scenario_preset(key)
         entry = dict(preset)
         ft, vs = am.default_role_split(int(preset.get("NUM_AGENTS", 3)))
         entry["NUM_FIRE_TRACKERS"] = ft
@@ -535,6 +564,8 @@ def _start(cfg):
             NUM_VICTIM_SEARCHERS=num_victim_searchers,
             # fix1 item 2: the preset's launch charge (1.0 unless the page sent B's 0.5).
             UAV_LAUNCH_BATTERY_FRACTION=float(cfg.get("UAV_LAUNCH_BATTERY_FRACTION", 1.0)),
+            # fix3a B1: the battery-scenario marker (1 only when the page sent B's preset).
+            BATTERY_SCENARIO=1 if am._exact_integer(cfg.get("BATTERY_SCENARIO", 0)) == 1 else 0,
         )
         apply_scenario_config(cfv, wf, **params)
         try:
@@ -773,7 +804,7 @@ let W=50,H=50,cs=11.2,probMode=false,playing=false,timer=null,totalSteps=80,curF
 // that feature's kill switch, so 0 means draw no diamonds at all.
 let FOVR=8,VFR=0;
 // fix1 item 2: the selected preset's launch-charge fraction (B 0.5), sent with /start.
-let LAUNCHF=1;
+let LAUNCHF=1;let BSCEN=0;
 const cv=document.getElementById('map'),ctx=cv.getContext('2d');
 
 fetch('/scenarios').then(r=>r.json()).then(s=>{
@@ -788,13 +819,14 @@ function syncUavTotal(){
 ['firetrackers','victimsearchers'].forEach(id=>{
   document.getElementById(id).addEventListener('input',syncUavTotal);
 });
-function applyPreset(k,s){if(k==='custom'){LAUNCHF=1;return;}
+function applyPreset(k,s){if(k==='custom'){LAUNCHF=1;BSCEN=0;return;}
   const n=s[k].NUM_AGENTS||3;
   // fix1 item 3: the server's split (agents.default_role_split), n-1 / 1 only as a fallback.
   firetrackers.value=(s[k].NUM_FIRE_TRACKERS==null?Math.max(0,n-1):s[k].NUM_FIRE_TRACKERS);
   victimsearchers.value=(s[k].NUM_VICTIM_SEARCHERS==null?1:s[k].NUM_VICTIM_SEARCHERS);syncUavTotal();
   victims.value=s[k].NUM_VICTIMS;ffs.value=s[k].NUM_FIREFIGHTERS;
-  LAUNCHF=(s[k].UAV_LAUNCH_BATTERY_FRACTION==null?1:s[k].UAV_LAUNCH_BATTERY_FRACTION);}
+  LAUNCHF=(s[k].UAV_LAUNCH_BATTERY_FRACTION==null?1:s[k].UAV_LAUNCH_BATTERY_FRACTION);
+  BSCEN=(s[k].BATTERY_SCENARIO==null?0:s[k].BATTERY_SCENARIO);}
 
 document.getElementById('probtoggle').onclick=function(){probMode=!probMode;this.classList.toggle('on',probMode);
   this.textContent='Probability map: '+(probMode?'on':'off');if(curFrame){render(curFrame);setLegend();}};
@@ -805,7 +837,7 @@ document.getElementById('run').onclick=async function(){
   const cfg={NUM_AGENTS:+uavs.value,NUM_FIRE_TRACKERS:+firetrackers.value,NUM_VICTIM_SEARCHERS:+victimsearchers.value,
     NUM_VICTIMS:+victims.value,NUM_FIREFIGHTERS:+ffs.value,
     wind:wind.value,batch_size:+batch.value,steps:+steps.value,fire_spread:+spread.value,
-    UAV_LAUNCH_BATTERY_FRACTION:LAUNCHF};
+    UAV_LAUNCH_BATTERY_FRACTION:LAUNCHF,BATTERY_SCENARIO:BSCEN};
   const seedRaw=seed.value.trim();
   const randomize=document.getElementById('randseed').checked;
   if(!randomize && seedRaw!=='' && seedRaw.toLowerCase()!=='random'){

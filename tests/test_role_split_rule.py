@@ -114,14 +114,16 @@ def test_a_three_uav_team_is_identical_under_both_settings() -> None:
 def test_dashboard_presets_carry_the_rule() -> None:
     payload = scenarios_payload()
     got = {k: (v["NUM_FIRE_TRACKERS"], v["NUM_VICTIM_SEARCHERS"]) for k, v in payload.items()}
-    assert got == {"A": (2, 1), "B": (2, 1), "C": (3, 2), "D": (2, 2)}
+    # fix3a B1: B is a 4-UAV team (2 trackers + 2 searchers by the rule); 3 UAVs at SCENARIO_B_TEAM 0.
+    assert got == {"A": (2, 1), "B": (2, 2), "C": (3, 2), "D": (2, 2)}
     assert "NUM_FIRE_TRACKERS" not in BUILTIN_SCENARIOS["C"]  # the source dict is not mutated
 
 
 def test_dashboard_presets_follow_the_switch(monkeypatch) -> None:
     monkeypatch.setattr(cfv, "ROLE_SPLIT_HALF_RULE", 0)
     got = {k: (v["NUM_FIRE_TRACKERS"], v["NUM_VICTIM_SEARCHERS"]) for k, v in scenarios_payload().items()}
-    assert got == {"A": (2, 1), "B": (2, 1), "C": (4, 1), "D": (3, 1)}
+    # fix3a B1: B's 4-UAV team takes the legacy n-1 / 1 split with the rule off.
+    assert got == {"A": (2, 1), "B": (3, 1), "C": (4, 1), "D": (3, 1)}
 
 
 def test_evaluate_header_states_the_split(monkeypatch, capsys) -> None:

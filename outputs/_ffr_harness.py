@@ -154,7 +154,10 @@ def main() -> int:
             return 2
         k, v = item.split("=", 1)
         extra[k.strip()] = _parse_value(v)
-    preset = BUILTIN_SCENARIOS.get(args.scenario, {})
+    # fix3a B1: the preset through serve_dashboard.scenario_preset with this run's --set values (so
+    # --set SCENARIO_B_TEAM=0 reaches the team); BUILTIN_SCENARIOS on a checkout that predates it.
+    _preset_fn = getattr(_sd, "scenario_preset", None)
+    preset = _preset_fn(args.scenario, extra) if _preset_fn is not None else BUILTIN_SCENARIOS.get(args.scenario, {})
     num_agents = int(preset.get("NUM_AGENTS", 3))
     if args.roles == "half":
         # fix1 item 3: --roles half is the maintainer's rule (searchers max(1, n // 2))

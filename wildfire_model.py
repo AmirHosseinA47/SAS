@@ -225,16 +225,20 @@ class WildFireModel(mesa.Model):
         self._assign_depot_homes()
         # fix2 item 4: each UAV's L_i from its return rank (searchers spread over the battery
         # cycle); all 100 with STAGGERED_LAUNCH_BATTERY off. The one role mapping decides roles.
-        launch_bases = agents.staggered_launch_bases(
-            [self._uav_role_for_index(a, self.NUM_AGENTS) for a in range(self.NUM_AGENTS)]
-        )
+        launch_roles = [self._uav_role_for_index(a, self.NUM_AGENTS) for a in range(self.NUM_AGENTS)]
+        launch_bases = agents.staggered_launch_bases(launch_roles)
+        # fix3a B2: in the battery scenario the launch charges (searchers 85 / 65, trackers 78 / 72)
+        # REPLACE the fraction x L_i; None everywhere else, and then nothing below changes.
+        battery_scenario_charges = agents.battery_scenario_launch_charges(launch_roles)
         for a in range(0, self.NUM_AGENTS):
             aux_UAV = agents.UAV(self.unique_agents_id, self)
             aux_UAV.selected_dir = warmup_dirs[a % len(warmup_dirs)]
             # fix1 item 2: the launch charge, f x L_i - exactly the 100.0 / 'normal' that
             # UAV.__init__ set unless the scenario reduces it (scenario B: f = 0.5). Set
             # before _init_runtime_knowledge reads it into the managed state.
-            aux_UAV.battery_level = agents.uav_launch_battery(a, launch_bases[a])
+            aux_UAV.battery_level = (agents.uav_launch_battery(a, launch_bases[a])
+                                     if battery_scenario_charges is None
+                                     else float(battery_scenario_charges[a]))
             aux_UAV.battery_status = agents.battery_status_for(aux_UAV.battery_level)
             if self.base_station is not None:
                 # One dedicated berth per UAV PER DEPOT, used as the spawn cell at

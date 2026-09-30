@@ -164,7 +164,12 @@ def test_rung_one_and_rung_two_genuinely_differ(monkeypatch):
 def test_it_cannot_be_starved_where_the_margin_three_filter_is(monkeypatch):
     """At a corner _retreat_to_safe_interior_direction is structurally unable to
     return anything - all four directions are edge-blocked regardless of fire -
-    which is exactly why the guard may not reuse that filter."""
+    which is exactly why the guard may not reuse that filter.
+
+    fix3a A1-D (SEARCHER_CORNER_ESCAPE) removes exactly this corner trap (the band's penetration per
+    axis gives a corner cell its inward moves), so the trap is pinned here with the switch at 0 - the
+    min-over-axes filter the guard was designed against. The corner exit is tests/test_fix3a.py."""
+    monkeypatch.setattr(cfv, "SEARCHER_CORNER_ESCAPE", 0)
     ex, agent = _exec((0, 0))
     for direction in range(4):
         assert ex._victim_edge_blocked_direction(agent, direction)

@@ -347,6 +347,11 @@ class UAV(mesa.Agent):
         self.rtb_return_steps = 0
         self.rtb_charge_steps = 0
         self.rtb_log: list[dict] = []
+        # fix3a (reporting only; nothing reads them for behaviour): B3's delayed trigger steps, one
+        # record each, and A2's boxed return steps (no UAV-free path to any free depot cell).
+        self.rtb_delay_steps = 0
+        self.rtb_delay_log: list[dict] = []
+        self.rtb_boxed_steps = 0
         # Local monitoring (observe-only); monitor object is attached after runtime knowledge init.
         self.local_monitor = None
         self.latest_local_observation = None
@@ -385,7 +390,8 @@ class UAV(mesa.Agent):
         # raises battery_level. It is applied after the drain and before the
         # existing clamp, which already caps at 100, so a recharge that overshoots
         # is harmless. A docked UAV never moves, so the net rate is rate - 0.1.
-        if self.rtb_docked and base_station_mode() >= 3:
+        # fix3a A2: with FREE_CELL_DOCKING on, only inside a depot footprint (_charge_position_ok).
+        if self.rtb_docked and base_station_mode() >= 3 and self._charge_position_ok():
             self.battery_level += base_station_recharge_per_step()
             self.rtb_charge_steps += 1
         self.battery_level = max(0.0, min(100.0, float(self.battery_level)))
@@ -659,6 +665,14 @@ class UAV(mesa.Agent):
             return
         if self.rtb_berth is None or self.pos is None:
             return
+        # fix3a A2: free-cell docking owns every step of a UAV that is not docked; a docked UAV's
+        # release (below) is shared. Needs the depot footprints; without them (a stand-in model) the
+        # berth code runs, which is also exactly the FREE_CELL_DOCKING = 0 path.
+        if free_cell_docking() and not self.rtb_docked:
+            depots = self._free_cell_depots()
+            if depots:
+                self._apply_return_to_base_free_cell(depots)
+                return
         # While a trip is active the target is the LATCHED one; otherwise the
         # trigger is tested against the nearest berth from where the UAV is now.
         # With one depot both are rtb_berth and nothing here changes.
@@ -688,7 +702,12 @@ class UAV(mesa.Agent):
 
         here = (int(self.pos[0]), int(self.pos[1]))
         if not self.rtb_active:
-            if self.battery_level > self._rtb_trigger_level(berth):
+            level = self._rtb_trigger_level(berth)
+            if self.battery_level > level:
+                return
+            # fix3a B3: a searcher's return may wait while the other searcher is away (never past
+            # the floor). A no-op returning False, with no side effect, when the switch is off.
+            if self._return_delay_applies(berth, level, step):
                 return
             self.rtb_active = True
             self.rtb_trips += 1
@@ -821,6 +840,202 @@ class UAV(mesa.Agent):
         self.execution_direction_applied = True
         self.execution_action = "rtb_return"
         self.execution_stay = False  # fix2 item 2: a return leg always moves
+
+    # --- fix3a A2: free-cell docking; B3: the searcher return delay -------------------------------
+
+    def _free_cell_depots(self):
+        """The depot footprints ({"cells": ...} per depot, ascending bit order), or () without any."""
+        station = getattr(self.model, "base_station", None)
+        depots = station.get("depots") if isinstance(station, dict) else None
+        return tuple(depots) if depots else ()
+
+    def _other_uav_cells(self):
+        """The cells every OTHER UAV stands on right now (the live grid: earlier-ordered UAVs of this
+        advance sweep have already moved, exactly what move() will test)."""
+        cells = set()
+        schedule = getattr(self.model, "schedule", None)
+        for agent in (getattr(schedule, "agents", ()) or ()):
+            if type(agent) is UAV and agent is not self and agent.pos is not None:
+                cells.add((int(agent.pos[0]), int(agent.pos[1])))
+        return cells
+
+    def _nearest_free_dock_cell(self, depots, occupied):
+        """A2's trigger target: (cell, depot index) - the Manhattan-nearest footprint cell of any depot
+        with no other UAV on it (this UAV's own cell counts as free). Ties: (distance, the first step of
+        _rtb_direction toward it blocked by a UAV or the grid edge, depot index, x, y) - a pure function
+        of position and occupancy. None only if every footprint cell is taken (impossible at <= 25 UAVs
+        per depot)."""
+        here = (int(self.pos[0]), int(self.pos[1]))
+        best = None
+        for i, depot in enumerate(depots):
+            for cell in sorted(depot["cells"]):
+                if cell != here and cell in occupied:
+                    continue
+                blocked = 0
+                if cell != here:
+                    d = self._rtb_direction(cell, False)
+                    first = (here[0] + (1, 0, -1, 0)[d], here[1] + (0, -1, 0, 1)[d])
+                    blocked = int(bool(self.model.grid.out_of_bounds(first)) or first in occupied)
+                key = (abs(cell[0] - here[0]) + abs(cell[1] - here[1]), blocked, i, cell)
+                if best is None or key < best[0]:
+                    best = (key, cell, i)
+        return None if best is None else (best[1], best[2])
+
+    def _dock_path(self, targets, occupied):
+        """A2's steer: the shortest 4-neighbour path from here that avoids every other UAV's cell to ANY
+        cell of `targets` (a set of free footprint cells). Returns (cell, first direction, length) -
+        among the targets first reached at the minimum length the one nearest by Manhattan, then (x, y)
+        - or None when no such path exists. Here in `targets`: (here, None, 0). In a static field the
+        path length drops by one per move, the distance-monotone argument the berth code relied on,
+        with the detour the memoryless _rtb_direction could never take."""
+        here = (int(self.pos[0]), int(self.pos[1]))
+        if here in targets:
+            return (here, None, 0)
+        grid = self.model.grid
+        seen = {here}
+        first = {}
+        queue = deque([here])
+        found = []
+        level = 0
+        while queue and not found:
+            level += 1
+            for _ in range(len(queue)):
+                cell = queue.popleft()
+                for d in range(4):
+                    nxt = (cell[0] + (1, 0, -1, 0)[d], cell[1] + (0, -1, 0, 1)[d])
+                    if nxt in seen or grid.out_of_bounds(nxt) or nxt in occupied:
+                        continue
+                    seen.add(nxt)
+                    first[nxt] = d if cell == here else first[cell]
+                    if nxt in targets:
+                        found.append(nxt)
+                    queue.append(nxt)
+        if not found:
+            return None
+        best = min(found, key=lambda c: (abs(c[0] - here[0]) + abs(c[1] - here[1]), c[0], c[1]))
+        return (best, first[best], level)
+
+    def _apply_return_to_base_free_cell(self, depots) -> None:
+        """fix3a A2 (FREE_CELL_DOCKING): trigger, steer and dock for a UAV that is NOT docked; the release
+        of a docked UAV stays in _apply_return_to_base. See agents.free_cell_docking."""
+        step = int(getattr(self.model, "evaluation_timesteps_counter", 0))
+        here = (int(self.pos[0]), int(self.pos[1]))
+        occupied = self._other_uav_cells()
+        if not self.rtb_active:
+            pick = self._nearest_free_dock_cell(depots, occupied)
+            if pick is None:
+                return
+            cell, depot = pick
+            level = self._rtb_trigger_level(cell)
+            if self.battery_level > level:
+                return
+            if self._return_delay_applies(cell, level, step):
+                return
+            self.rtb_active = True
+            self.rtb_trips += 1
+            self.rtb_stall_steps = 0
+            self.rtb_recovery_cell = None
+            self.rtb_recovery_steered = None
+            # The LATCH (the field names are kept, so every reader - the waypoint fix, the harness -
+            # keeps working): the free cell this trip aims at, and its depot.
+            self.rtb_target_berth = cell
+            self.rtb_target_depot = depot
+            self.rtb_log.append({
+                "trigger_step": step,
+                "trigger_level": float(self.battery_level),
+                "trigger_distance": abs(here[0] - cell[0]) + abs(here[1] - cell[1]),
+                "target_depot": int(depot),
+                "target_berth": [int(cell[0]), int(cell[1])],
+                "home_depot": int(self.rtb_home_depot),
+                "arrival_step": None,
+                "arrival_level": None,
+                "dock_cell": None,
+                "released_step": None,
+                "released_level": None,
+                "repicks": 0,
+                "boxed_steps": 0,
+            })
+        # The stall witness is kept for reporting (the path steer does not need it).
+        if self.rtb_last_pos is not None and self.rtb_last_pos == here:
+            self.rtb_stall_steps += 1
+        else:
+            self.rtb_stall_steps = 0
+        # DOCKED MEANS INSIDE A FOOTPRINT: any footprint cell docks - it is free by construction, the
+        # move rule never puts two UAVs on one cell.
+        if self.model.base_station_contains(here):
+            self.rtb_docked = True
+            self.rtb_stall_steps = 0
+            self.rtb_recovery_cell = None
+            self.rtb_recovery_steered = None
+            self.execution_action = "rtb_docked"
+            if self.rtb_log:
+                self.rtb_log[-1]["arrival_step"] = step
+                self.rtb_log[-1]["arrival_level"] = float(self.battery_level)
+                self.rtb_log[-1]["dock_cell"] = here
+            return
+        self.rtb_return_steps += 1
+        if base_station_return_mechanism() != 2:
+            return
+        depot = 0 if self.rtb_target_depot is None else int(self.rtb_target_depot)
+        cells = depots[depot]["cells"] if depot < len(depots) else ()
+        free = {c for c in cells if c not in occupied}
+        target = self.rtb_target_berth
+        route = self._dock_path({target}, occupied) if target in free else None
+        if route is None:
+            # RE-PICK within the latched depot: the latched cell is taken, or no UAV-free path to it.
+            route = self._dock_path(free, occupied)
+            if route is not None:
+                self.rtb_target_berth = route[0]
+                if self.rtb_log:
+                    self.rtb_log[-1]["repicks"] = int(self.rtb_log[-1].get("repicks", 0)) + 1
+        self.rtb_last_pos = here
+        self.execution_action = "rtb_return"
+        self.execution_stay = False  # fix2 item 2: a return leg never stays
+        if route is None or route[1] is None:
+            # BOXED IN: no UAV-free path to any free cell of the depot. No move this step (the model's
+            # no-direction hold: nothing is refused, the monitor records no drift).
+            self.execution_direction_applied = False
+            self.rtb_boxed_steps += 1
+            if self.rtb_log:
+                self.rtb_log[-1]["boxed_steps"] = int(self.rtb_log[-1].get("boxed_steps", 0)) + 1
+            return
+        self.selected_dir = route[1]
+        self.execution_direction_applied = True
+
+    def _return_delay_applies(self, target, level, step) -> bool:
+        """fix3a B3 (SCENARIO_B_RETURN_DELAY, the battery scenario only). Called only when the return
+        would start now (battery <= the trigger `level`). True - and the step is logged - iff this UAV is
+        a victim searcher, at least one other victim searcher exists and EVERY other one is away
+        (rtb_active or rtb_docked), and the battery is above return_delay_floor(d), d the Manhattan
+        distance to `target` (the cell the trigger measured to). Never past the floor: once the battery
+        reaches it the return starts, and it arrives above LOW. False, with no side effect, otherwise."""
+        if not (scenario_b_return_delay() and battery_scenario()):
+            return False
+        if str(self.current_role or "") != "victim_searcher":
+            return False
+        schedule = getattr(self.model, "schedule", None)
+        others = [a for a in (getattr(schedule, "agents", ()) or ())
+                  if type(a) is UAV and a is not self and str(a.current_role or "") == "victim_searcher"]
+        if not others or not all(bool(a.rtb_active) or bool(a.rtb_docked) for a in others):
+            return False
+        distance = abs(int(self.pos[0]) - int(target[0])) + abs(int(self.pos[1]) - int(target[1]))
+        per_move = float(self.battery_drain_per_step) + float(self.battery_drain_per_move)
+        floor = return_delay_floor(per_move, distance)
+        if float(self.battery_level) <= floor:
+            return False
+        self.rtb_delay_steps += 1
+        self.rtb_delay_log.append({"step": int(step), "level": float(self.battery_level),
+                                   "trigger": float(level), "floor": float(floor), "distance": distance})
+        return True
+
+    def _charge_position_ok(self) -> bool:
+        """fix3a A2: with FREE_CELL_DOCKING on, a UAV charges only INSIDE a depot footprint (docking can
+        only happen there, so this is an invariant guard). Off: True - the a5a496db charge, gated on
+        rtb_docked alone."""
+        if not free_cell_docking():
+            return True
+        contains = getattr(self.model, "base_station_contains", None)
+        return bool(callable(contains) and self.pos is not None and contains(self.pos))
 
     def _stays_this_step(self) -> bool:
         """fix2 item 2: the committed stay applies - UAV_HOLD_STATIONARY on, and the UAV is not
@@ -1628,6 +1843,18 @@ def rtb_trigger_level_at(uav, cell) -> float:
     critical = battery_critical_threshold()
     if base_station_mode() < 2 or cell is None:
         return critical
+    # fix3a A2: with free-cell docking the trigger measures to the nearest FREE footprint cell of either
+    # depot (another UAV's cell is not free; the UAV's own cell is) - the same distance
+    # UAV._apply_return_to_base_free_cell uses. PURE: reads positions only.
+    depots = uav._free_cell_depots() if (free_cell_docking() and hasattr(uav, "_free_cell_depots")
+                                          and getattr(uav, "model", None) is not None) else ()
+    if depots:
+        occupied = uav._other_uav_cells()
+        x, y = int(cell[0]), int(cell[1])
+        dists = [abs(x - c[0]) + abs(y - c[1]) for depot in depots for c in depot["cells"] if c not in occupied]
+        if dists:
+            per_move = float(uav.battery_drain_per_step) + float(uav.battery_drain_per_move)
+            return max(uav_return_to_base_reserve(), per_move * min(dists) + base_station_return_margin())
     rtb_berth = getattr(uav, "rtb_berth", None)
     berths = getattr(uav, "rtb_berths", None) or ((rtb_berth,) if rtb_berth else ())
     x, y = int(cell[0]), int(cell[1])
@@ -1824,6 +2051,145 @@ def searcher_gate_near_field() -> bool:
     keeps its meaning. Off: the global, target-blind repulsion on every gated step (c08456b).
     """
     return _fix2_switch("SEARCHER_GATE_NEAR_FIELD")
+
+
+# --- fix3a (session 3a): the depot area and scenario B (outputs/fix3a_part1.txt, rulings in
+# outputs/fix3a_part3_prereg.txt). Every switch below SHIPS 1 and is off only on an EXACT integral zero
+# (the _fix2_switch rule); all of them at 0 is a5a496db. The constants are fixed design values, not run
+# parameters (apply_scenario_config / --set write only common_fixed_variables and wildfire_model). ----
+
+# A1-S / A1-D: the edge band a victim searcher may leave but not enter - edge distance < SEARCHER_EDGE_BAND,
+# i.e. the margin-3 edge filter of UAVExecutor._victim_edge_blocked_direction, + 1.
+SEARCHER_EDGE_BAND = 4
+# A1-R: the clearance the pathfinding route keeps from a burning cell inside the near field
+# (ruling R-2: K = 6 = SEARCHER_GATE_NEAR_RANGE, exactly the 3b(ii) veto's own "never closer while within 6").
+SEARCHER_ROUTE_CLEARANCE = SEARCHER_GATE_NEAR_RANGE
+
+
+def searcher_route_fire_field() -> bool:
+    """SEARCHER_ROUTE_FIRE_FIELD - fix3a A1-R. Shipped 1 (ruling R-1, R-2, R-3).
+
+    Read only at the shipped 3b setting (VICTIM_SEARCHER_HAZARD_RETREAT_RANGE >= 99 and
+    SEARCHER_GATE_NEAR_FIELD on). On: the searcher's pathfinding route measures its near field to
+    BURNING cells only (smoke stays impassable, it no longer repels at range) and, inside it, is PLANNED
+    within the clearance min(d0, SEARCHER_ROUTE_CLEARANCE) instead of being vetoed after planning; with no
+    admissible step it steps strictly away from the fire, else waits on its cell (a stay). Off: fix2
+    3b(ii) exactly - the veto that, layered on a planner that could not see it, livelocked.
+    """
+    return _fix2_switch("SEARCHER_ROUTE_FIRE_FIELD")
+
+
+def searcher_sweep_in_bounds() -> bool:
+    """SEARCHER_SWEEP_IN_BOUNDS - fix3a A1-S. Shipped 1 (ruling R-1).
+
+    On: a victim searcher's sector bounds exclude the edge band (edge distance < SEARCHER_EDGE_BAND) and
+    the lawnmower sweep state is clamped into them, so no sweep target lies where the edge filter can never
+    let the searcher arrive. Off: full-grid bounds; the sweep aims at the grid edge (the B/west loop).
+    """
+    return _fix2_switch("SEARCHER_SWEEP_IN_BOUNDS")
+
+
+def searcher_corner_escape() -> bool:
+    """SEARCHER_CORNER_ESCAPE - fix3a A1-D. Shipped 1 (ruling R-1).
+
+    On: (i) the searcher edge filter measures the band's PENETRATION per axis - inside the band a move
+    is legal iff it strictly reduces it (identical to the old filter everywhere but at corner cells, where
+    the old min-over-axes rule refused all four moves); (ii) the pocket escape treats another UAV's cell
+    as blocked. Off: the margin-3 min-over-axes filter; escapes plan through UAVs (the D/north pair).
+    """
+    return _fix2_switch("SEARCHER_CORNER_ESCAPE")
+
+
+def free_cell_docking() -> bool:
+    """FREE_CELL_DOCKING - fix3a A2 (the maintainer's decision). Shipped 1 (ruling R-5).
+
+    On: no berths for docking. The return trigger measures to the NEAREST FREE footprint cell of either
+    depot; the leg latches it, steers along a shortest path that avoids every other UAV and re-picks
+    (within the latched depot) when the cell is taken or unreachable; the UAV docks the moment it stands
+    on ANY footprint cell, and charges only while docked AND inside a footprint. Berths remain the spawn
+    cells. Off: the berth docking of a5a496db (fallback, dock-fix recovery) exactly.
+    """
+    return _fix2_switch("FREE_CELL_DOCKING")
+
+
+def scenario_b_team() -> bool:
+    """SCENARIO_B_TEAM - fix3a B1. Shipped 1 (ruling R-5). Read by serve_dashboard.scenario_preset.
+
+    On: scenario B is 4 UAVs (the half rule: 2 trackers + 2 searchers) / 4 victims / 3 firefighters.
+    Off: the 3 / 2 / 2 team of a5a496db.
+    """
+    return _fix2_switch("SCENARIO_B_TEAM")
+
+
+def battery_scenario() -> bool:
+    """BATTERY_SCENARIO - the MARKER of the battery-constrained scenario (fix3a B1): a run parameter, not a
+    switch. 1 only on an exact integral 1; B's preset states 1 and every other preset 0 (scenario_extra_
+    params states it for every preset, since apply_scenario_config never resets a parameter), so B2 and
+    B3 never read a scenario letter. Default 0: a bare WildFireModel() is not scenario B."""
+    return _exact_integer(getattr(cfv, "BATTERY_SCENARIO", 0)) == 1
+
+
+def scenario_b_staggered_launch() -> bool:
+    """SCENARIO_B_STAGGERED_LAUNCH - fix3a B2. Shipped 1 (ruling R-5); acts only in the battery scenario.
+
+    On: the launch charges replace B's 0.5 fraction - victim searchers 85 and 65 (the lower unique_id
+    first), fire trackers 78 and 72 (battery_scenario_launch_charges); every value is above the return
+    point, so no UAV turns home at step 1. Off: every UAV launches at UAV_LAUNCH_BATTERY_FRACTION x L_i.
+    """
+    return _fix2_switch("SCENARIO_B_STAGGERED_LAUNCH")
+
+
+def scenario_b_return_delay() -> bool:
+    """SCENARIO_B_RETURN_DELAY - fix3a B3. Shipped 1 (ruling R-4, R-5); acts only in the battery scenario.
+
+    On: a victim searcher about to start a battery return DELAYS it while every other victim searcher is
+    away (returning or docked) and its battery stays above return_delay_floor(d) - never past it.
+    Off: the return starts at the trigger, as in a5a496db.
+    """
+    return _fix2_switch("SCENARIO_B_RETURN_DELAY")
+
+
+# B2 (ruling R-5): the launch charges, highest first, by unique-id order within the role.
+BATTERY_SCENARIO_SEARCHER_LAUNCH = (85.0, 65.0)
+BATTERY_SCENARIO_TRACKER_LAUNCH = (78.0, 72.0)
+
+
+def _launch_spread(ends, k, count):
+    """The k-th of `count` values spread linearly between ends[0] and ends[1] (count 1: ends[0])."""
+    hi, lo = float(ends[0]), float(ends[1])
+    if count <= 1:
+        return hi
+    return hi - (hi - lo) * k / float(count - 1)
+
+
+def battery_scenario_launch_charges(roles):
+    """B2: the launch charge of each UAV (unique-id order) given its role, or None when B2 does not apply
+    (switch off or not the battery scenario). Searchers 85 .. 65, trackers 78 .. 72, spread linearly for
+    other team sizes; the scenario's UAV_LAUNCH_BATTERY_FRACTION is NOT applied on top."""
+    if not (scenario_b_staggered_launch() and battery_scenario()):
+        return None
+    roles = [str(r) for r in roles]
+    searchers = [i for i, r in enumerate(roles) if r == "victim_searcher"]
+    trackers = [i for i, r in enumerate(roles) if r != "victim_searcher"]
+    out = [0.0] * len(roles)
+    for k, i in enumerate(searchers):
+        out[i] = _launch_spread(BATTERY_SCENARIO_SEARCHER_LAUNCH, k, len(searchers))
+    for k, i in enumerate(trackers):
+        out[i] = _launch_spread(BATTERY_SCENARIO_TRACKER_LAUNCH, k, len(trackers))
+    return out
+
+
+# B3 (ruling R-4): the floor F(d) = 0.3 d + LOW + 1.70 + 0.60 = 0.3 d + 32.30 at the shipped LOW of 30.
+# 1.70 = 17 blocked steps x 0.1 (the recorded maximum return-leg standoff); 0.60 = one more delayed step
+# flying AWAY (battery -0.3, the threshold +0.3). A return that starts at the floor arrives above LOW.
+RETURN_DELAY_BLOCKED_ALLOWANCE = 1.70
+RETURN_DELAY_STEP_ALLOWANCE = 0.60
+
+
+def return_delay_floor(per_move: float, distance: int) -> float:
+    """B3's floor for a searcher `distance` (Manhattan) from the cell its return trigger measures to."""
+    return (float(per_move) * float(distance) + battery_low_threshold()
+            + RETURN_DELAY_BLOCKED_ALLOWANCE + RETURN_DELAY_STEP_ALLOWANCE)
 
 
 # Mode 2's search order: +x, -x, +y, -y. Its OWN constant, deliberately not

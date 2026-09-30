@@ -164,6 +164,10 @@ class UAVExecutor:
             label = str(action or "").strip().lower()
             agent.execution_stay = label == "hold" or (
                 label == "fire_flank_hold" and self._flank_hold_in_place
+            ) or (
+                # fix3a A1-R: the searcher's deliberate wait (no admissible routed step, no safer
+                # neighbour) holds the cell; only A1-R ever issues this label.
+                label == self.FIRE_WAIT_LABEL and agents_module.searcher_route_fire_field()
             )
         self._flank_hold_in_place = False
         self._record_uav_movement_reason(agent, str(action or "set_direction"))
@@ -2002,6 +2006,25 @@ class UAVExecutor:
     def _pocket_blocked_cells_for_escape(
         self, agent: Any, start: tuple[int, int],
     ) -> set[tuple[int, int]]:
+        blocked = self._pocket_blocked_cells_for_escape_base(agent, start)
+        import agents as agents_module  # lazy: agents is a root module
+
+        if agents_module.searcher_corner_escape():
+            # fix3a A1-D (ii): the escape never plans through another UAV's cell (the D/north pair: each
+            # searcher's escape ran through the other's cell and both were refused for ~140 steps).
+            model = self._resolve_model(agent)
+            schedule = getattr(model, "schedule", None) if model is not None else None
+            for item in (getattr(schedule, "agents", ()) or ()):
+                if type(item).__name__ != "UAV" or item is agent or getattr(item, "pos", None) is None:
+                    continue
+                cell = (int(item.pos[0]), int(item.pos[1]))
+                if cell != tuple(start):
+                    blocked.add(cell)
+        return blocked
+
+    def _pocket_blocked_cells_for_escape_base(
+        self, agent: Any, start: tuple[int, int],
+    ) -> set[tuple[int, int]]:
         model = self._resolve_model(agent)
         if model is None:
             return set()
@@ -2058,6 +2081,8 @@ class UAVExecutor:
         action_label: str,
         prefer_bfs_action_label: bool = False,
     ) -> tuple[int, str] | None:
+        if self._route_fire_field_active():
+            return self._route_within_fire_field(agent, target, action_label, prefer_bfs_action_label)
         forced = self._forced_progress_direction(agent, target)
         if forced is None:
             return None
@@ -2084,6 +2109,140 @@ class UAVExecutor:
         if prefer_bfs_action_label and escape_method.startswith("bfs"):
             return forced, "victim_search_escape_bfs"
         return forced, action_label
+
+    # fix3a A1-R: the two labels of a routed step with no admissible step toward the target. Both contain
+    # "retarget_to_interior" and set _last_escape_method, so execute() treats them as routed steps, exempt
+    # from the searcher hazard gate like every routed step; the wait is a stay (_commit_execution_direction).
+    FIRE_RETREAT_LABEL = "victim_search_wind_aware_retarget_to_interior_fire_retreat"
+    FIRE_WAIT_LABEL = "victim_search_wind_aware_retarget_to_interior_fire_wait"
+
+    def _route_fire_field_active(self) -> bool:
+        """fix3a A1-R applies: SEARCHER_ROUTE_FIRE_FIELD on, at the shipped 3b setting (range >= 99 with
+        SEARCHER_GATE_NEAR_FIELD on - the only setting where 3b(ii)'s veto exists)."""
+        import agents as agents_module  # lazy: agents is a root module
+
+        return (agents_module.searcher_route_fire_field()
+                and self._hazard_retreat_range() >= 99 and self._gate_near_field())
+
+    def _route_within_fire_field(
+        self,
+        agent: Any,
+        target: tuple[float, float],
+        action_label: str,
+        prefer_bfs_action_label: bool,
+    ) -> tuple[int, str] | None:
+        """fix3a A1-R (SEARCHER_ROUTE_FIRE_FIELD; rulings R-2, R-3): the pathfinding route PLANS WITHIN its
+        near-field guard instead of being vetoed after planning.
+
+        d0 = the searcher's Manhattan distance to the nearest BURNING cell (smoke stays impassable - the
+        planner never steps into a fire or smoke cell - but no longer repels at range).
+          d0 > SEARCHER_GATE_NEAR_RANGE: the existing planner (_forced_progress_direction), no veto.
+          inside it: greedy and BFS keep a burning distance >= T = min(d0, SEARCHER_ROUTE_CLEARANCE) on
+            every cell, so no planned step can be vetoed;
+          no admissible step: the legal neighbour (in bounds, not edge-blocked, not fire / smoke, no UAV)
+            with the largest burning distance if it is strictly larger than d0 (FIRE_RETREAT_LABEL), else
+            a WAIT on the cell (FIRE_WAIT_LABEL, a stay).
+        In a static fire the burning distance of the searcher's cell never decreases inside the near field,
+        so the route cannot oscillate against a guard (the 3b(ii) livelock of the depot pockets).
+        """
+        import agents as agents_module  # lazy: agents is a root module
+
+        pos = getattr(agent, "pos", None)
+        if pos is None:
+            return None
+        model = self._resolve_model(agent)
+        fire = self._collect_strict_active_fire_cells(model)
+        near = int(self._gate_near_range())
+        here = (int(pos[0]), int(pos[1]))
+        x_max = int(getattr(model, "HEIGHT", getattr(model, "height", 50)) or 50) - 1
+        y_max = int(getattr(model, "WIDTH", getattr(model, "width", 50)) or 50) - 1
+        # The exact Manhattan distance of every cell to the nearest burning cell: one multi-source BFS on
+        # the obstacle-free 4-neighbour grid.
+        from collections import deque
+
+        dist: dict[tuple[int, int], int] = {}
+        queue: deque[tuple[int, int]] = deque()
+        for cell in fire:
+            dist[cell] = 0
+            queue.append(cell)
+        while queue:
+            cell = queue.popleft()
+            for d in range(4):
+                nxt = (cell[0] + _MOVE_X[d], cell[1] + _MOVE_Y[d])
+                if 0 <= nxt[0] <= x_max and 0 <= nxt[1] <= y_max and nxt not in dist:
+                    dist[nxt] = dist[cell] + 1
+                    queue.append(nxt)
+
+        def fire_distance(cell: tuple[int, int]) -> int:
+            return dist.get((int(cell[0]), int(cell[1])), 99)
+
+        d0 = fire_distance(here)
+        if d0 > near:
+            forced = self._forced_progress_direction(agent, target)
+            if forced is None:
+                return None
+            next_cell = self._next_cell_for_direction(agent, forced)
+            if next_cell is None or self._strict_victim_hazard_level(next_cell) != 0:
+                return None
+            method = str(getattr(self, "_last_escape_method", "") or "")
+            if prefer_bfs_action_label and method.startswith("bfs"):
+                return forced, "victim_search_escape_bfs"
+            return forced, action_label
+        clearance = min(d0, int(agents_module.SEARCHER_ROUTE_CLEARANCE))
+        self._last_escape_method = None
+        goal = (int(round(float(target[0]))), int(round(float(target[1]))))
+        pocket = self._pocket_blocked_cells_for_escape(agent, here)
+        current = abs(goal[0] - here[0]) + abs(goal[1] - here[1])
+        best: int | None = None
+        best_progress = 0
+        for d in range(4):
+            cell = (here[0] + _MOVE_X[d], here[1] + _MOVE_Y[d])
+            if not self._cell_in_bounds(cell) or self._strict_victim_hazard_level(cell) > 0:
+                continue
+            if (not self._strict_path_lookahead_safe(agent, d, depth=1)
+                    or fire_distance(cell) < clearance or cell in pocket):
+                continue
+            progress = current - (abs(goal[0] - cell[0]) + abs(goal[1] - cell[1]))
+            if progress > best_progress:
+                best, best_progress = d, progress
+        method = "greedy"
+        if best is None:
+            inside = {cell for cell, value in dist.items() if value < clearance}
+            max_depth = self._bfs_escape_max_depth(agent)
+            best = self._bfs_escape_direction(
+                agent, target, avoid_smoke=True, max_depth=max_depth, extra_blocked=inside)
+            method = "bfs_smoke_safe"
+            if best is None:
+                best = self._bfs_escape_direction(
+                    agent, target, avoid_smoke=False, max_depth=max_depth, extra_blocked=inside)
+                method = "bfs_fire_only"
+        if best is not None:
+            next_cell = (here[0] + _MOVE_X[best], here[1] + _MOVE_Y[best])
+            if self._strict_victim_hazard_level(next_cell) == 0:
+                self._last_escape_method = method
+                if prefer_bfs_action_label and method.startswith("bfs"):
+                    return best, "victim_search_escape_bfs"
+                return best, action_label
+        # No admissible step toward the target: strictly away from the fire, else wait.
+        occupied = set()
+        schedule = getattr(model, "schedule", None) if model is not None else None
+        for item in (getattr(schedule, "agents", ()) or ()):
+            if type(item).__name__ == "UAV" and item is not agent and getattr(item, "pos", None) is not None:
+                occupied.add((int(item.pos[0]), int(item.pos[1])))
+        away, away_distance = None, d0
+        for d in range(4):
+            cell = (here[0] + _MOVE_X[d], here[1] + _MOVE_Y[d])
+            if not self._cell_in_bounds(cell) or self._strict_victim_hazard_level(cell) > 0 or cell in occupied:
+                continue
+            if self._victim_edge_blocked_direction(agent, d):
+                continue
+            if fire_distance(cell) > away_distance:
+                away, away_distance = d, fire_distance(cell)
+        if away is not None:
+            self._last_escape_method = "fire_retreat"
+            return away, self.FIRE_RETREAT_LABEL
+        self._last_escape_method = "fire_wait"
+        return int(getattr(agent, "selected_dir", 0) or 0), self.FIRE_WAIT_LABEL
 
     def _apply_retarget_with_pathfinding_fallback(
         self,
@@ -2113,6 +2272,7 @@ class UAVExecutor:
         *,
         avoid_smoke: bool = True,
         max_depth: int = 30,
+        extra_blocked: set[tuple[int, int]] | None = None,
     ) -> int | None:
         pos = getattr(agent, "pos", None)
         if pos is None:
@@ -2124,6 +2284,9 @@ class UAVExecutor:
         fire_cells = self._collect_strict_active_fire_cells(model)
         smoke_cells = self._collect_strict_smoke_cells(model) if avoid_smoke else set()
         blocked = fire_cells | smoke_cells | self._pocket_blocked_cells_for_escape(agent, start)
+        if extra_blocked:
+            # fix3a A1-R: the cells inside the route's clearance (never passed otherwise).
+            blocked = blocked | set(extra_blocked)
 
         def _within_goal_radius(cell: tuple[int, int]) -> bool:
             return abs(cell[0] - goal[0]) + abs(cell[1] - goal[1]) <= 2
@@ -2336,6 +2499,24 @@ class UAVExecutor:
         x, y = int(pos[0]), int(pos[1])
         nx = x + _MOVE_X[direction]
         ny = y + _MOVE_Y[direction]
+        import agents as agents_module  # lazy: agents is a root module
+
+        if agents_module.searcher_corner_escape():
+            # fix3a A1-D (i): the band's PENETRATION per axis, p = max(0, B - dx) + max(0, B - dy),
+            # B = SEARCHER_EDGE_BAND (4 = the margin 3 below, + 1). Outside the band (p = 0) nothing
+            # is blocked - as below, which never blocks beyond edge distance 3; inside it a move is legal
+            # iff it strictly reduces p - along one edge exactly the rule below (p = 4 - d). It differs
+            # only at a CORNER cell, where the min over axes below refused all four moves.
+            band = int(agents_module.SEARCHER_EDGE_BAND)
+
+            def penetration(cx: int, cy: int) -> int:
+                return (max(0, band - min(cx, x_max - cx))
+                        + max(0, band - min(cy, y_max - cy)))
+
+            here_p = penetration(x, y)
+            if here_p == 0:
+                return False
+            return penetration(nx, ny) >= here_p
         margin = 3
         dist_before = min(x, y, x_max - x, y_max - y)
         dist_after = min(nx, ny, x_max - nx, y_max - ny)
@@ -4237,13 +4418,13 @@ class UAVExecutor:
         if bounds is not None and pos is not None:
             sweep_x = max(x_min, min(x_max, int(pos[0])))
 
-        return {
+        return self._clamp_sweep_state({
             "sweep_x": sweep_x,
             "sweep_y": sweep_y,
             "sweep_dir": sweep_dir,
             "wind_direction": wind_dir,
             "primary_axis": primary_axis,
-        }
+        }, height, width)
 
     def _victim_search_cell_is_safe(self, cell: tuple[int, int]) -> bool:
         return self._victim_sweep_cell_is_approachable(cell)
@@ -4260,6 +4441,32 @@ class UAVExecutor:
         return True
 
     def _safe_victim_sweep_target(
+        self,
+        agent: Any,
+        state: dict[str, Any],
+        model: Any | None,
+        sector_bounds: dict[str, int] | None,
+        height: int,
+        width: int,
+        step: int,
+        pos: tuple[int, int] | None,
+    ) -> tuple[float, float]:
+        import agents as agents_module  # lazy: agents is a root module
+
+        if not agents_module.searcher_sweep_in_bounds():
+            return self._safe_victim_sweep_target_raw(
+                agent, state, model, sector_bounds, height, width, step, pos)
+        # fix3a A1-S: the state and the target inside the edge-distance >= SEARCHER_EDGE_BAND box, before
+        # and after the advance (the inline advance in _resolve_direction_intent clamps to the grid only).
+        self._clamp_sweep_state(state, height, width)
+        tx, ty = self._safe_victim_sweep_target_raw(
+            agent, state, model, sector_bounds, height, width, step, pos)
+        self._clamp_sweep_state(state, height, width)
+        band = int(agents_module.SEARCHER_EDGE_BAND)
+        return (float(max(band, min(int(height) - 1 - band, int(tx)))),
+                float(max(band, min(int(width) - 1 - band, int(ty)))))
+
+    def _safe_victim_sweep_target_raw(
         self,
         agent: Any,
         state: dict[str, Any],
@@ -4402,7 +4609,33 @@ class UAVExecutor:
         assignments = getattr(resolved, "_uav_sector_assignments", None)
         if not isinstance(assignments, dict):
             return None
-        return assignments.get(str(self.uav_id))
+        bounds = assignments.get(str(self.uav_id))
+        if bounds is None:
+            return None
+        import agents as agents_module  # lazy: agents is a root module
+
+        if agents_module.searcher_sweep_in_bounds() and self._role_is_victim_searcher(self._read_uav_role()):
+            # fix3a A1-S: a victim searcher's sector excludes the edge band it may not enter (edge
+            # distance < SEARCHER_EDGE_BAND) - the lawnmower sweep's lanes and ends then lie where the
+            # edge filter lets the searcher arrive. A copy: the model's assignment is not touched.
+            band = int(agents_module.SEARCHER_EDGE_BAND)
+            x_max = int(getattr(resolved, "HEIGHT", 50) or 50) - 1
+            y_max = int(getattr(resolved, "WIDTH", 50) or 50) - 1
+            return {"x_min": max(int(bounds["x_min"]), band), "x_max": min(int(bounds["x_max"]), x_max - band),
+                    "y_min": max(int(bounds["y_min"]), band), "y_max": min(int(bounds["y_max"]), y_max - band)}
+        return bounds
+
+    @staticmethod
+    def _clamp_sweep_state(state: dict[str, Any], height: int, width: int) -> dict[str, Any]:
+        """fix3a A1-S: the lawnmower sweep state inside the edge-distance >= SEARCHER_EDGE_BAND box
+        (a no-op with SEARCHER_SWEEP_IN_BOUNDS off)."""
+        import agents as agents_module  # lazy: agents is a root module
+
+        if agents_module.searcher_sweep_in_bounds():
+            band = int(agents_module.SEARCHER_EDGE_BAND)
+            state["sweep_x"] = max(band, min(int(height) - 1 - band, int(state["sweep_x"])))
+            state["sweep_y"] = max(band, min(int(width) - 1 - band, int(state["sweep_y"])))
+        return state
 
     def _position_in_sector(
         self,

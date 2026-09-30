@@ -114,7 +114,6 @@ def main() -> int:
         victim_searchers=args.victim_searchers, batch_size=300, fire_spread=0.75,
         ff_absence_min=None, ff_absence_max=None,
     )
-    params = es._scenario_params(ns)
     extra = {}
     for item in args.set:
         if "=" not in item:
@@ -122,6 +121,10 @@ def main() -> int:
             return 2
         k, v = item.split("=", 1)
         extra[k.strip()] = _parse_value(v)
+    # fix3a B1: the --set values reach the preset resolver (serve_dashboard.scenario_preset), so
+    # --set SCENARIO_B_TEAM=0 selects B's legacy team; a checkout that predates it ignores the attribute.
+    ns.preset_overrides = dict(extra)
+    params = es._scenario_params(ns)
     params.update(extra)
 
     try:
