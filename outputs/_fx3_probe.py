@@ -217,6 +217,17 @@ def main() -> int:
 
     UX._choose_best_direction = cbd
 
+    # Part 3 observer: every lawnmower sweep target handed to a searcher (A1-S: none in the edge band)
+    osweep = UX._safe_victim_sweep_target
+
+    def sweep(self, agent, state, model, sector_bounds, height, width, step, pos):
+        r = osweep(self, agent, state, model, sector_bounds, height, width, step, pos)
+        if is_searcher(self):
+            rec(self, ["S", _j(r)])
+        return r
+
+    UX._safe_victim_sweep_target = sweep
+
     ogate = UX._apply_victim_searcher_hazard_gate
 
     def gate(self, agent, chosen_dir, action):
@@ -228,9 +239,11 @@ def main() -> int:
     UX._apply_victim_searcher_hazard_gate = gate
 
     ostep = wf.WildFireModel.step
+    MODEL = {}
 
     def step(self):
         cur["step"] += 1
+        MODEL["m"] = self
         r = ostep(self)
         try:
             snap = {}
@@ -258,8 +271,18 @@ def main() -> int:
     try:
         with open(out_path, encoding="utf-8") as fh:
             d = json.load(fh)
+        rtb = {}
+        m = MODEL.get("m")
+        for a in (getattr(getattr(m, "schedule", None), "agents", ()) or ()):
+            if type(a).__name__ != "UAV":
+                continue
+            rtb[str(a.unique_id)] = {"log": _j(getattr(a, "rtb_log", []) or []),
+                                     "delay": _j(getattr(a, "rtb_delay_log", []) or []),
+                                     "delay_steps": int(getattr(a, "rtb_delay_steps", 0) or 0),
+                                     "boxed": int(getattr(a, "rtb_boxed_steps", 0) or 0),
+                                     "trips": int(getattr(a, "rtb_trips", 0) or 0)}
         d["fx3"] = {"ev": {str(k): v for k, v in EV.items()},
-                    "ws": {str(k): v for k, v in WS.items()}, "probe": "fx3_probe v1"}
+                    "ws": {str(k): v for k, v in WS.items()}, "rtb": rtb, "probe": "fx3_probe v2"}
         tmp = out_path + ".fx3tmp"
         with open(tmp, "w", encoding="utf-8", newline="\n") as fh:
             json.dump(d, fh, separators=(",", ":"))
