@@ -347,6 +347,16 @@ class UAVExecutor:
         agent = self._resolve_agent()
         if agent is None:
             return {"applied": False, "reason": "agent_not_found", "uav_id": self.uav_id}
+        if self._fire_route_owner_active():
+            # fix3a round 2 (a1, a7): the step's target, its route ownership and the escape method are
+            # per-step state - a stale _last_escape_method could exempt a step from the second gate pass.
+            self._step_target = None
+            self._route_owned_step = False
+            self._last_escape_method = None
+        if self._route_bounded_wait_active():
+            import agents as agents_module  # lazy: agents is a root module
+
+            agents_module.searcher_route_wait_limit()   # (b, review) a junk W raises at step 1, not mid-run
 
         if fail_safe_decision is not None and fail_safe_decision.search_mode_active:
             role_kind = self._role_kind(self._read_uav_role())
@@ -450,14 +460,22 @@ class UAVExecutor:
             # or the boundary push could turn it back into the cell the partner needs.
             pass
         elif self._role_is_victim_searcher(role) and action != "hold":
-            pathfinding_routed = (
-                "retarget_to_interior" in str(action or "")
-                and str(getattr(self, "_last_escape_method", "") or "") != ""
-            )
-            if action != "victim_search_escape_bfs" and not pathfinding_routed:
-                chosen_dir, action = self._apply_victim_searcher_hazard_gate(
-                    agent, chosen_dir, action,
+            if self._fire_route_owner_active():
+                # fix3a round 2 (a7): ONE OWNER - a step the route planned (its own or a hand-off) is not
+                # gated again; every other step goes through the gate, whose vetoes go to the route.
+                if not getattr(self, "_route_owned_step", False):
+                    chosen_dir, action = self._apply_victim_searcher_hazard_gate(
+                        agent, chosen_dir, action,
+                    )
+            else:
+                pathfinding_routed = (
+                    "retarget_to_interior" in str(action or "")
+                    and str(getattr(self, "_last_escape_method", "") or "") != ""
                 )
+                if action != "victim_search_escape_bfs" and not pathfinding_routed:
+                    chosen_dir, action = self._apply_victim_searcher_hazard_gate(
+                        agent, chosen_dir, action,
+                    )
         elif action != "hold" and not (
             str(action).startswith("hold_escape")
             and str(self._read_uav_role() or "").strip().lower() == "fire_tracker"
@@ -531,9 +549,19 @@ class UAVExecutor:
             role_kind,
             action,
         )
-        chosen_dir, action_label = self._apply_final_direction_safety(
-            agent, chosen_dir, action_label
-        )
+        if (self._fire_route_owner_active() and self._role_is_victim_searcher(self._read_uav_role())
+                and action_label != "rtb_waypoint"):
+            # fix3a round 2 (a8): no second memoryless hazard escape for a searcher - the searcher gate,
+            # whose vetoes go to the route, unless the route already planned the step (a base return is
+            # exempt, as in execute()).
+            if not getattr(self, "_route_owned_step", False):
+                chosen_dir, action_label = self._apply_victim_searcher_hazard_gate(
+                    agent, chosen_dir, action_label
+                )
+        else:
+            chosen_dir, action_label = self._apply_final_direction_safety(
+                agent, chosen_dir, action_label
+            )
         self._commit_execution_direction(agent, chosen_dir, action_label)
         role = self._read_uav_role()
 
@@ -1044,7 +1072,13 @@ class UAVExecutor:
             return base_return
 
         if role_kind == "victim":
-            target = self._nearest_target(self._victim_positions_from_runtime())
+            victim_positions = self._victim_positions_from_runtime()
+            if self._route_bounded_wait_active():
+                # fix3a round 2 (b3): a known victim given up by the route is skipped for the next nearest
+                refusal_model = getattr(agent, "model", None) or self._model
+                victim_positions = [p for p in victim_positions
+                                    if not self._target_refused(refusal_model, p)]
+            target = self._nearest_target(victim_positions)
             if target is None:
                 model = getattr(agent, "model", None) or self._model
                 victim_id = self._victim_id_from_decision(decision, model)
@@ -1068,6 +1102,10 @@ class UAVExecutor:
                             victim_id, victim_entry or {}, model
                         ):
                             target = None
+            if target is not None and self._target_refused(getattr(agent, "model", None) or self._model, target):
+                target = None                   # fix3a round 2 (b3): the decision's victim, given up
+            if target is not None and self._fire_route_owner_active():
+                self._step_target = target      # fix3a round 2 (a1): the known victim is this step's target
             if target is not None:
                 chosen = self._choose_best_direction(
                     agent, target, target_kind="victim"
@@ -1372,6 +1410,10 @@ class UAVExecutor:
                 )
                 wind_state = _wind_search_state(model, uid)
                 escape_raw = wind_state.get("escape_target")
+                if (isinstance(escape_raw, (list, tuple)) and len(escape_raw) >= 2
+                        and self._target_refused(model, escape_raw)):
+                    wind_state["escape_target"] = None   # fix3a round 2 (b3): a given-up escape target
+                    escape_raw = None
                 if isinstance(escape_raw, (list, tuple)) and len(escape_raw) >= 2:
                     wind_state["hazard_buffer_level"] = 2
                     escape_target = (float(escape_raw[0]), float(escape_raw[1]))
@@ -1386,6 +1428,8 @@ class UAVExecutor:
                             wind_state["pocket_streak"] = 0
                             wind_state["force_coverage_escape"] = False
                         else:
+                            if self._fire_route_owner_active():
+                                self._step_target = escape_target      # fix3a round 2 (a1)
                             routed = self._attempt_pathfinding_toward_target(
                                 agent,
                                 escape_target,
@@ -1415,8 +1459,13 @@ class UAVExecutor:
                         if self._wind_target_is_saturated(model, wind_target):
                             planner_wind = None
                             needs_retarget = True
+                        elif self._target_refused(model, wind_target):
+                            planner_wind = None             # fix3a round 2 (b3)
+                            needs_retarget = True
                     if planner_wind is not None and not needs_retarget:
                         wind_target, wind_meta = planner_wind
+                        if self._fire_route_owner_active():
+                            self._step_target = wind_target      # fix3a round 2 (a1)
                         chosen_dir, action_label = self._apply_victim_searcher_hazard_gate(
                             agent,
                             self._choose_best_direction(
@@ -1456,6 +1505,8 @@ class UAVExecutor:
                         wind_state["force_sweep"] = False
                         force_sweep = False
                     wind_target = self._wind_aware_victim_search_target(agent, model)
+                    if wind_target is not None and self._target_refused(model, wind_target):
+                        wind_target = None      # fix3a round 2 (b3): given up -> the searcher's own sweep
                     if wind_target is not None:
                         if force_coverage or force_interior:
                             action_label = "victim_search_wind_aware_retarget_to_interior"
@@ -1467,6 +1518,8 @@ class UAVExecutor:
                             return self._apply_retarget_with_pathfinding_fallback(
                                 agent, wind_target, action_label,
                             )
+                        if self._fire_route_owner_active():
+                            self._step_target = wind_target      # fix3a round 2 (a1)
                         chosen_dir, action_label = self._apply_victim_searcher_hazard_gate(
                             agent,
                             self._choose_best_direction(
@@ -1488,6 +1541,8 @@ class UAVExecutor:
                     wind_state["force_sweep"] = False
                     force_sweep = False
                     wind_target = self._wind_aware_victim_search_target(agent, model)
+                    if wind_target is not None and self._target_refused(model, wind_target):
+                        wind_target = None      # fix3a round 2 (b3)
                     if wind_target is not None:
                         return self._apply_retarget_with_pathfinding_fallback(
                             agent,
@@ -1588,6 +1643,34 @@ class UAVExecutor:
                     STEP,
                     pos,
                 )
+                if self._target_refused(model, sweep_target):
+                    # fix3a round 2 (b3): a sweep target the route gave up -> the next lane, exactly the
+                    # lane-end branch above (once; a next lane that is refused too is bounded again by (b)).
+                    next_x = min(int(state["sweep_x"]) + STEP, H - 1)
+                    if sector_bounds is not None:
+                        next_x = min(next_x, sector_bounds["x_max"])
+                        if next_x >= sector_bounds["x_max"]:
+                            next_x = sector_bounds["x_min"]
+                    elif next_x >= H - 1:
+                        next_x = 0
+                    state["sweep_x"] = next_x
+                    state["sweep_dir"] = -state["sweep_dir"]
+                    state["sweep_y"] = (
+                        sector_bounds["y_min"]
+                        if sector_bounds is not None
+                        and state["sweep_dir"] == 1
+                        else (
+                            sector_bounds["y_max"]
+                            if sector_bounds is not None
+                            else (0 if state["sweep_dir"] == 1 else W - 1)
+                        )
+                    )
+                    sweep_states[uid] = state
+                    sweep_target = self._safe_victim_sweep_target(
+                        agent, state, model, sector_bounds, H, W, STEP, pos,
+                    )
+                if self._fire_route_owner_active():
+                    self._step_target = sweep_target     # fix3a round 2 (a1)
                 sweep_dir = self._choose_best_direction(
                     agent, sweep_target, target_kind="victim"
                 )
@@ -2080,8 +2163,20 @@ class UAVExecutor:
         *,
         action_label: str,
         prefer_bfs_action_label: bool = False,
+        force_fire_mode: bool = False,
     ) -> tuple[int, str] | None:
         if self._route_fire_field_active():
+            if self._fire_route_owner_active() or self._route_bounded_wait_active():
+                # fix3a round 2: the route with (a) / (b); Part 2's route below stays exact with both off.
+                self._last_route_fire_mode = False
+                routed = self._route_within_fire_field_r2(
+                    agent, target, action_label, prefer_bfs_action_label, force_fire_mode)
+                if (routed is not None and self._fire_route_owner_active()
+                        and getattr(self, "_last_route_fire_mode", False)):
+                    # (a7, review) only a FIRE-MODE step is route-owned (no second gate pass); the unlatched
+                    # forced-progress step (its BFS fallback does not plan within the edge filter) is gated.
+                    self._route_owned_step = True
+                return routed
             return self._route_within_fire_field(agent, target, action_label, prefer_bfs_action_label)
         forced = self._forced_progress_direction(agent, target)
         if forced is None:
@@ -2271,11 +2366,14 @@ class UAVExecutor:
         goal: tuple[int, int],
         blocked: set[tuple[int, int]],
         max_depth: int,
+        edge_ok: Any = None,
     ) -> int | None:
         """fix3a A1-R: the first direction of a shortest 4-neighbour path from `start` to within Manhattan 2
         of `goal` avoiding `blocked` (the _bfs_escape_direction search - level order, directions 0..3, goal
         radius 2 - over a GIVEN set, without the pocket escape's per-step cells). None: no path, or start
-        already within the goal radius."""
+        already within the goal radius. fix3a round 2 (a5): `edge_ok(cell, next)` - the edge filter as a
+        DIRECTED transition constraint (tested per parent -> child, before the child is marked visited, so a
+        child refused from one parent stays reachable from another); None = no constraint (Part 2)."""
         from collections import deque
 
         if abs(start[0] - goal[0]) + abs(start[1] - goal[1]) <= 2:
@@ -2293,6 +2391,8 @@ class UAVExecutor:
                     nxt = (cell[0] + _MOVE_X[direction], cell[1] + _MOVE_Y[direction])
                     if nxt in visited or not self._cell_in_bounds(nxt) or nxt in blocked:
                         continue
+                    if edge_ok is not None and not edge_ok(cell, nxt):
+                        continue
                     visited[nxt] = cell
                     parent_dir[nxt] = direction
                     if abs(nxt[0] - goal[0]) + abs(nxt[1] - goal[1]) <= 2:
@@ -2304,12 +2404,411 @@ class UAVExecutor:
             depth += 1
         return None
 
+    # ---- fix3a round 2 (outputs/fix3a_r2_prereg.txt): (a) one owner for near-fire steering, (b) a bounded
+    # wait. Everything below is read only while its switch is on AND A1-R is active; with both off the route
+    # above (_route_within_fire_field) and the gate's result are Part 2 exactly. ---------------------------
+
+    # a9: the origins whose handed-off moving step keeps its origin as a prefix; any other -> the generic label
+    # (never built on "hold" / "hazard_retreat": the analyzers and the stay / blacklist rules key on those).
+    _HANDOFF_ORIGINS = frozenset({
+        "victim_search_wind_aware",
+        "victim_search_wind_aware_retarget",
+        "victim_search_wind_aware_retarget_to_interior",
+        "victim_search_wind_aware_sweep",
+        "computed_from_target",
+        "victim_escape_committed",
+        "victim_stuck_escape",
+    })
+    HANDOFF_SUFFIX = "_fire_route"
+    HANDOFF_GENERIC_LABEL = "victim_search_fire_route"
+
+    def _fire_route_owner_active(self) -> bool:
+        """(a) SEARCHER_FIRE_ROUTE_OWNER applies (A1-R active and the switch on)."""
+        import agents as agents_module  # lazy: agents is a root module
+
+        return self._route_fire_field_active() and agents_module.searcher_fire_route_owner()
+
+    def _route_bounded_wait_active(self) -> bool:
+        """(b) SEARCHER_ROUTE_BOUNDED_WAIT applies (A1-R active and the switch on)."""
+        import agents as agents_module  # lazy: agents is a root module
+
+        return self._route_fire_field_active() and agents_module.searcher_route_bounded_wait()
+
+    @staticmethod
+    def _goal_cell(target: Any) -> tuple[int, int] | None:
+        if target is None:
+            return None
+        return (int(round(float(target[0]))), int(round(float(target[1]))))
+
+    def _latched_goal(self, model: Any | None) -> tuple[int, int] | None:
+        ws = _wind_search_state(model, self.uav_id) if model is not None else {}
+        raw = ws.get("fire_route_target")
+        if isinstance(raw, (list, tuple)) and len(raw) >= 2:
+            return (int(raw[0]), int(raw[1]))
+        return None
+
+    def _latched_on(self, agent: Any, target: Any) -> bool:
+        """(a2) The searcher is latched on a route whose goal is within Manhattan 2 of `target`."""
+        goal = self._goal_cell(target)
+        if goal is None:
+            return False
+        latched = self._latched_goal(self._resolve_model(agent))
+        return latched is not None and abs(latched[0] - goal[0]) + abs(latched[1] - goal[1]) <= 2
+
+    def _handoff_label(self, origin: Any) -> str:
+        label = str(origin or "")
+        if label in self._HANDOFF_ORIGINS:
+            return label + self.HANDOFF_SUFFIX
+        return self.HANDOFF_GENERIC_LABEL
+
+    def _fire_route_handoff(self, agent: Any, target: Any, origin: Any) -> tuple[int, str]:
+        """(a2) The vetoed (or latched) step, planned by the latched fire-mode route toward `target` (its
+        current goal when None). The goal reached, or none at all: the no-goal step (a4) - never the
+        memoryless retreat. Routed through _attempt_pathfinding_toward_target so every probe hook sees it."""
+        label = self._handoff_label(origin)
+        routed = self._attempt_pathfinding_toward_target(
+            agent, target, action_label=label, prefer_bfs_action_label=False, force_fire_mode=True)
+        if routed is None and target is not None:
+            routed = self._attempt_pathfinding_toward_target(
+                agent, None, action_label=label, prefer_bfs_action_label=False, force_fire_mode=True)
+        if routed is None:
+            return int(getattr(agent, "selected_dir", 0) or 0), self.FIRE_WAIT_LABEL
+        self._route_owned_step = True
+        return routed
+
+    def _edge_step_allowed(self, model: Any | None, cell: tuple[int, int], nxt: tuple[int, int]) -> bool:
+        """(a5) The searcher edge filter as a pure predicate on (cell, next cell): exactly
+        not _victim_edge_blocked_direction for a searcher standing on `cell` (pinned by an exhaustive test)."""
+        if model is None:
+            return True
+        x_max = int(getattr(model, "HEIGHT", getattr(model, "height", 50)) or 50) - 1
+        y_max = int(getattr(model, "WIDTH", getattr(model, "width", 50)) or 50) - 1
+        import agents as agents_module  # lazy: agents is a root module
+
+        if agents_module.searcher_corner_escape():
+            band = int(agents_module.SEARCHER_EDGE_BAND)
+
+            def penetration(cx: int, cy: int) -> int:
+                return max(0, band - min(cx, x_max - cx)) + max(0, band - min(cy, y_max - cy))
+
+            here_p = penetration(cell[0], cell[1])
+            if here_p == 0:
+                return True
+            return penetration(nxt[0], nxt[1]) < here_p
+        margin = 3
+        before = min(cell[0], cell[1], x_max - cell[0], y_max - cell[1])
+        after = min(nxt[0], nxt[1], x_max - nxt[0], y_max - nxt[1])
+        return not (before <= margin and after <= before)
+
+    def _burning_distance_map(self, model: Any | None, fire: set[tuple[int, int]]) -> dict[tuple[int, int], int]:
+        """Manhattan distance of every cell to the nearest burning cell (multi-source BFS; as in Part 2)."""
+        from collections import deque
+
+        x_max = int(getattr(model, "HEIGHT", getattr(model, "height", 50)) or 50) - 1
+        y_max = int(getattr(model, "WIDTH", getattr(model, "width", 50)) or 50) - 1
+        dist: dict[tuple[int, int], int] = {}
+        queue: deque[tuple[int, int]] = deque()
+        for cell in fire:
+            dist[cell] = 0
+            queue.append(cell)
+        while queue:
+            cell = queue.popleft()
+            for d in range(4):
+                nxt = (cell[0] + _MOVE_X[d], cell[1] + _MOVE_Y[d])
+                if 0 <= nxt[0] <= x_max and 0 <= nxt[1] <= y_max and nxt not in dist:
+                    dist[nxt] = dist[cell] + 1
+                    queue.append(nxt)
+        return dist
+
+    def _other_uav_cells_now(self, agent: Any, model: Any | None) -> set[tuple[int, int]]:
+        occupied: set[tuple[int, int]] = set()
+        schedule = getattr(model, "schedule", None) if model is not None else None
+        for item in (getattr(schedule, "agents", ()) or ()):
+            if type(item).__name__ == "UAV" and item is not agent and getattr(item, "pos", None) is not None:
+                occupied.add((int(item.pos[0]), int(item.pos[1])))
+        return occupied
+
+    @staticmethod
+    def _release_fire_route(ws: dict) -> None:
+        ws["fire_route_target"] = None
+        ws["fire_route_nopath"] = 0
+        ws["fire_route_nopath_step"] = None
+
+    @staticmethod
+    def _goal_given_up(ws: dict, cell: tuple[int, int] | None, step: int) -> bool:
+        """(b3) `cell` lies within Manhattan 2 of a goal given up and still refused at `step`."""
+        if cell is None:
+            return False
+        for entry in ws.get("route_given_up") or ():
+            if not isinstance(entry, dict) or int(entry.get("until", 0) or 0) <= int(step):
+                continue
+            gx, gy = entry.get("cell") or (None, None)
+            if gx is not None and abs(int(gx) - cell[0]) + abs(int(gy) - cell[1]) <= 2:
+                return True
+        return False
+
+    def _target_refused(self, model: Any | None, target: Any) -> bool:
+        """(b3) THE REFUSAL at a target's source: True (and counted) iff (b) applies and `target` is a
+        given-up goal still inside its cooldown."""
+        if target is None or model is None or not self._route_bounded_wait_active():
+            return False
+        ws = _wind_search_state(model, self.uav_id)
+        step = _step_index_from_runtime({"simulation_model": model})
+        if self._goal_given_up(ws, self._goal_cell(target), step):
+            self._note_refusal(ws, step)
+            return True
+        return False
+
+    @staticmethod
+    def _note_refusal(ws: dict, step: int) -> None:
+        """(b3) a refusal: route_refusals counts every refusal EVENT (one target can be refused at several
+        sources and by both executor invocations of a step); route_refusal_steps counts the distinct model
+        steps on which a given-up target was re-issued (the pre-registered (B) 're-issued inside a refusal')."""
+        ws["route_refusals"] = int(ws.get("route_refusals", 0) or 0) + 1
+        if ws.get("route_refusal_last_step") != step:
+            ws["route_refusal_last_step"] = step
+            ws["route_refusal_steps"] = int(ws.get("route_refusal_steps", 0) or 0) + 1
+
+    def _fire_no_path_step(
+        self,
+        agent: Any,
+        here: tuple[int, int],
+        d0: int,
+        near: int,
+        fire_distance: Any,
+        occupied: set[tuple[int, int]],
+        owner: bool,
+        retreat_inclusive: bool = True,
+        band_exit: bool = True,
+    ) -> tuple[int, str]:
+        """(a4) No admissible path (or no goal): on a hazard cell (with (a)) the legal neighbour with the
+        largest burning distance; inside the near field a strictly farther legal neighbour (FIRE_RETREAT;
+        d0 <= near, or d0 < near for a goal already reached); with (a), inside the edge band the legal
+        neighbour that leaves it fastest (review: with no goal there is no latch and no W, and a wait in the
+        band was a stall the legacy gate never had; the penetration strictly falls, so it cannot cycle; not for
+        a goal already reached, which the route would re-enter at once); else a
+        WAIT (FIRE_WAIT, a stay; with (a) its direction is kept on the grid). Legal = in bounds, no hazard,
+        no UAV, not edge-blocked. The retreat measures BURNING distance (ruling R-3: smoke does not repel)."""
+        import agents as agents_module  # lazy: agents is a root module
+
+        legal = []
+        for d in range(4):
+            cell = (here[0] + _MOVE_X[d], here[1] + _MOVE_Y[d])
+            if not self._cell_in_bounds(cell) or self._strict_victim_hazard_level(cell) > 0 or cell in occupied:
+                continue
+            if self._victim_edge_blocked_direction(agent, d):
+                continue
+            legal.append((d, fire_distance(cell)))
+        if owner and legal and self._strict_victim_hazard_level(here) > 0:
+            self._last_escape_method = "fire_retreat"
+            return max(legal, key=lambda item: item[1])[0], self.FIRE_RETREAT_LABEL
+        away, away_distance = None, d0
+        for d, value in legal:
+            if value > away_distance:
+                away, away_distance = d, value
+        if away is not None and (d0 <= near if retreat_inclusive else d0 < near):
+            self._last_escape_method = "fire_retreat"
+            return away, self.FIRE_RETREAT_LABEL
+        if owner and legal and band_exit:
+            band_here = self._edge_penetration(here)
+            if band_here > 0:
+                best = min(legal, key=lambda item: (self._edge_penetration(
+                    (here[0] + _MOVE_X[item[0]], here[1] + _MOVE_Y[item[0]])), -item[1], item[0]))
+                self._last_escape_method = "fire_retreat"
+                return best[0], self.FIRE_RETREAT_LABEL
+        if not agents_module.uav_hold_stationary() and legal:
+            self._last_escape_method = "fire_retreat"
+            return max(legal, key=lambda item: item[1])[0], self.FIRE_RETREAT_LABEL
+        self._last_escape_method = "fire_wait"
+        wait_dir = int(getattr(agent, "selected_dir", 0) or 0)
+        if owner and not self._cell_in_bounds((here[0] + _MOVE_X[wait_dir % 4], here[1] + _MOVE_Y[wait_dir % 4])):
+            wait_dir = next((d for d in range(4)
+                             if self._cell_in_bounds((here[0] + _MOVE_X[d], here[1] + _MOVE_Y[d]))), wait_dir)
+        return wait_dir, self.FIRE_WAIT_LABEL
+
+    def _edge_penetration(self, cell: tuple[int, int]) -> int:
+        """The edge band's penetration of `cell` (edge distance < SEARCHER_EDGE_BAND): the penetration rule's
+        p with SEARCHER_CORNER_ESCAPE on, the margin rule's 4 - edge distance (clamped at 0) off."""
+        import agents as agents_module  # lazy: agents is a root module
+
+        model = self._model
+        x_max = int(getattr(model, "HEIGHT", getattr(model, "height", 50)) or 50) - 1
+        y_max = int(getattr(model, "WIDTH", getattr(model, "width", 50)) or 50) - 1
+        band = int(agents_module.SEARCHER_EDGE_BAND)
+        if agents_module.searcher_corner_escape():
+            return (max(0, band - min(cell[0], x_max - cell[0]))
+                    + max(0, band - min(cell[1], y_max - cell[1])))
+        return max(0, band - min(cell[0], cell[1], x_max - cell[0], y_max - cell[1]))
+
+    def _count_no_path(self, agent: Any, ws: dict, goal: tuple[int, int], step: int) -> None:
+        """(b1) One more no-path step on this latch - once per MODEL STEP (the executor can run 0, 1 or 2
+        times in a step), never on a return-to-base leg; CUMULATIVE over the latch. At W: the give-up (b2)."""
+        import agents as agents_module  # lazy: agents is a root module
+
+        if bool(getattr(agent, "rtb_active", False)):
+            return
+        if ws.get("fire_route_nopath_step") != step:
+            ws["fire_route_nopath_step"] = step
+            ws["fire_route_nopath"] = int(ws.get("fire_route_nopath", 0) or 0) + 1
+        if int(ws.get("fire_route_nopath", 0) or 0) >= agents_module.searcher_route_wait_limit():
+            self._give_up_fire_route(ws, goal, step)
+
+    def _give_up_fire_route(self, ws: dict, goal: tuple[int, int], step: int) -> None:
+        """(b2) THE GIVE-UP: the goal is refused until step + G (G = the generator's own blacklist cooldown);
+        the generator's commit hold is released and the goal's neighbourhood blacklisted (its existing
+        helpers, not modified); the escape target is cleared when it is this goal; the next generator call
+        is forced to re-pick; the latch is released."""
+        from ..adaptation.local_adaptation_generator import WIND_TARGET_BLACKLIST_COOLDOWN, _clear_target_hold
+
+        live = [entry for entry in (ws.get("route_given_up") or ())
+                if isinstance(entry, dict) and int(entry.get("until", 0) or 0) > int(step)]
+        live.append({"cell": [int(goal[0]), int(goal[1])],
+                     "until": int(step) + int(WIND_TARGET_BLACKLIST_COOLDOWN)})
+        ws["route_given_up"] = live
+        _clear_target_hold(ws, "route_give_up")
+        _blacklist_target_neighborhood(ws, (float(goal[0]), float(goal[1])), int(step))
+        escape = ws.get("escape_target")
+        if (isinstance(escape, (list, tuple)) and len(escape) >= 2
+                and abs(int(round(float(escape[0]))) - goal[0]) + abs(int(round(float(escape[1]))) - goal[1]) <= 2):
+            ws["escape_target"] = None
+        ws["force_coverage_escape"] = True
+        ws["force_interior_retarget"] = True
+        ws["route_give_ups"] = int(ws.get("route_give_ups", 0) or 0) + 1
+        log = list(ws.get("route_give_up_log") or [])
+        log.append([int(step), int(goal[0]), int(goal[1])])   # for the report: repeat give-ups of one region
+        ws["route_give_up_log"] = log
+        self._release_fire_route(ws)
+
+    def _route_within_fire_field_r2(
+        self,
+        agent: Any,
+        target: Any,
+        action_label: str,
+        prefer_bfs_action_label: bool,
+        force_fire_mode: bool,
+    ) -> tuple[int, str] | None:
+        """fix3a round 2: the A1-R route with (a) and / or (b) (outputs/fix3a_r2_prereg.txt 1.1-1.2).
+
+        Both: the LATCH IDENTITY - a goal within Manhattan 2 of the latched goal is the same route (the
+        latch and its no-path count survive a one-cell shift of the target; C/S 9610's escape target moved
+        (45, 45) -> (44, 45) mid-wait).
+        (a) FIRE MODE is entered when forced (a hand-off), when latched, or within SEARCHER_GATE_NEAR_RANGE of
+            a strict hazard - FIRE OR SMOKE, the gate's own measure (one "near"); the BFS plans within the
+            edge filter (a directed transition constraint) and replans around a first-step hazard it did not
+            see; on a hazard cell the no-path step leaves it whatever the gain. target None: the latched goal,
+            else the no-goal step.
+        (b) the no-path steps are counted per latch (b1); at W the goal is given up (b2); a given-up goal
+            reaching the route inside its cooldown is not pursued (b3).
+        Unchanged from Part 2: the clearance T = min(burning distance, 6), smoke impassable, the retreat
+        only inside the near field (burning), the wait a stay.
+        """
+        import agents as agents_module  # lazy: agents is a root module
+
+        owner = self._fire_route_owner_active()
+        bounded = self._route_bounded_wait_active()
+        pos = getattr(agent, "pos", None)
+        if pos is None:
+            return None
+        model = self._resolve_model(agent)
+        fire = self._collect_strict_active_fire_cells(model)
+        near = int(self._gate_near_range())
+        here = (int(pos[0]), int(pos[1]))
+        dist = self._burning_distance_map(model, fire)
+
+        def fire_distance(cell: tuple[int, int]) -> int:
+            return dist.get((int(cell[0]), int(cell[1])), 99)
+
+        d0 = fire_distance(here)
+        ws = _wind_search_state(model, self.uav_id) if model is not None else {}
+        step = _step_index_from_runtime({"simulation_model": model}) if model is not None else 0
+        occupied = self._other_uav_cells_now(agent, model)
+        latched = self._latched_goal(model)
+        goal = self._goal_cell(target)
+        if goal is None:
+            goal = latched
+        if goal is None:
+            self._last_route_fire_mode = True
+            return self._fire_no_path_step(agent, here, d0, near, fire_distance, occupied, owner)
+        if latched is not None and abs(latched[0] - goal[0]) + abs(latched[1] - goal[1]) > 2:
+            self._release_fire_route(ws)        # a new route target (beyond Manhattan 2) is a new route
+            latched = None
+        if bounded and self._goal_given_up(ws, goal, step):
+            self._release_fire_route(ws)        # (b3) the backstop: a given-up goal is not pursued
+            self._note_refusal(ws, step)
+            self._last_route_fire_mode = True
+            return self._fire_no_path_step(agent, here, d0, near, fire_distance, occupied, owner)
+        near_hazard = (self._min_strict_hazard_distance(here) <= float(near)) if owner else (d0 <= near)
+        if latched is None and not force_fire_mode and not near_hazard:
+            forced = self._forced_progress_direction(agent, target)
+            if forced is None:
+                return None
+            next_cell = self._next_cell_for_direction(agent, forced)
+            if next_cell is None or self._strict_victim_hazard_level(next_cell) != 0:
+                return None
+            method = str(getattr(self, "_last_escape_method", "") or "")
+            if prefer_bfs_action_label and method.startswith("bfs"):
+                return forced, "victim_search_escape_bfs"
+            return forced, action_label
+        reached = abs(goal[0] - here[0]) + abs(goal[1] - here[1]) <= 2
+        if reached and not owner:
+            self._release_fire_route(ws)        # the route target is reached: the route is over (Part 2)
+            return None
+        if latched is None:
+            ws["fire_route_nopath"] = 0
+            ws["fire_route_nopath_step"] = None
+        ws["fire_route_target"] = [goal[0], goal[1]]
+        self._last_route_fire_mode = True
+        if reached:
+            # (a, review) THE GOAL REACHED IN FIRE MODE: the route keeps it - releasing it handed the step to the
+            # no-goal retreat, and the planner stepped straight back (B -> A -> B at the near-field boundary,
+            # uncounted). It waits for the SOURCE to move the target (a coverage hold releases on arrival, a
+            # sweep advances only at Chebyshev 1), counted toward W; it retreats only if the fire has come
+            # inside the near field (strictly inside: at the boundary it waits), or leaves a hazard cell.
+            outcome = self._fire_no_path_step(agent, here, d0, near, fire_distance, occupied, owner,
+                                              retreat_inclusive=False, band_exit=False)
+            if bounded:
+                self._count_no_path(agent, ws, goal, step)
+            return outcome
+        clearance = min(d0, int(agents_module.SEARCHER_ROUTE_CLEARANCE))
+        self._last_escape_method = None
+        inside = {cell for cell, value in dist.items() if value < clearance}
+        smoke = self._collect_strict_smoke_cells(model)
+        max_depth = self._bfs_escape_max_depth(agent)
+        edge_ok = (lambda cell, nxt: self._edge_step_allowed(model, cell, nxt)) if owner else None
+        stop = False
+        for method, blocked in (("bfs_fire_field", set(fire) | smoke | inside | occupied),
+                                ("bfs_fire_field_through_smoke", set(fire) | inside | occupied)):
+            extra: set[tuple[int, int]] = set()
+            for _attempt in range(5 if owner else 1):
+                best = self._fire_field_bfs_direction(here, goal, blocked | extra, max_depth, edge_ok=edge_ok)
+                if best is None:
+                    break
+                next_cell = (here[0] + _MOVE_X[best], here[1] + _MOVE_Y[best])
+                if self._strict_victim_hazard_level(next_cell) != 0:
+                    if owner:
+                        extra.add(next_cell)    # (a6) a hazard the plan did not see: replan around it
+                        continue
+                    stop = True                 # Part 2: the step is never taken -> the no-path step
+                    break
+                self._last_escape_method = method
+                if prefer_bfs_action_label:
+                    return best, "victim_search_escape_bfs"
+                return best, action_label
+            if stop:
+                break
+        outcome = self._fire_no_path_step(agent, here, d0, near, fire_distance, occupied, owner)
+        if bounded:
+            self._count_no_path(agent, ws, goal, step)
+        return outcome
+
     def _apply_retarget_with_pathfinding_fallback(
         self,
         agent: Any,
         target: tuple[float, float],
         action_label: str,
     ) -> tuple[int, str]:
+        if self._fire_route_owner_active():
+            self._step_target = target          # fix3a round 2 (a1)
         routed = self._attempt_pathfinding_toward_target(
             agent,
             target,
@@ -2764,6 +3263,52 @@ class UAVExecutor:
     def _apply_victim_searcher_hazard_gate(
         self, agent: Any, chosen_dir: int, action: str,
     ) -> tuple[int, str]:
+        """The searcher hazard gate. fix3a round 2 (a), SEARCHER_FIRE_ROUTE_OWNER: ONE OWNER FOR NEAR-FIRE
+        STEERING. The gate below runs unchanged (its pocket state write included); if it took ANY branch
+        other than its pass-through (a veto - even a retreat that happens to equal the planner's direction),
+        or the searcher is latched on a route to this step's target, the step is planned by the latched
+        fire-mode route toward that target instead of the memoryless retreat. Off: the gate's result."""
+        self._gate_passed = False
+        result = self._apply_victim_searcher_hazard_gate_legacy(agent, chosen_dir, action)
+        if not self._fire_route_owner_active():
+            return result
+        target = getattr(self, "_step_target", None)
+        model = self._resolve_model(agent)
+        latched = self._latched_goal(model)
+        goal = self._goal_cell(target)
+        if (goal is not None and latched is not None and model is not None
+                and abs(latched[0] - goal[0]) + abs(latched[1] - goal[1]) > 2):
+            # (review) the step steers to another target: the old latch (and its count) is released HERE,
+            # not only when the route is next called - a stale latch must not own a later step.
+            self._release_fire_route(_wind_search_state(model, self.uav_id))
+        if target is not None and self._target_refused(model, target):
+            # (b3) a target given up by the route, re-issued by a source that did not refuse it: not pursued
+            # - planner step or not - so the planner and the route cannot take turns over it.
+            self._route_owned_step = True
+            return self._fire_no_goal_step(agent)
+        if self._gate_passed and not self._latched_on(agent, target):
+            return result
+        return self._fire_route_handoff(agent, target, action)
+
+    def _fire_no_goal_step(self, agent: Any) -> tuple[int, str]:
+        """(a4) The no-goal step (FIRE_RETREAT / FIRE_WAIT), the latch untouched."""
+        pos = getattr(agent, "pos", None)
+        if pos is None:
+            return int(getattr(agent, "selected_dir", 0) or 0), self.FIRE_WAIT_LABEL
+        model = self._resolve_model(agent)
+        dist = self._burning_distance_map(model, self._collect_strict_active_fire_cells(model))
+        here = (int(pos[0]), int(pos[1]))
+
+        def fire_distance(cell: tuple[int, int]) -> int:
+            return dist.get((int(cell[0]), int(cell[1])), 99)
+
+        return self._fire_no_path_step(agent, here, fire_distance(here), int(self._gate_near_range()),
+                                       fire_distance, self._other_uav_cells_now(agent, model),
+                                       self._fire_route_owner_active())
+
+    def _apply_victim_searcher_hazard_gate_legacy(
+        self, agent: Any, chosen_dir: int, action: str,
+    ) -> tuple[int, str]:
         """Final safety pass on a victim searcher's chosen direction, in order:
         strict hazard on the current cell -> retreat; edge-blocked direction ->
         retreat; the hazard retreat rule (VICTIM_SEARCHER_HAZARD_RETREAT_RANGE,
@@ -2838,6 +3383,7 @@ class UAVExecutor:
                     return retreat, action
 
         if self._strict_path_lookahead_safe(agent, chosen_dir):
+            self._gate_passed = True    # fix3a round 2: the ONLY pass-through (bookkeeping, no effect)
             return chosen_dir, action
 
         model = self._resolve_model(agent)
@@ -2941,7 +3487,11 @@ class UAVExecutor:
 
         if agents_module.searcher_counters_per_step():
             wind_state["_last_action_wind_aware"] = True
-        if action == "victim_search_wind_aware_sweep":
+        if action == "victim_search_wind_aware_sweep" or (
+            action == "victim_search_wind_aware_sweep" + self.HANDOFF_SUFFIX
+            and self._fire_route_owner_active()
+        ):
+            # fix3a round 2 (a9): a route-owned sweep step is a sweep step
             wind_state["force_sweep"] = False
         if "hazard_retreat" in str(action or ""):
             wind_state["force_interior_retarget"] = True

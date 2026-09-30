@@ -160,7 +160,11 @@ def test_route_approaching_a_near_hazard_is_replaced() -> None:
     assert routed is not None and routed[0] != EAST
 
 
-def test_route_far_from_hazard_or_moving_away_is_kept() -> None:
+def test_route_far_from_hazard_or_moving_away_is_kept(monkeypatch) -> None:
+    # fix2 3b(ii)'s route, pinned: fix3a round 2 puts a route within 6 of a hazard in fire mode, whose BFS
+    # plans within the edge filter (a goal on the grid edge is then unreachable) - tests/test_fix3a_r2.py.
+    monkeypatch.setattr(cfv, "SEARCHER_FIRE_ROUTE_OWNER", 0)
+    monkeypatch.setattr(cfv, "SEARCHER_ROUTE_BOUNDED_WAIT", 0)
     ex, agent = _gate_executor((10, 20), {(28, 20)})       # 18 cells away
     ex._forced_progress_direction = lambda *_a, **_k: EAST
     assert ex._attempt_pathfinding_toward_target(agent, (40.0, 20.0), action_label="x")[0] == EAST

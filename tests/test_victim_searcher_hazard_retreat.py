@@ -144,8 +144,18 @@ def test_range_zero_still_retreats_inward_at_the_edge(monkeypatch, searcher):
 
 def test_always_on_keeps_edge_handling_through_the_edge_filter(monkeypatch, searcher):
     monkeypatch.setattr(cfv, "VICTIM_SEARCHER_HAZARD_RETREAT_RANGE", 99)
+    monkeypatch.setattr(cfv, "SEARCHER_FIRE_ROUTE_OWNER", 0)   # the LEGACY gate's edge retreat (fix3a round 2)
     executor, agent = searcher((20, 1))
     assert _gate(executor, agent, SOUTH) == (NORTH, ACTION)
+
+
+def test_with_the_route_owning_the_veto_the_edge_is_still_left_inward(monkeypatch, searcher):
+    """fix3a round 2 (a): the edge veto goes to the route; with no target and no fire its no-goal step leaves
+    the band inward (the penetration strictly falls), labelled a fire retreat - never a wait in the band."""
+    monkeypatch.setattr(cfv, "VICTIM_SEARCHER_HAZARD_RETREAT_RANGE", 99)
+    executor, agent = searcher((20, 1))
+    executor._step_target = None
+    assert _gate(executor, agent, SOUTH) == (NORTH, UAVExecutor.FIRE_RETREAT_LABEL)
 
 
 def test_retreat_scoring_is_hazard_only_when_on(monkeypatch, searcher):

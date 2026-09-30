@@ -164,6 +164,16 @@ SEARCHER_GATE_NEAR_FIELD = 1
 # a step strictly away from the fire, else a wait. Replaces fix2 3b(ii)'s veto, which livelocked the
 # searcher at the depots (3 never-finishing runs). agents.searcher_route_fire_field.
 SEARCHER_ROUTE_FIRE_FIELD = 1
+# fix3a ROUND 2 (outputs/fix3a_r2_prereg.txt; the maintainer's ruling after the Part 3 STOP). Both read
+# only while A1-R is active. (a) ONE OWNER FOR NEAR-FIRE STEERING: every searcher-gate veto (on-cell
+# hazard, edge-blocked, near field, lookahead - on every step kind) is planned by the latched fire-mode
+# route instead of the memoryless retreat. agents.searcher_fire_route_owner.
+SEARCHER_FIRE_ROUTE_OWNER = 1
+# (b) A BOUNDED WAIT: a latched route that has found no path on SEARCHER_ROUTE_WAIT_LIMIT steps gives its
+# target up (hold released, target blacklisted, refused for 15 steps). agents.searcher_route_bounded_wait.
+SEARCHER_ROUTE_BOUNDED_WAIT = 1
+# W, pre-registered before any run (20; the sensitivity arm 39). An integer >= 1; anything else raises.
+SEARCHER_ROUTE_WAIT_LIMIT = 20
 # A1-S. A victim searcher's sector (and its lawnmower sweep) excludes the edge band it may not enter
 # (edge distance < agents.SEARCHER_EDGE_BAND, 4). agents.searcher_sweep_in_bounds.
 SEARCHER_SWEEP_IN_BOUNDS = 1

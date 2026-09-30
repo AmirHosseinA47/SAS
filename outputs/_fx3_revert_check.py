@@ -13,7 +13,10 @@ import sys
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SWITCHES = ["SEARCHER_ROUTE_FIRE_FIELD", "SEARCHER_SWEEP_IN_BOUNDS", "SEARCHER_CORNER_ESCAPE",
-            "FREE_CELL_DOCKING", "SCENARIO_B_TEAM", "SCENARIO_B_STAGGERED_LAUNCH", "SCENARIO_B_RETURN_DELAY"]
+            "FREE_CELL_DOCKING", "SCENARIO_B_TEAM", "SCENARIO_B_STAGGERED_LAUNCH", "SCENARIO_B_RETURN_DELAY",
+            # fix3a round 2 (outputs/fix3a_r2_prereg.txt)
+            "SEARCHER_FIRE_ROUTE_OWNER", "SEARCHER_ROUTE_BOUNDED_WAIT"]
+TEST_FILES = ["tests/test_fix3a.py", "tests/test_fix3a_r2.py"]
 
 
 def main():
@@ -23,9 +26,9 @@ def main():
     rc_all = 0
     for name in SWITCHES:
         env["FX3_REVERT"] = name
-        proc = subprocess.run([sys.executable, "-m", "pytest", "-q", "-p", "_fx3_revert_plugin", "-rf",
-                               "tests/test_fix3a.py"], cwd=REPO, env=env, capture_output=True, text=True)
-        failed = sorted(set(re.findall(r"FAILED tests/test_fix3a.py::(\S+)", proc.stdout)))
+        proc = subprocess.run([sys.executable, "-m", "pytest", "-q", "-p", "_fx3_revert_plugin", "-rf"]
+                              + TEST_FILES, cwd=REPO, env=env, capture_output=True, text=True)
+        failed = sorted(set(re.findall(r"FAILED tests/(test_fix3a(?:_r2)?\.py::\S+)", proc.stdout)))
         summary = (proc.stdout.strip().splitlines() or ["?"])[-1]
         print("%-28s %d failing: %s" % (name, len(failed), summary))
         for t in failed:

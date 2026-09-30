@@ -172,3 +172,75 @@ HOW THE STEERING WAS MAPPED (read-only; outputs/fix3a_r2_map_*.txt keep the four
 THE LESSON (ruled, to be recorded in the report): A1 removed one veto-against-planner livelock but left
 the same pattern on the steps the route does not control. The rule that follows: a guard must be planned
 within, everywhere it acts.
+
+ADDENDUM A - THE ROUTE_BLOCKED TRACE, MADE CONCRETE (written before any run of this round)
+  For every NEW route_blocked loss of fx3rgS at 240 steps, the SAME tool and configuration
+  (outputs/_rblatch_campaign2.py, scenario D, the shard's wind, that seed alone) is re-run at --steps 360,
+  tag fx3rgT<wind initial><seed> (e.g. fx3rgTe606). The trace reports, for the lost victim: its detection step
+  (the first non-candidate status), its outcome at 240 and at 360, and the step it was rescued. "Only a victim
+  found after step 240 that the 360-step run rescues" = detected after 240 (or detected before and still en
+  route at 240) AND rescued in the 360-step run - reported as such; the gate stays as pre-registered (a
+  NEW loss at 240 is a FAIL of the gate either way; the trace explains it, it does not excuse it).
+  The same trace for fx3rgW (sensitivity) only if the maintainer asks.
+ADDENDUM B - THE (A) CHECK, MADE CONCRETE: in every arm with (a) on, (i) executed searcher labels containing
+  "hazard_retreat" or "_hazard_escape" = 0; (ii) gate calls (probe G events) whose output direction differs
+  from the input and whose output label is not route-owned (ends "_fire_route", FIRE_RETREAT, FIRE_WAIT) = 0;
+  (iii) searcher moves (consecutive rows) that the edge filter forbids = 0 (all arms reported).
+
+ADDENDUM C - THE REVIEW OF THE ROUND-2 CODE (2 agents - the last 2 of the 3; written BEFORE any pre-registered run)
+  A smoke pair was run first on C/S 9610 (tags fx3rsmX / fx3rsmS, outputs/_fx3_q_r2smoke.jsonl): fx3rsmX (the two
+  new switches 0) == fx3S (Part 3 shipped) on every behavioural field - identity 2 holds; fx3rsmS (shipped, the
+  code as reviewed) is recorded HERE, before the arms, so that nothing below is read as tuned to it: no oscillation
+  episode, but C/S still unfinished (victim_0 found at step 351, later than Part 3's 337). Mechanism (trace in the
+  report): each give-up refused its target correctly, but the generator's relocation (the y-commit to row 45, the
+  pull toward x ~ 44) re-issued NEW targets 3-5 cells away in the SAME unreachable north-east region
+  ((44,45) (46,45) (41,45) (47,45) (42,45) (45,45) (39,47) ...), each a fresh latch with a fresh count: 5
+  give-ups, ~130 idle steps. That is a property of the pre-registered design (per-target give-up, per-latch
+  count) meeting the generator's target selection (session 3b territory); the design and W are NOT changed for
+  it. The report states it, whatever the arms show.
+  FIXES MADE after the review (each a defect against the pre-registered rules, none a tuning of W, G or the
+  arms), with tests; revert check: every switch fails its own tests at 0 (outputs/_fx3_revert_check.txt):
+  C1 (a, defect) A GOAL REACHED IN FIRE MODE was released and handed to the no-goal retreat; at the near-field
+     boundary the planner stepped straight back (B -> A -> B), uncounted. Now the route KEEPS the reached goal
+     and waits for the source to move it, counted toward W; it retreats only if the fire is strictly inside the
+     near field, or leaves a hazard cell.
+  C2 (a7, defect) route ownership was set for ANY route result, including the unlatched forced-progress step,
+     whose BFS fallback ignores the edge filter. Now only a FIRE-MODE result is route-owned; every other step
+     takes the second gate pass (whose vetoes go to the fire-mode route) - the pre-registered a7.
+  C3 (a, risk) a latch survived stretches of steps toward other targets. Now a step whose target is more than
+     Manhattan 2 from the latch releases it (and its count) at that step.
+  C4 (a4, defect found by the neighbouring tests) with no goal and no fire, an edge-blocked step (e.g. a hold
+     escape in the band) WAITED in the band - no latch, no W, a possible permanent stall; the legacy gate
+     stepped inward. Now the no-path step leaves the band (the penetration strictly falls - it cannot cycle); not
+     for a goal already reached (the route would re-enter at once). A wait's direction is kept on the grid.
+  C5 (b) W is validated at every execute() (a junk W raises at step 1, not mid-run). a8 applies to a victim
+     searcher only, with rtb_waypoint exempt (as execute()).
+  C6 (reporting) route_refusals counts refusal EVENTS; route_refusal_steps counts the distinct steps a given-up
+     target was re-issued (the pre-registered '(B) re-issued inside a refusal'); route_give_up_log records every
+     give-up (step, cell) so repeat give-ups of one region are reported (probe v3 whitelist extended).
+  C7 (tests) the legacy-gate pins (21 SITE A cases, the always-on edge retreat, fix2's route pin, Part 2's smoke
+     pin) now pin SEARCHER_FIRE_ROUTE_OWNER = 0 (and the bound where the test is Part 2's route), each with an
+     owner-ON counterpart; the B/W 9608 test rebuilt so the legacy retreat really enters the band; execute()-
+     level tests for a1, a7, a8, a9 and a b3 source refusal.
+  ANALYSIS (sharpened before the runs):
+  - (A)(iii): the verdict counts EVERY edge-forbidden searcher move in an (a)-on arm (addendum B as written);
+    the label kind is reported for diagnosis only.
+  - (C): the detection step is the [Victim Detection] event (the marker stays candidate after detection).
+  - (W): the per-latch cumulative no-path count is RECONSTRUCTED from the rows (FIRE_* labels) grouped by the
+    route events' targets (Manhattan-2 chains, cut at a give-up) - independent of the implementation's counter;
+    FAIL if any exceeds W. Fire-wait steps are split: a hazard within 6 (the probe's hazard view) vs none (edge /
+    unreachable-goal waits). Per UAV: total no-path steps across latches, and repeat give-ups (a give-up within
+    Manhattan 6 of an earlier one) - the reviewers' "each latch bounded, total idling not" risk, REPORTED.
+  - (R) TRACE, made concrete (replaces addendum A's tool): the campaign hard-codes BATCH_SIZE 300 and records
+    totals only, so the trace of a NEW loss is outputs/_fx3_probe.py on (D, wind, seed) with the campaign's
+    explicit parameters (--set NUM_FIRE_TRACKERS=2 NUM_VICTIM_SEARCHERS=2 FIRE_SPREAD_MULTIPLIER=0.75, 360 steps,
+    BATCH_SIZE 360; the probe seeds exactly as the campaign), tag fx3rgT<w><seed>. CONSISTENCY CHECK: its victim
+    statuses at step 240 must reproduce the campaign's evaluation for that seed (rescued / dead / candidate); if
+    not, the trace is reported as not comparable. Reported per lost victim: detection step, status at 240,
+    outcome at 360, rescue step.
+  RISKS RECORDED, NOT CHANGED (design matters for the maintainer): G (15) < W (20) - two unreachable targets can
+  alternate give-ups, each latch bounded but the total idling not (reported per UAV, above); goals whose disk of
+  radius 2 lies deeper than penetration 1 in the band (e.g. a victim on the outermost row) are unreachable under
+  the edge filter and end in bounded waits (reported via the no-hazard wait split); the a4 retreat measures burning
+  distance only (R-3), so a searcher near smoke alone with no path waits rather than retreats (the on-hazard exit
+  still leaves a smoke cell).

@@ -36,7 +36,10 @@ WS_KEYS = ("pocket_streak", "pocket_center", "pocket_anchor", "escape_target", "
            "blocked_backtrack_cells", "sweep_no_move_streak", "steps_since_detection",
            "searcher_victim_detections", "last_action", "same_target_streak", "dwell_count",
            "coverage_priority", "north_strip_done", "south_strip_done", "west_strip_done",
-           "east_strip_done", "active_lane_axis")
+           "east_strip_done", "active_lane_axis",
+           # v3 (fix3a round 2): the route's latch, its no-path count, the give-ups and refusals - read only
+           "fire_route_target", "fire_route_nopath", "route_give_ups", "route_refusals", "route_given_up",
+           "route_refusal_steps", "route_give_up_log")
 
 
 def _j(v):
@@ -282,7 +285,7 @@ def main() -> int:
                                      "boxed": int(getattr(a, "rtb_boxed_steps", 0) or 0),
                                      "trips": int(getattr(a, "rtb_trips", 0) or 0)}
         d["fx3"] = {"ev": {str(k): v for k, v in EV.items()},
-                    "ws": {str(k): v for k, v in WS.items()}, "rtb": rtb, "probe": "fx3_probe v2"}
+                    "ws": {str(k): v for k, v in WS.items()}, "rtb": rtb, "probe": "fx3_probe v3"}
         tmp = out_path + ".fx3tmp"
         with open(tmp, "w", encoding="utf-8", newline="\n") as fh:
             json.dump(d, fh, separators=(",", ":"))

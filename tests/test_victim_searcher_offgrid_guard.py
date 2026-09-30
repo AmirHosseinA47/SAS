@@ -185,6 +185,7 @@ def test_the_gate_never_returns_an_off_grid_direction_when_on(monkeypatch, pos, 
     """Drive the real gate through SITE A: force the searcher's own cell to read
     hazardous so the first branch is taken, and force the retreat to find
     nothing, which is what every recorded pin did."""
+    monkeypatch.setattr(cfv, "SEARCHER_FIRE_ROUTE_OWNER", 0)   # the LEGACY gate (fix3a round 2 hands vetoes to the route)
     monkeypatch.setattr(cfv, "VICTIM_SEARCHER_HAZARD_GATE_BOUNDS_FIX", 1)
     ex, agent = _exec(pos)
     monkeypatch.setattr(ex, "_strict_victim_hazard_level", lambda cell: 2)
@@ -199,6 +200,7 @@ def test_the_gate_never_returns_an_off_grid_direction_when_on(monkeypatch, pos, 
 def test_the_gate_reproduces_the_defect_when_the_switch_is_off(monkeypatch, pos, direction):
     """The positive control: with the guard off, the gate hands back the
     off-grid direction - the behaviour every recorded pin is made of."""
+    monkeypatch.setattr(cfv, "SEARCHER_FIRE_ROUTE_OWNER", 0)   # the LEGACY gate (fix3a round 2 hands vetoes to the route)
     monkeypatch.setattr(cfv, "VICTIM_SEARCHER_HAZARD_GATE_BOUNDS_FIX", 0)
     ex, agent = _exec(pos)
     monkeypatch.setattr(ex, "_strict_victim_hazard_level", lambda cell: 2)
@@ -213,6 +215,7 @@ def test_the_worked_example_from_the_diagnosis(monkeypatch):
     """seed 404 south, uid 2502, cell (27,0), 26 consecutive refused steps with
     applied direction 1 (SOUTH) on every one. With the guard on, the gate
     returns 3 (NORTH) and the searcher leaves the boundary."""
+    monkeypatch.setattr(cfv, "SEARCHER_FIRE_ROUTE_OWNER", 0)   # the LEGACY gate (fix3a round 2 hands vetoes to the route)
     monkeypatch.setattr(cfv, "VICTIM_SEARCHER_HAZARD_GATE_BOUNDS_FIX", 1)
     ex, agent = _exec((27, 0))
     monkeypatch.setattr(ex, "_strict_victim_hazard_level", lambda cell: 2)
@@ -229,3 +232,18 @@ def test_the_guard_is_idempotent(monkeypatch):
     ex, agent = _exec((27, 0))
     once = ex._offgrid_guard_direction(agent, SOUTH)
     assert ex._offgrid_guard_direction(agent, once) == once
+
+
+@pytest.mark.parametrize("pos,direction", EDGE_CASES + CORNER_CASES)
+def test_with_the_route_owning_the_veto_no_off_grid_direction_is_returned(monkeypatch, pos, direction):
+    """fix3a round 2 (a): the same SITE A situation (the cell reads hazardous, the retreat finds nothing) is
+    handed to the latched route - its step (a fire retreat or a wait whose direction is kept on the grid) is
+    never off-grid either."""
+    monkeypatch.setattr(cfv, "VICTIM_SEARCHER_HAZARD_GATE_BOUNDS_FIX", 1)
+    ex, agent = _exec(pos)
+    agent.selected_dir = direction                          # a stale heading that points off the grid
+    monkeypatch.setattr(ex, "_strict_victim_hazard_level", lambda cell: 2)
+    monkeypatch.setattr(ex, "_retreat_to_safe_interior_direction", lambda a: None)
+    out, label = ex._apply_victim_searcher_hazard_gate(agent, direction, ACTION)
+    assert _in_bounds(pos, out)
+    assert label in (UAVExecutor.FIRE_RETREAT_LABEL, UAVExecutor.FIRE_WAIT_LABEL)
