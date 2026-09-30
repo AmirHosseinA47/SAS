@@ -2097,44 +2097,6 @@ def searcher_route_fire_field() -> bool:
     return _fix2_switch("SEARCHER_ROUTE_FIRE_FIELD")
 
 
-def searcher_fire_route_owner() -> bool:
-    """SEARCHER_FIRE_ROUTE_OWNER - fix3a round 2 (a). Shipped 1 (the maintainer's ruling after Part 3).
-
-    Read only while A1-R is active (searcher_route_fire_field at the shipped 3b setting). On: ONE OWNER
-    FOR NEAR-FIRE STEERING - whenever the searcher hazard gate takes any branch other than its pass-through
-    (on-cell hazard, edge-blocked direction, the near-field retreat, the lookahead re-rank / retreat), on
-    ANY searcher step (search, sweep, known victim, fallback, hold escape), or the searcher is latched on
-    the step's target, the step is planned by the latched fire-mode route toward that target; the route's
-    BFS plans within the edge filter; route-owned steps skip the second gate pass. Off: fix3a Part 2
-    exactly (the gate's memoryless retreat on every step the route does not own).
-    """
-    return _fix2_switch("SEARCHER_FIRE_ROUTE_OWNER")
-
-
-def searcher_route_bounded_wait() -> bool:
-    """SEARCHER_ROUTE_BOUNDED_WAIT - fix3a round 2 (b). Shipped 1.
-
-    Read only while A1-R is active. On: a latched route that has produced no path (a fire retreat or a
-    fire wait) on searcher_route_wait_limit() distinct steps GIVES ITS TARGET UP - the generator's commit
-    hold is released, the target's neighbourhood blacklisted, the escape target cleared, and the target
-    refused at its source for WIND_TARGET_BLACKLIST_COOLDOWN steps. Off: the wait is unbounded (Part 2).
-    """
-    return _fix2_switch("SEARCHER_ROUTE_BOUNDED_WAIT")
-
-
-def searcher_route_wait_limit() -> int:
-    """SEARCHER_ROUTE_WAIT_LIMIT W - pre-registered 20 (outputs/fix3a_r2_prereg.txt 1.3; sensitivity 39).
-
-    RAISES unless an exact integer >= 1 (bool excluded): a silent fallback would run a different bound
-    than the one recorded - the dead-input class of the fix1 launch fraction.
-    """
-    raw = getattr(cfv, "SEARCHER_ROUTE_WAIT_LIMIT", 20)
-    value = None if isinstance(raw, bool) else _exact_integer(raw)
-    if value is None or value < 1:
-        raise ValueError("SEARCHER_ROUTE_WAIT_LIMIT must be an integer >= 1, got %r" % (raw,))
-    return value
-
-
 def searcher_sweep_in_bounds() -> bool:
     """SEARCHER_SWEEP_IN_BOUNDS - fix3a A1-S. Shipped 1 (ruling R-1).
 

@@ -164,11 +164,8 @@ def test_the_sweep_aims_at_the_edge_with_the_switch_off(monkeypatch):
 # ============================================================================ A1-R
 def test_smoke_alone_no_longer_vetoes_the_route(monkeypatch):
     """Smoke 4 cells west, no fire: the routed step west (to 3 from the smoke, never INTO it) stands.
-    52% of the depot-pocket vetoes were smoke alone. (Part 2's unlatched step: pinned with round 2's
-    one-owner switch at 0; with it on, smoke within 6 puts the route in fire mode - test_fix3a_r2.)"""
+    52% of the depot-pocket vetoes were smoke alone."""
     _near_field_setting(monkeypatch)
-    monkeypatch.setattr(cfv, "SEARCHER_FIRE_ROUTE_OWNER", 0, raising=False)
-    monkeypatch.setattr(cfv, "SEARCHER_ROUTE_BOUNDED_WAIT", 0, raising=False)   # Part 2's route exactly
     ex, agent = _searcher((20, 20), smoke_cells={(16, 20)})
     routed = ex._attempt_pathfinding_toward_target(agent, (5.0, 20.0), action_label="lbl")
     assert routed is not None and routed[0] == WEST
@@ -228,12 +225,9 @@ def test_a_routed_step_through_the_near_field_of_smoke_never_enters_the_smoke(mo
 
 def _route_drive(ex, agent, target, steps):
     """Route step by step in a STATIC fire (the route only - no pocket, gate or sweep machinery).
-    Returns (trail, labels); stops at a wait (static: it would wait forever), when the route ends, or on
-    arrival (within the goal radius 2 - fix3a round 2 keeps a reached goal and waits there for the source)."""
+    Returns (trail, labels); stops at a wait (static: it would wait forever) or when the route ends."""
     trail, labels = [tuple(agent.pos)], []
     for _ in range(steps):
-        if abs(agent.pos[0] - target[0]) + abs(agent.pos[1] - target[1]) <= 2:
-            break
         routed = ex._attempt_pathfinding_toward_target(agent, target, action_label="lbl")
         if routed is None:
             break
@@ -264,13 +258,7 @@ def test_the_route_does_not_undo_its_own_detour(monkeypatch):
     assert min(_manhattan_to(fire, cell) for cell in trail) >= 6
     assert UAVExecutor.FIRE_WAIT_LABEL not in labels
     assert ex._model._wind_search_target_state  # the latch lives in the wind state ...
-    arrived = ex._attempt_pathfinding_toward_target(agent, (25.0, 40.0), action_label="lbl")
-    if agents.searcher_fire_route_owner():
-        # fix3a round 2 (a): the reached goal is KEPT - the route waits there for the source to move it
-        assert arrived[1] == UAVExecutor.FIRE_WAIT_LABEL and _wind_state(ex).get("fire_route_target") == [25, 40]
-    else:
-        # ... Part 2: and is released on arrival
-        assert arrived is None and _wind_state(ex).get("fire_route_target") is None
+    assert _wind_state(ex).get("fire_route_target") is None  # ... and is released on arrival
 
 
 def _wind_state(ex):

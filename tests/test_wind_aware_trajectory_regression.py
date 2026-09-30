@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import importlib.util
 import os
 import random
 from dataclasses import dataclass, field
 from typing import Callable
 
 os.environ.setdefault("MPLBACKEND", "Agg")
+
+import pytest
 
 import agents
 import common_fixed_variables as cfv
@@ -18,6 +21,39 @@ from wildfire_model import WildFireModel
 DEFAULT_SEED = 42
 DEFAULT_STEPS = 40
 GRID_CENTER = (cfv.HEIGHT // 2, cfv.WIDTH // 2)
+
+# THESE TESTS SET THEIR OWN CONFIGURATION (fix3a, the maintainer's ruling (iv)). In the full-suite order they
+# used to run under whatever earlier tests left in the module globals - variable wind (FIXED_WIND False,
+# west -> east), a 2-UAV team, 3 victims - and passed or failed by test order. Every value below is the SOURCE
+# default of common_fixed_variables (a fresh load of the file, so no leaked value can reach it), set on cfv and
+# on wildfire_model's star-imported copies, and restored after each test - with the keys this module itself
+# overwrites in _seed_deterministic_environment (SYSTEM_RANDOM, WIND_DIRECTION, FIRE_SPREAD_MULTIPLIER,
+# BATCH_SIZE), agents.random and the WIND_DIRECTION environment variable.
+_SPEC = importlib.util.spec_from_file_location("_cfv_source_defaults", cfv.__file__)
+_CFV_DEFAULTS = importlib.util.module_from_spec(_SPEC)
+_SPEC.loader.exec_module(_CFV_DEFAULTS)
+_OWN_CONFIGURATION = (
+    "FIXED_WIND", "FIRST_DIR", "FIRST_DIR_PROB", "SECOND_DIR",
+    "NUM_AGENTS", "NUM_VICTIMS", "NUM_FIREFIGHTERS", "NUM_FIRE_TRACKERS", "NUM_VICTIM_SEARCHERS",
+    "UAV_LAUNCH_BATTERY_FRACTION", "BATTERY_SCENARIO",
+    "BATCH_SIZE", "WIND_DIRECTION", "FIRE_SPREAD_MULTIPLIER", "SYSTEM_RANDOM",
+)
+
+
+@pytest.fixture(autouse=True)
+def _own_configuration(monkeypatch):
+    for module in (cfv, wf):
+        for name in _OWN_CONFIGURATION:
+            # absent from the source (FIRST_DIR / SECOND_DIR / FIRST_DIR_PROB exist only when FIXED_WIND is
+            # False): None, as in a fresh process
+            monkeypatch.setattr(module, name, getattr(_CFV_DEFAULTS, name, None), raising=False)
+    monkeypatch.setattr(agents, "random", agents.random)
+    saved_wind_env = os.environ.get("WIND_DIRECTION")
+    yield
+    if saved_wind_env is None:
+        os.environ.pop("WIND_DIRECTION", None)
+    else:
+        os.environ["WIND_DIRECTION"] = saved_wind_env
 
 
 @dataclass
