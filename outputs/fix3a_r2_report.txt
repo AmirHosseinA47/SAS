@@ -1,0 +1,320 @@
+================================================================================
+FIX3A ROUND 2 - ONE OWNER FOR NEAR-FIRE STEERING AND A BOUNDED WAIT - REPORT
+                                                                         outputs/fix3a_r2_report.txt
+================================================================================
+Branch fix3a. Pre-registration: outputs/fix3a_r2_prereg.txt (2cd13ca6 + addenda A-C, all before any
+pre-registered run). Code: cacc8463. Analysis: outputs/_fx3r_analysis.txt (outputs/_fx3r_analyze.py),
+outputs/_fx3r_osc_mech.txt (outputs/_fx3r_osc_mech.py), outputs/_fx3r_invariants_S.txt / _Z.txt.
+ENVIRONMENT: sys.version = 3.10.11 (tags/v3.10.11:7d4cc5a, Apr  5 2023, 00:38:17) [MSC v.1929 64 bit
+(AMD64)]; mesa.__version__ = 1.2.1; interpreter E:\Projects\SAS\.venv\Scripts\python.exe. All 208 probe runs
+record head cacc8463 and source hashes equal to this tree (P3-0). 252 + 1 trace run, 0 FAIL in the pool.
+
+================================================================================
+VERDICT: STOP BEFORE MERGING. Round 2 FAILS its gates, and on (O) it is WORSE than Part 3.
+================================================================================
+FAIL  (N) runs that never finish, gated arms (Part 3 in brackets):
+      - fx3rS 1, C/S 9610 (1). victim_0 is now detected at step 338 (337) and a firefighter is en route at 360.
+      - fx3rA1 3, A/N B/E C/S (1): A/N's victim_4 is detected at 185 (92); in B/E and C/S a victim is NEVER
+        detected.
+      - fx3rB3 1, B/S 9662 (1): a victim on the edge row (25, 48) is never detected.
+      - fx3rS2, fx3rB0, fx3rB2, fx3rB23: 0.
+FAIL  (O) searcher two-cell oscillation episodes in EVERY gated arm (Part 3 in brackets):
+      fx3rS 11 (2), fx3rS2 9 (3), fx3rA1 12 (1), fx3rB0 16 (6), fx3rB2 11 (3), fx3rB3 13 (4), fx3rB23 11 (3).
+      The longest runs 24-57 steps. Episodes near a depot are back at 1-5 per arm (0 in Part 3).
+FAIL  route_blocked gate at 240 steps. There is ONE new loss, D/east 303 (3 -> 2). Two things are PASS: the
+      pooled count rises 59 -> 60, and Part 3's two new losses (606, 505) are gone; 505 is now a gain.
+      The TRACE (addendum C) is CONSISTENT at step 240. The lost victim is NEVER detected, at 240 or by 360:
+      this is not a victim found late that the 360-step run rescues. The 360-step harness confirms it: D/east
+      303 has a never-detected victim in both role variants, where a5a496db rescued them all by step 121.
+FAIL  the full test suite fails 3 tests (pre-registered: exactly {T5}):
+      - T5;
+      - test_wind_aware_trajectory_regression.py::test_north_vs_south_trajectories_diverge_over_40_steps;
+      - test_wind_aware_trajectory_regression.py::test_east_vs_west_trajectories_diverge_over_40_steps.
+      The two trajectory tests pass in isolation. They fail only under the global state that earlier tests leave
+      behind: variable wind (FIXED_WIND False, west -> east p 0.8), 2 UAVs, 3 victims (dumped by
+      outputs/_fx3r_state_plugin.py). Under that state the failure is caused by (a) ALONE: with
+      SEARCHER_FIRE_ROUTE_OWNER on, north and south end on the same planner target (24, 4); with it off they
+      diverge, (8, 4) vs (41, 4). This holds with the bounded wait on or off (outputs/_fx3r_traj_polluted.py).
+PASS  identity 1: every switch 0 == a5a496db (probe 16/16, harness 16/16, route_blocked 4/4).
+PASS  identity 2: the two new switches 0 == fix3a Part 2 shipped, a1373935 (probe 16/16).
+PASS  (A) ONE OWNER, structurally exact in every (a)-on arm:
+      - executed memoryless-retreat labels: 0;
+      - gate vetoes not handed to the route: 0 (325-603 hand-offs per arm);
+      - searcher moves the edge filter forbids: 0. For comparison, fx3rX / fx3rZ / fx3rSZ2 / fx3rA2 had 224-314
+        such moves per 16 runs, nearly all on Part 2's routed steps.
+PASS  (W) the bound per latch, reconstructed from the rows independently of the counter: the largest count is
+      exactly 20 (39 in the sensitivity arm), and 0 latches exceed W.
+PASS  A2: docked or charged outside a footprint 0, shared cells 0, standoffs 0-1 (a5a496db 1), return-leg
+      oscillation / stall 0.
+PASS  B four ways and its STOP rule (C -403 <= G 513). B2 closes the gap 584 -> 0 with searcher returns 1.75.
+      B3 on top of B2 fires 0 UAV-steps; alone, 419; the lowest arrival is 31.3 > LOW.
+PASS  Session 1's B checks, drone steps in fire (searcher -0.11 / -0.06 / -0.15 points), the yield rules, and
+      the invariants (no hard invariant fails).
+
+WHAT THIS MEANS FOR THE PAPER (the headline): the one-owner rule was implemented EXACTLY - the structural
+check finds no memoryless steering step left near fire and no edge-filter violation - and the searchers
+oscillate MORE and find victims LATER. One owner is necessary, not sufficient: the owner's own no-path rules
+must share one objective, and the target generator must see what the owner refuses (section 5). Part 3's
+searcher numbers (fix3a Part 2 at a1373935) remain the best measured state of the searcher; round 2 must not
+be used.
+
+================================================================================
+1. HOUSEKEEPING (as instructed)
+================================================================================
+  QUARANTINE: my recursive searches were path-scoped (src_extension/, tests/, named files; grep -r with
+    --exclude-dir=_firemech_rewound_20260914). ONE BREACH BY A SUB-AGENT: a mapping agent rooted one Grep at
+    the repo root (glob *.py). ripgrep honours .git/info/exclude, which lists /outputs/_firemech_rewound_20260914/,
+    and the agent reports that nothing from it was returned or opened. The rule asks for an explicit
+    exclusion, so it is recorded here as a breach.
+  TAG NAMES: every round-2 tag (fx3r*, the smoke pair fx3rsm*, the trace fx3rgTe303) was checked unused
+    before its wave: 0 on disk, 0 tracked. The queue script refuses to overwrite. The prefix is fx3r, not fx3b:
+    Windows is case-insensitive, and fx3b0 would collide with Part 3's fx3B0.
+  WORKTREES: none.
+  SWITCHES: SEARCHER_FIRE_ROUTE_OWNER and SEARCHER_ROUTE_BOUNDED_WAIT ship 1 and turn off only on an exact
+    zero. SEARCHER_ROUTE_WAIT_LIMIT must be an integer >= 1, or it RAISES; it is validated at every execute().
+  AGENTS: the review quota is now used up, 3 of 3 (Part 2's review and this round's 2-lens review). This
+    round also ran a 4-agent READ-ONLY MAPPING workflow (the steering paths, the target sources, the label
+    consumers, the post-route guards: outputs/fix3a_r2_map_*.txt). Those were not review agents, but the quota
+    was stated as tight. Ultracode was switched on for this round; I took that as licence for the mapping
+    workflow while keeping review agents within the cap of 3.
+  QUOTA: waves checked every 20-30 minutes (two stale timers fired early; I did not check on them).
+  SESSION 3b: not touched. The give-up CALLS the generator's existing helpers (_clear_target_hold,
+    _blacklist_target_neighborhood); the generator's target selection is not modified.
+
+================================================================================
+2. WHAT WAS BUILT (code at cacc8463; both switches ship 1)
+================================================================================
+2.1 (a) ONE OWNER - SEARCHER_FIRE_ROUTE_OWNER
+  - The searcher hazard gate still runs first, unchanged, and keeps its pocket state write. If it takes ANY
+    branch other than its pass-through, the step is planned by the latched fire-mode route toward the step's
+    target. The branches are: on-cell hazard, edge-blocked direction, the near-field retreat within 6 of fire
+    or smoke, and the lookahead re-rank / retreat.
+  - This holds on every step kind and in both gate invocations: ordinary search, the lawnmower sweep, the
+    known victim, the fallbacks, the hold escape, and the fail-safe search path.
+  - Once the searcher is latched on a target (Manhattan 2), the route owns every step until the latch is
+    released.
+  - ONE "NEAR": fire mode is entered within 6 of fire OR smoke, the gate's own measure. The clearance
+    (burning distance >= min(d0, 6)) and "smoke impassable" are unchanged (R-2, R-3).
+  - The BFS plans within the edge filter as a directed transition constraint (exact; exhaustive test).
+  - Fire-mode steps skip execute()'s second gate pass. A reached goal is kept and waited on (counted). With
+    no path: a strictly-farther retreat inside the near field, or a wait. With no goal: the step leaves the
+    edge band. A wait's direction stays on the grid.
+2.2 (b) THE BOUNDED WAIT - SEARCHER_ROUTE_BOUNDED_WAIT, SEARCHER_ROUTE_WAIT_LIMIT W = 20
+  - W counts, per latch, the model steps on which the latched route found no path. It counts once per model
+    step, never on a return leg, and cumulatively over the latch.
+  - AT W, THE GIVE-UP:
+    - the goal is refused for G = 15 steps (the generator's own blacklist cooldown);
+    - the commit hold is released;
+    - the goal's neighbourhood is blacklisted;
+    - the escape target is cleared if it is this goal;
+    - the generator is forced to re-pick.
+  - The refusal applies at every target source, with backstops in the gate and the route.
+2.3 THE BOUND, fixed before any run (prereg 1.3): W = 20; the sensitivity bound is 39 (the longest pre-latch
+  fire-wait). The reasoning: 85% of the latched waits that ended in a reopened path reopened within 20 steps,
+  and 20 is the controller's own pocket threshold.
+2.4 THE REVIEW (2 agents) AND THE SMOKE PAIR, both BEFORE the arms (prereg addendum C)
+  - Defects found and fixed with tests:
+    - C1: a reached goal handed to the no-goal retreat alternated with the planner.
+    - C2: route ownership was set for any route result.
+    - C3: a stale latch survived steps toward other targets.
+    - C4: a no-goal wait in the edge band was a possible permanent stall.
+    - C5: W validation, and the scope of the fail-safe hand-off (a8).
+    - C6: accounting.
+    - C7: 24 legacy-gate test cases (21 SITE A off-grid, the always-on edge retreat, fix2 route, Part 2 smoke) were pinned at SEARCHER_FIRE_ROUTE_OWNER = 0, each with an owner-on
+      counterpart.
+  - The revert check passes: each switch fails its own tests at 0 (owner 15, bound 9;
+    outputs/_fx3_revert_check.txt).
+  - The smoke pair on C/S 9610:
+    - fx3rsmX == fx3S, so identity 2 held.
+    - fx3rsmS was recorded BEFORE the arms. C/S was still unfinished, because the generator re-issued targets
+      3-5 cells away in the same unreachable region, each a fresh latch.
+    The design was not changed for it (disclosed in addendum C).
+  - NOTE: fix C4 (the band exit) is one half of the dominant failure below (5.1). It was a review fix, tested
+    in isolation. The interaction with the near-field retreat was not tested.
+
+================================================================================
+3. RESULTS PER CHECK (every arm; gated = the A1-containing arms S, S2, A1, B0, B2, B3, B23)
+================================================================================
+3.1 (N) / (O) / (W), per arm:
+  arm      (N)            (O) FULL/PRE, longest | near depot | (W) fire-wait episodes, longest, overlapping
+                                                                a victim that later dies / never detected
+  fx3rZ    3 rep.         27 / 12, 119 | 9           0
+  fx3rX    1 rep.          2 / 1,  33  | 0           140, 89, 31 / 4        (== Part 3 fx3S)
+  fx3rSZ2  0 rep.         14 / 2,  124 | 2           0
+  fx3rA2   2 rep.         22 / 11, 119 | 6           0
+  fx3rS    1  FAIL        11 / 9,  26  | 1  FAIL     196, 30, 30 / 9
+  fx3rS2   0  PASS         9 / 3,  42  | 2  FAIL     200, 22, 23 / 4
+  fx3rA1   3  FAIL        12 / 10, 24  | 2  FAIL     183, 30, 27 / 52
+  fx3rB0   0  PASS        16 / 8,  34  | 5  FAIL     193, 39, 41 / 25
+  fx3rB2   0  PASS        11 / 2,  34  | 5  FAIL     184, 34, 23 / 7
+  fx3rB3   1  FAIL        13 / 8,  57  | 4  FAIL     178, 24, 51 / 54
+  fx3rB23  0  PASS        11 / 2,  34  | 5  FAIL     184, 34, 23 / 7
+  fx3rW    1 rep.         10 / 7,  32  | 1           195, 39, 30 / 9   (sensitivity, W = 39)
+  fx3rW2   0 rep.         14 / 4,  48  | 2           188, 38, 22 / 4   (sensitivity)
+  - A fire-wait EPISODE (consecutive waits) can span a give-up and a new latch, so the longest episode can
+    exceed W (30-39). The per-latch count never does (3.3).
+  - PAPER: see section 5. Round 2's searcher is not usable. The sensitivity bound (39) does not rescue it:
+    the oscillations are not a waiting-time effect.
+3.2 (A) ONE OWNER - PASS in every (a)-on arm:
+  - (i) executed memoryless-retreat labels: 0;
+  - (ii) gate vetoes not handed to the route: 0 (325-603 hand-offs per arm);
+  - (iii) edge-forbidden searcher moves: 0.
+  The four arms without (a) (Z, X, SZ2, A2) show 224-314 edge-forbidden moves per 16 runs, nearly all on
+  Part 2's routed steps. Part 2's escape route has broken the edge filter all along.
+  PAPER: the rule "no second memoryless steering path near fire" is implementable exactly and verifiable
+  from the logs; Part 2's own route was a second owner the edge filter could not see.
+3.3 (B) THE BOUNDED WAIT:
+  - The reconstructed per-latch maximum is exactly W: 20 in every gated arm, 39 in fx3rW / fx3rW2.
+  - Give-ups: 28-36 per arm, in 9-14 of 16 runs. Repeat-region give-ups (within Manhattan 6 of an earlier
+    one): 7-10 per arm.
+  - Given-up targets re-issued inside their refusal: on 100-188 steps per arm.
+  - The per-target chain (across latches) reaches 21-47.
+  - The per-UAV total of no-path steps reaches 125-207.
+  - About 2/3 of all wait steps have NO hazard within 6: 609-767 far vs 295-455 near. These are waits for
+    unreachable or edge goals, not fire waits.
+  PAPER: a per-latch bound is exact and cheap; it does not bound total idling when the target generator
+  re-issues neighbours of an unreachable region.
+3.4 (C) C/S 9610: victim_0 is detected at step 338 in fx3rS (a5a496db 344, pre-latch 188, Part 3 337). The run
+  is unfinished: victim_0 is assigned and its firefighter en route at 360. In fx3rA1 it is never detected. In
+  fx3rW it is detected at 358.
+3.5 (R) route_blocked: see the verdict. The trace (outputs/_sd_fx3rgTe303.json) reproduces the campaign at step
+  240: 2 rescued, 1 dead, 1 candidate. victim_0 is never detected in 360 steps.
+3.6 Rescued / dead / never detected (a SCREEN, never gated):
+  - fx3rS 55/8/0 (Part 3 fx3S 52/11/0); fx3rS2 60/4/0 (59/5/0); fx3rA1 46/7/2 (46/9/0).
+  - B0 56/8/0, B2 58/6/0, B3 54/9/1, B23 58/6/0.
+  - Harness: 51/11/2 vs a5a496db 49/11/0, where +2 is B's team and 2 are never detected (D/east 303 x 2).
+  - Drone steps in fire: PASS; searcher time on burning cells is lower in every arm.
+  PAPER: no outcome claim from these screens. The canonical-13 lesson applies, and the never-detected
+  victims are the signal that counts.
+3.7 Re-confirmed from Part 3 - all PASS:
+  - identity 1 and 2;
+  - A2's structural checks;
+  - B four ways and the STOP rule;
+  - session 1's B checks (LOW / CRITICAL 0, fail-safe reasons 0, emergency steps 0; every trip that did not
+    arrive was started within its distance of the horizon);
+  - exposure;
+  - the yield rules (violations 0);
+  - the invariants (no hard invariant fails). Stuck-UAV episodes rise (18 vs 5, the waits) and UAV
+    livelocks fall (10 vs 36).
+  Two round-2 changes show up in these checks:
+  - sweep targets in the edge band 0 and routed steps inside the clearance 0 still hold;
+  - searcher depot-pocket steps before the terminal step RETURN: set 1 B 42, C 39; set 2 A 16, B 10, D 10.
+    Part 3 had 0 on set 1.
+
+================================================================================
+4. THE EDGE-COVERAGE QUESTION (B/N 9671, maintainer)
+================================================================================
+  - The B/N 9671 victim did not start on the edge. It began in the interior at (40, 25), fled east into the
+    outer ring by step 106 and settled at (49, 20).
+  - In Part 3's B3-alone arm no UAV came within the observation radius (8) of it.
+  - In round 2 it is detected at steps 64-68, before it reached the edge, and RESCUED in all four B arms.
+  DOES THE HOLE EXIST IN THE SHIPPED ARM? Not as a coverage hole. Share of outer-ring cells (edge distance <= 3)
+  ever within 8 of a UAV, full run:
+  - a5a496db: 87.2%. Part 3 shipped: 94.5%. Round 2 shipped: 90.7-93.8%.
+  - Shipped searchers spend less than half as long in the ring (Part 3: 7.6% of flying steps vs 16.9%).
+  - Part 3 shipped (B23) and round 2 fx3rS / fx3rS2 / fx3rB23 have 0 never-detected victims.
+  DOES IT RELATE TO THE EDGE FILTER? No:
+  - the observation radius (8) reaches the ring from the band's inner lane;
+  - the shipped arm observes MORE of the ring than a5a496db while its searchers stay out of it.
+  WHAT IS TRUE: every never-detected victim in both rounds (a5a496db 2, Part 3 B3 1, round 2 A1 2, B3 1) had
+  fled into the ring. The ring is less observed than the interior before the terminal step (78-84% vs
+  85-92%). A victim that flees there is found only if a searcher's route passes within 8, so the misses are
+  search order and time. Round 2 costs search time.
+  PAPER: edge victims are the hard case, but the edge filter is not the cause; detection radius 8 covers the
+  band it forbids.
+
+================================================================================
+5. DIAGNOSIS - WHY ROUND 2 FAILS (outputs/_fx3r_osc_mech.txt; traces in section 8)
+================================================================================
+5.1 BAND - the route's two no-path rules take turns (7-9 of the (O) episodes in most gated arms).
+  - Inside the near field with no path, the route retreats to the neighbour STRICTLY FARTHER from the fire.
+    That neighbour can be inside the edge band.
+  - There, with no path again, the band exit (review fix C4) steps OUT toward lower penetration, which is back
+    toward the fire.
+  - Example: B/S 9606 alternates (4, 25) <-> (3, 25) for 17 steps.
+  - Both steps belong to the one owner, but they optimise two different quantities (burning distance, band
+    penetration): two owners again, inside the route.
+  - The same pair recreates depot pockets, because the corner depots lie in the band.
+5.2 FIRE - no-path alternations with a moving front (2-7 episodes per arm).
+  - The burning distance flickers by +-1 as cells ignite and burn out.
+  - A strictly-farther retreat at the near-field boundary then takes turns with the wait or with the next
+    retreat.
+5.3 THE PLANNER NO LONGER HEARS THE VETO.
+  - Under the legacy gate, a retreat's label ("victim_search_hazard_retreat") was the target generator's only
+    signal. The wind-state sync forced a retarget and blacklisted the area around the searcher.
+  - Under (a) the veto is absorbed by the route and the signal is gone. The generator keeps issuing targets
+    the route cannot reach. The route waits, then gives up.
+  - The cost: 28-36 give-ups per arm, repeat-region give-ups 7-10, ~2/3 of waits far from any hazard, later
+    detections (A1: 2 victims never detected, 3 runs unfinished; D/east 303 never detected).
+  - It is also the trajectory-test failure: under variable wind the planner's target no longer depends on the
+    wind within 40 steps.
+  - This is the same "veto layered on a planner that cannot see it", one level up: the TARGET GENERATOR
+    cannot see the route's refusals.
+
+================================================================================
+6. OPTIONS FOR THE MAINTAINER (nothing below is implemented; round 2 stops here)
+================================================================================
+  (i) ONE OBJECTIVE FOR THE NO-PATH STEP. The retreat never enters or deepens the band. The band exit never
+      lowers the burning distance inside the near field. Candidates are ranked by one lexicographic potential
+      (band penetration first, then burning distance), so no pair of no-path steps can cycle. This targets
+      5.1 and part of 5.2.
+  (ii) MAKE THE REFUSAL VISIBLE TO THE PLANNER. A hand-off and a no-path step emit the planner signal the
+      legacy retreat label gave (force the retarget, blacklist the unreachable goal's region - not the
+      searcher's own cell). This targets 5.3. A reachability-aware target choice would be the complete answer,
+      but it is the generator's (session 3b's) territory.
+  (iii) FALL BACK: keep fix3a Part 2's searcher (A1 as in Part 3) and ship A2 + B. The Part 3 report's option
+      (c) still applies: A2 and B pass every gate in both rounds.
+  (iv) Whatever is chosen, fix the TEST-ISOLATION defect separately: the wind-trajectory tests depend on
+      global state left by earlier tests (variable wind, team size). They should set their own configuration.
+  MY RECOMMENDATION: (i) + (ii) as one round-3 design, pre-registered on the same sample with the gates
+  unchanged, with a PROTOTYPE SCREEN that measures (O) by the broad measure BEFORE the pre-registration. That
+  screen is what round 2 lacked for its own rules, and 5.1 and 5.3 would have shown in it.
+
+================================================================================
+7. THE LESSON (ruled) AND WHAT ROUND 2 ADDS
+================================================================================
+  RULED: A1 removed one veto-against-planner livelock but left the same pattern on the steps the route does
+  not control. THE RULE THAT FOLLOWS: A GUARD MUST BE PLANNED WITHIN, EVERYWHERE IT ACTS.
+  ADDED BY THIS ROUND:
+  - ONE OWNER NEEDS ONE OBJECTIVE. The owner's no-path rules (a fire retreat and a band exit) optimised
+    different quantities and livelocked each other. "Planned within the guard" means one potential over all
+    the guards (fire distance, edge band), not one planner per guard.
+  - REMOVING A VETO REMOVES A SIGNAL. The memoryless retreat was also the planner's only feedback. When a
+    lower layer absorbs a refusal, the layer above must be told, or it keeps asking for what cannot be done.
+  - A FIX FROM A REVIEW IS A NEW RULE. The band exit (C4) was reviewed and unit-tested alone. Its interaction
+    with the retreat is the dominant failure. Every rule added after a prototype needs its own screen by the
+    gate's measure, not only a unit test.
+  - GLOBAL STATE LEAKS BETWEEN TESTS. Two regression tests passed for months only in their own order.
+
+================================================================================
+8. PAPER FINDINGS (for the maintainer to rule)
+================================================================================
+  1. The one-owner rule is implementable exactly and verifiable from logs: 0 memoryless steering steps near
+     fire and 0 edge-filter violations, where fix3a Part 2's route broke the edge filter about 300 times per
+     16 runs. On its own it does not remove livelock: an owner with two objectives oscillates.
+  2. A per-latch wait bound is exact (max = W in every arm). Total idling stays unbounded when the target
+     generator re-issues neighbours of an unreachable region.
+  3. B2 is confirmed a third time: no-searcher gap 584 -> 0 with fewer searcher returns (1.75). B3 is a safety
+     net: 0 firings on top of B2, and no delayed return below LOW.
+  4. Edge victims are the hard case (every never-detected victim fled into the outer ring), but the edge
+     filter does not cause it: detection radius 8 covers the band, and the shipped arm observes more of the
+     ring than a5a496db.
+  5. fix3a Part 2 (a1373935) remains the best measured searcher; its Part 3 numbers stand. Round 2 must not be
+     used for results.
+  TRACES: B/S 9606 steps 90-111 (5.1); A/N 9601 steps 165-185 (5.1, the band variant of FIRE); the
+  wind-trajectory reproduction (5.3); C/S 9610's re-issued region (addendum C).
+
+================================================================================
+9. FILES
+================================================================================
+  - Code: cacc8463.
+  - Tests: tests/test_fix3a_r2.py and the pinned legacy tests.
+  - Pre-registration: outputs/fix3a_r2_prereg.txt.
+  - Maps: outputs/fix3a_r2_map_*.txt.
+  - Runs: outputs/_fx3_q_r2all.jsonl, outputs/_fx3_pool_r2.log, outputs/_sd_fx3r*_*.json,
+    outputs/_ffr_fx3rh*_*.json, outputs/_rblatch_camp2_fx3rg*_D_*.json; trace outputs/_sd_fx3rgTe303.json.
+  - Analysis: outputs/_fx3r_analysis.txt, outputs/_fx3r_osc_mech.txt, outputs/_fx3r_invariants_S.txt / _Z.txt,
+    outputs/_fx3r_hs_compare.py.
+  - Test runs: full suite outputs/_fx3r_fullsuite.log; suite-order state outputs/_fx3r_state_*.json and
+    outputs/_fx3r_prefix_suite.log; reproduction outputs/_fx3r_traj_polluted.py.
+  - Evidence behind the bound: outputs/_fx3b_waitdist.py, outputs/_fx3b_edgecov.py.

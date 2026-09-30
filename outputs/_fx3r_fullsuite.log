@@ -1,0 +1,516 @@
+........................................................................ [  4%]
+........................................................................ [  9%]
+........................................................................ [ 14%]
+........................................................................ [ 19%]
+........................................................................ [ 23%]
+........................................................................ [ 28%]
+........................................................................ [ 33%]
+........................................................................ [ 38%]
+........................................................................ [ 42%]
+........................................................................ [ 47%]
+........................................................................ [ 52%]
+........................................................................ [ 57%]
+........................................................................ [ 61%]
+........................................................................ [ 66%]
+........................................................................ [ 71%]
+........................................................................ [ 76%]
+........................................................................ [ 80%]
+......................................F................................. [ 85%]
+........................................................................ [ 90%]
+........................................................................ [ 95%]
+.......................................................FF............... [ 99%]
+..                                                                       [100%]
+================================== FAILURES ===================================
+____________ test_fire_tracker_uavs_receive_different_target_sets _____________
+
+    def test_fire_tracker_uavs_receive_different_target_sets() -> None:
+        generator = LocalAdaptationSpaceGenerator()
+        runtime_models = _runtime_models(["0", "1", "2"])
+    
+        fire_targets: dict[str, set[tuple[int, int]]] = {}
+        for uav_id in ("0", "1", "2"):
+            runtime_models["uav_id"] = uav_id
+            runtime_models["uav_resource_model"] = _FakeUAVResource(
+                by_uav_id={
+                    uid: type("Role", (), {"current_role": "fire_tracker"})()
+                    for uid in ("0", "1", "2")
+                }
+            )
+            space = generator.generate(
+                {"target_entity": uav_id, "triggers": ()},
+                {},
+                runtime_models,
+                timestamp=1.0,
+            )
+            targets = {
+                tuple(option.parameters.get("target_region"))
+                for option in space.options
+                if option.parameters.get("path_action", "").startswith("move_toward_fire")
+                and option.parameters.get("target_region") is not None
+            }
+            fire_targets[uav_id] = targets
+    
+        assert fire_targets["0"]
+        assert fire_targets["1"]
+        assert fire_targets["2"]
+        assert fire_targets["0"].isdisjoint(fire_targets["1"])
+>       assert fire_targets["1"].isdisjoint(fire_targets["2"])
+E       assert False
+E        +  where False = <built-in method isdisjoint of set object at 0x000001B28EDA7E60>({(1, 5), (2, 5), (3, 5)})
+E        +    where <built-in method isdisjoint of set object at 0x000001B28EDA7E60> = {(1, 5), (2, 5), (3, 5)}.isdisjoint
+
+tests\test_uav_sector_assignment.py:198: AssertionError
+___________ test_north_vs_south_trajectories_diverge_over_40_steps ____________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x000001B28F83B0D0>
+
+    def test_north_vs_south_trajectories_diverge_over_40_steps(monkeypatch) -> None:
+        _pin_centre_spawn(monkeypatch)
+        north = _run_wind_simulation("north", steps=40, seed=DEFAULT_SEED)
+        south = _run_wind_simulation("south", steps=40, seed=DEFAULT_SEED)
+    
+        _assert_wind_aware_behavior(north)
+        _assert_wind_aware_behavior(south)
+>       _assert_trajectory_or_region_diverged(north, south)
+
+tests\test_wind_aware_trajectory_regression.py:335: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests\test_wind_aware_trajectory_regression.py:291: in _assert_trajectory_or_region_diverged
+    _assert_planning_targets_differ(a, b)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+a = WindSimTrace(wind='north', positions=[(26, 26), (25, 26), (24, 26), (25, 26), (26, 26), (27, 26), (26, 26), (25, 26), ...o_interior_fire_retreat'], final_target=(24.0, 4.0), model=<wildfire_model.WildFireModel object at 0x000001B28F83A2C0>)
+b = WindSimTrace(wind='south', positions=[(26, 24), (25, 24), (24, 24), (25, 24), (25, 25), (26, 25), (25, 25), (24, 25), ...o_interior_fire_retreat'], final_target=(24.0, 4.0), model=<wildfire_model.WildFireModel object at 0x000001B28F2EE8C0>)
+
+    def _assert_planning_targets_differ(a: WindSimTrace, b: WindSimTrace) -> None:
+        a_targets = set(a.wind_planning_targets)
+        b_targets = set(b.wind_planning_targets)
+        assert a_targets or b_targets, "expected wind planning targets during MAPE run"
+        if a_targets and b_targets:
+            assert a_targets != b_targets, (
+                f"wind planning targets should differ: {a.wind}={a_targets} {b.wind}={b_targets}"
+            )
+        if a.final_target is not None and b.final_target is not None:
+>           assert a.final_target != b.final_target
+E           AssertionError: assert (24.0, 4.0) != (24.0, 4.0)
+E            +  where (24.0, 4.0) = WindSimTrace(wind='north', positions=[(26, 26), (25, 26), (24, 26), (25, 26), (26, 26), (27, 26), (26, 26), (25, 26), ...o_interior_fire_retreat'], final_target=(24.0, 4.0), model=<wildfire_model.WildFireModel object at 0x000001B28F83A2C0>).final_target
+E            +  and   (24.0, 4.0) = WindSimTrace(wind='south', positions=[(26, 24), (25, 24), (24, 24), (25, 24), (25, 25), (26, 25), (25, 25), (24, 25), ...o_interior_fire_retreat'], final_target=(24.0, 4.0), model=<wildfire_model.WildFireModel object at 0x000001B28F2EE8C0>).final_target
+
+tests\test_wind_aware_trajectory_regression.py:286: AssertionError
+---------------------------- Captured stdout call -----------------------------
+2
+[Environment] wind_direction=north wind_vector=(0.0, 1.0) step=0
+[Environment] wind_direction=north wind_vector=(0.0, 1.0) step=1
+explain=wind_aware_search wind=north target=(26.0,34.0)
+[Environment] wind_direction=north wind_vector=(0.0, 1.0) step=2
+explain=wind_aware_search planner_source=local_adaptation_generator wind=north target=(2.0,44.0)
+[Environment] wind_direction=north wind_vector=(0.0, 1.0) step=3
+explain=wind_aware_search planner_source=local_adaptation_generator wind=north target=(2.0,44.0)
+[Environment] wind_direction=east wind_vector=(1.0, 0.0) step=4
+explain=wind_aware_search planner_source=local_adaptation_generator wind=east target=(41.0,26.0)
+[Environment] wind_direction=east wind_vector=(1.0, 0.0) step=5
+explain=wind_aware_search planner_source=local_adaptation_generator wind=east target=(41.0,41.0)
+[Environment] wind_direction=east wind_vector=(1.0, 0.0) step=6
+explain=wind_aware_search planner_source=local_adaptation_generator wind=east target=(41.0,41.0)
+[Environment] wind_direction=west wind_vector=(-1.0, 0.0) step=7
+explain=wind_aware_search planner_source=local_adaptation_generator wind=west target=(8.0,26.0)
+[Environment] wind_direction=west wind_vector=(-1.0, 0.0) step=8
+explain=wind_aware_search planner_source=local_adaptation_generator wind=west target=(8.0,41.0)
+[Environment] wind_direction=west wind_vector=(-1.0, 0.0) step=9
+explain=wind_aware_search planner_source=local_adaptation_generator wind=west target=(8.0,41.0)
+[Environment] wind_direction=west wind_vector=(-1.0, 0.0) step=10
+explain=wind_aware_search planner_source=local_adaptation_generator wind=west target=(8.0,41.0)
+[UAV debug] step=10 failsafe_mode=normal
+  [FailSafeDecision] mission_mode= search_mode_active=False action=
+  uav=2500 role=fire_tracker pos=(28, 18) sector={'x_min': 15, 'x_max': 45, 'y_min': 3, 'y_max': 25, 'split_axis': 'none', 'flank_index': 0, 'flank_count': 1} battery=97.0 dir=1 next_action=south option_id=explore_unknown_region_2500_10 target_position=(42.0, 2.0) fail_safe_override_active=False local_fail_safe_override_active=False exec_applied=True exec_action=fire_safe_standoff exec_selected_dir=1 stuck_count=0 before_pos=(28, 19) current_pos_key=2500
+  uav=2501 role=victim_searcher pos=(23, 26) sector={'x_min': 0, 'x_max': 49, 'y_min': 0, 'y_max': 49} battery=97.0 dir=2 next_action=victim_search_wind_aware option_id=wind_aware_victim_search target_position=(8.0, 41.0) fail_safe_override_active=False local_fail_safe_override_active=False exec_applied=True exec_action=victim_search_wind_aware exec_selected_dir=2 stuck_count=0 before_pos=(24, 26) current_pos_key=2501
+[Environment] wind_direction=west wind_vector=(-1.0, 0.0) step=11
+explain=wind_aware_search wind=west target=(8.0,41.0)
+[Environment] wind_direction=west wind_vector=(-1.0, 0.0) step=12
+explain=wind_aware_search planner_source=local_adaptation_generator wind=west target=(8.0,41.0)
+[Environment] wind_direction=west wind_vector=(-1.0, 0.0) step=13
+explain=wind_aware_search planner_source=local_adaptation_generator wind=west target=(8.0,41.0)
+[Environment] wind_direction=west wind_vector=(-1.0, 0.0) step=14
+explain=wind_aware_search planner_source=local_adaptation_generator wind=west target=(8.0,41.0)
+[Environment] wind_direction=west wind_vector=(-1.0, 0.0) step=15
+explain=wind_aware_search planner_source=local_adaptation_generator wind=west target=(8.0,4.0)
+[Environment] wind_direction=west wind_vector=(-1.0, 0.0) step=16
+explain=wind_aware_search planner_source=local_adaptation_generator wind=west target=(8.0,4.0)
+[Environment] wind_direction=west wind_vector=(-1.0, 0.0) step=17
+explain=wind_aware_search planner_source=local_adaptation_generator wind=west target=(8.0,4.0)
+[Environment] wind_direction=west wind_vector=(-1.0, 0.0) step=18
+explain=wind_aware_search planner_source=local_adaptation_generator wind=west target=(8.0,4.0)
+[Environment] wind_direction=west wind_vector=(-1.0, 0.0) step=19
+explain=wind_aware_search planner_source=local_adaptation_generator wind=west target=(8.0,4.0)
+[Environment] wind_direction=west wind_vector=(-1.0, 0.0) step=20
+explain=wind_aware_search planner_source=local_adaptation_generator wind=west target=(8.0,4.0)
+[Monitoring] step=20 avg_norm_ig=0.7587 uncertain_cells=1910
+[UAV debug] step=20 failsafe_mode=normal
+  [FailSafeDecision] mission_mode= search_mode_active=False action=
+  uav=2500 role=fire_tracker pos=(29, 21) sector={'x_min': 9, 'x_max': 49, 'y_min': 0, 'y_max': 28, 'split_axis': 'none', 'flank_index': 0, 'flank_count': 1} battery=94.0 dir=1 next_action=south option_id=explore_unknown_region_2500_20 target_position=(42.0, 2.0) fail_safe_override_active=False local_fail_safe_override_active=False exec_applied=True exec_action=fire_safe_standoff exec_selected_dir=1 stuck_count=0 before_pos=(29, 22) current_pos_key=2500
+  uav=2501 role=victim_searcher pos=(20, 23) sector={'x_min': 0, 'x_max': 49, 'y_min': 0, 'y_max': 49} battery=94.0 dir=1 next_action=victim_search_wind_aware option_id=wind_aware_victim_search target_position=(8.0, 4.0) fail_safe_override_active=False local_fail_safe_override_active=False exec_applied=True exec_action=victim_search_wind_aware_fire_route exec_selected_dir=1 stuck_count=0 before_pos=(20, 24) current_pos_key=2501
+[Environment] wind_direction=west wind_vector=(-1.0, 0.0) step=21
+explain=wind_aware_search planner_source=local_adaptation_generator wind=west target=(5.0,4.0)
+[Environment] wind_direction=east wind_vector=(1.0, 0.0) step=22
+explain=wind_aware_search planner_source=local_adaptation_generator wind=east target=(41.0,4.0)
+[Environment] wind_direction=east wind_vector=(1.0, 0.0) step=23
+explain=wind_aware_search planner_source=local_adaptation_generator wind=east target=(44.0,4.0)
+[Environment] wind_direction=east wind_vector=(1.0, 0.0) step=24
+explain=wind_aware_search planner_source=local_adaptation_generator wind=east target=(44.0,4.0)
+[Environment] wind_direction=west wind_vector=(-1.0, 0.0) step=25
+[KnowledgeManager] t=25.0 avg_conf=0.145 high_prob_cells=138
+[Environment] wind_direction=west wind_vector=(-1.0, 0.0) step=26
+[Environment] wind_direction=west wind_vector=(-1.0, 0.0) step=27
+explain=wind_aware_search wind=west target=(24.0,4.0)
+[Environment] wind_direction=west wind_vector=(-1.0, 0.0) step=28
+[Environment] wind_direction=west wind_vector=(-1.0, 0.0) step=29
+[Environment] wind_direction=west wind_vector=(-1.0, 0.0) step=30
+[UAV debug] step=30 failsafe_mode=normal
+  [FailSafeDecision] mission_mode= search_mode_active=False action=
+  uav=2500 role=fire_tracker pos=(30, 22) sector={'x_min': 3, 'x_max': 49, 'y_min': 0, 'y_max': 33, 'split_axis': 'none', 'flank_index': 0, 'flank_count': 1} battery=91.0 dir=3 next_action=south option_id=explore_unknown_region_2500_30 target_position=(42.0, 2.0) fail_safe_override_active=False local_fail_safe_override_active=False exec_applied=True exec_action=fire_flank_hold exec_selected_dir=3 stuck_count=0 before_pos=(30, 21) current_pos_key=2500
+  uav=2501 role=victim_searcher pos=(23, 26) sector={'x_min': 0, 'x_max': 49, 'y_min': 0, 'y_max': 49} battery=91.4 dir=3 next_action= option_id=local_stability_maintain_current_config_2501  fail_safe_override_active=False local_fail_safe_override_active=False exec_applied=True exec_action=victim_search_wind_aware_retarget_to_interior_fire_wait exec_selected_dir=3 stuck_count=2 before_pos=(23, 26) current_pos_key=2501
+[Environment] wind_direction=west wind_vector=(-1.0, 0.0) step=31
+[Environment] wind_direction=west wind_vector=(-1.0, 0.0) step=32
+[Environment] wind_direction=west wind_vector=(-1.0, 0.0) step=33
+[Environment] wind_direction=west wind_vector=(-1.0, 0.0) step=34
+[Environment] wind_direction=west wind_vector=(-1.0, 0.0) step=35
+[Environment] wind_direction=west wind_vector=(-1.0, 0.0) step=36
+[Environment] wind_direction=west wind_vector=(-1.0, 0.0) step=37
+[Environment] wind_direction=west wind_vector=(-1.0, 0.0) step=38
+[Environment] wind_direction=west wind_vector=(-1.0, 0.0) step=39
+[Environment] wind_direction=west wind_vector=(-1.0, 0.0) step=40
+[Monitoring] step=40 avg_norm_ig=0.7401 uncertain_cells=1890
+[UAV debug] step=40 failsafe_mode=normal
+  [FailSafeDecision] mission_mode= search_mode_active=False action=
+  uav=2500 role=fire_tracker pos=(29, 27) sector={'x_min': 0, 'x_max': 49, 'y_min': 0, 'y_max': 34, 'split_axis': 'none', 'flank_index': 0, 'flank_count': 1} battery=88.0 dir=1 next_action=south option_id=explore_unknown_region_2500_40 target_position=(42.0, 2.0) fail_safe_override_active=False local_fail_safe_override_active=False exec_applied=True exec_action=fire_safe_standoff exec_selected_dir=1 stuck_count=0 before_pos=(29, 28) current_pos_key=2500
+  uav=2501 role=victim_searcher pos=(24, 29) sector={'x_min': 0, 'x_max': 49, 'y_min': 0, 'y_max': 49} battery=89.6 dir=3 next_action=victim_search_wind_aware option_id=wind_aware_victim_search target_position=(24.0, 4.0) fail_safe_override_active=False local_fail_safe_override_active=False exec_applied=True exec_action=victim_search_wind_aware_retarget_to_interior_fire_retreat exec_selected_dir=3 stuck_count=0 before_pos=(24, 28) current_pos_key=2501
+2
+[Environment] wind_direction=south wind_vector=(0.0, -1.0) step=0
+[Environment] wind_direction=south wind_vector=(0.0, -1.0) step=1
+explain=wind_aware_search wind=south target=(26.0,0.0)
+[Environment] wind_direction=south wind_vector=(0.0, -1.0) step=2
+explain=wind_aware_search planner_source=local_adaptation_generator wind=south target=(2.0,5.0)
+[Environment] wind_direction=south wind_vector=(0.0, -1.0) step=3
+explain=wind_aware_search planner_source=local_adaptation_generator wind=south target=(2.0,5.0)
+[Environment] wind_direction=east wind_vector=(1.0, 0.0) step=4
+explain=wind_aware_search planner_source=local_adaptation_generator wind=east target=(41.0,26.0)
+[Environment] wind_direction=east wind_vector=(1.0, 0.0) step=5
+explain=wind_aware_search planner_source=local_adaptation_generator wind=east target=(41.0,41.0)
+[Environment] wind_direction=east wind_vector=(1.0, 0.0) step=6
+explain=wind_aware_search planner_source=local_adaptation_generator wind=east target=(41.0,41.0)
+[Environment] wind_direction=west wind_vector=(-1.0, 0.0) step=7
+explain=wind_aware_search planner_source=local_adaptation_generator wind=west target=(8.0,26.0)
+[Environment] wind_direction=west wind_vector=(-1.0, 0.0) step=8
+explain=wind_aware_search planner_source=local_adaptation_generator wind=west target=(8.0,41.0)
+[Environment] wind_direction=west wind_vector=(-1.0, 0.0) step=9
+explain=wind_aware_search planner_source=local_adaptation_generator wind=west target=(8.0,41.0)
+[Environment] wind_direction=west wind_vector=(-1.0, 0.0) step=10
+explain=wind_aware_search planner_source=local_adaptation_generator wind=west target=(8.0,41.0)
+[UAV debug] step=10 failsafe_mode=normal
+  [FailSafeDecision] mission_mode= search_mode_active=False action=
+  uav=2500 role=fire_tracker pos=(28, 18) sector={'x_min': 15, 'x_max': 45, 'y_min': 3, 'y_max': 25, 'split_axis': 'none', 'flank_index': 0, 'flank_count': 1} battery=97.0 dir=1 next_action=south option_id=explore_unknown_region_2500_10 target_position=(42.0, 2.0) fail_safe_override_active=False local_fail_safe_override_active=False exec_applied=True exec_action=fire_safe_standoff exec_selected_dir=1 stuck_count=0 before_pos=(28, 19) current_pos_key=2500
+  uav=2501 role=victim_searcher pos=(23, 26) sector={'x_min': 0, 'x_max': 49, 'y_min': 0, 'y_max': 49} battery=97.0 dir=3 next_action=victim_search_wind_aware option_id=wind_aware_victim_search target_position=(8.0, 41.0) fail_safe_override_active=False local_fail_safe_override_active=False exec_applied=True exec_action=victim_search_wind_aware exec_selected_dir=3 stuck_count=0 before_pos=(23, 25) current_pos_key=2501
+[Environment] wind_direction=west wind_vector=(-1.0, 0.0) step=11
+explain=wind_aware_search planner_source=local_adaptation_generator wind=west target=(8.0,41.0)
+[Environment] wind_direction=west wind_vector=(-1.0, 0.0) step=12
+explain=wind_aware_search planner_source=local_adaptation_generator wind=west target=(8.0,41.0)
+[Environment] wind_direction=west wind_vector=(-1.0, 0.0) step=13
+explain=wind_aware_search planner_source=local_adaptation_generator wind=west target=(8.0,41.0)
+[Environment] wind_direction=west wind_vector=(-1.0, 0.0) step=14
+explain=wind_aware_search planner_source=local_adaptation_generator wind=west target=(8.0,41.0)
+[Environment] wind_direction=west wind_vector=(-1.0, 0.0) step=15
+explain=wind_aware_search planner_source=local_adaptation_generator wind=west target=(8.0,41.0)
+[Environment] wind_direction=west wind_vector=(-1.0, 0.0) step=16
+explain=wind_aware_search planner_source=local_adaptation_generator wind=west target=(8.0,41.0)
+[Environment] wind_direction=west wind_vector=(-1.0, 0.0) step=17
+explain=wind_aware_search planner_source=local_adaptation_generator wind=west target=(8.0,41.0)
+[Environment] wind_direction=west wind_vector=(-1.0, 0.0) step=18
+explain=wind_aware_search planner_source=local_adaptation_generator wind=west target=(8.0,41.0)
+[Environment] wind_direction=west wind_vector=(-1.0, 0.0) step=19
+explain=wind_aware_search planner_source=local_adaptation_generator wind=west target=(8.0,41.0)
+[Environment] wind_direction=west wind_vector=(-1.0, 0.0) step=20
+explain=wind_aware_search planner_source=local_adaptation_generator wind=west target=(8.0,4.0)
+[Monitoring] step=20 avg_norm_ig=0.7330 uncertain_cells=1863
+[UAV debug] step=20 failsafe_mode=normal
+  [FailSafeDecision] mission_mode= search_mode_active=False action=
+  uav=2500 role=fire_tracker pos=(29, 21) sector={'x_min': 9, 'x_max': 49, 'y_min': 0, 'y_max': 28, 'split_axis': 'none', 'flank_index': 0, 'flank_count': 1} battery=94.0 dir=1 next_action=south option_id=explore_unknown_region_2500_20 target_position=(42.0, 2.0) fail_safe_override_active=False local_fail_safe_override_active=False exec_applied=True exec_action=fire_safe_standoff exec_selected_dir=1 stuck_count=0 before_pos=(29, 22) current_pos_key=2500
+  uav=2501 role=victim_searcher pos=(18, 29) sector={'x_min': 0, 'x_max': 49, 'y_min': 0, 'y_max': 49} battery=94.0 dir=1 next_action=victim_search_wind_aware option_id=wind_aware_victim_search target_position=(8.0, 4.0) fail_safe_override_active=False local_fail_safe_override_active=False exec_applied=True exec_action=victim_search_wind_aware exec_selected_dir=1 stuck_count=0 before_pos=(18, 30) current_pos_key=2501
+[Environment] wind_direction=west wind_vector=(-1.0, 0.0) step=21
+explain=wind_aware_search planner_source=local_adaptation_generator wind=west target=(5.0,4.0)
+[Environment] wind_direction=east wind_vector=(1.0, 0.0) step=22
+explain=wind_aware_search planner_source=local_adaptation_generator wind=east target=(38.0,4.0)
+[Environment] wind_direction=east wind_vector=(1.0, 0.0) step=23
+explain=wind_aware_search planner_source=local_adaptation_generator wind=east target=(44.0,4.0)
+[Environment] wind_direction=east wind_vector=(1.0, 0.0) step=24
+explain=wind_aware_search planner_source=local_adaptation_generator wind=east target=(44.0,4.0)
+[Environment] wind_direction=west wind_vector=(-1.0, 0.0) step=25
+[KnowledgeManager] t=25.0 avg_conf=0.154 high_prob_cells=139
+[Environment] wind_direction=west wind_vector=(-1.0, 0.0) step=26
+[Environment] wind_direction=west wind_vector=(-1.0, 0.0) step=27
+[Environment] wind_direction=west wind_vector=(-1.0, 0.0) step=28
+[Environment] wind_direction=west wind_vector=(-1.0, 0.0) step=29
+[Environment] wind_direction=west wind_vector=(-1.0, 0.0) step=30
+[UAV debug] step=30 failsafe_mode=normal
+  [FailSafeDecision] mission_mode= search_mode_active=False action=
+  uav=2500 role=fire_tracker pos=(30, 22) sector={'x_min': 3, 'x_max': 49, 'y_min': 0, 'y_max': 33, 'split_axis': 'none', 'flank_index': 0, 'flank_count': 1} battery=91.0 dir=3 next_action=west option_id=explore_unknown_region_2500_30 target_position=(18.0, 17.0) fail_safe_override_active=False local_fail_safe_override_active=False exec_applied=True exec_action=fire_flank_hold exec_selected_dir=3 stuck_count=0 before_pos=(30, 21) current_pos_key=2500
+  uav=2501 role=victim_searcher pos=(24, 25) sector={'x_min': 0, 'x_max': 49, 'y_min': 0, 'y_max': 49} battery=91.0 dir=1 next_action=victim_search_wind_aware option_id=wind_aware_victim_search target_position=(32.0, 4.0) fail_safe_override_active=False local_fail_safe_override_active=False exec_applied=True exec_action=victim_search_wind_aware_sweep exec_selected_dir=1 stuck_count=0 before_pos=(24, 26) current_pos_key=2501
+[Environment] wind_direction=west wind_vector=(-1.0, 0.0) step=31
+explain=wind_aware_search planner_source=local_adaptation_generator wind=west target=(41.0,4.0)
+[Environment] wind_direction=west wind_vector=(-1.0, 0.0) step=32
+explain=wind_aware_search planner_source=local_adaptation_generator wind=west target=(41.0,4.0)
+[Environment] wind_direction=west wind_vector=(-1.0, 0.0) step=33
+explain=wind_aware_search planner_source=local_adaptation_generator wind=west target=(41.0,4.0)
+[Environment] wind_direction=west wind_vector=(-1.0, 0.0) step=34
+explain=wind_aware_search planner_source=local_adaptation_generator wind=west target=(41.0,4.0)
+[Environment] wind_direction=west wind_vector=(-1.0, 0.0) step=35
+explain=wind_aware_search planner_source=local_adaptation_generator wind=west target=(41.0,4.0)
+[Environment] wind_direction=west wind_vector=(-1.0, 0.0) step=36
+explain=wind_aware_search planner_source=local_adaptation_generator wind=west target=(41.0,4.0)
+[Environment] wind_direction=west wind_vector=(-1.0, 0.0) step=37
+explain=wind_aware_search planner_source=local_adaptation_generator wind=west target=(41.0,4.0)
+[Environment] wind_direction=west wind_vector=(-1.0, 0.0) step=38
+explain=wind_aware_search planner_source=local_adaptation_generator wind=west target=(41.0,4.0)
+[Environment] wind_direction=west wind_vector=(-1.0, 0.0) step=39
+explain=wind_aware_search planner_source=local_adaptation_generator wind=west target=(41.0,4.0)
+[Environment] wind_direction=west wind_vector=(-1.0, 0.0) step=40
+[Monitoring] step=40 avg_norm_ig=0.7197 uncertain_cells=1890
+[UAV debug] step=40 failsafe_mode=normal
+  [FailSafeDecision] mission_mode= search_mode_active=False action=
+  uav=2500 role=fire_tracker pos=(29, 27) sector={'x_min': 0, 'x_max': 49, 'y_min': 0, 'y_max': 34, 'split_axis': 'none', 'flank_index': 0, 'flank_count': 1} battery=88.0 dir=1 next_action=south option_id=explore_unknown_region_2500_40 target_position=(42.0, 2.0) fail_safe_override_active=False local_fail_safe_override_active=False exec_applied=True exec_action=fire_safe_standoff exec_selected_dir=1 stuck_count=0 before_pos=(29, 28) current_pos_key=2500
+  uav=2501 role=victim_searcher pos=(24, 29) sector={'x_min': 0, 'x_max': 49, 'y_min': 0, 'y_max': 49} battery=89.2 dir=3 next_action=victim_search_wind_aware option_id=wind_aware_victim_search target_position=(24.0, 4.0) fail_safe_override_active=False local_fail_safe_override_active=False exec_applied=True exec_action=victim_search_wind_aware_retarget_to_interior_fire_retreat exec_selected_dir=3 stuck_count=0 before_pos=(24, 28) current_pos_key=2501
+____________ test_east_vs_west_trajectories_diverge_over_40_steps _____________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x000001B28E534DF0>
+
+    def test_east_vs_west_trajectories_diverge_over_40_steps(monkeypatch) -> None:
+        _pin_centre_spawn(monkeypatch)
+        east = _run_wind_simulation("east", steps=40, seed=DEFAULT_SEED)
+        west = _run_wind_simulation("west", steps=40, seed=DEFAULT_SEED)
+    
+        _assert_wind_aware_behavior(east)
+        _assert_wind_aware_behavior(west)
+>       _assert_trajectory_or_region_diverged(east, west)
+
+tests\test_wind_aware_trajectory_regression.py:345: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests\test_wind_aware_trajectory_regression.py:291: in _assert_trajectory_or_region_diverged
+    _assert_planning_targets_differ(a, b)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+a = WindSimTrace(wind='east', positions=[(27, 25), (27, 26), (27, 27), (27, 28), (27, 29), (27, 30), (26, 30), (25, 30), (...o_interior_fire_retreat'], final_target=(24.0, 4.0), model=<wildfire_model.WildFireModel object at 0x000001B28E537A00>)
+b = WindSimTrace(wind='west', positions=[(25, 25), (25, 26), (25, 27), (26, 27), (27, 27), (28, 27), (27, 27), (26, 27), (...o_interior_fire_retreat'], final_target=(24.0, 4.0), model=<wildfire_model.WildFireModel object at 0x000001B28E7184C0>)
+
+    def _assert_planning_targets_differ(a: WindSimTrace, b: WindSimTrace) -> None:
+        a_targets = set(a.wind_planning_targets)
+        b_targets = set(b.wind_planning_targets)
+        assert a_targets or b_targets, "expected wind planning targets during MAPE run"
+        if a_targets and b_targets:
+            assert a_targets != b_targets, (
+                f"wind planning targets should differ: {a.wind}={a_targets} {b.wind}={b_targets}"
+            )
+        if a.final_target is not None and b.final_target is not None:
+>           assert a.final_target != b.final_target
+E           AssertionError: assert (24.0, 4.0) != (24.0, 4.0)
+E            +  where (24.0, 4.0) = WindSimTrace(wind='east', positions=[(27, 25), (27, 26), (27, 27), (27, 28), (27, 29), (27, 30), (26, 30), (25, 30), (...o_interior_fire_retreat'], final_target=(24.0, 4.0), model=<wildfire_model.WildFireModel object at 0x000001B28E537A00>).final_target
+E            +  and   (24.0, 4.0) = WindSimTrace(wind='west', positions=[(25, 25), (25, 26), (25, 27), (26, 27), (27, 27), (28, 27), (27, 27), (26, 27), (...o_interior_fire_retreat'], final_target=(24.0, 4.0), model=<wildfire_model.WildFireModel object at 0x000001B28E7184C0>).final_target
+
+tests\test_wind_aware_trajectory_regression.py:286: AssertionError
+---------------------------- Captured stdout call -----------------------------
+2
+[Environment] wind_direction=east wind_vector=(1.0, 0.0) step=0
+[Environment] wind_direction=east wind_vector=(1.0, 0.0) step=1
+explain=wind_aware_search wind=east target=(46.0,24.0)
+[Environment] wind_direction=east wind_vector=(1.0, 0.0) step=2
+explain=wind_aware_search planner_source=local_adaptation_generator wind=east target=(44.0,47.0)
+[Environment] wind_direction=east wind_vector=(1.0, 0.0) step=3
+explain=wind_aware_search planner_source=local_adaptation_generator wind=east target=(44.0,47.0)
+[Environment] wind_direction=east wind_vector=(1.0, 0.0) step=4
+explain=wind_aware_search planner_source=local_adaptation_generator wind=east target=(44.0,47.0)
+[Environment] wind_direction=east wind_vector=(1.0, 0.0) step=5
+explain=wind_aware_search planner_source=local_adaptation_generator wind=east target=(44.0,47.0)
+[Environment] wind_direction=east wind_vector=(1.0, 0.0) step=6
+explain=wind_aware_search planner_source=local_adaptation_generator wind=east target=(44.0,47.0)
+[Environment] wind_direction=west wind_vector=(-1.0, 0.0) step=7
+explain=wind_aware_search planner_source=local_adaptation_generator wind=west target=(8.0,32.0)
+[Environment] wind_direction=west wind_vector=(-1.0, 0.0) step=8
+explain=wind_aware_search planner_source=local_adaptation_generator wind=west target=(8.0,41.0)
+[Environment] wind_direction=west wind_vector=(-1.0, 0.0) step=9
+explain=wind_aware_search planner_source=local_adaptation_generator wind=west target=(8.0,41.0)
+[Environment] wind_direction=west wind_vector=(-1.0, 0.0) step=10
+explain=wind_aware_search planner_source=local_adaptation_generator wind=west target=(8.0,41.0)
+[UAV debug] step=10 failsafe_mode=normal
+  [FailSafeDecision] mission_mode= search_mode_active=False action=
+  uav=2500 role=fire_tracker pos=(28, 18) sector={'x_min': 15, 'x_max': 45, 'y_min': 3, 'y_max': 25, 'split_axis': 'none', 'flank_index': 0, 'flank_count': 1} battery=97.0 dir=1 next_action=south option_id=explore_unknown_region_2500_10 target_position=(42.0, 2.0) fail_safe_override_active=False local_fail_safe_override_active=False exec_applied=True exec_action=fire_safe_standoff exec_selected_dir=1 stuck_count=0 before_pos=(28, 19) current_pos_key=2500
+  uav=2501 role=victim_searcher pos=(23, 30) sector={'x_min': 0, 'x_max': 49, 'y_min': 0, 'y_max': 49} battery=97.0 dir=2 next_action=victim_search_wind_aware option_id=wind_aware_victim_search target_position=(8.0, 41.0) fail_safe_override_active=False local_fail_safe_override_active=False exec_applied=True exec_action=victim_search_wind_aware exec_selected_dir=2 stuck_count=0 before_pos=(24, 30) current_pos_key=2501
+[Environment] wind_direction=west wind_vector=(-1.0, 0.0) step=11
+explain=wind_aware_search planner_source=local_adaptation_generator wind=west target=(8.0,41.0)
+[Environment] wind_direction=west wind_vector=(-1.0, 0.0) step=12
+explain=wind_aware_search planner_source=local_adaptation_generator wind=west target=(8.0,41.0)
+[Environment] wind_direction=west wind_vector=(-1.0, 0.0) step=13
+explain=wind_aware_search planner_source=local_adaptation_generator wind=west target=(8.0,41.0)
+[Environment] wind_direction=west wind_vector=(-1.0, 0.0) step=14
+explain=wind_aware_search planner_source=local_adaptation_generator wind=west target=(8.0,41.0)
+[Environment] wind_direction=west wind_vector=(-1.0, 0.0) step=15
+explain=wind_aware_search planner_source=local_adaptation_generator wind=west target=(8.0,4.0)
+[Environment] wind_direction=west wind_vector=(-1.0, 0.0) step=16
+explain=wind_aware_search planner_source=local_adaptation_generator wind=west target=(8.0,4.0)
+[Environment] wind_direction=west wind_vector=(-1.0, 0.0) step=17
+explain=wind_aware_search planner_source=local_adaptation_generator wind=west target=(8.0,4.0)
+[Environment] wind_direction=west wind_vector=(-1.0, 0.0) step=18
+explain=wind_aware_search planner_source=local_adaptation_generator wind=west target=(8.0,4.0)
+[Environment] wind_direction=west wind_vector=(-1.0, 0.0) step=19
+explain=wind_aware_search planner_source=local_adaptation_generator wind=west target=(8.0,4.0)
+[Environment] wind_direction=west wind_vector=(-1.0, 0.0) step=20
+explain=wind_aware_search planner_source=local_adaptation_generator wind=west target=(8.0,4.0)
+[Monitoring] step=20 avg_norm_ig=0.7337 uncertain_cells=1861
+[UAV debug] step=20 failsafe_mode=normal
+  [FailSafeDecision] mission_mode= search_mode_active=False action=
+  uav=2500 role=fire_tracker pos=(29, 21) sector={'x_min': 9, 'x_max': 49, 'y_min': 0, 'y_max': 28, 'split_axis': 'none', 'flank_index': 0, 'flank_count': 1} battery=94.0 dir=1 next_action=south option_id=explore_unknown_region_2500_20 target_position=(42.0, 2.0) fail_safe_override_active=False local_fail_safe_override_active=False exec_applied=True exec_action=fire_safe_standoff exec_selected_dir=1 stuck_count=0 before_pos=(29, 22) current_pos_key=2500
+  uav=2501 role=victim_searcher pos=(19, 24) sector={'x_min': 0, 'x_max': 49, 'y_min': 0, 'y_max': 49} battery=94.0 dir=1 next_action=victim_search_wind_aware option_id=wind_aware_victim_search target_position=(8.0, 4.0) fail_safe_override_active=False local_fail_safe_override_active=False exec_applied=True exec_action=victim_search_wind_aware exec_selected_dir=1 stuck_count=0 before_pos=(19, 25) current_pos_key=2501
+[Environment] wind_direction=west wind_vector=(-1.0, 0.0) step=21
+explain=wind_aware_search planner_source=local_adaptation_generator wind=west target=(5.0,4.0)
+[Environment] wind_direction=east wind_vector=(1.0, 0.0) step=22
+explain=wind_aware_search planner_source=local_adaptation_generator wind=east target=(38.0,4.0)
+[Environment] wind_direction=east wind_vector=(1.0, 0.0) step=23
+explain=wind_aware_search planner_source=local_adaptation_generator wind=east target=(41.0,4.0)
+[Environment] wind_direction=east wind_vector=(1.0, 0.0) step=24
+explain=wind_aware_search planner_source=local_adaptation_generator wind=east target=(41.0,4.0)
+[Environment] wind_direction=west wind_vector=(-1.0, 0.0) step=25
+[KnowledgeManager] t=25.0 avg_conf=0.147 high_prob_cells=138
+[Environment] wind_direction=west wind_vector=(-1.0, 0.0) step=26
+[Environment] wind_direction=west wind_vector=(-1.0, 0.0) step=27
+[Environment] wind_direction=west wind_vector=(-1.0, 0.0) step=28
+[Environment] wind_direction=west wind_vector=(-1.0, 0.0) step=29
+[Environment] wind_direction=west wind_vector=(-1.0, 0.0) step=30
+[UAV debug] step=30 failsafe_mode=normal
+  [FailSafeDecision] mission_mode= search_mode_active=False action=
+  uav=2500 role=fire_tracker pos=(30, 22) sector={'x_min': 3, 'x_max': 49, 'y_min': 0, 'y_max': 33, 'split_axis': 'none', 'flank_index': 0, 'flank_count': 1} battery=91.0 dir=3 next_action=south option_id=explore_unknown_region_2500_30 target_position=(42.0, 2.0) fail_safe_override_active=False local_fail_safe_override_active=False exec_applied=True exec_action=fire_flank_hold exec_selected_dir=3 stuck_count=0 before_pos=(30, 21) current_pos_key=2500
+  uav=2501 role=victim_searcher pos=(23, 26) sector={'x_min': 0, 'x_max': 49, 'y_min': 0, 'y_max': 49} battery=91.4 dir=3 next_action= option_id=local_stability_maintain_current_config_2501  fail_safe_override_active=False local_fail_safe_override_active=False exec_applied=True exec_action=victim_search_wind_aware_retarget_to_interior_fire_wait exec_selected_dir=3 stuck_count=2 before_pos=(23, 26) current_pos_key=2501
+[Environment] wind_direction=west wind_vector=(-1.0, 0.0) step=31
+[Environment] wind_direction=west wind_vector=(-1.0, 0.0) step=32
+[Environment] wind_direction=west wind_vector=(-1.0, 0.0) step=33
+[Environment] wind_direction=west wind_vector=(-1.0, 0.0) step=34
+[Environment] wind_direction=west wind_vector=(-1.0, 0.0) step=35
+[Environment] wind_direction=west wind_vector=(-1.0, 0.0) step=36
+[Environment] wind_direction=west wind_vector=(-1.0, 0.0) step=37
+[Environment] wind_direction=west wind_vector=(-1.0, 0.0) step=38
+[Environment] wind_direction=west wind_vector=(-1.0, 0.0) step=39
+[Environment] wind_direction=west wind_vector=(-1.0, 0.0) step=40
+[Monitoring] step=40 avg_norm_ig=0.7107 uncertain_cells=1890
+[UAV debug] step=40 failsafe_mode=normal
+  [FailSafeDecision] mission_mode= search_mode_active=False action=
+  uav=2500 role=fire_tracker pos=(29, 27) sector={'x_min': 0, 'x_max': 49, 'y_min': 0, 'y_max': 34, 'split_axis': 'none', 'flank_index': 0, 'flank_count': 1} battery=88.0 dir=1 next_action=south option_id=explore_unknown_region_2500_40 target_position=(42.0, 2.0) fail_safe_override_active=False local_fail_safe_override_active=False exec_applied=True exec_action=fire_safe_standoff exec_selected_dir=1 stuck_count=0 before_pos=(29, 28) current_pos_key=2500
+  uav=2501 role=victim_searcher pos=(24, 29) sector={'x_min': 0, 'x_max': 49, 'y_min': 0, 'y_max': 49} battery=89.6 dir=3 next_action=victim_search_wind_aware option_id=wind_aware_victim_search target_position=(24.0, 4.0) fail_safe_override_active=False local_fail_safe_override_active=False exec_applied=True exec_action=victim_search_wind_aware_retarget_to_interior_fire_retreat exec_selected_dir=3 stuck_count=0 before_pos=(24, 28) current_pos_key=2501
+2
+[Environment] wind_direction=west wind_vector=(-1.0, 0.0) step=0
+[Environment] wind_direction=west wind_vector=(-1.0, 0.0) step=1
+explain=wind_aware_search wind=west target=(10.0,24.0)
+[Environment] wind_direction=west wind_vector=(-1.0, 0.0) step=2
+explain=wind_aware_search planner_source=local_adaptation_generator wind=west target=(5.0,47.0)
+[Environment] wind_direction=west wind_vector=(-1.0, 0.0) step=3
+explain=wind_aware_search planner_source=local_adaptation_generator wind=west target=(5.0,47.0)
+[Environment] wind_direction=east wind_vector=(1.0, 0.0) step=4
+explain=wind_aware_search planner_source=local_adaptation_generator wind=east target=(41.0,29.0)
+[Environment] wind_direction=east wind_vector=(1.0, 0.0) step=5
+explain=wind_aware_search planner_source=local_adaptation_generator wind=east target=(41.0,41.0)
+[Environment] wind_direction=east wind_vector=(1.0, 0.0) step=6
+explain=wind_aware_search planner_source=local_adaptation_generator wind=east target=(41.0,41.0)
+[Environment] wind_direction=west wind_vector=(-1.0, 0.0) step=7
+explain=wind_aware_search planner_source=local_adaptation_generator wind=west target=(8.0,29.0)
+[Environment] wind_direction=west wind_vector=(-1.0, 0.0) step=8
+explain=wind_aware_search planner_source=local_adaptation_generator wind=west target=(8.0,41.0)
+[Environment] wind_direction=west wind_vector=(-1.0, 0.0) step=9
+explain=wind_aware_search planner_source=local_adaptation_generator wind=west target=(8.0,41.0)
+[Environment] wind_direction=west wind_vector=(-1.0, 0.0) step=10
+explain=wind_aware_search planner_source=local_adaptation_generator wind=west target=(8.0,41.0)
+[UAV debug] step=10 failsafe_mode=normal
+  [FailSafeDecision] mission_mode= search_mode_active=False action=
+  uav=2500 role=fire_tracker pos=(28, 18) sector={'x_min': 15, 'x_max': 45, 'y_min': 3, 'y_max': 25, 'split_axis': 'none', 'flank_index': 0, 'flank_count': 1} battery=97.0 dir=1 next_action=south option_id=explore_unknown_region_2500_10 target_position=(42.0, 2.0) fail_safe_override_active=False local_fail_safe_override_active=False exec_applied=True exec_action=fire_safe_standoff exec_selected_dir=1 stuck_count=0 before_pos=(28, 19) current_pos_key=2500
+  uav=2501 role=victim_searcher pos=(24, 27) sector={'x_min': 0, 'x_max': 49, 'y_min': 0, 'y_max': 49} battery=97.0 dir=2 next_action=victim_search_wind_aware option_id=wind_aware_victim_search target_position=(8.0, 41.0) fail_safe_override_active=False local_fail_safe_override_active=False exec_applied=True exec_action=victim_search_wind_aware exec_selected_dir=2 stuck_count=0 before_pos=(25, 27) current_pos_key=2501
+[Environment] wind_direction=west wind_vector=(-1.0, 0.0) step=11
+explain=wind_aware_search wind=west target=(8.0,41.0)
+[Environment] wind_direction=west wind_vector=(-1.0, 0.0) step=12
+explain=wind_aware_search wind=west target=(8.0,41.0)
+[Environment] wind_direction=west wind_vector=(-1.0, 0.0) step=13
+explain=wind_aware_search planner_source=local_adaptation_generator wind=west target=(8.0,41.0)
+[Environment] wind_direction=west wind_vector=(-1.0, 0.0) step=14
+explain=wind_aware_search planner_source=local_adaptation_generator wind=west target=(8.0,41.0)
+[Environment] wind_direction=west wind_vector=(-1.0, 0.0) step=15
+explain=wind_aware_search planner_source=local_adaptation_generator wind=west target=(8.0,4.0)
+[Environment] wind_direction=west wind_vector=(-1.0, 0.0) step=16
+explain=wind_aware_search planner_source=local_adaptation_generator wind=west target=(8.0,4.0)
+[Environment] wind_direction=west wind_vector=(-1.0, 0.0) step=17
+explain=wind_aware_search planner_source=local_adaptation_generator wind=west target=(8.0,4.0)
+[Environment] wind_direction=west wind_vector=(-1.0, 0.0) step=18
+explain=wind_aware_search planner_source=local_adaptation_generator wind=west target=(8.0,4.0)
+[Environment] wind_direction=west wind_vector=(-1.0, 0.0) step=19
+explain=wind_aware_search planner_source=local_adaptation_generator wind=west target=(8.0,4.0)
+[Environment] wind_direction=west wind_vector=(-1.0, 0.0) step=20
+explain=wind_aware_search planner_source=local_adaptation_generator wind=west target=(8.0,4.0)
+[Monitoring] step=20 avg_norm_ig=0.7587 uncertain_cells=1910
+[UAV debug] step=20 failsafe_mode=normal
+  [FailSafeDecision] mission_mode= search_mode_active=False action=
+  uav=2500 role=fire_tracker pos=(29, 21) sector={'x_min': 9, 'x_max': 49, 'y_min': 0, 'y_max': 28, 'split_axis': 'none', 'flank_index': 0, 'flank_count': 1} battery=94.0 dir=1 next_action=south option_id=explore_unknown_region_2500_20 target_position=(42.0, 2.0) fail_safe_override_active=False local_fail_safe_override_active=False exec_applied=True exec_action=fire_safe_standoff exec_selected_dir=1 stuck_count=0 before_pos=(29, 22) current_pos_key=2500
+  uav=2501 role=victim_searcher pos=(20, 23) sector={'x_min': 0, 'x_max': 49, 'y_min': 0, 'y_max': 49} battery=94.0 dir=1 next_action=victim_search_wind_aware option_id=wind_aware_victim_search target_position=(8.0, 4.0) fail_safe_override_active=False local_fail_safe_override_active=False exec_applied=True exec_action=victim_search_wind_aware_fire_route exec_selected_dir=1 stuck_count=0 before_pos=(20, 24) current_pos_key=2501
+[Environment] wind_direction=west wind_vector=(-1.0, 0.0) step=21
+explain=wind_aware_search planner_source=local_adaptation_generator wind=west target=(8.0,4.0)
+[Environment] wind_direction=east wind_vector=(1.0, 0.0) step=22
+explain=wind_aware_search planner_source=local_adaptation_generator wind=east target=(41.0,4.0)
+[Environment] wind_direction=east wind_vector=(1.0, 0.0) step=23
+explain=wind_aware_search planner_source=local_adaptation_generator wind=east target=(44.0,4.0)
+[Environment] wind_direction=east wind_vector=(1.0, 0.0) step=24
+explain=wind_aware_search planner_source=local_adaptation_generator wind=east target=(44.0,4.0)
+[Environment] wind_direction=west wind_vector=(-1.0, 0.0) step=25
+[KnowledgeManager] t=25.0 avg_conf=0.145 high_prob_cells=138
+[Environment] wind_direction=west wind_vector=(-1.0, 0.0) step=26
+[Environment] wind_direction=west wind_vector=(-1.0, 0.0) step=27
+explain=wind_aware_search wind=west target=(24.0,4.0)
+[Environment] wind_direction=west wind_vector=(-1.0, 0.0) step=28
+[Environment] wind_direction=west wind_vector=(-1.0, 0.0) step=29
+[Environment] wind_direction=west wind_vector=(-1.0, 0.0) step=30
+[UAV debug] step=30 failsafe_mode=normal
+  [FailSafeDecision] mission_mode= search_mode_active=False action=
+  uav=2500 role=fire_tracker pos=(30, 22) sector={'x_min': 3, 'x_max': 49, 'y_min': 0, 'y_max': 33, 'split_axis': 'none', 'flank_index': 0, 'flank_count': 1} battery=91.0 dir=3 next_action=south option_id=explore_unknown_region_2500_30 target_position=(42.0, 2.0) fail_safe_override_active=False local_fail_safe_override_active=False exec_applied=True exec_action=fire_flank_hold exec_selected_dir=3 stuck_count=0 before_pos=(30, 21) current_pos_key=2500
+  uav=2501 role=victim_searcher pos=(23, 26) sector={'x_min': 0, 'x_max': 49, 'y_min': 0, 'y_max': 49} battery=91.4 dir=3 next_action= option_id=local_stability_maintain_current_config_2501  fail_safe_override_active=False local_fail_safe_override_active=False exec_applied=True exec_action=victim_search_wind_aware_retarget_to_interior_fire_wait exec_selected_dir=3 stuck_count=2 before_pos=(23, 26) current_pos_key=2501
+[Environment] wind_direction=west wind_vector=(-1.0, 0.0) step=31
+[Environment] wind_direction=west wind_vector=(-1.0, 0.0) step=32
+[Environment] wind_direction=west wind_vector=(-1.0, 0.0) step=33
+[Environment] wind_direction=west wind_vector=(-1.0, 0.0) step=34
+[Environment] wind_direction=west wind_vector=(-1.0, 0.0) step=35
+[Environment] wind_direction=west wind_vector=(-1.0, 0.0) step=36
+[Environment] wind_direction=west wind_vector=(-1.0, 0.0) step=37
+[Environment] wind_direction=west wind_vector=(-1.0, 0.0) step=38
+[Environment] wind_direction=west wind_vector=(-1.0, 0.0) step=39
+[Environment] wind_direction=west wind_vector=(-1.0, 0.0) step=40
+[Monitoring] step=40 avg_norm_ig=0.7401 uncertain_cells=1890
+[UAV debug] step=40 failsafe_mode=normal
+  [FailSafeDecision] mission_mode= search_mode_active=False action=
+  uav=2500 role=fire_tracker pos=(29, 27) sector={'x_min': 0, 'x_max': 49, 'y_min': 0, 'y_max': 34, 'split_axis': 'none', 'flank_index': 0, 'flank_count': 1} battery=88.0 dir=1 next_action=south option_id=explore_unknown_region_2500_40 target_position=(42.0, 2.0) fail_safe_override_active=False local_fail_safe_override_active=False exec_applied=True exec_action=fire_safe_standoff exec_selected_dir=1 stuck_count=0 before_pos=(29, 28) current_pos_key=2500
+  uav=2501 role=victim_searcher pos=(24, 29) sector={'x_min': 0, 'x_max': 49, 'y_min': 0, 'y_max': 49} battery=89.6 dir=3 next_action=victim_search_wind_aware option_id=wind_aware_victim_search target_position=(24.0, 4.0) fail_safe_override_active=False local_fail_safe_override_active=False exec_applied=True exec_action=victim_search_wind_aware_retarget_to_interior_fire_retreat exec_selected_dir=3 stuck_count=0 before_pos=(24, 28) current_pos_key=2501
+============================== warnings summary ===============================
+tests\test_firefighter_fire_avoidance.py:205
+  E:\Projects\SAS\tests\test_firefighter_fire_avoidance.py:205: PytestUnknownMarkWarning: Unknown pytest.mark.slow - is this a typo?  You can register custom marks to avoid this warning - for details, see https://docs.pytest.org/en/stable/how-to/mark.html
+    @pytest.mark.slow
+
+tests\test_unresolved_victim_coverage.py:282
+  E:\Projects\SAS\tests\test_unresolved_victim_coverage.py:282: PytestUnknownMarkWarning: Unknown pytest.mark.slow - is this a typo?  You can register custom marks to avoid this warning - for details, see https://docs.pytest.org/en/stable/how-to/mark.html
+    @pytest.mark.slow
+
+tests\test_unresolved_victim_coverage.py:303
+  E:\Projects\SAS\tests\test_unresolved_victim_coverage.py:303: PytestUnknownMarkWarning: Unknown pytest.mark.slow - is this a typo?  You can register custom marks to avoid this warning - for details, see https://docs.pytest.org/en/stable/how-to/mark.html
+    @pytest.mark.slow
+
+tests\test_unresolved_victim_coverage.py:312
+  E:\Projects\SAS\tests\test_unresolved_victim_coverage.py:312: PytestUnknownMarkWarning: Unknown pytest.mark.slow - is this a typo?  You can register custom marks to avoid this warning - for details, see https://docs.pytest.org/en/stable/how-to/mark.html
+    @pytest.mark.slow
+
+tests\test_y_sweep_commit.py:106
+  E:\Projects\SAS\tests\test_y_sweep_commit.py:106: PytestUnknownMarkWarning: Unknown pytest.mark.slow - is this a typo?  You can register custom marks to avoid this warning - for details, see https://docs.pytest.org/en/stable/how-to/mark.html
+    @pytest.mark.slow
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ===========================
+FAILED tests/test_uav_sector_assignment.py::test_fire_tracker_uavs_receive_different_target_sets
+FAILED tests/test_wind_aware_trajectory_regression.py::test_north_vs_south_trajectories_diverge_over_40_steps
+FAILED tests/test_wind_aware_trajectory_regression.py::test_east_vs_west_trajectories_diverge_over_40_steps
+3 failed, 1511 passed, 5 warnings in 7966.47s (2:12:46)
