@@ -1,4 +1,4 @@
-"""fix3b Part 3 (read-only): searcher in-fire exposure split by the label of the PREVIOUS row (targeting step vs
+"""fix3b Part 3 (read-only): searcher in-fire and smoke exposure split by the label of the PREVIOUS row (targeting step vs
 any other) and by phase (pre = an undetected victim remains, post = every victim detected).
 usage (repo root): .venv/Scripts/python.exe outputs/_fb3_exposure_split.py [tag ...]"""
 import collections
@@ -24,6 +24,8 @@ for tag in TAGS or ("fx3mS", "fb3bf", "fx3mS2", "fb3bf2", "fb3bd2", "fb3vs0", "f
                 ph = "pre" if (t_all is None or t + 1 < t_all) else "post"
                 C[(k, ph, "n")] += 1
                 C[(k, ph, "f")] += u[4]
-    parts = ["%s/%s %d/%d=%.2f%%" % (k, ph, C[(k, ph, "f")], C[(k, ph, "n")], 100.0 * C[(k, ph, "f")] / C[(k, ph, "n")])
-             for k in ("tgt", "other") for ph in ("pre", "post") if C[(k, ph, "n")]]
+                C[(k, ph, "s")] += u[5] if isinstance(u[5], int) else 0
+    parts = ["%s/%s fire %d/%d=%.2f%% smoke %d=%.2f%%" % (
+        k, ph, C[(k, ph, "f")], C[(k, ph, "n")], 100.0 * C[(k, ph, "f")] / C[(k, ph, "n")], C[(k, ph, "s")],
+        100.0 * C[(k, ph, "s")] / C[(k, ph, "n")]) for k in ("tgt", "other") for ph in ("pre", "post") if C[(k, ph, "n")]]
     print(tag, " | ".join(parts))

@@ -1,8 +1,9 @@
 import sys, collections
+_TAGS = sys.argv[1:]
 sys.path.insert(0, r"E:\Projects\SAS\outputs"); sys.path.insert(0, r"E:\Projects\SAS")
 sys.argv = ["x"]
 import _fb3_analyze as A
-for tag in sys.argv[1:] or ["fb3bd", "fb3bd2", "fb3bf2", "fb3vs3", "fx3mS", "fx3mS2", "fb3vs0", "fb3lo", "fb3lo2"]:
+for tag in _TAGS or ["fb3bd", "fb3bd2", "fb3bf2", "fb3vs3", "fx3mS", "fx3mS2", "fb3vs0", "fb3lo", "fb3lo2"]:
     runs = A.load(tag)
     for k, d in sorted(runs.items()):
         b, p, a = A.searcher_o(d)

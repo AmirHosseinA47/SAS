@@ -1,0 +1,1284 @@
+{
+ "cur": {
+  "strategy_items": [
+   {
+    "strategy": "CUR",
+    "item": "Unresolved-victim count: _count_unresolved_victims -> wind_state['unresolved_victim_count']",
+    "klass": "P",
+    "how_used": "PRIVILEGED (managed truth). The function counts every entry in simulation.managed_victims whose status and flags (rescued, dead, cancelled, unreachable), plus the matching victim_marker_agents status, are not terminal. All N victims are created in managed_victims at t0 with status 'candidate', so undetected victims are counted. _check_fire_casualties marks a managed victim dead whether or not any UAV ever saw it, so unseen deaths are subtracted. Consumers: (1) coverage mode. _coverage_mode_active returns True iff count > 0; its other tests (steps>40, corridor failure, boost, post-rescue) are moot because the function ends in an unconditional `return True`. (2) _apply_unresolved_coverage_mode sets force_coverage_escape and force_interior_retarget and raises coverage_priority to 0.9. (3) Hybrid score: the wind weight drops to 0.15*0.35, and the count gates the never-seen bonus and the uncovered-region bonus. (4) _coverage_priority. (5) The y-commit update in _finalize_coverage_target. (6) It is relayed through the path-context model to local_uav_path_planner (unresolved_coverage_active), which sets the force_coverage_escape and force_wind_retarget ctx flags the executor reads. An operator can know N (B) minus rescues (S) minus observed deaths. That number differs from this count exactly when a victim dies unseen. Example: once every remaining victim has died unseen, the searcher drops out of coverage mode, i.e. it 'knows' nothing is left to find.",
+    "evidence": "local_adaptation_generator.py:763-789 (reads managed_victims :764, victim_marker_agents :767,:783-787), :811-826 (:826 return True), :1343-1357 (:1350), :1360-1370, :1373-1388, :1408-1428, :1274-1278, :4022-4028; wildfire_model.py:936-976 (all N managed victims 'candidate' at init), :5609-5651 (dead set on managed side with no detection test), :1996-1998 (relay into path context); local_uav_path_planner.py:132-145, :191",
+    "status": "verified"
+   },
+   {
+    "strategy": "CUR",
+    "item": "Post-rescue coverage activation gate (_activate_post_rescue_coverage_for_searchers checks _count_unresolved_victims)",
+    "klass": "P",
+    "how_used": "PRIVILEGED gate on an S event. When a rescue completes, the burst is armed (post_rescue_coverage_steps_remaining=50, coverage_priority>=0.85, steps_since_detection=9999) only if the managed-truth unresolved count is > 0. So a rescue that leaves only unseen-dead victims arms no burst.",
+    "evidence": "wildfire_model.py:3925, :3975-3985",
+    "status": "verified"
+   },
+   {
+    "strategy": "CUR",
+    "item": "Planner victim-known branch filter (_collect_active_live_victim_targets / _victim_needs_live_search)",
+    "klass": "P",
+    "how_used": "PRIVILEGED. A detected victim is a 'live' planner target only if managed_victims[vid] has no terminal status and none of the flags dead, cancelled, rescued, unreachable, rescue_assigned, confirmed or assigned. If any live target exists, the searcher gets move_toward_victim_candidate options and the wind-aware search is skipped. INFERRED INERT: managed_victim.confirmed is set True at the same step as first detection and is never reset (its only writers are wildfire_model.py:1461 and rescue_executor.py:568). Every victim in the runtime model is therefore filtered out, and the searcher never targets a detected victim through this branch.",
+    "evidence": "local_adaptation_generator.py:2243-2266, :3380-3412, :3414-3461 (managed read :3426-3446); wildfire_model.py:1453-1465 (confirmed=True on first detection), :2179-2190 (runtime_models carries simulation_model)",
+    "status": "inferred"
+   },
+   {
+    "strategy": "CUR",
+    "item": "Executor victim-known branch handled-check (_victim_positions_from_runtime / _victim_handled_for_uav_target)",
+    "klass": "P",
+    "how_used": "PRIVILEGED. The executor steers to the nearest detected victim (escape memory, stuck escape) only if the managed-side flags (dead, cancelled, rescued, unreachable, rescue_assigned, confirmed, assigned) and the victim_marker_agents status are not terminal or handled. INFERRED INERT for the same reason as the planner branch: confirmed=True from first detection, so control always falls through to the no-victim branch.",
+    "evidence": "uav_executor.py:1061-1348 (branch), :1718-1799 (managed :1730-1752, marker :1753-1761), :1801-1827; wildfire_model.py:1459-1462",
+    "status": "inferred"
+   },
+   {
+    "strategy": "CUR",
+    "item": "Victim detection sensor model (simulated sensor)",
+    "klass": "B",
+    "how_used": "Sensor spec. A victim is detected iff some UAV is within Euclidean distance UAV_OBSERVATION_RADIUS=8 of the victim's true marker cell (a disk of 197 cells). Detection creates the runtime belief record and sets managed confirmed=True. This is the only source of victim information that legitimately reaches the managing system.",
+    "evidence": "wildfire_model.py:1415-1469 (:1442-1444 Euclidean test on marker.pos); common_fixed_variables.py:918",
+    "status": "verified"
+   },
+   {
+    "strategy": "CUR",
+    "item": "Detected victim position (victim_runtime_model.victims[vid].estimated_position)",
+    "klass": "S",
+    "how_used": "The runtime belief holds detected victims only. Each record is created by update_detection, and positions are refreshed while the victim is in range or its old estimated cell is inside a footprint. This is the position read by both victim-known branches (inferred inert) and by _victim_likelihood_score (dead). No victim position from managed truth (last_known_position or marker pos) is read anywhere in the generator or executor.",
+    "evidence": "victim_runtime_model.py:21-41, :60-101; wildfire_model.py:1446-1452, :1497-1516; local_uav_monitor.py:95-112; local_adaptation_generator.py:3360-3377, :4446-4458; uav_executor.py:1801-1827; grep of both files for last_known_position/marker positions: none",
+    "status": "verified"
+   },
+   {
+    "strategy": "CUR",
+    "item": "_victim_likelihood_score (hybrid-score victim term)",
+    "klass": "S",
+    "how_used": "DEAD INPUT. It reads getattr(victim, 'confidence'), but the records are VictimBeliefRecord objects, which only have confidence_score. conf is therefore always 0.0, the term is always 0, and the score never pulls toward detected victims.",
+    "evidence": "local_adaptation_generator.py:733-760 (:756-758), called :1420; victim_runtime_model.py:21-41 (no 'confidence' field), :60-65",
+    "status": "verified"
+   },
+   {
+    "strategy": "CUR",
+    "item": "searcher_victim_detections / steps_since_detection",
+    "klass": "S",
+    "how_used": "These are set from the searcher's own detection events. While detections = 0, a forced coverage escape fires every 25 steps (coverage_priority>=0.65), and _coverage_priority is lifted to >=0.55 after 40 steps. In the legacy executor fallback, steps_since_detection>=40 allows cells on the fire side. The test inside _coverage_mode_active is moot.",
+    "evidence": "wildfire_model.py:1470-1478; local_adaptation_generator.py:1480-1484, :1373-1379, :815-819; uav_executor.py:4630-4634",
+    "status": "verified"
+   },
+   {
+    "strategy": "CUR",
+    "item": "fire_tracker_detection_boost",
+    "klass": "S",
+    "how_used": "Each detection by a fire tracker adds 0.06 (capped at 0.45) to every searcher's boost. Boost >= 0.06 with no searcher detection forces a coverage escape (priority>=0.7), and the boost is added to _coverage_priority.",
+    "evidence": "wildfire_model.py:1479-1486; local_adaptation_generator.py:1485-1488, :1377, :1388",
+    "status": "verified"
+   },
+   {
+    "strategy": "CUR",
+    "item": "Rescue-completion event -> post_rescue_coverage_steps_remaining",
+    "klass": "S",
+    "how_used": "A completed rescue starts a 50-step countdown (counted once per step). It lifts coverage_priority to >=0.85 and, through the path context, sets unresolved_coverage_active in the path planner. The arming is gated by the P count (see the gate item).",
+    "evidence": "wildfire_model.py:3925, :3975-3985; local_adaptation_generator.py:105, :1352-1355, :1382-1383; local_uav_path_planner.py:129-142",
+    "status": "verified"
+   },
+   {
+    "strategy": "CUR",
+    "item": "Visibility observation_status_map: UAV footprint (17x17 Moore square, radius 8)",
+    "klass": "S",
+    "how_used": "The local monitor's footprint is grid.get_neighborhood(moore=True, radius=8), a 17x17 square of 289 cells. Each footprint cell that is not fire or smoke is stamped OBSERVED_NO_FIRE and turns STALE after 10 steps unseen. Uses: the observation-coverage penalty, the never-seen/stale proximity bonus, the explore lists, and the executor's 2-ahead smoke-label penalty. SENSOR MISMATCH: detection is a Euclidean disk of r=8 (197 cells), so 92 of 289 footprint cells (31.8%) are marked 'observed' although a victim there cannot be detected.",
+    "evidence": "local_uav_monitor.py:53-61; agents.py:275 (moore=True); wildfire_model.py:1305-1341, :1379-1386; visibility_model.py:84-103, :159-197; local_adaptation_generator.py:573-598, :601-632; uav_executor.py:5026-5037, :5071-5077; disk/square counts computed 197/289",
+    "status": "verified"
+   },
+   {
+    "strategy": "CUR",
+    "item": "Environment-monitor stamps into the visibility map (true burning -> OBSERVED_FIRE, true smoke -> SMOKE_OBSCURED)",
+    "klass": "A3",
+    "how_used": "Every step, every true burning cell and every true smoke cell is written into the coverage map with no UAV present. Burning cells therefore count as 'observed' (coverage penalty 4.0) and never become never_seen or stale. Smoke cells populate smoke_obscured_cells, which are hazards and excluded targets throughout. Note: smoke truth goes beyond A3's 'perimeter known' wording.",
+    "evidence": "wildfire_model.py:1387-1413; environment_monitor.py:17-46; visibility_model.py:105-157",
+    "status": "verified"
+   },
+   {
+    "strategy": "CUR",
+    "item": "Planner fire cells = fire_probability_map >= 0.3 (fire runtime belief)",
+    "klass": "A3",
+    "how_used": "The belief is stamped every step with probability 1.0 on every true burning cell by the environment monitor, and UAV observations are added on top. Burned-out cells decay slowly. Uses: the wind option exists only if fire is present (_has_meaningful_fire); no fire cells means no target. It also feeds hazard_dist, excludes candidates and corridor cells, the front-distance filter (>=12), the target-hold 'unsafe' release, and the relocation-reject check. The planner's first loop over agents' 'burnt_status' is DEAD: no class defines burnt_status (its only occurrence in the repo is this read).",
+    "evidence": "local_adaptation_generator.py:3535-3593 (:3566 burnt_status), :2762-2777, :3637-3646, :3732, :3865, :3953-3958, :1117-1119, :1002-1041, :4365-4370, :3981-3983; wildfire_model.py:1343-1377; fire_runtime_model.py:105-150, :209-232",
+    "status": "verified"
+   },
+   {
+    "strategy": "CUR",
+    "item": "Fire-cell centroid (fx, fy)",
+    "klass": "A3",
+    "how_used": "This is the mean of all planner fire cells. downwind = (cell - centroid) . wind_vector is the wind term in hybrid scoring (capped at 20, weight 3.0*wind_w) and in the legacy fallback.",
+    "evidence": "local_adaptation_generator.py:3985-3986, :3739, :3902, :1416-1417; uav_executor.py:4593-4594, :4629",
+    "status": "verified"
+   },
+   {
+    "strategy": "CUR",
+    "item": "Planner smoke cells (visibility_model.smoke_obscured_cells)",
+    "klass": "A3",
+    "how_used": "Environment-monitor-stamped true smoke plus UAV-reported smoke. Uses: candidate exclusion, smoke_dist in the hybrid hazard term (min(fire,smoke)*0.85), corridor blocking, the hold 'unsafe' release, relocation reject, and the gradual-escape sidestep.",
+    "evidence": "local_adaptation_generator.py:2831-2854, :3984, :3741, :3904, :1418, :1539-1543",
+    "status": "verified"
+   },
+   {
+    "strategy": "CUR",
+    "item": "Executor direct true fire (grid Fire agents is_burning)",
+    "klass": "A3",
+    "how_used": "The executor reads the managed grid's Fire agents directly. Inputs: _cell_has_burning_fire; strict fire set (hazard gate, lookahead, A1-R distance field, BFS blocking); _cell_high_fire (burning OR belief>=0.3), which penalises steps and rejects planner targets; _collect_active_fire_cells (burning + belief>=0.55) for the legacy fallback.",
+    "evidence": "uav_executor.py:5278-5303, :2846-2863, :5234-5241, :4411-4436, :4495-4497",
+    "status": "verified"
+   },
+   {
+    "strategy": "CUR",
+    "item": "Executor direct true smoke (Fire agent smoke.is_smoke_active) + visibility smoke labels",
+    "klass": "A3",
+    "how_used": "Strict smoke is the hazard-gate level 1 and blocks the BFS/route. _cell_smoke_obscured penalises a step by -4 and the 2-ahead smoke label by -2. Smoke also feeds the sweep-target approachability test. This is environment truth beyond the perimeter assumption.",
+    "evidence": "uav_executor.py:5305-5317, :1988-2019, :2865-2887, :5243-5264, :4713-4722",
+    "status": "verified"
+   },
+   {
+    "strategy": "CUR",
+    "item": "Wind direction / vector",
+    "klass": "B",
+    "how_used": "The planner reads it from the global observation snapshot (environment bridge, then model.wind, then config/env var); the executor reads it from the environment bridge or model.wind. It is fixed for the run (FIXED_WIND=True, default 'west'), so it equals a perfect forecast. Uses: the downwind term; the lane axis; the y-commit wind rule; the west-only x-strip rules and _allow_east_force; downwind-edge blocking; the lawnmower origin; a corridor reset on wind change.",
+    "evidence": "local_adaptation_generator.py:3464-3532, :4073-4079, :939-974, :1239-1253, :1671-1683; global_monitor.py:282-329; uav_executor.py:4394-4409, :1384; agents.py:224-235; common_fixed_variables.py:10, :36",
+    "status": "verified"
+   },
+   {
+    "strategy": "CUR",
+    "item": "Own position",
+    "klass": "S",
+    "how_used": "The planner reads uav_resource_model.current_position (falling back to the grid centre); the executor uses agent.pos and syncs it into the resource model before recomputing. Uses: dist_agent terms, reached penalties, arrival/hold, edge and interior triggers, BFS start.",
+    "evidence": "local_adaptation_generator.py:3596-3613, :3988-3990; uav_executor.py:4519-4532; wildfire_model.py:1518-1544",
+    "status": "verified"
+   },
+   {
+    "strategy": "CUR",
+    "item": "Own per-cell visit counts (uav_visit_counts[(uav,x,y)])",
+    "klass": "S",
+    "how_used": "Applied as a per-UAV penalty: 0.9/visit in the hybrid and legacy scores, 0.5 in _choose_best_direction, 0.8 in the exploration fallback. Each searcher sees only its own counts.",
+    "evidence": "wildfire_model.py:1179-1181; local_adaptation_generator.py:559-570, :1432-1433; uav_executor.py:5216-5223, :5079, :5181, :4641",
+    "status": "verified"
+   },
+   {
+    "strategy": "CUR",
+    "item": "Own stuck count / last failed direction",
+    "klass": "S",
+    "how_used": "A failed direction is penalised (-5/-6). A stuck count >= 2 selects the victim-stuck escape (in the inert victim-known branch).",
+    "evidence": "wildfire_model.py:1182-1186, :3422-3426; uav_executor.py:5225-5232, :1209-1214, :5080-5081",
+    "status": "verified"
+   },
+   {
+    "strategy": "CUR",
+    "item": "Own recent-position windows and counters (recent_x/y_positions x30, pocket anchor/streak, no-move streak, edge/hold/same-target streaks, last action)",
+    "klass": "S",
+    "how_used": "These record the searcher's own movement history. Uses: uncovered-region bonus, corridor-diversity failure, y-camping, strip latches, pocket penalty and escape, forced retarget, force_sweep. Counted once per step (SEARCHER_COUNTERS_PER_STEP=1).",
+    "evidence": "local_adaptation_generator.py:1322-1340, :1447-1514, :1718-1808, :427-450; uav_executor.py:3106-3176; common_fixed_variables.py:106",
+    "status": "verified"
+   },
+   {
+    "strategy": "CUR",
+    "item": "Other UAV positions (managed_uav_states.position; schedule UAV cells)",
+    "klass": "S",
+    "how_used": "Fleet telemetry. Uses: a separation penalty -6*(1-d/8) for candidate steps in _choose_best_direction and the escape scores; other UAVs' cells are blocked in the A1-R fire-mode BFS and in the pocket-escape BFS (SEARCHER_CORNER_ESCAPE).",
+    "evidence": "uav_executor.py:5098-5119, :1295-1315, :1916-1953, :2331-2339, :2231-2236, :2027-2044; wildfire_model.py:1170-1173",
+    "status": "verified"
+   },
+   {
+    "strategy": "CUR",
+    "item": "Searcher role, searcher ids and searcher count",
+    "klass": "B",
+    "how_used": "This is the system's own launch assignment (index order; half rule, so 3 UAVs gives 1 searcher). It selects the searcher branch in the planner and executor, and the searcher count n with this UAV's index sets the cross-wind lanes (n<=1 means no lane). Fallback: NUM_AGENTS.",
+    "evidence": "local_adaptation_generator.py:276-317, :3343-3357, :2243-2244; uav_executor.py:5393-5407, :1008-1013; wildfire_model.py:1059-1109; agents.py:1667-1673",
+    "status": "verified"
+   },
+   {
+    "strategy": "CUR",
+    "item": "Grid extent (HEIGHT, WIDTH = 50x50)",
+    "klass": "B",
+    "how_used": "Bounds for all candidate loops (_grid_bounds maps x to HEIGHT-1), edge and interior tests, the sweep, the BFS limits, and the escape midpoints. All the margin constants below are relative to these bounds unless noted.",
+    "evidence": "wildfire_model.py:201-202; common_fixed_variables.py:20-21; local_adaptation_generator.py:3616-3624; uav_executor.py:1372-1381, :2184-2185, :706-718",
+    "status": "verified"
+   },
+   {
+    "strategy": "CUR",
+    "item": "Cross-wind lanes (_crosswind_band)",
+    "klass": "D",
+    "how_used": "Disjoint bands by searcher index: y-bands under east/west wind, x-bands under north/south. A hard candidate filter in the escape and corridor loops, it also suppresses the y-commit (y-lane) and the x-sweep pull (x-lane), and re-anchors the gradual escape. Relative to the bounds, not absolute; inert for n<=1. Added in 66dc728c and measured on the fixed ring.",
+    "evidence": "local_adaptation_generator.py:332-398, :3698-3714, :3878-3888, :893-902, :1234-1238, :4140-4148; git show 66dc728c",
+    "status": "verified"
+   },
+   {
+    "strategy": "CUR",
+    "item": "Sector assignments (_uav_sector_assignments)",
+    "klass": "D",
+    "how_used": "Searchers get the full grid, shrunk by SEARCHER_EDGE_BAND=4, and sectors apply only after LAUNCH_GRACE_STEPS=20. Used by the lawnmower sweep, the legacy fallback bounds and the exploration fallback. The generator's quadrant _assign_sector_targets is never reached by a searcher, because the searcher branch returns at :2266/:2288.",
+    "evidence": "wildfire_model.py:499-525; uav_executor.py:4873-4907, :1519-1556, :4598-4608, :5184-5190; local_adaptation_generator.py:2714-2747, :2317; common_fixed_variables.py:924",
+    "status": "verified"
+   },
+   {
+    "strategy": "CUR",
+    "item": "Lawnmower sweep (last fallback of the no-victim branch)",
+    "klass": "D",
+    "how_used": "Lane spacing STEP=8. The origin corner is chosen by wind (e.g. west wind starts at x_max) and the sweep runs along y. The cursor is clamped to the edge band (A1-S), and cells that are not approachable (true fire, smoke or belief) are skipped. Relative to the grid.",
+    "evidence": "uav_executor.py:1382, :1519-1623, :4653-4708, :4724-4818, :4909-4919; common_fixed_variables.py:169",
+    "status": "verified"
+   },
+   {
+    "strategy": "CUR",
+    "item": "Searcher hazard gate parameters",
+    "klass": "D",
+    "how_used": "Final pass on every non-exempt searcher step: on-cell hazard leads to retreat; an edge-blocked direction leads to retreat; a near-field retreat applies when the global minimum strict fire/smoke distance is <= SEARCHER_GATE_NEAR_RANGE=6 (VICTIM_SEARCHER_HAZARD_RETREAT_RANGE=99, SEARCHER_GATE_NEAR_FIELD=1); then a 3-cell lookahead with hazard buffer 2/1/0 (by hazard_buffer_level), and the off-grid guard. Inputs are A3 fire/smoke.",
+    "evidence": "uav_executor.py:2985-3104, :2808-2836, :2889-2906, :2665-2705, :49; agents.py:2064; common_fixed_variables.py:157, :330",
+    "status": "verified"
+   },
+   {
+    "strategy": "CUR",
+    "item": "A1-R fire-field route (_route_within_fire_field)",
+    "klass": "D",
+    "how_used": "Routed retarget and escape steps. Beyond the near field (d0>6, no latch) it takes the greedy step; inside it, a fire-mode BFS over cells with burning distance >= min(d0, SEARCHER_ROUTE_CLEARANCE=6), excluding fire, smoke and other UAVs, plus the edge filter, latched on the target. With no admissible path it retreats or waits. The distance field comes from true fire (A3). Routed steps are exempt from the gate.",
+    "evidence": "uav_executor.py:2140-2270, :2272-2329, :460-472; agents.py:2089; common_fixed_variables.py:166",
+    "status": "verified"
+   },
+   {
+    "strategy": "CUR",
+    "item": "Greedy / BFS escape pathfinding and pocket-blocked cells",
+    "klass": "D",
+    "how_used": "_forced_progress_direction takes the greedy step with a 1-cell safe lookahead; if that step is pocket-blocked it falls back to a smoke-safe BFS and then a fire-only BFS (depth >= H+W+5). Pocket-blocked cells are the pocket centre ±2 closer than the start, the last cell, and the last 8 backtrack cells.",
+    "evidence": "uav_executor.py:2613-2663, :2549-2611, :2027-2095, :3135-3144",
+    "status": "verified"
+   },
+   {
+    "strategy": "CUR",
+    "item": "Searcher edge filter (_victim_edge_blocked_direction)",
+    "klass": "D",
+    "how_used": "With SEARCHER_CORNER_ESCAPE=1, a move inside the band of SEARCHER_EDGE_BAND=4 is legal only if it strictly reduces the band penetration; otherwise the margin is 3. Applied in candidate steps, the lookahead, the retreat and the route. Relative to the grid edges.",
+    "evidence": "uav_executor.py:2773-2806, :5043-5049, :2921-2922; agents.py:2086; common_fixed_variables.py:172",
+    "status": "verified"
+   },
+   {
+    "strategy": "CUR",
+    "item": "Off-grid legality guard",
+    "klass": "D",
+    "how_used": "Substitutes the reverse direction when the gate's two fall-throughs would leave the grid (shipped value 1).",
+    "evidence": "uav_executor.py:2707-2771, :3005-3008, :3101-3104; common_fixed_variables.py:381",
+    "status": "verified"
+   },
+   {
+    "strategy": "CUR",
+    "item": "Path-planner retarget flags (needs_new_wind_target, wind_target_reached, force_wind_retarget, force_wind_sweep, force_coverage_escape) and planner-target delivery",
+    "klass": "D",
+    "how_used": "local_uav_path_planner builds these ctx flags from the wind-state mirror: arrival within 2, near boundary, directional edge (margin 6), hold/edge streaks, pocket >= 10, and the P-relayed unresolved count with coverage_priority >= 0.85. The executor uses the planner's target only if no retarget flag is set, the target is not saturated, and its cell is not high-fire or smoke. Otherwise it recomputes. It contains an ABSOLUTE-coordinate duplicate: corridor_diversity_failure = all of the last 20 x >= 38.",
+    "evidence": "local_uav_path_planner.py:115-233 (:134-137 x>=38); uav_executor.py:1385-1393, :1427-1458, :4475-4507, :4534-4544",
+    "status": "verified"
+   },
+   {
+    "strategy": "CUR",
+    "item": "Corridor-diversity constants CORRIDOR_DIVERSITY_X_BAND=38, CORRIDOR_WEST_CAMP_X=12, CORRIDOR_NARROW_X_SPAN=18, CORRIDOR_DIVERSITY_MIN_STEPS=20",
+    "klass": "D",
+    "how_used": "ABSOLUTE grid coordinates. 38 and 12 are x cells; 18 is a fixed cell span that does not scale with the grid. Failure is triggered by all of the last 20 x >= 38, or all <= 12 under west wind, or an x-span <= 18. Failure triggers the global coverage escape every planner call in coverage mode and caps candidate x (min(tail)-8). 12 was added in 66dc728c; 38/18/20 date from the initial commit a4a01b4b. All were measured only on the fixed ring. INFERRED: a 20-step x-span <= 18 is the common case for a 1-cell/step UAV, so this escape is the dominant planner path in coverage mode.",
+    "evidence": "local_adaptation_generator.py:100-104, :238-256, :792-808, :3680-3684, :3715-3716, :4030-4059; git log -S (a4a01b4b; 66dc728c)",
+    "status": "inferred"
+   },
+   {
+    "strategy": "CUR",
+    "item": "CORRIDOR_WEST_TARGET_X_MAX=25",
+    "klass": "D",
+    "how_used": "ABSOLUTE x cap that applies only when coverage is inactive. INFERRED DEAD: _pick_global_coverage_escape_target is reached only with coverage active. Line 4030 requires coverage_mode; when coverage is inactive, :4116-4163 always returns the gradual escape (never None). Initial commit a4a01b4b; ring-era.",
+    "evidence": "local_adaptation_generator.py:103, :257-259, :4030-4031, :4115-4164, :1517-1544",
+    "status": "inferred"
+   },
+   {
+    "strategy": "CUR",
+    "item": "COVERAGE_INTERIOR_X_MIN=8 / COVERAGE_INTERIOR_X_MAX=30",
+    "klass": "D",
+    "how_used": "ABSOLUTE x fallbacks in _finalize_coverage_target, used only when x_min/x_max is None. DEAD: every caller passes both bounds. Initial commit a4a01b4b.",
+    "evidence": "local_adaptation_generator.py:106-107, :1215-1224; callers :3815-3817, :4095-4107, :4160-4162, :4346-4348",
+    "status": "verified"
+   },
+   {
+    "strategy": "CUR",
+    "item": "X-strip latches and west/east sweep pull (_west/_east_strip_reached, _allow_east_force, west_goal/east_goal = safe bound ±6)",
+    "klass": "D",
+    "how_used": "In coverage mode the target x is clamped to the safe interior and pulled toward the pending strip. The west strip is reached at x <= safe_x_min+10, a threshold justified in the code by the measured ring run 'A/west 505 median x was 11'. _allow_east_force hardcodes west wind. Expressed relative to the bounds but tuned on the fixed ring (66dc728c, fix14).",
+    "evidence": "local_adaptation_generator.py:156-200 (:159-161), :1225-1273, :3708-3710, :3767-3783, :3927-3934; git show 66dc728c",
+    "status": "verified"
+   },
+   {
+    "strategy": "CUR",
+    "item": "Y-commit (north/south coverage commit, COVERAGE_Y_SWEEP_MIN_STEPS=15, TARGET_MARGIN=4, PENETRATE_MARGIN=6, GRADUAL_STEP=6)",
+    "klass": "D",
+    "how_used": "A camping detector against the grid half split. Under N/S wind the commit goes downwind first (fix2 3a). The commit filters candidates to the committed half, forces target y, adds a northward/southward score, and picks interior corridor points. Updated in _finalize_coverage_target only while the P unresolved count is > 0. Relative to the bounds; ring-era (a4a01b4b, fix2).",
+    "evidence": "local_adaptation_generator.py:112-115, :829-999, :1274-1285, :3685-3696, :3720-3727, :3784-3793, :3853-3861, :3892-3899, :3935-3944, :4287-4315",
+    "status": "verified"
+   },
+   {
+    "strategy": "CUR",
+    "item": "Hybrid target score weights and penalties (HYBRID_*, WIND_EDGE_PENALTY 7, WIND_VISIT_PENALTY_SCALE 0.9, WIND_REACHED_PENALTY 12, WIND_RECENT_TARGET_PENALTY 5, interior margin 6, pocket penalty, distance -0.1 / +0.35 in escape, pocket-centre distance +0.35/+0.45)",
+    "klass": "D",
+    "how_used": "_score_hybrid_search_cell combines the wind, hazard, interior, (dead) victim, coverage, never-seen, uncovered, pocket, edge, visit, recent-target, distance and reached terms. Set in the initial commit a4a01b4b and kept through every ring-measured round.",
+    "evidence": "local_adaptation_generator.py:51-78, :94-98, :666-677, :714-730, :1391-1444, :3766, :3794-3795; git log -S HYBRID_COVERAGE_WEIGHT -> a4a01b4b",
+    "status": "verified"
+   },
+   {
+    "strategy": "CUR",
+    "item": "Uncovered-region bonus (COVERAGE_UNVISITED_X_BONUS 14, Y 12, EDGE_SWEEP 10)",
+    "klass": "D",
+    "how_used": "Rewards cells beyond the searcher's own recent x/y span, and the edge bands when the span is < 55% of the grid. Applied when unresolved > 0 and in the escape and corridor loops.",
+    "evidence": "local_adaptation_generator.py:109-111, :203-235, :1425-1428, :3763-3765, :3924-3926",
+    "status": "verified"
+   },
+   {
+    "strategy": "CUR",
+    "item": "Never-seen/stale proximity bonus (obs_radius 8: +4 within 8, decaying to 16)",
+    "klass": "D",
+    "how_used": "Sums over the whole status map for each candidate cell, counting never_seen and stale cells; multiplied by (1+coverage_w). In the escape loop it is applied twice when the hybrid gate is open.",
+    "evidence": "local_adaptation_generator.py:601-632, :1423-1424, :3760-3762",
+    "status": "verified"
+   },
+   {
+    "strategy": "CUR",
+    "item": "Observation-coverage penalty (WIND_COVERAGE_PENALTY 4.0; stale 0.35x)",
+    "klass": "D",
+    "how_used": "Penalises cells marked observed_no_fire or observed_fire, including the A3-stamped burning cells and the square-footprint corners, times 1.15*(1+coverage_w).",
+    "evidence": "local_adaptation_generator.py:56, :573-598, :1421-1422",
+    "status": "verified"
+   },
+   {
+    "strategy": "CUR",
+    "item": "Candidate generation (escape: full interior with odd/odd parity skip, min escape distance 6/14/20/8/5; corridor: stride 3, interior ±2, <=16 waypoints)",
+    "klass": "D",
+    "how_used": "Defines which cells can become targets: fire, smoke and saturated cells are excluded, and lane, coverage-x and y-commit filters apply.",
+    "evidence": "local_adaptation_generator.py:62-63, :3673-3696, :3711-3738, :3842-3875, :3960-3972",
+    "status": "verified"
+   },
+   {
+    "strategy": "CUR",
+    "item": "Front-distance filter and downwind-edge block (WIND_FIRE_FRONT_MIN_DISTANCE 12, x0.45 under escape; downwind edge 2-4 cells)",
+    "klass": "D",
+    "how_used": "Corridor waypoints prefer points >= 12 from the fire/smoke front. Downwind edge cells are blocked unless a coverage escape is forced.",
+    "evidence": "local_adaptation_generator.py:70, :1671-1683, :3863-3872, :3953-3958",
+    "status": "verified"
+   },
+   {
+    "strategy": "CUR",
+    "item": "Saturation, dwell, blacklist and recent targets (dwell 2, cooldown 12, blacklist 5x5 for 15, history 8, same-target reset 10)",
+    "klass": "D",
+    "how_used": "Internal anti-repeat state. Saturated cells are excluded; the planner target is rejected in the executor when saturated; a hazard retreat blacklists the current cell.",
+    "evidence": "local_adaptation_generator.py:59-68, :635-663, :1577-1617, :1694-1715, :4068-4071; uav_executor.py:4534-4544, :3167-3176",
+    "status": "verified"
+   },
+   {
+    "strategy": "CUR",
+    "item": "Pocket/camping detection (anchor ±2, WIND_POCKET_CAMP_THRESHOLD 20, WIND_SWEEP_NO_MOVE_ESCAPE 5, forced escape every 25 steps without detection)",
+    "klass": "D",
+    "how_used": "Sets force_coverage_escape, force_interior_retarget, hazard_buffer_level 1-2 and a blacklist, which steer the escape branch and lower the gate buffer.",
+    "evidence": "local_adaptation_generator.py:76-78, :1447-1514; uav_executor.py:3019-3021, :1460-1478",
+    "status": "verified"
+   },
+   {
+    "strategy": "CUR",
+    "item": "Coverage target hold (COMMIT_ARRIVAL_DIST 2, COMMIT_PROGRESS_WINDOW 12, COMMIT_TIMEOUT_MULTIPLIER 2)",
+    "klass": "D",
+    "how_used": "Holds the finalized coverage target across steps; it is released on arrival, on the target becoming unsafe (A3 fire/smoke), when stalled, or on timeout. Derived in fix14 (77fa7028) from measured fixed-ring runs (D/north 101, A/west 505...).",
+    "evidence": "local_adaptation_generator.py:80-93, :1044-1194, :1292-1302, :1142-1159; git log -S -> 77fa7028",
+    "status": "verified"
+   },
+   {
+    "strategy": "CUR",
+    "item": "Escape target / gradual escape (wind_state escape_target; step 12 toward the grid or lane midpoint)",
+    "klass": "D",
+    "how_used": "With coverage inactive and a pocket or forced escape, the planner aims 12 cells toward the midpoint of the grid or lane. The executor routes to a stored escape_target first (A1-R/greedy, else best direction plus the gate) until within 2.",
+    "evidence": "local_adaptation_generator.py:1517-1544, :4092-4163; uav_executor.py:1394-1426",
+    "status": "verified"
+   },
+   {
+    "strategy": "CUR",
+    "item": "Interior-forcing edge triggers (edge distance <= 5 in the hold branch; WIND_INTERIOR_MARGIN 6; _cell_on_edge margin 2)",
+    "klass": "D",
+    "how_used": "Near the boundary these force force_interior_retarget, coverage escape and a pathfinding retarget. Relative to the grid edges.",
+    "evidence": "uav_executor.py:385-399, :2838-2844, :1468-1473; local_adaptation_generator.py:542-556, :4085-4089",
+    "status": "verified"
+   },
+   {
+    "strategy": "CUR",
+    "item": "Step choice _choose_best_direction (victim mode)",
+    "klass": "D",
+    "how_used": "For each of the 4 directions: skip edge-blocked or unsafe (3-ahead lookahead) steps; score progress*2, -0.2*distance, -4 if moving away; fire -8 and smoke -4 (A3); belief>=0.5 or smoke label 2 ahead -4/-2; visit -0.5; failed direction -5; preferred +0.5/+1.5; other-UAV separation (S). Then keep the hard-safety minimum level and prefer improving moves.",
+    "evidence": "uav_executor.py:4995-5128, :1897-1914, :5459-5489",
+    "status": "verified"
+   },
+   {
+    "strategy": "CUR",
+    "item": "Exploration fallback",
+    "klass": "D",
+    "how_used": "Reached only when no direction is scoreable. Hazard/visit/sector scoring plus a fixed per-UAV-id direction bias (id digits % 4).",
+    "evidence": "uav_executor.py:5130-5214",
+    "status": "verified"
+   },
+   {
+    "strategy": "CUR",
+    "item": "Executor recomputation of the generator target and the legacy fallback",
+    "klass": "D",
+    "how_used": "The executor calls the same _compute_wind_aware_search_target with runtime models that include simulation_model, so the same P count is read again. If that returns None, it uses the legacy grid scan (stride 2, downwind > 0 unless forced, Chebyshev hazard scan 8, edge 2).",
+    "evidence": "uav_executor.py:4509-4517, :4546-4651, :1479-1498, :1511-1517",
+    "status": "verified"
+   },
+   {
+    "strategy": "CUR",
+    "item": "SEARCHER_TARGETING switch (shipped 0)",
+    "klass": "D",
+    "how_used": "At 0, _searcher_targeting_direction returns None and the fix3b exemptions are False, so the current chain above runs unchanged.",
+    "evidence": "uav_executor.py:1354-1358, :2475-2487, :2350-2370; agents.py:2160-2167; common_fixed_variables.py:193",
+    "status": "verified"
+   },
+   {
+    "strategy": "CUR",
+    "item": "Fail-safe search mode routing",
+    "klass": "D",
+    "how_used": "With fail_safe_decision.search_mode_active, the searcher uses _resolve_direction_intent followed by _apply_final_direction_safety instead of the searcher hazard gate.",
+    "evidence": "uav_executor.py:359-371, :516-552, :1955-1986",
+    "status": "verified"
+   },
+   {
+    "strategy": "CUR",
+    "item": "Own battery level and return trigger",
+    "klass": "S",
+    "how_used": "Target selection reads no battery. The return is a pre-move override in UAV.advance: battery <= trigger level starts a latched trip to the berth (last writer of selected_dir). At the shipped BASE_STATION_RETURN_MECHANISM=2, the planner's base-return waypoint option and the executor's _base_return_direction are inert.",
+    "evidence": "agents.py:651-712; common_fixed_variables.py:733-734; local_adaptation_generator.py:2095-2121; uav_executor.py:1015-1041, :1057-1059",
+    "status": "verified"
+   },
+   {
+    "strategy": "CUR",
+    "item": "Depot / berth positions",
+    "klass": "B",
+    "how_used": "The return destination (latched berth or depot) for the override above. It is not used in search targeting.",
+    "evidence": "agents.py:676-681; wildfire_model.py:684-700, :800-858",
+    "status": "verified"
+   },
+   {
+    "strategy": "CUR",
+    "item": "Victim spawn rule (fixed ring, VICTIM_SPAWN_MODE 0)",
+    "klass": "P",
+    "how_used": "Not read at run time: the generator and executor reference no spawn rule and no managed victim position. It enters only implicitly, through constants set and kept while measured on the ring: radius 0.3/0.45 of the grid around the centre, angle 2*pi*i/N. VICTIM_SPAWN_MODE was introduced at a0b834a7 (2026-10-01), so every current-searcher constant was tuned with the ring as the only spawn. Verified for sampled constants (a4a01b4b, 66dc728c, 77fa7028); inferred for the rest.",
+    "evidence": "wildfire_model.py:936-968; agents.py:2203-2206; common_fixed_variables.py:228; git log -S VICTIM_SPAWN_MODE -> a0b834a7; Grep of both files: no managed position reads",
+    "status": "inferred"
+   },
+   {
+    "strategy": "CUR",
+    "item": "Unused helpers in the searcher module",
+    "klass": "D",
+    "how_used": "DEAD (no callers in src_extension or the root modules): _opposite_quadrant_escape_target, _south_edge_extra_penalty, _east_edge_extra_penalty, _corridor_front_distance_penalty, _score_wind_aware_cell.",
+    "evidence": "local_adaptation_generator.py:1547-1574, :1631-1651, :1686-1691, :1661-1668, :680-711; grep across src_extension and *.py: definitions only",
+    "status": "verified"
+   }
+  ],
+  "summary": "M1, the current searcher (SEARCHER_TARGETING 0), mapped read-only on branch fix3b at 0e457b92: 53 items.\n\n**Privileged (P) reads**\n\n(1) `_count_unresolved_victims` (local_adaptation_generator.py:763-789) reads `simulation.managed_victims` and the `victim_marker_agents` status.\n- It counts all N victims from t0 (all start as 'candidate', wildfire_model.py:936-976), so undetected victims are counted.\n- It subtracts victims killed unseen (wildfire_model.py:5609-5651).\n- It controls whether coverage mode is on: `_coverage_mode_active` returns True iff the count is > 0, and its other tests never matter because the function ends in `return True` (:826).\n- It also sets the hybrid wind weight, the never-seen and uncovered bonuses, coverage priority and the y-commit. It is passed through to local_uav_path_planner.py:132-145, whose flags the executor reads, and it gates the post-rescue coverage step (wildfire_model.py:3976).\n- What an operator can know is N minus rescues minus observed deaths. The two numbers differ exactly when a victim dies unseen.\n\n(2) Both victim-known branches filter on managed-side flags and marker status (planner :3414-3461; executor uav_executor.py:1718-1799). `confirmed` is set at first detection (wildfire_model.py:1461) and never reset, so I infer both branches never fire: the searcher never steers to a detected victim.\n\n(3) No managed victim position is read anywhere (grep-verified). Victim information arrives only through detection: a Euclidean disk of radius 8 against the true marker position.\n\n**True fire state (A3)**\n- The environment monitor stamps every true burning cell (probability 1, OBSERVED_FIRE) and every true smoke cell into the fire belief and the visibility map each step.\n- The executor also reads the grid's Fire agents directly for burning and for smoke. Smoke goes beyond the 'perimeter known' wording of A3.\n\n**Dead inputs**\n- `_victim_likelihood_score` reads `.confidence`, but the belief records only have `confidence_score`, so the term is always 0.\n- The planner's `burnt_status` loop: no class defines that attribute.\n- Five uncalled helpers.\n- The absolute fallbacks COVERAGE_INTERIOR_X_MIN/MAX = 8/30.\n- CORRIDOR_WEST_TARGET_X_MAX = 25 is dead by inference.\n\n**Absolute coordinates still in use**\n- CORRIDOR_DIVERSITY_X_BAND = 38, duplicated as `x >= 38` at local_uav_path_planner.py:136.\n- CORRIDOR_WEST_CAMP_X = 12 (added in 66dc728c).\n- CORRIDOR_NARROW_X_SPAN = 18.\n- `_allow_east_force` is hard-coded to west wind.\n- The west-strip threshold is justified in the code by a measured ring run (\"A/west 505 median x was 11\").\n\nI infer that the corridor-failure escape is the dominant planner path in coverage mode, since a UAV moving one cell per step usually covers an x-span of 18 or less over 20 steps.\n\n**Tuned on the fixed ring**\nEvery design constant predates VICTIM_SPAWN_MODE (added at a0b834a7, 2026-10-01), so all of them were set or kept while the fixed ring was the only spawn. I traced sample constants to a4a01b4b (initial commit), 66dc728c and 77fa7028 (fix14).\n\n**Sensor mismatch**\nThe coverage map footprint is a 17x17 square (289 cells), but detection is a radius-8 disk (197 cells). So 92 cells per footprint (31.8%) are marked 'observed' where no victim can be detected. The environment-stamped burning cells also count as observed.\n\n**Other inputs**\n- Wind is the fixed configured direction, which amounts to a perfect forecast (B).\n- Other UAVs' positions (S) give a separation penalty and are blocked in the BFS searches.\n- Target selection reads no battery. The return to base is an override in agents.py:651-712, and the waypoint channel is inert at the shipped mechanism 2.\n- Searchers get full-grid sectors. The generator's quadrant sector split is never reached by a searcher.",
+  "quarantine_contact": "None. I never read, listed or entered outputs/_firemech_rewound_20260914/.\n- The Grep tool was rooted only at src_extension/ files or named files.\n- Bash greps ran on named root .py files (non-recursive), or recursively under src_extension/ with --exclude-dir=_firemech_rewound_20260914.\n- One recursive grep was rooted at the repo root. It carried both --exclude-dir=_firemech_rewound_20260914 and --exclude-dir=outputs, so outputs/ was not entered.\n- I did not run git status. The git commands I ran were log/show on commits 66dc728c and a0b834a7 and on constants in named source files.\n\nI ran no simulation, pytest, probe, pool or launcher. My only python -c call did plain arithmetic (197 vs 289 cells). I edited, created or deleted nothing in E:\\Projects\\SAS."
+ },
+ "fb": {
+  "strategy_items": [
+   {
+    "strategy": "LO",
+    "item": "Search area / grid dimensions (HEIGHT x WIDTH = 50 x 50)",
+    "klass": "B",
+    "how_used": "Fixed tile partition over the interior span [band, N-1-band] per axis. Sets the belief array shape (only last_cover is used by LO) and the BFS bounds x_max/y_max.",
+    "evidence": "src_extension/planning/searcher_targeting.py:74-95,145,192; wildfire_model.py:2714-2715; src_extension/execution/uav_executor.py:2405-2406; common_fixed_variables.py:20-21",
+    "status": "verified"
+   },
+   {
+    "strategy": "LO",
+    "item": "Depot footprints (base_station depots[].cells)",
+    "klass": "B",
+    "how_used": "Excluded from the belief prior, which LO does not read for scoring. Used in the battery filter: rtb_trigger_level_at measures from the target to the nearest free footprint cell.",
+    "evidence": "wildfire_model.py:2673-2681; agents.py:846-850,1872-1880; src_extension/planning/searcher_targeting.py:219-226",
+    "status": "verified"
+   },
+   {
+    "strategy": "LO",
+    "item": "Number of victims N (NUM_VICTIMS)",
+    "klass": "B",
+    "how_used": "Stored as belief.n_brief at init. NOT used by LO targeting: at mode 1, eff is always 1, so lambda / N_unf are never computed.",
+    "evidence": "wildfire_model.py:2714-2715; src_extension/planning/searcher_targeting.py:185-193",
+    "status": "verified"
+   },
+   {
+    "strategy": "LO",
+    "item": "Detection events (managed_victims[vid].confirmed; victim_runtime_model.victims ids)",
+    "klass": "S",
+    "how_used": "Added to belief.detected_ids every post-move update but never read by the mode-1 rule.",
+    "evidence": "wildfire_model.py:2767-2771; src_extension/planning/searcher_targeting.py:185",
+    "status": "verified"
+   },
+   {
+    "strategy": "LO",
+    "item": "Post-move cell of EVERY UAV, all roles (LocalObservation.current_position = uav.pos, with agent.pos as fallback), plus one launch-geometry measure at step 0",
+    "klass": "S",
+    "how_used": "MEASURE stamps last_cover in each Euclidean-8 disc. Tile age = mean(now - last_cover) over the tile's searchable cells, with never-covered cells = now+1. Key = (age // 10, -L, -index). The oldest-bucket reachable tile anchor wins.",
+    "evidence": "wildfire_model.py:2719-2724,2753-2764; agents.py:1138-1148; src_extension/monitoring/local_uav_monitor.py:318-319; src_extension/knowledge/victim_search_belief.py:198-213; src_extension/planning/searcher_targeting.py:98-109,268-287",
+    "status": "verified"
+   },
+   {
+    "strategy": "LO",
+    "item": "True burning cells (Fire agents with is_burning)",
+    "klass": "A3",
+    "how_used": "Excluded from tile-age averaging. Impassable in the admissible BFS, plus a clearance of min(d0, 6) on the burning-distance field. Skips the searcher when it stands on a hazard cell (planner and executor).",
+    "evidence": "wildfire_model.py:2687-2698; src_extension/planning/searcher_targeting.py:153,176-178,193; src_extension/execution/uav_executor.py:2408,2418-2422,1988-1995,2512-2514,5294-5303",
+    "status": "verified"
+   },
+   {
+    "strategy": "LO",
+    "item": "Smoke: active Fire-agent smoke, plus visibility smoke_obscured cells (fed by UAV local reports and by the environment monitor, which reads the true Fire agents)",
+    "klass": "A3",
+    "how_used": "Tile-age mask, BFS blocked set and on-hazard skip. The belief MEASURE takes smoke, but it is inert at PD_SMOKE = PD = 1.0.",
+    "evidence": "wildfire_model.py:2699-2709,1379-1413; src_extension/monitoring/environment_monitor.py:24-32; src_extension/execution/uav_executor.py:2409-2417,2865-2887,1993; src_extension/knowledge/victim_search_belief.py:202-206",
+    "status": "verified"
+   },
+   {
+    "strategy": "LO",
+    "item": "Own state: assigned role (managed_uav_states / uav_resource_model), cell, rtb_active / rtb_docked, current-chain return option id",
+    "klass": "S",
+    "how_used": "Decides which UAVs are eligible searchers. A searcher on a return leg drops its target and is skipped.",
+    "evidence": "src_extension/planning/searcher_targeting.py:157-170; src_extension/adaptation/local_adaptation_generator.py:276-307",
+    "status": "verified"
+   },
+   {
+    "strategy": "LO",
+    "item": "Own battery level (agent.battery_level)",
+    "klass": "S",
+    "how_used": "Hard filter: battery - 0.3*(L+2) must be > rtb_trigger_level_at(uav, target). A budget at or below min(margin, critical) is rejected without a call. The filter is re-checked every step for a held target (drop_battery).",
+    "evidence": "src_extension/planning/searcher_targeting.py:138-140,219-226,249-250; agents.py:1858-1894",
+    "status": "verified"
+   },
+   {
+    "strategy": "LO",
+    "item": "Other UAVs' current cells",
+    "klass": "S",
+    "how_used": "Part of the BFS blocked set. Free-dock occupancy inside the battery trigger. The boxed-by-UAVs fallback test re-runs the BFS with ignore_uavs.",
+    "evidence": "src_extension/execution/uav_executor.py:2332-2339,2421; agents.py:852-860,1875; src_extension/planning/searcher_targeting.py:341-347",
+    "status": "verified"
+   },
+   {
+    "strategy": "LO",
+    "item": "Other searchers' held/assigned tiles (the planner's own state)",
+    "klass": "S",
+    "how_used": "Coordination: a tile already claimed by another searcher is excluded (greedy sequential).",
+    "evidence": "src_extension/planning/searcher_targeting.py:233,264-265,320-335,361-363",
+    "status": "verified"
+   },
+   {
+    "strategy": "LO",
+    "item": "LO design constants: TILE 7, AGE_BUCKET 10, SEARCHER_EDGE_BAND 4, GIVEUP_COOLDOWN G 15, FALLBACK_HOLD R 10, anchor Manhattan > 2, goal radius Manhattan 2, PER_MOVE 0.3",
+    "klass": "D",
+    "how_used": "Tile layout, tie bucket, candidate filters, commitment/cooldown and fallback hold. TUNING: the fix3b values were fixed before any run and not fitted, and LO keeps its screened form. The screen's sets 1-2 were ring geometry (inferred). SEARCHER_EDGE_BAND is a fix3a constant kept under gates measured only on the ring.",
+    "evidence": "common_fixed_variables.py:202,221-224; agents.py:2084-2086; src_extension/planning/searcher_targeting.py:35,130-137,276; src_extension/execution/uav_executor.py:2441-2463; outputs/fix3b_part1.txt:820,725-729",
+    "status": "inferred"
+   },
+   {
+    "strategy": "LO",
+    "item": "Return-trigger constants (BASE_STATION_RETURN_MARGIN 39.23, UAV_RETURN_TO_BASE_RESERVE 0, drain 0.1+0.2/step, BASE_STATION_MODE 3, FREE_CELL_DOCKING 1, BATTERY_CRITICAL 15)",
+    "klass": "D",
+    "how_used": "The battery-feasibility filter evaluates the live return trigger at the target. TUNING: the base-station choices were selected under ring-only never_detected gates.",
+    "evidence": "agents.py:1276-1290,1858-1894; common_fixed_variables.py:733-738,236; outputs/fix3b_part1.txt:725-729",
+    "status": "inferred"
+   },
+   {
+    "strategy": "LO",
+    "item": "Admissible-set constants: SEARCHER_ROUTE_CLEARANCE 6 (= SEARCHER_GATE_NEAR_RANGE), edge-band penetration filter (SEARCHER_CORNER_ESCAPE)",
+    "klass": "D",
+    "how_used": "Define which cells and moves the reachability BFS admits. The same BFS is used for the planner's check and for the executor's steer.",
+    "evidence": "agents.py:2084-2089,2115-2123; src_extension/execution/uav_executor.py:2372-2388,2390-2439",
+    "status": "verified"
+   },
+   {
+    "strategy": "LO",
+    "item": "Wind (direction/forecast)",
+    "klass": "B",
+    "how_used": "NOT read. The strategy, the belief update and the BFS contain no wind reference. Wind affects LO only through the true fire it reads.",
+    "evidence": "src_extension/planning/searcher_targeting.py:1-396 (no 'wind' token); src_extension/knowledge/victim_search_belief.py:1-247; wildfire_model.py:2726-2778; src_extension/execution/uav_executor.py:2390-2439",
+    "status": "verified"
+   },
+   {
+    "strategy": "LO",
+    "item": "Managed truth: true victim positions, managed status/dead, _count_unresolved_victims, spawn rule",
+    "klass": "P",
+    "how_used": "NOT read by the strategy. Exposure is indirect only: on a fallback step (no feasible tile, then R=10 hold) there is no delivery, the current chain steers, and that chain reads _count_unresolved_victims.",
+    "evidence": "src_extension/planning/searcher_targeting.py:320-351; src_extension/adaptation/local_adaptation_generator.py:763-789,1350",
+    "status": "verified"
+   },
+   {
+    "strategy": "BD",
+    "item": "Search area / grid dimensions",
+    "klass": "B",
+    "how_used": "Shape of the prior and posterior p, the candidate lattice and the BFS bounds.",
+    "evidence": "src_extension/knowledge/victim_search_belief.py:122-136; src_extension/planning/searcher_targeting.py:145,195-196; src_extension/execution/uav_executor.py:2405-2406",
+    "status": "verified"
+   },
+   {
+    "strategy": "BD",
+    "item": "Depot footprints + cells burning at t0 (reported ignition)",
+    "klass": "B",
+    "how_used": "Prior H0 = uniform over all cells minus depots minus cells burning at t0, with p0(DEAD)=0. The depots also enter the battery trigger.",
+    "evidence": "wildfire_model.py:2673-2685,2712-2718; src_extension/knowledge/victim_search_belief.py:122-136; outputs/fix3b_part1.txt:126-141",
+    "status": "verified"
+   },
+   {
+    "strategy": "BD",
+    "item": "N = NUM_VICTIMS (briefing count)",
+    "klass": "B",
+    "how_used": "n_unfound = max(0, N - |detected_ids|) and lambda = n_unfound * p. lambda is the field that is scored, convolved and claimed. n_unfound == 0 switches the arm to the LO rule (R-1).",
+    "evidence": "wildfire_model.py:2715; src_extension/knowledge/victim_search_belief.py:229-238; src_extension/planning/searcher_targeting.py:185-188",
+    "status": "verified"
+   },
+   {
+    "strategy": "BD",
+    "item": "Detection events: managed_victims[vid].confirmed (flag only) and victim_runtime_model.victims keys",
+    "klass": "S",
+    "how_used": "Union into detected_ids, which decrements N_unf, drives the R-1 switch and the drop_all_detected rule. 'confirmed' is set only (a) at the first sensor detection, or (b) at dispatch, which itself requires confirmed. The rescue_executor 'confirm' path never fires because the MAPE rescue options carry no victim_id (inferred). Runtime-model records are created only by update_detection and require_confirmation inside the detection pass. _apply_victim_updates re-reads only existing records (closed loop). No count that includes undetected or dead victims is read.",
+    "evidence": "wildfire_model.py:2767-2771,1444-1465,4913-4927,3036-3056,3622-3627; src_extension/planning/rescue_planner.py:593; src_extension/knowledge/victim_runtime_model.py:60-101,158-163; src_extension/monitoring/local_uav_monitor.py:95-112; src_extension/execution/rescue_executor.py:94-103,566-568; src_extension/adaptation/rescue_adaptation_generator.py:22-34,157-202,233-305; src_extension/managed/victim_state.py:28",
+    "status": "verified"
+   },
+   {
+    "strategy": "BD",
+    "item": "Post-move cell of every UAV (all roles; LocalObservation.current_position, falling back to agent.pos) + launch measure",
+    "klass": "S",
+    "how_used": "MEASURE: p *= (1 - P_d) in the union of Euclidean-8 discs, renormalised with DEAD (negative information). Also stamps last_cover for the R-1 continuation.",
+    "evidence": "wildfire_model.py:2719-2724,2753-2764; src_extension/knowledge/victim_search_belief.py:198-213",
+    "status": "verified"
+   },
+   {
+    "strategy": "BD",
+    "item": "Sensor spec: detection radius 8 (197 offsets), P_d = 1, PD_SMOKE = 1",
+    "klass": "B",
+    "how_used": "Likelihood derived from the simulator's detection rule. The disc offsets give S = disc_convolve(lambda), the along-path gain masks and the swept rule on disc_convolve(p).",
+    "evidence": "wildfire_model.py:2717,2723-2724,1444; src_extension/knowledge/victim_search_belief.py:34-38,56-78; common_fixed_variables.py:203-204,918; src_extension/planning/searcher_targeting.py:187-191,309-310",
+    "status": "verified"
+   },
+   {
+    "strategy": "BD",
+    "item": "True burning cells",
+    "klass": "A3",
+    "how_used": "PREDICT: burning neighbours are unavailable as moves. BURN-OVER: p_bo of the alive mass on burning cells goes to DEAD. Also the BFS blocked set and clearance, the on-hazard skip, and the tile ages under R-1.",
+    "evidence": "wildfire_model.py:2748-2752,2765-2766,2687-2698; src_extension/knowledge/victim_search_belief.py:139-162,215-226; src_extension/execution/uav_executor.py:2408,2418-2422",
+    "status": "verified"
+   },
+   {
+    "strategy": "BD",
+    "item": "Smoke (Fire-agent smoke + visibility smoke_obscured)",
+    "klass": "A3",
+    "how_used": "BFS blocked set, on-hazard skip, and the tile-age mask under R-1. The MEASURE smoke argument is inert at PD_SMOKE = PD (0.5 is a sensitivity only).",
+    "evidence": "wildfire_model.py:2699-2709,2762-2764; src_extension/knowledge/victim_search_belief.py:202-206; src_extension/execution/uav_executor.py:2409-2417",
+    "status": "verified"
+   },
+   {
+    "strategy": "BD",
+    "item": "Motion model: lazy 4-neighbour random walk, q = SEARCHER_BELIEF_DIFFUSION_Q 0.1",
+    "klass": "D",
+    "how_used": "PREDICT spreads p by q/k to each available neighbour. TUNING: an operator assumption taken from the literature (sensitivity {0.05, 0.3}), not fitted to simulator runs and not tuned on the ring.",
+    "evidence": "common_fixed_variables.py:205; wildfire_model.py:2726-2734; src_extension/knowledge/victim_search_belief.py:159-162,188-196; outputs/fix3b_part1.txt:166-170,751-754,774",
+    "status": "verified"
+   },
+   {
+    "strategy": "BD",
+    "item": "Victim movement quantum: at most 1 cell per step, onto a non-burning 4-neighbour (simulator property, A6)",
+    "klass": "D",
+    "how_used": "Structure of the PREDICT kernel. This is the one simulator property the belief adopts, stated as assumption A6.",
+    "evidence": "src_extension/knowledge/victim_search_belief.py:31,148-157; outputs/fix3b_part1.txt:189-190; common_fixed_variables.py:285-289",
+    "status": "verified"
+   },
+   {
+    "strategy": "BD",
+    "item": "Burn-over p_bo = SEARCHER_BELIEF_BURNOVER 0.1",
+    "klass": "D",
+    "how_used": "Alive mass on a burning cell goes to DEAD at this rate per step. R-3: changed from 0.5 to 0.1 AFTER the screen and BEFORE the measurement round. Motivated by the screen run BF set 1 C/S, where 81% of an alive victim's mass went to DEAD; set 1 is ring geometry (inferred). Not fitted. 0.5 is kept as the sensitivity.",
+    "evidence": "common_fixed_variables.py:211-214; src_extension/knowledge/victim_search_belief.py:105,215-226; wildfire_model.py:2734,2765-2766; outputs/fix3b_part1.txt:821-834; outputs/fix3b_report.txt:170-174",
+    "status": "verified"
+   },
+   {
+    "strategy": "BD",
+    "item": "Scoring/commitment constants: STRIDE 2, TOP_M 12, L0 4, MIN_DIST 5, SWEPT_RHO 0.25, G 15, R 10, Manhattan > 2, edge band 4",
+    "klass": "D",
+    "how_used": "Candidates on the non-band stride lattice. Pre-rank by S/max(L, L0); exact along-path gain for the top M. MIN_DIST (R-1, set after the screen in response to ring-set micro-retargeting) excludes Bayes targets with L < 5. A held target is dropped when Sp < rho * S_issue.",
+    "evidence": "common_fixed_variables.py:215-222; src_extension/planning/searcher_targeting.py:130-136,186,195-196,253,288-318; outputs/fix3b_part1.txt:816-819; outputs/fix3b_report.txt:183-185",
+    "status": "verified"
+   },
+   {
+    "strategy": "BD",
+    "item": "Own battery level + return-trigger constants",
+    "klass": "S",
+    "how_used": "Same hard battery filter as LO; the battery level is the UAV's own reading. The constants are the D items listed under LO.",
+    "evidence": "src_extension/planning/searcher_targeting.py:219-226,249-250,303; agents.py:1858-1894",
+    "status": "verified"
+   },
+   {
+    "strategy": "BD",
+    "item": "Other UAVs' cells; other searchers' assigned paths",
+    "klass": "S",
+    "how_used": "BFS blocked set and dock occupancy. Coordination by fictitious non-detection: lambda is multiplied by ~claimed, the union of discs along the held and newly assigned paths. Free searchers are ordered by their best stand-alone score.",
+    "evidence": "src_extension/execution/uav_executor.py:2332-2339,2421; src_extension/planning/searcher_targeting.py:232-266,325-366",
+    "status": "verified"
+   },
+   {
+    "strategy": "BD",
+    "item": "R-1 continuation once N_unf = 0: last_cover tile ages, tile layout, true burning/smoke",
+    "klass": "S",
+    "how_used": "eff switches to the unchanged mode-1 rule. A held Bayes point target is dropped (drop_all_detected). Tile targets are then chosen exactly as in LO; delivered steps are counted as lo_continuation_steps. The searcher is no longer handed back to the current chain.",
+    "evidence": "src_extension/planning/searcher_targeting.py:182-193,251-252,381-382; outputs/fix3b_part1.txt:812-815",
+    "status": "verified"
+   },
+   {
+    "strategy": "BD",
+    "item": "Wind",
+    "klass": "B",
+    "how_used": "NOT read: the motion model is fire-agnostic in direction. Wind enters only through the true fire field.",
+    "evidence": "src_extension/knowledge/victim_search_belief.py:96-105,159-162; wildfire_model.py:2726-2778",
+    "status": "verified"
+   },
+   {
+    "strategy": "BD",
+    "item": "Managed truth (true victim positions, managed status/dead, _count_unresolved_victims)",
+    "klass": "P",
+    "how_used": "NOT read. The only managed read is the boolean confirmed flag, which is detection-derived. Exposure is indirect only, through fallback steps (no feasible target, then R=10 hold) where the current chain steers and reads _count_unresolved_victims.",
+    "evidence": "wildfire_model.py:2767-2769; src_extension/planning/searcher_targeting.py:320-351; src_extension/adaptation/local_adaptation_generator.py:763-789,1350",
+    "status": "verified"
+   },
+   {
+    "strategy": "BD",
+    "item": "Uniform spawn rule (VICTIM_SPAWN_MODE 1)",
+    "klass": "P",
+    "how_used": "Never read by the belief. The spawn draws i.i.d. uniformly over the support built by the SAME victim_search_prior_excluded() call as the prior, so H0 equals the generating distribution BY CONSTRUCTION. Under the legacy ring, H0 is misspecified.",
+    "evidence": "wildfire_model.py:182-184,936-949,2673-2685,2715; outputs/fix3b_part1.txt:142-144",
+    "status": "verified"
+   },
+   {
+    "strategy": "BF",
+    "item": "Search area / grid dimensions",
+    "klass": "B",
+    "how_used": "Same as BD: shape of p, the candidate lattice and the BFS bounds.",
+    "evidence": "src_extension/knowledge/victim_search_belief.py:122-136; src_extension/planning/searcher_targeting.py:145,195-196",
+    "status": "verified"
+   },
+   {
+    "strategy": "BF",
+    "item": "Depot footprints + cells burning at t0",
+    "klass": "B",
+    "how_used": "Prior H0 exclusions, as in BD.",
+    "evidence": "wildfire_model.py:2673-2685,2712-2718",
+    "status": "verified"
+   },
+   {
+    "strategy": "BF",
+    "item": "N = NUM_VICTIMS",
+    "klass": "B",
+    "how_used": "n_unfound = N - |detected|, lambda = n_unfound * p. The R-1 switch fires at n_unfound == 0.",
+    "evidence": "src_extension/knowledge/victim_search_belief.py:229-238; src_extension/planning/searcher_targeting.py:185-188",
+    "status": "verified"
+   },
+   {
+    "strategy": "BF",
+    "item": "Detection events (confirmed flag; victim_runtime_model ids)",
+    "klass": "S",
+    "how_used": "As in BD: detection-derived only, decrements N_unf, drives R-1 and drop_all_detected.",
+    "evidence": "wildfire_model.py:2767-2771,1444-1465; src_extension/planning/searcher_targeting.py:185,251-252",
+    "status": "verified"
+   },
+   {
+    "strategy": "BF",
+    "item": "Post-move UAV cells (all roles) + launch measure",
+    "klass": "S",
+    "how_used": "MEASURE (negative information) and last_cover.",
+    "evidence": "wildfire_model.py:2719-2724,2753-2764; src_extension/knowledge/victim_search_belief.py:198-213",
+    "status": "verified"
+   },
+   {
+    "strategy": "BF",
+    "item": "Sensor spec: radius 8, P_d 1, PD_SMOKE 1",
+    "klass": "B",
+    "how_used": "Likelihood and disc convolutions, as in BD.",
+    "evidence": "wildfire_model.py:2717,2723-2724; common_fixed_variables.py:203-204,918",
+    "status": "verified"
+   },
+   {
+    "strategy": "BF",
+    "item": "True burning cells",
+    "klass": "A3",
+    "how_used": "PREDICT: d(c) = exact Euclidean distance to the nearest TRUE burning cell drives the alarm and the softmax gain. Burning neighbours are unavailable. Also used in burn-over, the BFS, the on-hazard skip and the tile ages under R-1.",
+    "evidence": "src_extension/knowledge/victim_search_belief.py:81-93,163-187,215-226; wildfire_model.py:2748-2752,2765-2766",
+    "status": "verified"
+   },
+   {
+    "strategy": "BF",
+    "item": "Smoke",
+    "klass": "A3",
+    "how_used": "BFS, on-hazard skip and tile ages under R-1. Not used by the flee model. MEASURE is inert at PD_SMOKE = PD.",
+    "evidence": "src_extension/knowledge/victim_search_belief.py:163-187,202-206; src_extension/execution/uav_executor.py:2409-2417",
+    "status": "verified"
+   },
+   {
+    "strategy": "BF",
+    "item": "Flee motion model: D50 5, s 1.5, p_go 0.8, beta 1.5, q_calm 0.02",
+    "klass": "D",
+    "how_used": "alarm = logistic((D50 - d)/s). An alarmed victim moves with p_go, by softmax over the non-burning neighbours with utility beta*(d(n) - d(c)). An unalarmed victim diffuses with q_calm. No leash. TUNING: literature-form operator assumptions, NOT the simulator's rule (Manhattan trigger 3, leash 6), not fitted to runs, not tuned on the ring.",
+    "evidence": "common_fixed_variables.py:206-210,305-306; wildfire_model.py:2726-2734; src_extension/knowledge/victim_search_belief.py:96-105,163-187; outputs/fix3b_part1.txt:171-183,755-769",
+    "status": "verified"
+   },
+   {
+    "strategy": "BF",
+    "item": "Victim movement quantum (<= 1 cell/step, non-burning neighbour; A6)",
+    "klass": "D",
+    "how_used": "Structure of the PREDICT kernel.",
+    "evidence": "src_extension/knowledge/victim_search_belief.py:31,148-157; outputs/fix3b_part1.txt:189-190",
+    "status": "verified"
+   },
+   {
+    "strategy": "BF",
+    "item": "Burn-over p_bo 0.1",
+    "klass": "D",
+    "how_used": "As in BD (R-3: set after the screen and before the measurement round; motivated by the BF set 1 C/S run; 0.5 kept as the sensitivity).",
+    "evidence": "common_fixed_variables.py:211-214; src_extension/knowledge/victim_search_belief.py:105,215-226; outputs/fix3b_part1.txt:821-834; outputs/fix3b_report.txt:170-174",
+    "status": "verified"
+   },
+   {
+    "strategy": "BF",
+    "item": "Scoring/commitment constants (STRIDE 2, M 12, L0 4, MIN_DIST 5, rho 0.25, G 15, R 10)",
+    "klass": "D",
+    "how_used": "As in BD. MIN_DIST was added by R-1 after the screen.",
+    "evidence": "common_fixed_variables.py:215-222; src_extension/planning/searcher_targeting.py:130-136,186,288-318",
+    "status": "verified"
+   },
+   {
+    "strategy": "BF",
+    "item": "Own battery + return-trigger constants",
+    "klass": "S",
+    "how_used": "Hard battery filter, as in LO and BD.",
+    "evidence": "src_extension/planning/searcher_targeting.py:219-226; agents.py:1858-1894",
+    "status": "verified"
+   },
+   {
+    "strategy": "BF",
+    "item": "Other UAVs' cells; other searchers' assigned paths",
+    "klass": "S",
+    "how_used": "BFS blocked set, dock occupancy, and coordination by fictitious non-detection.",
+    "evidence": "src_extension/execution/uav_executor.py:2332-2339; src_extension/planning/searcher_targeting.py:232-266,325-366",
+    "status": "verified"
+   },
+   {
+    "strategy": "BF",
+    "item": "R-1 continuation (LO rule after N_unf = 0)",
+    "klass": "S",
+    "how_used": "Same as BD: reads last_cover tile ages plus true burning/smoke. No hand-back to the current chain after all victims are detected.",
+    "evidence": "src_extension/planning/searcher_targeting.py:182-193,251-252,381-382",
+    "status": "verified"
+   },
+   {
+    "strategy": "BF",
+    "item": "Wind",
+    "klass": "B",
+    "how_used": "NOT read. Flight is driven only by the distance to true burning cells, which already embeds the wind-driven spread.",
+    "evidence": "src_extension/knowledge/victim_search_belief.py:163-187; wildfire_model.py:2726-2778",
+    "status": "verified"
+   },
+   {
+    "strategy": "BF",
+    "item": "Managed truth (true positions, status/dead, unresolved count) and the true victim flee rule",
+    "klass": "P",
+    "how_used": "NOT read. The design explicitly withholds the flee constants (the inverse crime). Indirect exposure only on fallback steps, through the current chain.",
+    "evidence": "src_extension/knowledge/victim_search_belief.py:1-247; outputs/fix3b_part1.txt:136-141,182-183; src_extension/planning/searcher_targeting.py:320-351",
+    "status": "verified"
+   },
+   {
+    "strategy": "BF",
+    "item": "Uniform spawn rule",
+    "klass": "P",
+    "how_used": "Not read. H0 equals the generating distribution by construction (shared exclusion helper).",
+    "evidence": "wildfire_model.py:942-949,2715",
+    "status": "verified"
+   },
+   {
+    "strategy": "RW",
+    "item": "Dedicated salted RNG stream (fix3b-searcher-random-walk)",
+    "klass": "D",
+    "how_used": "draw_random_walk makes one uniform direction per UAV every step, before the planning early-return, so the stream stays aligned. The stream is a digest of the seeded SYSTEM_RANDOM state and consumes nothing from the fire stream.",
+    "evidence": "wildfire_model.py:185-187,2660-2668,2321-2325; src_extension/planning/searcher_targeting.py:59-70",
+    "status": "verified"
+   },
+   {
+    "strategy": "RW",
+    "item": "Step counter + own UAV id",
+    "klass": "S",
+    "how_used": "Selects this step's pre-drawn direction in the searcher's no-victim branch.",
+    "evidence": "src_extension/execution/uav_executor.py:2490-2499,1349-1358",
+    "status": "verified"
+   },
+   {
+    "strategy": "RW",
+    "item": "Grid bounds",
+    "klass": "B",
+    "how_used": "UAV.move refuses an out-of-bounds target. A refused draw is a stay with no re-draw, and its intended delta is (0,0), so it does not trip the drift alarms.",
+    "evidence": "agents.py:1100-1106,1128-1132",
+    "status": "verified"
+   },
+   {
+    "strategy": "RW",
+    "item": "Other UAVs' cells",
+    "klass": "S",
+    "how_used": "UAV.move refuses a move into adjacency of another UAV (not_UAV_adjacent).",
+    "evidence": "agents.py:1103-1105",
+    "status": "verified"
+   },
+   {
+    "strategy": "RW",
+    "item": "True fire / smoke",
+    "klass": "A3",
+    "how_used": "NOT read at the primary setting: RW steps are exempt from the searcher hazard gate when SEARCHER_TARGETING_RW_GATED = 0. The control RW_GATED = 1 passes the gate, which reads true fire and smoke.",
+    "evidence": "src_extension/execution/uav_executor.py:2359-2370,460-472; agents.py:2197-2200; common_fixed_variables.py:200-201",
+    "status": "verified"
+   },
+   {
+    "strategy": "RW",
+    "item": "Battery / return to base",
+    "klass": "S",
+    "how_used": "Not read by RW itself. The return leg pre-empts it through _base_return_direction and the advance() override (own battery, depots).",
+    "evidence": "src_extension/execution/uav_executor.py:1057-1059; agents.py:651-700,1112",
+    "status": "verified"
+   },
+   {
+    "strategy": "RW",
+    "item": "N, detection events, belief",
+    "klass": "B",
+    "how_used": "NOT read: no belief is built for mode 4, and the post-pass is inert for mode 4.",
+    "evidence": "agents.py:2170-2172; wildfire_model.py:403-406; src_extension/planning/searcher_targeting.py:120-122",
+    "status": "verified"
+   },
+   {
+    "strategy": "RW",
+    "item": "Detected-but-unhandled victim in victim_runtime_model (the searcher's victim branch)",
+    "klass": "S",
+    "how_used": "Would pre-empt the walk by steering to that victim. In practice it never does, because a detection sets confirmed, which _victim_handled_for_uav_target treats as handled.",
+    "evidence": "src_extension/execution/uav_executor.py:1061-1089,1718-1752,1801-1827; wildfire_model.py:1459-1462",
+    "status": "inferred"
+   },
+   {
+    "strategy": "RW",
+    "item": "Wind",
+    "klass": "B",
+    "how_used": "NOT read.",
+    "evidence": "src_extension/planning/searcher_targeting.py:59-70; src_extension/execution/uav_executor.py:2491-2499",
+    "status": "verified"
+   },
+   {
+    "strategy": "RW",
+    "item": "Managed truth (positions, status, unresolved count)",
+    "klass": "P",
+    "how_used": "NOT read. While a draw exists the current chain never steers the no-victim branch, so even its P count does not reach RW steps.",
+    "evidence": "src_extension/execution/uav_executor.py:1354-1358,2491-2499",
+    "status": "verified"
+   },
+   {
+    "strategy": "ALL",
+    "item": "Detection rule wildfire_model._detect_victims_in_uav_radius (truth geometry)",
+    "klass": "S",
+    "how_used": "The sensor model. A victim is detected iff the Euclidean distance between the TRUE UAV cell and the TRUE victim marker cell is <= UAV_OBSERVATION_RADIUS (8). Smoke-blind, run pre-move and post-move. Victims that are dead/rescued/cancelled/unreachable are skipped. At the shipped UNDETECTED_WRITEOFF_FIX 1 an undetected victim is never written off, so only true death removes its detectability. The output (detection events) is S.",
+    "evidence": "wildfire_model.py:1415-1495; src_extension/adaptation_manager.py:101,171; agents.py:1631-1639; common_fixed_variables.py:99,918; src_extension/planning/rescue_planner.py:493-551",
+    "status": "verified"
+   },
+   {
+    "strategy": "ALL",
+    "item": "Firefighter dispatch and tracking read the TRUE victim position after detection (assumption A7)",
+    "klass": "P",
+    "how_used": "Dispatch picks only confirmed victims, at the marker's true cell (snapshot -> select_rescue_assignment -> apply_physical_rescue_command target_pos). The unit then re-targets to the victim's current true cell every step without any sensor contact. Identical in every arm.",
+    "evidence": "wildfire_model.py:3603-3627,4882-4890; src_extension/planning/rescue_planner.py:583-623; agents.py:2785-2803,2810",
+    "status": "verified"
+   },
+   {
+    "strategy": "ALL",
+    "item": "Return-to-base override (BASE_STATION_MODE 3, mechanism 2, free-cell docking)",
+    "klass": "S",
+    "how_used": "advance() runs _apply_return_to_base first, as the last writer of selected_dir; it reads own battery (S), depot footprints (B), other UAV cells (S) and the margin (D). Searchers on a return leg are excluded from targeting, and the base-return waypoint pre-empts every searcher branch.",
+    "evidence": "agents.py:651-700,1111-1118; common_fixed_variables.py:733-738; src_extension/planning/searcher_targeting.py:165-170; src_extension/execution/uav_executor.py:1057-1059",
+    "status": "verified"
+   },
+   {
+    "strategy": "ALL",
+    "item": "Fail-safe / dispatcher layers",
+    "klass": "S",
+    "how_used": "Victim searchers are exempt from search-mode overrides except emergency/safety_first/safe_hold/return. The fail-safe pre-dispatch runs execute() with a bare PathDecision: the LO/BD/BF hook needs this step's marker, so it returns None and the current chain steers that call, while RW still steers. The later local-path dispatch is the last writer. A fail-safe yield marks a hold that the searcher obeys (_execute_hold), with no targeting.",
+    "evidence": "src_extension/execution/decision_dispatcher.py:155-198,269-306,326-375,503-524; src_extension/execution/uav_executor.py:359-371,381-434,516-552,2500-2502",
+    "status": "inferred"
+   },
+   {
+    "strategy": "ALL",
+    "item": "Searcher hazard gate exemption and fix3b method labels",
+    "klass": "D",
+    "how_used": "A targeting step (label AND method) and an ungated RW step skip the hazard gate. A fix3b label is never carried across decisions, and owned steps do not advance the current chain's wind-search state, so a fallback resumes from the chain's own state.",
+    "evidence": "src_extension/execution/uav_executor.py:349-354,460-472,480-483,2350-2370,2488-2489",
+    "status": "verified"
+   },
+   {
+    "strategy": "ALL",
+    "item": "Current-chain count _count_unresolved_victims (fallback / hand-back steps)",
+    "klass": "P",
+    "how_used": "Counts every managed victim that is not terminal, so it INCLUDES UNDETECTED victims and EXCLUDES victims that died unseen. It switches coverage mode, coverage priority, hybrid score weights, the y-commit, the path planner's coverage escape and the post-rescue coverage. It reaches LO/BD/BF only on steps without a delivery (fallback, R-hold, ineligible steps). After R-1 it no longer reaches Bayes arms once all victims are detected. It never reaches RW.",
+    "evidence": "src_extension/adaptation/local_adaptation_generator.py:763-789,811-826,1274,1343-1350,1384-1387,1409-1415; src_extension/planning/local_uav_path_planner.py:132-145; wildfire_model.py:1996-1997,3975-3985; outputs/fix3b_part1.txt:730-733",
+    "status": "verified"
+   },
+   {
+    "strategy": "ALL",
+    "item": "Current-chain coverage constants in absolute grid coordinates (CORRIDOR_DIVERSITY_X_BAND 38, CORRIDOR_NARROW_X_SPAN 18, CORRIDOR_WEST_TARGET_X_MAX 25, CORRIDOR_WEST_CAMP_X 12, COVERAGE_INTERIOR_X_MIN/MAX 8/30, WIND_SOUTH_EDGE_PENALTY 15, ...)",
+    "klass": "D",
+    "how_used": "Steer the current searcher on every step it owns, including fix3b fallback steps. TUNED ON THE FIXED RING: commit 66dc728c ('Fix west-wind search coverage: never_detected 24 -> 10') diagnosed misses by ring clusters and validated by ring cells. Settings were kept on ring-only gates.",
+    "evidence": "src_extension/adaptation/local_adaptation_generator.py:51-115; git 66dc728c (2026-08-17); outputs/fix3b_part1.txt:711-729",
+    "status": "verified"
+   },
+   {
+    "strategy": "ALL",
+    "item": "Fire trackers (unchanged)",
+    "klass": "A3",
+    "how_used": "Their behaviour is unchanged: the targeting hook sits only in the role_kind 'victim' no-target branch, and the post-pass iterates only resolve_victim_searcher_uav_ids. The RW draws are made for all UAVs but only searchers consume them. The trackers' post-move discs feed the belief MEASURE (S), and their detections count toward N_unf. The trackers read the fire picture (A3).",
+    "evidence": "src_extension/execution/uav_executor.py:1061,1349-1358; src_extension/planning/searcher_targeting.py:157; src_extension/planning/searcher_targeting.py:69-70; wildfire_model.py:2753-2761; outputs/fix3b_part1.txt:147-148,740-743",
+    "status": "inferred"
+   },
+   {
+    "strategy": "ALL",
+    "item": "Role planner at GLOBAL_PLANNER_MODE 0",
+    "klass": "D",
+    "how_used": "Roles are fixed at launch by the half rule (trackers first, then searchers, by unique_id). At mode 0 no role switch happens and no role-change reset runs. Eligible searchers = managed_uav_states roles.",
+    "evidence": "common_fixed_variables.py:496; agents.py:1593-1605; wildfire_model.py:468-484,1059-1109; src_extension/adaptation/global_adaptation_generator.py:100-110; src_extension/adaptation/local_adaptation_generator.py:276-307",
+    "status": "verified"
+   },
+   {
+    "strategy": "ALL",
+    "item": "Legacy fixed-ring spawn (VICTIM_SPAWN_MODE 0, the default)",
+    "klass": "P",
+    "how_used": "Environment-side; not read by any fix3b strategy. Positions are fractions of HEIGHT/WIDTH on a fixed ring, independent of seed. It misspecifies H0 and is the current searcher's home ground.",
+    "evidence": "wildfire_model.py:950-968; common_fixed_variables.py:225-228; outputs/fix3b_part1.txt:142-144,711-713",
+    "status": "verified"
+   },
+   {
+    "strategy": "ALL",
+    "item": "True victim flee rule (VICTIM_FLEE_TRIGGER_DISTANCE 3, VICTIM_FLEE_MAX_DISPLACEMENT 6)",
+    "klass": "P",
+    "how_used": "Environment victim motion. Not read by any belief; BD and BF use operator models instead.",
+    "evidence": "common_fixed_variables.py:285-306; src_extension/knowledge/victim_search_belief.py:96-105",
+    "status": "verified"
+   },
+   {
+    "strategy": "ALL",
+    "item": "Source of the 'true fire' read by fix3b (_fix3b_true_fire)",
+    "klass": "A3",
+    "how_used": "Reads the schedule's Fire agents (is_burning, smoke) plus visibility smoke_obscured directly. It does NOT go through fire_runtime_model, although part1 2.4 says it does; 15.2 says 'through the environment monitor', which reads the same Fire agents. The content is identical; the paper's wording should match the code.",
+    "evidence": "wildfire_model.py:2687-2710; src_extension/monitoring/environment_monitor.py:24-32; outputs/fix3b_part1.txt:164-165,740-743",
+    "status": "verified"
+   }
+  ],
+  "summary": "No fix3b strategy reads managed truth (class P). This holds for LO, BD, BF (including the R-1 least-observed continuation) and RW.\n\n- **Detection events.** The belief's only read of managed state is the boolean `managed_victims[vid].confirmed` together with the keys of `victim_runtime_model.victims` (wildfire_model.py:2767-2771). Both are written only by the sensor path:\n  - `confirmed` is set at the first in-radius detection (wildfire_model.py:1459-1462), or at dispatch, which itself requires `confirmed` (4926; rescue_planner.py:593; 3622-3627).\n  - The `rescue_executor` \"confirm\" branch (rescue_executor.py:94-103, 566-568) is unreachable in practice, because no MAPE rescue option carries a victim_id (rescue_adaptation_generator.py:22-34, 157-305). This is inferred.\n  - Runtime-model records are created only inside the detection pass: `update_detection` at 1446 and `require_confirmation` at 1455-1458. The re-read at 1510 uses `visible_victim_candidates`, which comes from existing records only (local_uav_monitor.py:95-112), so it is a closed loop.\n- **The count.** N is the briefing count `NUM_VICTIMS` (B). N_unf = N minus distinct first detections (S). No count that includes undetected or dead victims is read.\n- **Other inputs.** None of these strategies reads wind (verified: no wind token in searcher_targeting.py or victim_search_belief.py, nor in the belief update or the BFS). The true fire and smoke come from the schedule's Fire agents (A3). Positions are the UAVs' own (S). The motion parameters are literature assumptions (D), not the simulator's flee rule (P). RW reads only its salted RNG stream, the grid bounds and other UAVs' cells; it is fire-blind at the primary RW_GATED 0.\n\n**Where P still reaches the system: the shared pipeline only.**\n1. On steps without a delivery, the current chain steers (no feasible target, the R=10 hold, fail-safe pre-dispatch calls). That chain reads `_count_unresolved_victims` (local_adaptation_generator.py:763-789, 1350), which includes undetected victims and drops unseen-dead ones. After R-1 this exposure no longer occurs once all victims are detected. It never reaches RW.\n2. Firefighter dispatch and tracking read the true victim position after detection (A7), identically in every arm (wildfire_model.py:3603-3627, 4882-4890; agents.py:2785-2803).\n3. The uniform spawn rule is never read, but its support is built by the same `victim_search_prior_excluded()` call as the prior. H0 therefore equals the generating distribution by construction; the paper should state this.\n\n**Tuning provenance.**\n- **Current chain.** Its absolute-coordinate coverage constants (local_adaptation_generator.py:51-115) were tuned on the fixed ring (66dc728c) and kept on ring-only gates.\n- **fix3b values.** The fix3b parameters were fixed before any run and not fitted. Two were set after the screen, in response to ring-set runs: `SEARCHER_TARGETING_MIN_DIST` 5 (R-1) and `SEARCHER_BELIEF_BURNOVER` 0.1 (R-3). That the screen's sets 1 and 2 used the ring geometry is inferred from fix3b_report.txt.\n- **Wording mismatch.** The fix3b design document says the fire input comes through `fire_runtime_model` (fix3b_part1.txt 2.4) or the environment monitor (15.2). The code (wildfire_model.py:2687-2710) reads the Fire agents directly. The content is the same (A3); only the wording differs.\n\n**Rules followed.** Read-only throughout: nothing was run (no simulation, pytest, probe or pool) and nothing in the repo was edited. Files read are under E:\\Projects\\SAS, mainly wildfire_model.py, agents.py, common_fixed_variables.py, src_extension\\planning\\searcher_targeting.py, src_extension\\knowledge\\victim_search_belief.py, src_extension\\execution\\uav_executor.py, src_extension\\execution\\decision_dispatcher.py, src_extension\\execution\\rescue_executor.py, src_extension\\planning\\rescue_planner.py, src_extension\\adaptation\\local_adaptation_generator.py, and the named outputs files fix3b_part1.txt and fix3b_report.txt.",
+  "quarantine_contact": "None. I never read, listed or traversed outputs/_firemech_rewound_20260914/. Every recursive grep carried --exclude-dir=_firemech_rewound_20260914; the ones rooted at the repo root also excluded outputs, .venv and .git. Grep and Glob tool calls were rooted only at src_extension/ or at named files. I did not run find or git status. In outputs/ I read only the named files fix3b_part1.txt and fix3b_report.txt. One shell glob, `ls -la outputs/fix3b_part1.txt outputs/fix3b_*.txt`, read the names of the top-level entries in outputs/ to expand the pattern. That listing would include the quarantine directory's name but did not enter or list it, and the pattern cannot match it. The two `git show --stat` calls (0e457b92, 66dc728c) read git objects, not the working tree."
+ },
+ "table": {
+  "strategy_items": [
+   {
+    "strategy": "ALL",
+    "item": "Code state checked",
+    "klass": "D",
+    "how_used": "HEAD is 3e0973d9, not 0e457b92. `git log 0e457b92..HEAD --stat` shows that only outputs/fix3b_part1.txt changed (+44 lines, section 16 rulings), so every source citation from M1 and M2 refers to unchanged code.",
+    "evidence": "git log --oneline 0e457b92..HEAD --stat",
+    "status": "verified"
+   },
+   {
+    "strategy": "CUR",
+    "item": "Mission-goal priorities derived from alive_victims_remaining (OMITTED by M1)",
+    "klass": "P",
+    "how_used": "Each step _build_mission_goal_runtime_context counts every victim marker that is not dead, rescued or unreachable. That count includes undetected victims and drops victims that died unseen. It feeds MissionGoalModel.refresh_from_runtime, which derives the mission phase ('evacuation' when fire severity >= 0.65 and the count > 0) and prioritize_victim_search (in 'exploration', true iff the count > 0). _adjust_option_confidence then adds +0.12 confidence to the victim_search_wind_aware and move_toward_victim_candidate options. This is a second P count, separate from _count_unresolved_victims. Its effect on option selection is inferred, not measured.",
+    "evidence": "wildfire_model.py:3691-3734 (:3697-3704 count), :3603-3650 (snapshot reads every marker and managed status), :3794-3797; src_extension/knowledge/mission_goal_model.py:153-191, :198-212, :225-235; src_extension/adaptation/local_adaptation_generator.py:1882-1899, :2241-2257",
+    "status": "verified"
+   },
+   {
+    "strategy": "ALL",
+    "item": "Mission-goal option confidence in the shared pipeline",
+    "klass": "P",
+    "how_used": "The fix3b post-pass leaves next_action and selected_option_id unchanged, so the same P-derived option ranking runs in every arm. The fix3b hook sits in the executor's victim no-target branch whatever option was selected, so I infer this P input does not change a step the strategy owns. It does act on steps handed back to the current chain.",
+    "evidence": "src_extension/planning/searcher_targeting.py:5-7; src_extension/execution/uav_executor.py:1061, :1356; src_extension/adaptation/local_adaptation_generator.py:1892-1899",
+    "status": "inferred"
+   },
+   {
+    "strategy": "ALL",
+    "item": "Executor victim-known branch handled-check runs before every fix3b hook (M2 classed the RW row as S: corrected)",
+    "klass": "P",
+    "how_used": "Before the targeting or random-walk hook, the executor calls _nearest_target(_victim_positions_from_runtime()). That call filters the detected records (S) by _victim_handled_for_uav_target, which reads managed_victims flags (dead, cancelled, rescued, unreachable, rescue_assigned, confirmed, assigned) and the marker status. Those are P. I infer it is inert in every arm (LO/BD/BF/RW/CUR) because confirmed is set True at the first detection and only ever re-set True. The read still happens in every arm and gates whether the hook is reached.",
+    "evidence": "src_extension/execution/uav_executor.py:1061-1062, :1356, :1718-1761, :1801-1827; wildfire_model.py:1459-1462; grep '.confirmed =' -> only wildfire_model.py:1461, :4926 and rescue_executor.py:568 (all True)",
+    "status": "inferred"
+   },
+   {
+    "strategy": "ALL",
+    "item": "Current-chain hand-back steps after R-1 (M2 overstated the closure)",
+    "klass": "P",
+    "how_used": "R-1 replaces the Bayes rule with the LO rule once N_unf = 0 (eff = 1). The LO rule can still return None: no tile that is reachable, battery-feasible, not cooled down and farther than Manhattan 2. That sets fallback_until = step + R (10) with no delivery. The on-hazard skip, the route-field-inactive skip, return legs and the fail-safe pre-dispatch call also deliver nothing. On all of these steps the current chain steers and reads _count_unresolved_victims. So R-1 removes the systematic hand-back (the Bayes score is zero once lambda = 0), but not every P exposure after all victims are detected. Whether such steps occur after detection is an empirical question for the R-5 report.",
+    "evidence": "src_extension/planning/searcher_targeting.py:173-178, :185, :268-287, :331-351, :369-384; src_extension/adaptation/local_adaptation_generator.py:763-789, :1350",
+    "status": "verified"
+   },
+   {
+    "strategy": "CUR",
+    "item": "Environment-monitor stamps into visibility and the fire belief (M1 wording corrected)",
+    "klass": "A3",
+    "how_used": "collect_environment_snapshot reports a Fire cell as SMOKE when its smoke is active and as FIRE only otherwise (the `elif`). So a burning cell under active smoke is stamped SMOKE_OBSCURED in the visibility map, and fire_runtime_model.mark_smoke_obscured lowers its confidence without setting probability 1.0. Cells that a UAV's LocalObservation already declared that step are skipped. M1's 'every true burning cell -> OBSERVED_FIRE / probability 1.0' therefore holds only for non-smoky burning cells. The class (A3) is unchanged.",
+    "evidence": "src_extension/monitoring/environment_monitor.py:17-46 (:29, :31); wildfire_model.py:1343-1413 (:1351, :1384 declared skip); src_extension/knowledge/fire_runtime_model.py:152-166; agents.py:199-215 (smoke turns on while burning after the pre-dispelling counter)",
+    "status": "verified"
+   },
+   {
+    "strategy": "ALL",
+    "item": "Strict smoke source of the hazard gate, the fix3b BFS and the on-hazard skip (OMITTED by both)",
+    "klass": "A3",
+    "how_used": "Strict smoke is the union of two sources. (1) Active Fire-agent smoke (true). (2) Visibility observation_status_map SMOKE_OBSCURED labels. Those labels are written by the environment monitor (true smoke, A3) and by UAV smoke reports (S). They are sticky: update_staleness and apply_time_decay never age SMOKE_OBSCURED, so a label stays until a UAV footprint or a non-smoky environment-monitor fire stamp overwrites the cell. The executor's read of visibility_model.smoke_obscured_cells is DEAD, because that set lives on visibility_model.state. The status-map read carries the same content. _fix3b_true_fire reads .state correctly.",
+    "evidence": "src_extension/execution/uav_executor.py:1988-2019 (:2004 dead attr), :2865-2887 (:2872 dead attr), :2390-2439; src_extension/knowledge/visibility_model.py:32-37, :48-66, :137-157, :159-197 (:175, :196); wildfire_model.py:2687-2710 (:2706-2710 .state)",
+    "status": "verified"
+   },
+   {
+    "strategy": "LO",
+    "item": "Least-observed searchable mask and age source (clarifies the visibility-model question)",
+    "klass": "S",
+    "how_used": "Tile age is computed from belief.last_cover, stamped by the Euclidean-8 disc of every UAV each step. It does NOT use the visibility model's 17x17-square OBSERVED/STALE map, so the 31.8% square-versus-disc mismatch does not affect LO. The searchable mask excludes the burning cells and the smoke set returned by _fix3b_true_fire (A3), which includes the sticky visibility SMOKE_OBSCURED labels. Never-covered cells get age now+1.",
+    "evidence": "src_extension/planning/searcher_targeting.py:98-109 (:99, :103); src_extension/knowledge/victim_search_belief.py:198-213 (:212); wildfire_model.py:2687-2710, :2753-2764",
+    "status": "verified"
+   },
+   {
+    "strategy": "LO",
+    "item": "Post-pass eligibility gates (route-field config + on-cell hazard)",
+    "klass": "D",
+    "how_used": "A searcher is eligible only if A1-R applies (SEARCHER_ROUTE_FIRE_FIELD on, retreat range >= 99, near field on) and its own cell has strict hazard level 0. Hazard level 0 means not burning, no active smoke and no SMOKE_OBSCURED label (A3). An ineligible searcher gets no delivery, so the current chain steers it. The same gates apply to BD and BF.",
+    "evidence": "src_extension/planning/searcher_targeting.py:173-178; src_extension/execution/uav_executor.py:2140-2146, :1988-1995",
+    "status": "verified"
+   },
+   {
+    "strategy": "LO",
+    "item": "Number of victims N",
+    "klass": "B",
+    "how_used": "NOT read by LO. eff == 1 always holds at mode 1, so lambda and n_unfound are never computed. detected_ids is maintained but unused.",
+    "evidence": "src_extension/planning/searcher_targeting.py:185-188; wildfire_model.py:2767-2771",
+    "status": "verified"
+   },
+   {
+    "strategy": "BD",
+    "item": "N = NUM_VICTIMS (briefing count; default 5)",
+    "klass": "B",
+    "how_used": "n_unfound = max(0, N - |detected_ids|) and lambda = n_unfound * p, with p being the ALIVE posterior mass (DEAD is held separately). n_unfound == 0 switches the arm to the LO rule (R-1). Detected victims stay counted after they die, which is the honest observable.",
+    "evidence": "common_fixed_variables.py:80; src_extension/knowledge/victim_search_belief.py:229-238; src_extension/planning/searcher_targeting.py:185-188; wildfire_model.py:2714-2715",
+    "status": "verified"
+   },
+   {
+    "strategy": "BF",
+    "item": "Wind in the flee model",
+    "klass": "B",
+    "how_used": "NOT read. The flee kernel uses only the exact Euclidean distance to the TRUE burning cells (A3) and the non-burning 4-neighbour availability. MotionParams has no wind field. Wind enters only through the fire it has spread.",
+    "evidence": "src_extension/knowledge/victim_search_belief.py:96-105, :163-187; wildfire_model.py:2726-2734",
+    "status": "verified"
+   },
+   {
+    "strategy": "BD",
+    "item": "Prior H0 and the uniform spawn share one exclusion set (spawn with replacement)",
+    "klass": "P",
+    "how_used": "The spawn is never read at run time. Its support is built by the same victim_search_prior_excluded() call (depots plus cells burning at t0; the fire is created at :205, before both calls), so H0 equals the generating distribution by construction. The spawn draws with replacement, so two victims may share a cell. Under the default ring, H0 is misspecified. The same holds for BF.",
+    "evidence": "wildfire_model.py:205, :293, :406, :2673-2685, :936-949; src_extension/knowledge/victim_search_belief.py:122-136",
+    "status": "verified"
+   },
+   {
+    "strategy": "BD",
+    "item": "Burn-over p_bo = 0.1 and MIN_DIST = 5 (rulings R-3 and R-1, both after the screen)",
+    "klass": "D",
+    "how_used": "The comment records 0.1 as set on 2026-10-01 after the screen and before the measurement round, with 0.5 kept as the sensitivity. MIN_DIST is justified as L0 + 1, so the L0 floor never binds. MIN_DIST filters Bayes candidates only (L < 5 is excluded). The LO rule keeps its own Manhattan > 2 anchor filter. The same applies to BF.",
+    "evidence": "common_fixed_variables.py:211-219; src_extension/planning/searcher_targeting.py:186, :280, :297",
+    "status": "verified"
+   },
+   {
+    "strategy": "RW",
+    "item": "N, detection events, belief (M2 classed this B: corrected)",
+    "klass": "S",
+    "how_used": "NOT read by RW. There is no belief at mode 4. Detection events are S information that RW never uses. Table cell: '-'.",
+    "evidence": "agents.py:2170-2172; wildfire_model.py:403-406; src_extension/planning/searcher_targeting.py:120-122",
+    "status": "verified"
+   },
+   {
+    "strategy": "ALL",
+    "item": "Detection rule (sensor spec) vs detection events",
+    "klass": "B",
+    "how_used": "The rule is B, as the sensor specification: Euclidean distance <= UAV_OBSERVATION_RADIUS 8 between the true UAV cell and the true marker cell, smoke-blind. Its outputs (first detections, runtime records, the confirmed flag) are S. M2's ALL row classed the rule as S; M1 classed it as B. They are harmonised here.",
+    "evidence": "wildfire_model.py:1415-1469 (:1442-1444, :1459-1462); common_fixed_variables.py:918",
+    "status": "verified"
+   },
+   {
+    "strategy": "CUR",
+    "item": "_count_unresolved_victims and its consumers (spot-check confirms M1)",
+    "klass": "P",
+    "how_used": "Confirmed as M1 states. The count reads managed_victims plus the marker status. _coverage_mode_active ends in an unconditional `return True`. In the hybrid score, unresolved > 0 cuts the wind weight to 0.15*0.35 and gates the never-seen and uncovered bonuses. The post-rescue burst is armed only if the count > 0. The path planner reads the relayed count.",
+    "evidence": "src_extension/adaptation/local_adaptation_generator.py:763-789, :811-826, :1343-1388, :1408-1428; wildfire_model.py:3975-3984, :1996-1998; src_extension/planning/local_uav_path_planner.py:132-145",
+    "status": "verified"
+   },
+   {
+    "strategy": "CUR",
+    "item": "Unseen deaths are subtracted from the managed count",
+    "klass": "P",
+    "how_used": "_check_fire_casualties marks the marker and the managed state dead whenever the marker cell is burning, with no detection test.",
+    "evidence": "wildfire_model.py:5609-5651",
+    "status": "verified"
+   },
+   {
+    "strategy": "CUR",
+    "item": "Absolute-coordinate duplicate in the path planner (x >= 38)",
+    "klass": "D",
+    "how_used": "Confirmed. corridor_diversity_failure = all of the last 20 x >= 38. This forces force_coverage_escape and force_wind_retarget.",
+    "evidence": "src_extension/planning/local_uav_path_planner.py:135-141",
+    "status": "verified"
+   },
+   {
+    "strategy": "CUR",
+    "item": "_victim_likelihood_score dead input",
+    "klass": "S",
+    "how_used": "Confirmed. It reads `confidence`, but VictimBeliefRecord only defines confidence_score, so the term is always 0.",
+    "evidence": "src_extension/adaptation/local_adaptation_generator.py:733-760; src_extension/knowledge/victim_runtime_model.py:21-41",
+    "status": "verified"
+   },
+   {
+    "strategy": "CUR",
+    "item": "Visibility footprint = 17x17 Moore square",
+    "klass": "S",
+    "how_used": "Confirmed: get_neighborhood(moore=uav.moore, include_center=True, radius=8). This is the mismatch against the Euclidean-8 detection disc.",
+    "evidence": "src_extension/monitoring/local_uav_monitor.py:53-61; wildfire_model.py:1442-1444",
+    "status": "verified"
+   },
+   {
+    "strategy": "LO",
+    "item": "Battery feasibility filter (live return trigger at the target)",
+    "klass": "S",
+    "how_used": "Confirmed. budget = battery - 0.3*(L+2) must exceed rtb_trigger_level_at(uav, target). That trigger is max(reserve, 0.3*Manhattan distance to the nearest free depot cell + margin) and reads own battery (S), depot cells (B) and other UAV cells (S). The same filter applies to BD and BF.",
+    "evidence": "src_extension/planning/searcher_targeting.py:219-226; agents.py:1856-1894",
+    "status": "verified"
+   },
+   {
+    "strategy": "ALL",
+    "item": "Firefighter dispatch and tracking use the true victim position (A7)",
+    "klass": "P",
+    "how_used": "Confirmed. The dispatch snapshot carries the marker's true position. A dispatched unit re-targets to the victim's current true cell every step with no sensor contact. Dispatch also sets confirmed/assigned/rescue_assigned. The behaviour is identical in every arm.",
+    "evidence": "wildfire_model.py:3603-3650, :4913-4930; agents.py:2783-2803",
+    "status": "verified"
+   },
+   {
+    "strategy": "BD",
+    "item": "Admissible BFS (planner check and executor steer)",
+    "klass": "A3",
+    "how_used": "Confirmed. The blocked set is true burning cells, strict smoke (the Fire-agent smoke loop plus the visibility labels), cells with burning distance < min(d0, 6), and other UAV cells (S). Moves must pass the edge-band penetration filter. Bounds come from model.HEIGHT/WIDTH. LO and BF use the same BFS.",
+    "evidence": "src_extension/execution/uav_executor.py:2390-2439",
+    "status": "verified"
+   },
+   {
+    "strategy": "CUR",
+    "item": "Spawn rule (fixed ring) - implicit, through ring-tuned constants",
+    "klass": "P",
+    "how_used": "Confirmed that it is not read at run time. The ring positions are fractions of HEIGHT/WIDTH (r = 0.3/0.45, angle 2*pi*i/N) and do not depend on the seed. The current searcher's constants were tuned while this was the only spawn.",
+    "evidence": "wildfire_model.py:950-968; common_fixed_variables.py:225-228",
+    "status": "verified"
+   }
+  ],
+  "summary": "TASK C: cross-check of M1 (current searcher) and M2 (fix3b strategies), plus the paper table. Read-only throughout.\n\nSCOPE NOTE: HEAD is 3e0973d9. Between 0e457b92 and HEAD only outputs/fix3b_part1.txt changed (+44 lines), so every source citation is unchanged.\n\nSPOT-CHECKS: 22 items re-read against the source. All confirmed except the corrections below.\n- local_adaptation_generator.py: :763-789 (count), :811-826 (return True), :1343-1388 and :1408-1428 (hybrid/unresolved), :733-760 (.confidence; checked against victim_runtime_model.py:21-41), :3414-3461 (confirmed filter)\n- wildfire_model.py: :1442-1462 (detection, confirmed=True), :3975-3984 (post-rescue gate), :5609-5651 (unseen deaths), :2767-2771 (detected_ids), :936-968 (spawn), :2673-2710 (prior exclusions, _fix3b_true_fire)\n- local_uav_path_planner.py:135-141 (x >= 38)\n- local_uav_monitor.py:53-61 (Moore radius 8)\n- uav_executor.py: :1718-1761 (handled check), :2390-2439 (admissible BFS)\n- searcher_targeting.py:185-186, :252, :297 (R-1 eff, drop_all_detected, MIN_DIST)\n- victim_search_belief.py:163-187 (flee, no wind)\n- common_fixed_variables.py:211-219 (burn-over 0.1, MIN_DIST 5)\n- agents.py: :1856-1894 (rtb_trigger_level_at), :2783-2803 (firefighter tracks the true victim cell)\n- environment_monitor.py:17-46\n- mission_goal_model.py:153-235\n\nCORRECTIONS\nC1 (M1, environment-monitor stamps and fire belief).\n- The monitor reports a Fire cell as SMOKE when its smoke is active, and as FIRE only otherwise (the `elif`, environment_monitor.py:29-31).\n- So a burning cell under active smoke is stamped SMOKE_OBSCURED. Its fire-belief probability is not set to 1.0; mark_smoke_obscured only lowers confidence (fire_runtime_model.py:152-166).\n- Cells already declared that step by a UAV are skipped (wildfire_model.py:1351, :1384).\n- The class (A3) is unchanged.\n\nC2 (M2, the RW row \"Detected-but-unhandled victim\", classed S).\n- The gate is _victim_handled_for_uav_target. It reads managed flags and marker status, which is P.\n- That check runs before EVERY fix3b hook in every arm (uav_executor.py:1061-1062 comes before :1356).\n- I infer it is inert, because confirmed is only ever set True (writers: wildfire_model.py:1461, :4926; rescue_executor.py:568). Reclassified as P (inert) for all arms.\n\nC3 (M2, the RW row \"N, detection events, belief\", classed B). These are not read by RW. Detection events are S. Table cell: '-'.\n\nC4 (M2's claim that R-1 closes P exposure once all victims are detected). This is overstated.\n- After N_unf = 0 the arm runs the LO rule. LO can still return None: no reachable, battery-feasible, not cooled-down tile farther than Manhattan 2. That sets the R=10 hold with no delivery.\n- The on-hazard skip, the route-field-inactive skip, return legs and the fail-safe pre-dispatch call also deliver nothing.\n- On all of these steps the current chain steers and reads _count_unresolved_victims (searcher_targeting.py:173-178, :331-351).\n- So R-1 removes the systematic hand-back, but not every hand-back.\n\nC5 (detection rule). M1 classed it B, M2 classed it S. Harmonised: the rule (Euclidean distance <= 8, true UAV cell to true marker cell) is B as the sensor spec. Its outputs (detection events) are S.\n\nOMISSIONS FOUND\nO1 (CUR and shared; P). Mission goals use a second P count.\n- _build_mission_goal_runtime_context counts alive_victims_remaining over every marker that is not dead, rescued or unreachable. It includes undetected victims and drops unseen deaths (wildfire_model.py:3691-3704, :3603-3650).\n- That count sets the mission phase ('evacuation' at fire severity >= 0.65) and prioritize_victim_search (mission_goal_model.py:198-235).\n- prioritize_victim_search adds +0.12 confidence to the wind-aware search option (local_adaptation_generator.py:1892-1899).\n- M1 missed this entirely. Its effect on fix3b-owned steps is inferred to be nil.\n\nO2 (hazard-gate and BFS smoke source; A3 with an S component). Strict smoke is active Fire-agent smoke plus the visibility SMOKE_OBSCURED labels.\n- The labels are sticky: staleness never ages them (visibility_model.py:175, :196). They persist until a UAV footprint overwrites the cell.\n- The executor's read of visibility_model.smoke_obscured_cells is DEAD, because the set lives on .state (uav_executor.py:2004, :2872 against visibility_model.py:32-37, :48-66). The status-map read carries the same content.\n- _fix3b_true_fire reads .state correctly.\n\nO3 (LO mask). LO ages come from belief.last_cover, which uses the Euclidean-8 disc of every UAV. LO does not use the visibility model's 17x17 coverage map, so the square/disc mismatch does not reach LO. The searchable mask is burning cells plus _fix3b_true_fire smoke, including the sticky labels.\n\nO4 (eligibility). A searcher is eligible only if A1-R applies (route field on, retreat range 99, near field on) and its own cell has strict hazard level 0 (searcher_targeting.py:173-178).\n\nO5 (N). The default N is NUM_VICTIMS = 5 (common_fixed_variables.py:80). lambda = n_unfound * the alive mass p. A detected victim stays counted after it dies.\n\nO6 (spawn). The uniform spawn draws with replacement. The fire is created at :205, before both the spawn (:293) and the prior (:406), so H0 equals the generating distribution exactly.\n\nO7 (sector bounds). None of the fix3b strategies uses sectors. Their only bound is the edge band of 4 (the tile layout and the stride-2 candidate lattice).\n\nO8 (wind in the flee model). Verified absent. The flee model uses only the Euclidean distance to true burning cells.\n\nPAPER TABLE. Columns: CUR / LO / BD / BF / RW / ALL (shared pipeline). Cells: B, S, A3, P, D; '-' means unused; (P) means P read only on steps handed back to the current chain or in an inert gate.\nGrid extent 50x50 ............................... B  / B  / B  / B  / B  / -\nDepot footprints .................................. B  / B  / B  / B  / B  / B\nCells burning at t0 (reported ignition) ........... -  / -  / B  / B  / -  / -\nBriefing count N .................................. -  / -  / B  / B  / -  / -\nSensor spec (Euclidean r=8, Pd=1) ................. B  / B  / B  / B  / -  / B\nWind direction (fixed = perfect forecast) ......... B  / -  / -  / -  / -  / -\nSearcher roles/ids/count (half rule, mode 0) ...... B  / B  / B  / B  / B  / D\nDetection events (first detections) ............... S  / -  / S  / S  / -  / S\nDetected victim position (runtime record) ......... S  / -  / -  / -  / -  / -\nUnresolved count _count_unresolved_victims ........ P  / (P)/ (P)/ (P)/ -  / P\nMission-goal alive_victims_remaining .............. P  / (P)/ (P)/ (P)/ (P)/ P\nManaged handled flags in victim-known branches .... P  / (P)/ (P)/ (P)/ (P)/ P (inert)\nTrue victim position for firefighters (A7) ........ -  / -  / -  / -  / -  / P\nTrue burning cells ................................ A3 / A3 / A3 / A3 / -  / A3\nTrue smoke + sticky visibility smoke labels ....... A3 / A3 / A3 / A3 / -  / A3\nFire belief map >= 0.3 (environment-stamped) ...... A3 / -  / -  / -  / -  / -\nVisibility coverage map (17x17 square) ............ S  / -  / -  / -  / -  / -\nBelief last_cover (disc, all UAVs) ................ -  / S  / S  / S  / -  / -\nOwn position ...................................... S  / S  / S  / S  / S  / S\nOwn visit counts / movement history ............... S  / -  / -  / -  / -  / -\nFire-tracker detection boost ...................... S  / -  / -  / -  / -  / -\nOwn battery (filter or return override) ........... S  / S  / S  / S  / S  / S\nOther UAV positions ............................... S  / S  / S  / S  / S  / S\nOther searchers' claims (coordination) ............ -  / S  / S  / S  / -  / -\nMotion model (diffusion q / flee D50, s, p_go, beta, q_calm) ... - / - / D / D / - / -\nBurn-over p_bo 0.1 (set after the screen; 0.5 is the sensitivity) ... - / - / D / D / - / -\nTargeting constants (tile, stride, M, L0, MIN_DIST, rho, G, R) ... - / D / D / D / - / -\nSalted RNG stream ................................. -  / -  / -  / -  / D  / -\nAdmissible BFS (clearance 6, edge band 4) ......... D  / D  / D  / D  / -  / -\nSearcher hazard gate parameters ................... D  / -  / -  / -  / -  / D (on hand-back steps)\nCUR coverage/score constants (ring-tuned) ......... D  / (D)/ (D)/ (D)/ -  / D\nSpawn rule (implicit) ............................. P (via tuning) / - / P (H0 = spawn by construction) / P (same) / - / -\nTrue victim flee rule ............................. -  / -  / -  / -  / -  / - (environment only)\n\nPRIVILEGED (P) INFORMATION BY STRATEGY\nCUR:\n(1) _count_unresolved_victims. It counts undetected victims and drops unseen deaths. Through it:\n- it switches coverage mode (always True when > 0);\n- it sets coverage priority 0.9, the hybrid wind weight 0.15*0.35, and the never-seen and uncovered bonuses;\n- it sets the y-commit and the path-planner coverage escape;\n- it gates the post-rescue burst.\n(2) The mission-goal alive_victims_remaining count: the phase and the +0.12 confidence on the search option (NEW).\n(3) The managed handled flags in the planner and executor victim-known branches (inert: confirmed is set at first detection).\n(4) Implicitly, the fixed-ring spawn, through constants tuned on it.\n\nLO: no direct P read. Indirect exposure:\n- the inert P handled-check runs before the hook every step;\n- the current chain reads the P count on fallback, R-hold, on-hazard, route-inactive and return steps;\n- the shared mission-goal ranking.\n\nBD and BF:\n- Same as LO.\n- Before R-1, the P count reached them on every hand-back step. After R-1 it no longer reaches them systematically once N_unf = 0, but it still does on LO-rule fallbacks (C4).\n- H0 equals the uniform spawn distribution by construction (stated as a design fact, not a run-time read).\n- The only managed read is the boolean confirmed flag, which is detection-derived.\n\nRW:\n- No P on its own steps: a draw exists every step, so the current chain never steers it.\n- Only the inert P handled-check runs before the hook.\n\nALL:\n- Firefighter dispatch and tracking use the true victim cell (A7).\n- The mission-goal count.\n\nRING-TUNED (D) ELEMENTS OF CUR. All predate VICTIM_SPAWN_MODE (a0b834a7) and were measured only on the ring.\nAbsolute coordinates:\n- CORRIDOR_DIVERSITY_X_BAND 38, duplicated as x >= 38 at local_uav_path_planner.py:135-136;\n- CORRIDOR_WEST_CAMP_X 12 (66dc728c);\n- CORRIDOR_NARROW_X_SPAN 18;\n- CORRIDOR_DIVERSITY_MIN_STEPS 20;\n- CORRIDOR_WEST_TARGET_X_MAX 25 (dead by inference);\n- COVERAGE_INTERIOR_X_MIN/MAX 8/30 (dead);\n- _allow_east_force is hard-coded to west wind.\nRelative to the grid but set on the ring:\n- the west/east strip latches (the west-strip threshold is justified in the code by \"A/west 505 median x was 11\", 66dc728c);\n- cross-wind lanes (66dc728c);\n- the y-commit constants (15/4/6/6);\n- the coverage-hold constants 2/12/2 (77fa7028, from ring runs);\n- hybrid weights and penalties (a4a01b4b);\n- the uncovered-region bonuses 14/12/10, the never-seen bonus 4/8/16 and the coverage penalty 4.0;\n- the front distance 12 and the downwind-edge block;\n- the saturation, dwell and blacklist constants;\n- the pocket thresholds 20/5/25;\n- the lawnmower STEP 8;\n- SEARCHER_EDGE_BAND 4 and the hazard-gate and route constants (near range 6, clearance 6; fix3a, kept on ring-only gates).\nThese constants also steer LO, BD and BF on every hand-back step.",
+  "quarantine_contact": "None. I never read, listed or traversed outputs/_firemech_rewound_20260914/.\n- Recursive greps ran from the repo root (`.`) with --exclude-dir set to _firemech_rewound_20260914, outputs, .venv and .git (one also excluded tests), so outputs/ was not entered.\n- All other reads were of named files: sed or grep on src_extension/, agents.py, wildfire_model.py and common_fixed_variables.py.\n- git status ran only with -uno. I also ran git log on the commit range 0e457b92..HEAD and git rev-parse.\n- I ran no simulation, pytest, probe, pool or launcher, and no python.\n- Nothing in E:\\Projects\\SAS was edited, created or deleted."
+ }
+}

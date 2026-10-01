@@ -1,7 +1,7 @@
 """fix3b Part 3 screen analyzer (read-only) - every pre-registered check of outputs/fix3b_part1.txt section 9.
 
 usage (repo root): .venv/Scripts/python.exe outputs/_fb3_analyze.py [section ...]
-sections: prov ident gates ffosc outcomes exposure targeting invariants spawn rbgate (default: all)
+sections: prov ident gates ffosc outcomes exposure targeting invariants spawn rbgate r5 (default: all); --rescreen = R-1..R-3 arms
 
 Measures are the session-3a ones, imported unchanged from outputs/_fx3r_analyze.py: (N) = no terminal step by
 360; (O) broad = per searcher, steps covered by a 10-step window (airborne) on <= 2 cells with >= 4 changes;
@@ -364,11 +364,17 @@ def sec_targeting():
                         if t_all is None or t + 1 < t_all:          # an undetected victim remains
                             tot["_pre_steps"] += 1
                             tot["_pre_steer"] += 1 if own else 0
+                        else:                                        # all detected: R-1's residual hand-back (C4)
+                            tot["_post_steps"] += 1
+                            tot["_post_steer"] += 1 if own else 0
         q = lambda xs, f: sorted(xs)[min(len(xs) - 1, int(f * len(xs)))] if xs else 0
         pre_s, pre_n = tot.pop("_pre_steer", 0), tot.pop("_pre_steps", 0)
+        post_s, post_n = tot.pop("_post_steer", 0), tot.pop("_post_steps", 0)
         out("  %-7s %s" % (tag, dict(sorted(tot.items()))))
         out("          WHILE AN UNDETECTED VICTIM REMAINS: strategy-steered airborne searcher steps %d / %d (%.1f%%)" % (
             pre_s, pre_n, 100.0 * pre_s / pre_n if pre_n else 0.0))
+        out("          AFTER ALL VICTIMS DETECTED: strategy-steered %d / %d (%.1f%%) - the rest are handed back to the"
+            " current chain" % (post_s, post_n, 100.0 * post_s / post_n if post_n else 0.0))
         out("          issued %d, reachable at issue %d (%.1f%%) | strategy-steered airborne searcher steps %d / %d (%.1f%%)"
             " | belief ms median %.2f p95 %.2f | planner ms median %.2f p95 %.2f" % (
                 issued, reach, 100.0 * reach / issued if issued else 0.0, steer, steps,
@@ -401,11 +407,61 @@ def sec_invariants():
 def sec_spawn():
     out("=" * 110)
     out("SPAWN ENVIRONMENT - VICTIM_SPAWN_MODE 1: the two arms see the same victims per seed; none on the ring")
-    a, b = load("fb3vs0"), load("fb3vs3")
+    a = load(SPAWN[0])
     ring = {(40, 25), (32, 46), (13, 34), (7, 12), (30, 11), (25, 48), (10, 25), (25, 3), (14, 44), (17, 12)}
-    same = sum(1 for k in set(a) & set(b) if (a[k].get("fb3") or {}).get("spawn") == (b[k].get("fb3") or {}).get("spawn"))
     on_ring = sum(1 for d in a.values() for c in ((d.get("fb3") or {}).get("spawn") or {}).values() if tuple(c) in ring)
-    out("  same spawn in both arms: %d / %d | spawn cells on a ring cell: %d" % (same, len(set(a) & set(b)), on_ring))
+    for tag in SPAWN[1]:
+        b = load(tag)
+        same = sum(1 for k in set(a) & set(b)
+                   if (a[k].get("fb3") or {}).get("spawn") == (b[k].get("fb3") or {}).get("spawn"))
+        out("  %-7s same spawn as %s: %d / %d" % (tag, SPAWN[0], same, len(set(a) & set(b))))
+    out("  spawn cells on a ring cell (%s): %d" % (SPAWN[0], on_ring))
+
+
+def _alarms(d, kind="DRIFT_TOO_HIGH"):            # local + global, as in the screen report
+    n = 0
+    for row in (d.get("mf2") or {}).get("fleet") or []:
+        if isinstance(row, list) and len(row) > 3 and isinstance(row[3], dict):
+            n += sum(int(v or 0) for k, v in row[3].items() if str(k).split("|")[0] == kind)
+    return n
+
+
+def sec_r5():
+    out("=" * 110)
+    out("R-5 REPORT ONLY - firefighter (O) episodes and DRIFT fail-safe alarms per arm vs CUR on the same seeds, both"
+        " directions, and whether a rise coincides with a lost rescue on that seed")
+    for ref, arms in (SET1, SET2, SPAWN):
+        rr = load(ref)
+        for tag in arms:
+            runs = load(tag)
+            if not runs:
+                continue
+            c = collections.Counter()
+            flag = []
+            for k in sorted(set(rr) & set(runs)):
+                a, b = rr[k], runs[k]
+                ffa, ffb = len(ff_episodes(a)), len(ff_episodes(b))
+                dra, drb = _alarms(a), _alarms(b)
+                ra, rb = int((a.get("eval") or {}).get("rescued") or 0), int((b.get("eval") or {}).get("rescued") or 0)
+                c["ff_ref"] += ffa
+                c["ff_arm"] += ffb
+                c["dr_ref"] += dra
+                c["dr_arm"] += drb
+                c["ff_up"] += ffb > ffa
+                c["ff_down"] += ffb < ffa
+                c["dr_up"] += drb > dra
+                c["dr_down"] += drb < dra
+                c["loss"] += rb < ra
+                c["gain"] += rb > ra
+                if rb < ra and (ffb > ffa or drb > dra):
+                    flag.append((k, "ff %d->%d" % (ffa, ffb), "drift %d->%d" % (dra, drb), "rescued %d->%d" % (ra, rb)))
+                if rb > ra and (ffb > ffa or drb > dra):
+                    c["rise_with_gain"] += 1
+            out("  %-10s %-8s ff episodes %d -> %d (seeds up %d / down %d) | DRIFT alarms %d -> %d (up %d / down %d) |"
+                " rescue losses %d gains %d | rise WITH a gain on %d seeds" % (
+                    NAMES.get(tag, tag), tag, c["ff_ref"], c["ff_arm"], c["ff_up"], c["ff_down"], c["dr_ref"],
+                    c["dr_arm"], c["dr_up"], c["dr_down"], c["loss"], c["gain"], c["rise_with_gain"]))
+            out("             *** RISE WITH A LOST RESCUE: %s" % (flag if flag else "none"))
 
 
 def sec_rbgate():
@@ -444,7 +500,7 @@ def sec_rbgate():
 
 SECTIONS = {"prov": sec_prov, "ident": sec_ident, "gates": sec_gates, "ffosc": sec_ffosc, "outcomes": sec_outcomes,
             "exposure": sec_exposure, "targeting": sec_targeting, "invariants": sec_invariants, "spawn": sec_spawn,
-            "rbgate": sec_rbgate}
+            "rbgate": sec_rbgate, "r5": sec_r5}
 
 
 def main():
