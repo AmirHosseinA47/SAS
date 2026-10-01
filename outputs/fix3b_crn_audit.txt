@@ -1,0 +1,80 @@
+================================================================================
+FIX3B - CRN AUDIT (maintainer's request, before Part 2)            outputs/fix3b_crn_audit.txt
+Which earlier results were described as CRN or "fire pinned", and which tool produced them.
+================================================================================
+WHY THIS AUDIT
+  _fx3_probe (and the _sd_probe / _mf2_probe chain under it) accepts --set FM2P_CRN=1, writes it into the
+  run's params and NEVER applies it: no code in that chain replaces the fire draw (0 FM2P references).
+  So any result produced through that chain and labelled CRN would be a stock result under a CRN label.
+
+METHOD (read-only; scripts kept in outputs/ for re-running)
+  1. outputs/_fb3_crn_scan.py
+     Every top-level outputs/*.txt|*.md (non-recursive; UTF-16 / UTF-8 decoded) was searched for
+     "FM2P_CRN", "CRN", "fire pinned", "pinned fire", "pins the fire" and "common random". 59 files
+     matched. The claims in the round reports were read in context.
+  2. outputs/_fb3_crn_cmds.py
+     Every recorded command line that carries FM2P_CRN, from *.argv, queues, *.jsonl, *.sh and state
+     files: 863 lines. The script or instrument that ran each one:
+     - 128 lines name _fm2_probe_harness.py directly (the mf2hc* argv files and the _mf2_q_p3c queue);
+     - 2 lines name _cl_probe.py;
+     - 732 lines are pool queue lines (kind|tag|repo|...). Their instrument is chosen by the pool:
+       - _cl_pool.sh refuses a CRN line unless the instrument is _cl_obs_crn.py or _cl_probe.py
+         (guards at :217-225);
+       - _pl_pool.sh maps kind 'fc' to _pl_obs_crn.py (:256-257);
+       - _ug_pool.sh and _dfp_pool.sh take HARNESS from the environment, defaulting to the STOCK
+         harness. So for those two waves the queue line alone does NOT prove CRN; check 3 decides.
+     NO command line carrying FM2P_CRN names _fx3_probe.py, _sd_probe.py or _mf2_probe.py.
+  3. outputs/_fb3_crn_json.py - the decisive check, on the output.
+     _fm2_probe_harness.py writes an "fm2p" block whose counters.crn_draws counts the replaced fire
+     draws. A run is REAL CRN iff that block exists and crn_draws > 0. Every outputs/*.json mentioning
+     FM2P_CRN or fm2p was checked. For the sysdebug counterfactuals (_sd_cf.py --cf-crn, its own
+     identical construction), the "cf" block's config.crn and counters.crn_draws were checked.
+
+RESULT: EVERY RESULT DESCRIBED AS CRN WAS PRODUCED BY A CRN INSTRUMENT AND CARRIES REAL CRN DRAWS.
+NONE CAME THROUGH _fx3_probe. Nothing has to be withdrawn.
+  round / report                         CRN arms (tag)                        instrument                       real CRN runs
+  fix2 (P3-12 D-7 condition)             mf2hcZ, mf2hc3, mf2hcX, mf2hcS        _fm2_probe_harness.py            64/64
+  fire mechanic round 2 (firemech2)      f2cOFF, f2cDRY, f2cEFS, f2cES, f2cF,  _fm2_probe_harness.py (pool)     184/184 (8 x 23)
+                                         f2cGES, f2cGF, f2cGW
+  depot-fireproof (section 11)           dfpCB, dfpCON                         _fm2_probe_harness.py via        66/66
+                                                                               _dfp_pool HARNESS override
+  ungated firefighting                   ugKC, ugKD, ugKY                      _fm2_probe_harness.py via        90/90
+                                                                               _ug_pool HARNESS override
+  exit-stall (xs trace)                  xsTK                                  _xs_probe.py -> _fm2_probe_harness 4/4
+  carrying-leg                           clKA, clKC, clKE2, clKH, clKPS0/1     _cl_obs_crn.py / _cl_probe.py   326/326
+  planner (the CRN pair)                 plKC, plKG                            _pl_obs_crn.py                   60/60
+  sysdebug counterfactuals               X_*_crn, N_*, F_*, U_* (_sd_*.json)   _sd_cf.py --cf-crn               48/48
+  (The "no fm2p block" files next to clK*, plK* and xsTK are their sidecars - .clobs / .plobs / .xstrace
+  JSON - one per real run, counts equal.) Non-CRN arms in the same rounds (V_* in sysdebug; f2G*, f2L*,
+  f2U*, f2b404* in firemech2, with an fm2p block and crn_draws 0) are described as stock in their reports.
+
+THE _fx3_probe CHAIN (fix3a Part 3, round 2, merge runs; sysdebug's plain _sd_probe arms)
+  0 of its runs carry FM2P_CRN, and no fix3a report describes any result as CRN or "fire pinned" (0
+  matches in fix3a_*.txt). Those results are STOCK, as reported. The risk was prospective: a future run
+  passing --set FM2P_CRN=1 to _fx3_probe would have been mislabelled. Part 2 closes that: the probe used
+  from now on REFUSES FM2P_CRN unless its CRN flag is on (fix3b_part1.txt section 8).
+
+CAVEATS - NOT CRN-INSTRUMENT ERRORS, BUT THEY MUST NOT BE QUOTED AS PLAIN CRN MEASUREMENTS
+  C1 firemech2_report.txt:30-35, :320 - "+239 of +1,379 under common random numbers" is a PROJECTION.
+     It is the round-2 CRN probe arm's measured +248, with one run replaced by its control, projected
+     onto the shipped strict predicate. The report says so ("Round 3 ran no CRN arm"). Quote it as a
+     projection from a CRN arm, not as a CRN measurement of the shipped gate.
+  C2 firemech2_report.txt:309 / depotfireproof_report.txt:658, :804 - "PINNED REPLAY" (outputs/
+     _fm2_fire_replay.py, which records draws and replays them) is a DIFFERENT instrument from closed-loop
+     CRN, and the two disagree on firebreak's physical size (+1,209 of +1,783 vs about zero). Those
+     reports leave it open. A "pinned replay" number is not a CRN number; the fire-replay tool's own --crn
+     mode is unvalidated against a closed-loop CRN run (_fm2_fire_replay notes :192-197, :231-232).
+  C3 firemech2_report.txt:86-87 - Part 1's two pre-registered CRN rows (canonical +166, fresh +73) are
+     real CRN (f2c* probe arms) but were not re-measured in tree.
+  C4 ungated_horizon_report.txt:135, :333 - the 360-step ungated results are STOCK only; CRN exists at
+     240 only. Do not quote a 360-step ungated CRN number.
+  C5 CRN arms compare only with CRN arms (memory note): every CRN figure above is paired within its own
+     CRN set. None was paired with a stock arm in its report.
+
+FOR THE PAPER
+  - Every result in this project labelled CRN is a closed-loop CRN result. The fix3a / sysdebug stock
+    results were never labelled CRN.
+  - Two labels need care when quoted: projections from a CRN arm (C1), and the separate "pinned replay"
+    instrument (C2).
+  - From fix3b on, CRN runs go through a probe that refuses the flag unless it applies it, and each CRN
+    run's JSON carries crn_draws > 0, which the analyzers check.
