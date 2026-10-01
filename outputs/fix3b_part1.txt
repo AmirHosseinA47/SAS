@@ -499,8 +499,8 @@ F10 VARIANCE, CRN, COMPUTE (R5).
 10.4 COMPUTE ON THIS BOX (R5: about 60 runs/h at 13-14 processes; about 719 s per run at 360 steps).
   - Main: 10 arms x 16 cells x 10 = 1 600 runs, about 27 h.
   - Secondary (ring): 4 x 16 x 5 = 320 runs, about 5.5 h.
-  - Sensitivity (10.7): 10 points x 48 runs = 480 runs, about 8 h.
-  - TOTAL about 2 400 runs, about 40 h of machine time. The per-step belief and allocation cost is
+  - Sensitivity (10.7): 11 points x 48 runs = 528 runs, about 9 h (burn-over 0 added, 18.5).
+  - TOTAL about 2 450 runs, about 41 h of machine time. The per-step belief and allocation cost is
     measured in Part 3; if it exceeds 10% of step time the estimate is revised before the round.
 10.5 METRICS.
   PRIMARY E1: per run, the mean over ELIGIBLE victims of min(T_detect, H), H = 360 (a restricted mean
@@ -513,8 +513,15 @@ F10 VARIANCE, CRN, COMPUTE (R5).
   SECONDARY:
     - never_detected (from stdout events, including victims who died undetected);
     - rescued, dead;
-    - coverage over time: the share of cells ever inside a disc, and POS(t) = 1 - expected unfound-alive
-      mass;
+    - coverage over time: the share of cells ever inside a disc, and POS(t) - DEFINITION FIXED before any
+      measurement run (18.6): POS(t) = 1 - prod_{k<=t} (1 - r_k), the model probability that ONE unfound
+      victim would have been detected by step t. r_k = the alive mass of the single-victim posterior
+      inside the step-k detection discs, removed by the negative update BEFORE renormalising (k = 0 is
+      the launch measure); prod (1 - r_k) is the model probability of the observed 'no detection'
+      history. Computed in EVERY arm from the record-only shadow BF belief of 18.4 (in a BF arm, its own
+      belief), so it compares arms under one model; each Bayes arm's POS under its own belief is also
+      reported. [Was: 1 - expected unfound-alive mass. With p.sum() + dead = 1 that equals the DEAD mass,
+      not a probability of success.]
     - searcher exposure: drone steps in fire, strict fire/smoke steps, smoke-proximity steps;
     - battery margin: minimum in-flight battery and arrival battery;
     - per-step compute: median / p95 ms of belief + allocation;
@@ -536,11 +543,13 @@ F10 VARIANCE, CRN, COMPUTE (R5).
   - Ring environment: the same estimators, exploratory.
 10.7 SENSITIVITY (BF vs CUR unless stated; n = 3 per cell, 48 CRN pairs per point; exploratory).
   - Belief / candidate resolution: stride 1, and a 2x2-cell belief (25x25).
-  - Motion parameter: BD q in {0.05, 0.3}; BF D50 in {3, 8}; BF p_bo in {0.2, 0.8}.
+  - Motion parameter: BD q in {0.05, 0.3}; BF D50 in {3, 8}; BF p_bo in {0, 0.2, 0.5} (16.2 replaced
+    {0.2, 0.8} by {0.2, 0.5}; 18.5 adds 0 = option A, a belief that models location only).
   - Likelihood misspecification: PD_SMOKE = 0.5.
   - Horizon: E1 and the outcomes read at H = 240 / 300 / 360 from the main runs, plus one 480-step point.
   CALIBRATION (reported, never used to fit): the predictive log-likelihood of BD vs BF on the recorded
-  victim trajectories.
+  victim trajectories. Computed from the ONE instrument of 18.4, together with the DEAD calibration (18.4
+  M1) and each victim's belief mass at its true location (18.4 M2).
 
 ================================================================================
 11. RELATED WORK MAP AND NOVELTY CHECK (L1, L2, V2)
@@ -770,6 +779,8 @@ RULINGS: D-1 .. D-13 all as recommended, with the notes below. The CRN audit cam
   burn-over p_bo = 0.5     absorbing loss state for survival, as in SAROPS survival-time    assumption;
                            modelling (Kratzke, Stone & Frost 2010)                          sensitivity
                                                                                             {0.2, 0.8}
+                           [SUPERSEDED: p_bo = 0.1 (16.2, after the screen, disclosed); sensitivity
+                           {0, 0.2, 0.5} (18.5); 0 = no death model (option A)]
   speed <= 1 cell / step   NOT literature: the simulator's movement quantum (A6)            simulator
   No parameter is fitted to simulator runs; the inverse crime is avoided (Kaipio & Somersalo 2005).
   The paper states every value above as an assumption, with its sensitivity, or as "not varied".
@@ -831,7 +842,9 @@ NEXT: Part 2 (section 8), one review agent on the diff (the last of 3), then the
          truly stays in fire is still mostly removed within one burn.
      The value is NOT fitted to simulator runs.
      SENSITIVITY (10.7, replacing {0.2, 0.8}): p_bo in {0.2, 0.5}. 0.5 = the original pre-registered value
-     (ruled); 0.2 = the original lower point.
+     (ruled); 0.2 = the original lower point. EXTENDED by 18.5 to {0, 0.2, 0.5}.
+     NOTE (18.1 b): the '81% to DEAD' observation above was read as the belief giving up on a living
+     victim. That reading was wrong: no decision reads the DEAD mass.
 16.3 R-4 n = 10 seeds per cell (the 10.3 rule with the screen's pilot SD 37-47); the main round is 1 600 runs.
 16.4 R-5 REPORT ONLY, BOTH DIRECTIONS, EVERY ARM: firefighter (O) episodes and fail-safe drift alarms. Any
      association with lost rescues in any arm is flagged PROMINENTLY. No firefighter round now.
@@ -857,6 +870,8 @@ NEXT: Part 2 (section 8), one review agent on the diff (the last of 3), then the
      on DEAD for 15 victims across all five Bayes arms (max 0.9978; 13 of the 15 were found later). The
      burn-over value 0.1 does not meet the R-3 criterion. A RULING ON THE BELIEF IS PENDING (options A/B/C
      and a recommendation in report section 15); the measurement round does not start before it.
+     AMENDED BY 18 (maintainer ruling, option H; DISCLOSED): the > 0.5 criterion is WITHDRAWN as
+     ill-posed (18.1 a, 18.3). Burn-over stays 0.1 (18.2). The ruling pending above is made.
 17.2 INSTRUMENT, PRE-REGISTERED FOR THE MEASUREMENT ROUND (record only - no RNG draw, no simulation
      write): for every run with a belief, EVERY STEP, after the post-move update: dead_mass, alive_mass,
      n_unfound, the mass burn-over moved to DEAD this step, and the alive mass the negative update removed
@@ -864,6 +879,9 @@ NEXT: Part 2 (section 8), one review agent on the diff (the last of 3), then the
      first detection) at step s, its DEAD share = dead_mass at s. THE R-3 CHECK: any such share > 0.5 is a
      failure, reported with arm, run, victim, the first step above 0.5 and the maximum, and whether the
      victim was found later; per arm and at every burn-over sensitivity point.
+     AMENDED BY 18 (DISCLOSED): this instrument is ABSORBED into the single instrument of 18.4, which
+     extends it. THE R-3 CHECK ABOVE IS WITHDRAWN as a criterion; it survives only as a reported count,
+     labelled ill-posed (18.4 M3). Reason: 18.1 a. This resolves the overlap with 10.7's calibration.
 17.3 HAND-BACK - MEASURED AS IS. The report and the paper state that the Bayes arms use the current chain
      on 5-10% of searcher steps after all victims are detected (R-1's residual: the least-observed rule's
      no-tile hold, the on-hazard skip, route-field-inactive steps, return legs), and that on those steps
@@ -878,3 +896,93 @@ NEXT: Part 2 (section 8), one review agent on the diff (the last of 3), then the
      on the final head. Every new switch still ships OFF. The analysis and the options for the R-3 ruling
      are in fix3b_rescreen_report.txt section 15 (it shows the 17.2 per-victim check is a run-level clock
      that a calibrated belief also fails, and that targeting never reads the DEAD mass).
+
+================================================================================
+18. OPTION H (maintainer ruling, 2026-10-01, after re-screen report section 15) - BINDING FOR THE
+    MEASUREMENT ROUND. Fixed BEFORE any measurement run. Governs where it differs from sections 2-17.
+================================================================================
+18.1 TWO CORRECTIONS, RECORDED PLAINLY - BOTH THE MAINTAINER'S:
+     (a) THE R-3 > 50% THRESHOLD WAS ILL-POSED.
+         - The DEAD share is shared by every undetected victim and never decreases: dead_mass =
+           d_raw / (d_raw + a_raw), and the negative update raises it without adding mass.
+         - So ANY burn-over above 0 fails the threshold, and a calibrated belief would fail it too: at
+           D = 0.6, a calibrated belief has 40% of those victims alive.
+         - The threshold is WITHDRAWN.
+     (b) THE CLAIM THAT A HIGH DEAD SHARE MAKES SEARCHERS GIVE UP ON A LIVING VICTIM WAS WRONG.
+         - No decision reads the DEAD mass, and target choice is invariant to scaling the belief.
+         - Burn-over acts only through (i) the belief's SHAPE near the fire and (ii) the swept rule, and
+           there only when burn-over hits burning cells inside a held target's disc.
+     Also corrected: the re-screen report's own earlier claim that global DEAD growth looks like a sweep
+     (report 15.4).
+18.2 BURN-OVER STAYS 0.1 - set after the screen and disclosed (16.2). NO third change of value.
+18.3 THE THRESHOLD IS REPLACED BY PRE-REGISTERED CALIBRATION MEASURES (amends 17.1 and 17.2).
+     - DISCLOSURE: a criterion is changed after it failed. The failure is reported verbatim (re-screen
+       report 15.2: 15 victims, 13 later found).
+     - The reason is 18.1 (a). The replacement is fixed here, before any measurement run.
+     - It is recorded IN THE MEASUREMENT ROUND. The 80 Bayes runs are NOT re-run now.
+18.4 THE ONE INSTRUMENT (replaces and extends 17.2; resolves the overlap with 10.7).
+     WHERE: outputs/_fb3_probe.py, record-only - no RNG draw, no write into the model.
+     - It reads true victim positions, so it lives in the evaluation probe, never in src_extension. Truth
+       never reaches the managing system.
+     - SHADOW BELIEFS are evaluation instruments. They are fed the run's own observation stream (the same
+       UAV cells and true fire), are never read by the managing system, and draw no RNG.
+     PER STEP, after the post-move update, for every run:
+       - the run's own belief (Bayes arms): dead_mass, alive_mass, n_unfound, the mass burn-over moved to
+         DEAD, and r_k (the alive mass the negative update removed before renormalising);
+       - the burning and smoke sets, so the belief can be replayed exactly offline;
+       - shadow beliefs on the same observation stream: BF (flee) at p_bo 0.1 in EVERY arm (it gives POS,
+         18.6), plus, in the Bayes arms, BD, motion-off, and BF at p_bo 0, 0.2 and 0.5;
+       - for every victim truly alive and undetected (step < first detection), per belief:
+         - a_v = the alive-conditional mass in the Euclidean-8 disc around the victim's TRUE cell;
+         - u_v = that disc's share of the prior's support;
+         - r_v = a_v / u_v (1 = as good as the uniform prior);
+       - at each drop_swept, the held target's mass loss split into coverage / motion / burn-over.
+     VALIDATION BEFORE THE ROUND (part of the round, not a re-run now):
+       - the extended probe must reproduce recorded re-screen runs value for value, on every recorded
+         field (one seed per Bayes re-screen arm, non-CRN as recorded);
+       - the offline replay must reproduce the per-step belief summary to float precision.
+     MEASURES (per arm, at the primary p_bo and at every p_bo sensitivity point; unit = run; bootstrap
+     over runs; exploratory, no confirmatory claim):
+       M1 CALIBRATION OF THE DEAD SHARE AGAINST ACTUAL DEATHS. Truth: whether each undetected victim is in
+          fact dead at that step.
+          - reliability in the fixed bins [0, .25, .5, .75, .9, 1];
+          - Brier score vs climatology;
+          - observed alive among D > 0.5 vs the calibrated expectation sum(1 - D), with a 95% run-bootstrap
+            interval. Over- and under-confidence are BOTH reported (two-sided).
+          - Undefined at p_bo = 0 (D = 0).
+       M2 EACH VICTIM'S BELIEF MASS AT ITS TRUE LOCATION OVER TIME.
+          - log r_v per alive undetected victim-step;
+          - per arm, the median and its time course in 30-step bins, and the share of steps with r_v < 1.
+          - Compared WITHIN runs across the shadow beliefs (same observation stream), never across arms
+            (confounded by each arm's coverage). This is the measure that says whether burn-over removes
+            belief from where alive victims are.
+       M3 The old R-3 count, exact per step: REPORTED ONLY, labelled ill-posed (18.1 a), never gating.
+          Identically 0 at p_bo = 0.
+       M4 10.7's predictive log-likelihood of BD vs BF on the recorded victim trajectories, from the same
+          instrument.
+18.5 SENSITIVITY: p_bo in {0, 0.2, 0.5} around the primary 0.1 (extends 16.2). Burn-over 0 is OPTION A, a
+     belief that models location only, so A is MEASURED, not argued. 48 CRN runs per point as in 10.7.
+     10.7 now has 11 points; 10.4 is updated.
+18.6 POS(t) FIXED in 10.5 before any measurement run, with r_k from 18.4.
+18.7 THE 17.2 OVERLAP RESOLVED:
+     - 17.2's instrument is absorbed into 18.4.
+     - Its per-victim check is withdrawn, kept as M3 only.
+     - 10.7's calibration line is computed from the same instrument (M4).
+     - There is no second, parallel instrument.
+18.8 PAPER FINDINGS AND LIMITATIONS TO RECORD:
+     (a) In the screen (post hoc), the FLEE-AWARE belief is UNDER-confident about deaths: 15 alive above
+         0.5 vs 38.7 expected under calibration. The DIFFUSION belief is OVER-confident: 78 vs 31.6. Report
+         both; the round's M1 measures them.
+     (b) The target pool excludes the 4-cell edge band (SEARCHER_EDGE_BAND = 4: pool cells x, y in
+         [4, 45]), and most delayed victims sat there (78.7% of the flagged victims' high-DEAD steps were
+         within 4 cells of the edge).
+         IN THE MEASUREMENT ROUND, report detection time (E1 and Kaplan-Meier) SEPARATELY for EDGE-BAND
+         victims:
+         - definition: a victim whose true cell is outside [4, 45] in x or y on at least half of its
+           undetected steps (up to H);
+         - also by spawn cell in the band, as a second definition;
+         - per arm; exploratory.
+     (c) On the ring, the uniform prior reaches ring cells later than the ring-tuned current searcher (set
+         1, cell (40,25): median first approach within 8 at step 87.5 / 93 vs 55). This is expected, and it
+         is why uniform spawn is the primary environment (D-1, 15.1).
+     (d) The design history in the paper includes 18.1 (a) and (b) as stated.

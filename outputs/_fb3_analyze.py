@@ -48,6 +48,9 @@ if "--rescreen" in _ARGS:            # rulings R-1..R-3: the re-screened Bayes a
 if "--final" in _ARGS:               # identity on the final head before the merge
     _ARGS.remove("--final")
     IDENT_TAGS = ("fb3idf",)
+for _a in [a for a in _ARGS if a.startswith("--ident=")]:     # identity on any given tag, e.g. --ident=fb3idg
+    _ARGS.remove(_a)
+    IDENT_TAGS = (_a.split("=", 1)[1],)
 
 
 def out(*a):
