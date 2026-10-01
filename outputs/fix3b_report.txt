@@ -1,0 +1,292 @@
+================================================================================
+FIX3B - SESSION 3b - PART 2 + PART 3 SCREEN REPORT                    outputs/fix3b_report.txt
+Motion-aware Bayesian search inside MAPE-K: implementation, review, and the pre-registered screen.
+STOP BEFORE MERGING (as instructed). Nothing is merged.
+================================================================================
+Branch fix3b:
+  9a012eb6  Part 1 + rulings (section 15) + CRN audit (outputs/fix3b_crn_audit.txt)
+  a0b834a7  Part 2 implementation
+  0dce532f  review fixes (the last review agent, 3 of 3)
+  The screen ran at 0dce532f. The report commit adds results and tooling only.
+
+================================================================================
+0. VERDICT (the pre-registered gates of fix3b_part1.txt section 9)
+================================================================================
+  ID         PASS. Every switch at default = 11785ae6, value for value: fb3id 16/16 (a0b834a7) and fb3idb
+             16/16 (0dce532f) vs fx3mS, on the fx3m FIELDS + every mf2 section, through the new CRN-capable
+             probe with CRN off.
+  G-N        PASS for every targeting arm on every set. Runs that never finish did not rise:
+             set 1: LO 1, BD 0, BF 1 vs CUR 1. set 2: 0 / 0 / 0 vs 0. uniform spawn: BF 0 vs CUR 0.
+             TWO CAVEATS a count hides (4.3):
+             - LO set 1's unfinished run is C/W (a firefighter-side delay), not CUR's C/S;
+             - BF set 1's C/S never DETECTS victim_0 at all, where CUR found it at step 337.
+  G-O        MIXED - FAIL for the Bayes arms. Searcher oscillation episodes of every kind (broad / pocket
+             near a depot / pocket anywhere):
+               arm  set 1 (CUR 2 / 0 / 2)    set 2 (CUR 3 / 0 / 3)    uniform spawn (CUR 5 / 0 / 5)
+               LO   0 / 0 / 1   PASS         1 / 0 / 1   PASS         (not run)
+               BD   4 / 0 / 4   FAIL         5 / 0 / 5   FAIL         (not run)
+               BF   0 / 0 / 0   PASS         6 / 0 / 6   FAIL         6 / 2 / 5   FAIL
+             Target zero: met only by BF set 1.
+             MECHANISM (section 3): every Bayes-arm episode starts AFTER EVERY VICTIM WAS DETECTED. With
+             N_unf = 0 the belief has no mass, so the strategy hands the searcher back to the current
+             chain for the rest of the run. That chain then livelocks in a state the current searcher
+             never reaches (its lawnmower sweep; one episode lasts 64 steps). No episode contains a
+             targeting step.
+  R-G        FAIL by the letter (the fix3a rule: no NEW loss vs fx3gS).
+             - Pooled rescued 58 -> 61, latched 0.
+             - D/south 202 is 4 -> 3 at the 240-step horizon. Both arms rescue 4/4 by 360.
+             - Cause: SEARCH ORDER (section 5). victim_0 is found 50 steps earlier and victim_3 at the ring
+               cell (25,3) 78 steps later. Each far victim's rescue leg takes about 170 steps.
+  SUITE      see section 9.
+  ==> The local belief-gap baseline (LO) passes G-N and G-O on both seed sets.
+      The Bayesian arms fail G-O on the hand-back defect. That defect is a design gap in the strategies'
+      END STATE ("nothing left to search"), not in the targeting itself. It is diagnosed below, with a
+      fix proposed for a ruling. The D-11 measurement round should NOT start until a re-screen passes.
+
+================================================================================
+1. WHAT WAS IMPLEMENTED (Part 2; the design of fix3b_part1.txt sections 2-8 + 15)
+================================================================================
+  - src_extension/knowledge/victim_search_belief.py (new):
+    - the one-map belief x N_unf with an absorbing DEAD state; prior H0 (uniform minus depots minus cells
+      burning at t0);
+    - the negative update on every UAV's Euclidean-8 disc (P_d = 1, smoke-transparent: the model's own
+      rule);
+    - predict by diffusion (q 0.1) or soft fire-aware flee (D50 5, s 1.5, p_go 0.8, beta 1.5, q_calm
+      0.02); burn-over 0.5;
+    - the last-cover map; pure numpy, no RNG.
+  - src_extension/planning/searcher_targeting.py (new): the joint post-pass in PlanningCoordinator.run_planning.
+    - least-observed tiles (LO) or Bayes gain / path length (two stages, M = 12, L0 = 4);
+    - HARD reachability (the executor's own admissible BFS) and HARD battery (b - 0.3 (L + 2) >
+      rtb_trigger_level_at(uav, t));
+    - commitment rules (a)-(d), cooldown G 15, fallback hold R 10;
+    - greedy sequential coordination with fictitious non-detection; the random-walk draws.
+  - uav_executor:
+    - the marker-gated delivery through PathDecision.waypoints_by_uav in the searcher's no-victim
+      branch (it was produced but never read: F7);
+    - the label-AND-method gate exemption; the old chain's sync skipped on fix3b steps;
+    - A1-R's burning-distance field and occupied set extracted into shared helpers (A1-R unchanged:
+      ID PASS).
+  - wildfire_model:
+    - dedicated salted streams (uniform spawn, random walk) that consume nothing from SYSTEM_RANDOM;
+    - VICTIM_SPAWN_MODE 1; belief init (with a launch measure) and the post-move update; role-change
+      cleanup.
+  - agents / cfv: the switches (SEARCHER_TARGETING ships 0; ablations ship 1, off on an exact 0;
+    VICTIM_SPAWN_MODE ships 0) and the parameters. UAV.advance: a refused random-walk draw is an
+    intended stay (review MEDIUM-2; the label exists only at mode 4).
+  - outputs/_fb3_probe.py: _fx3_probe unchanged, plus
+    - --crn, exactly _fm2_probe_harness's construction; it REFUSES every form of --set FM2P_CRN;
+    - read-only coverage / belief / stats / issued-target / timing recorders.
+  - Tooling: outputs/_fb3_queue.py, _fb3_analyze.py, _fb3_episode_diag.py, _fb3_exposure_split.py.
+  - TESTS: tests/test_searcher_targeting.py, 47 tests.
+    - T-R (reachability, Bayes and LO) goes RED with the filter patched out (outputs/_fb3_noreach_plugin.py:
+      targets behind the wall at (24,34) and (28,35)), run twice: before and after the review fixes.
+    - Also covered: T-B battery, T-C coordination, T-U belief (exact 197-cell disc, mass conservation,
+      burn-over, no RNG), T-D delivery (stale marker, on-cell hazard, label+method exemption, inert at
+      0), T-S switches, T-W random walk (own stream, chi-square), T-V uniform spawn (support, reproducible,
+      fire stream untouched).
+    - Review-fix tests: launch boxing, enclosure hold, targeted label clearing, swept on p, the probe's
+      refusals, and a real-model integration test.
+  REVIEW (the third and last review agent): no HIGH; 3 MEDIUM and 11 LOW, fixed at 0dce532f except:
+    - LOW-4 kept: the bucketed tie is the design's own rule;
+    - LOW-9 documented: A1-R keeps its own blocked set (changing it would break identity); the targeting
+      route adds Fire-agent smoke and the edge rule.
+  DEVIATIONS FROM THE PART 1 TEXT, stated:
+    (a) switches follow the project's _exact_integer semantics ("3" -> 3, True -> 1, as GLOBAL_PLANNER_MODE
+        does); 8 T-S had listed "3" / True as 0;
+    (b) the admissible move rule mirrors the actual edge filter, which allows a one-cell dip from p = 0;
+    (c) the battery budget uses L + 2 (the goal radius);
+    (d) the swept rule reads p, not lambda;
+    (e) no R hold for a searcher boxed in only by other UAVs.
+
+================================================================================
+2. GATE TABLES (outputs/_fb3_analysis_gates.txt)
+================================================================================
+  (N) never finish        set 1 CUR 1 (C_S) | LO 1 (C_W) | BD 0 | BF 1 (C_S) | RW 10 (reported)
+                          set 2 CUR 0 | LO 0 | BD 0 | BF 0      uniform spawn CUR 0 | BF 0
+  (O) broad, longest      set 1 CUR 2 (33) | LO 0 | BD 4 (18) | BF 0 | RW 3 (10, reported)
+                          set 2 CUR 3 (13) | LO 1 (10) | BD 5 (55) | BF 6 (64)
+                          uniform spawn CUR 5 (33) | BF 6 (60)
+  (O) pocket near depot   0 everywhere, except BF uniform spawn 2 (and RW 1)
+  (O) mechanism of the Bayes-arm episodes (by executed labels):
+    PLAN (the current chain's own sweep / wind-aware steps) 15, ROUTE 3, FIRE 2, YIELD 1.
+    TARGETING 0 - no episode contains a targeting step.
+
+================================================================================
+3. THE G-O FAILURE: THE HAND-BACK WHEN NOTHING IS LEFT TO SEARCH (outputs/_fb3_episode_diag.txt)
+================================================================================
+  FACT 1. All 21 broad episodes of the Bayes arms (BD set 1 / 2, BF set 2, BF uniform spawn) start AFTER THE
+    LAST VICTIM'S FIRST DETECTION ("undetected at start" = 0 in every row).
+    The current searcher's episodes are the opposite: 8 of 10 start while a victim is undetected (L2).
+  FACT 2. When every victim is detected, N_unf = 0 and lambda = 0. No candidate has mass, so the strategy
+    falls back to the current chain, and stays there until step 360. Its share of airborne searcher steps:
+    - while an undetected victim remains, the strategy steers 81-90% (BF 82.7% / 90.0%, BD 87.5% / 90.3%,
+      BF uniform spawn 81.4%);
+    - over the whole run, only 40-51% (27% under uniform spawn).
+  FACT 3. LO never runs out of targets (tile ages keep growing after detection). It never hands back, and it
+    has no post-detection episode: 0 and 1 episodes, against CUR's 2 and 3.
+  FACT 4 (the livelock). In fb3bf2 C/S the hand-back happens at step ~40 (every victim detected at 37).
+    - From step 297 to 360 searcher 2503 executes 'victim_search_wind_aware_sweep' on every step,
+      alternating between two cells. Its pocket_streak climbs to 86, and no release fires.
+    - The current searcher reaches this sweep state continuously from launch and rarely livelocks after
+      detection (2 post-detection episodes in 48 runs).
+    - The hand-back enters the sweep from a state the current chain never produces: its wind-search state
+      was frozen while the strategy steered (sync skipped by design).
+  WHAT IT IS. A design gap in the strategies' END STATE. Section 3.6's fallback ("no feasible target -> the
+    current behaviour") also fires when the search is COMPLETE, and then for the rest of the run. The
+    targeting itself never oscillated: 0 episodes contain a targeting step.
+  PROPOSED FIX - for a ruling, not implemented:
+    (i) ONE OWNER TO THE END (recommended). When N_unf = 0 or the belief has no mass, a Bayes arm continues
+        on the least-observed rule over the same last-cover map, with the same BFS, battery filter and
+        commitment. LO itself showed 0 / 1 episodes on these seeds, and it is the arms' own baseline. The
+        searcher never re-enters the current chain after its own steering, and it keeps covering (useful
+        if N is wrong).
+    (ii) Hand back with the current chain's state RESET to its launch state. Cheaper, but untested, and the
+        sweep might livelock from a reset state too.
+    (iii) Mission complete -> return to a depot / hold. Realistic, but a new behaviour for the exemplar.
+  A re-screen of BD + BF on sets 1-2 + uniform spawn (80 runs, about 1.5 h), with the SAME gates, would
+  follow the ruling. Lesson again: a fallback is part of the design and needs its own screen - the
+  session-3a lesson ("a lower layer that absorbs a refusal must tell the layer above"), here in reverse.
+
+================================================================================
+4. OUTCOMES (a screen, 16 runs per arm per set; direction only - no claim; outputs/_fb3_analysis_rest.txt)
+================================================================================
+  4.1 First detection, per-run mean over eligible victims (censored 360), paired arm - CUR on the same seeds:
+      set 1          LO +7.3 (median +1.0)    BD +3.5 (+0.1)    BF +7.0 (+6.8)    RW +112.9
+      set 2          LO -0.4 (+0.2)           BD +1.0 (+0.5)    BF +0.8 (+0.5)
+      uniform spawn  BF -6.1 (median -1.7; better 9, worse 7; SD 36.9)
+      On the RING (the current searcher's home ground, 15.1) no strategy beats it. Under uniform spawn the
+      Bayes-flee arm leans better, at noise level. The paired SD is 36.9 on uniform spawn and 5-48 on the
+      ring. This is the pilot SD the 10.3 rule uses: n = min(16, max(10, n_req(15, SD))). At alpha / K =
+      0.01 (K = 5), power 0.8 and Wilcoxon ARE 0.864, SD 37-47 needs about 82-134 pairs in total, i.e. 6-9
+      per cell, so the rule gives n = 10.
+  4.2 never detected (stdout events, incl. died undetected):
+      set 1 CUR 5 | LO 7 | BD 6 | BF 7          set 2 CUR 4 | LO 2 | BD 4 | BF 4
+      uniform spawn CUR 3 | BF 1                RW 18
+  4.3 Rescued / dead (victims 64 per arm):
+      set 1 CUR 52 / 11 | LO 51 / 12 | BD 54 / 10 | BF 54 / 9 | RW 40 / 11
+      set 2 CUR 59 / 5 | LO 59 / 5 | BD 56 / 8 | BF 57 / 7
+      uniform spawn CUR 55 / 7 | BF 57 / 7
+      Firefighter deaths: set 1 CUR 4 vs BF 7; set 2 2 vs 1; uniform spawn 6 vs 7.
+      - BF set 1 C/S (the L1 run): victim_0 at (46,30) is NEVER detected and alive at 360 (CUR: found at
+        337). By step 330 the belief puts 81% of the last victim's mass in DEAD. Burn-over 0.5 compounds as
+        the fire sweeps the map, yet the simulator's victim escapes its own igniting cell almost always.
+        The belief stops weighting where the victim actually is. THE BURN-OVER PARAMETER IS MISSPECIFIED IN
+        A WAY THAT MATTERS; its pre-registered sensitivity (0.2 / 0.8, 10.7) is a priority.
+      - LO set 1 C/W never finishes: same detections as CUR (57 / 8 / 27 vs 55 / 8 / 28), but victim_0's
+        rescue took until 250 (CUR 104) and victim_2 is still assigned at 360. A firefighter-side delay.
+  4.4 Coverage, the share of cells ever inside a detection disc (from rows_uav, the same computation for
+      every arm), at 120 / 240 / 360:
+      set 1 CUR .839 / .938 / .971 | LO .851 / .960 / .987 | BD .845 / .962 / .984 | BF .838 / .952 / .971
+      set 2 CUR .833 / .933 / .963 | LO .845 / .957 / .990 | BD .861 / .946 / .972 | BF .853 / .943 / .968
+      RW .534 / .718 / .838
+      LO covers the most, as designed.
+  4.5 Micro-retargeting (not caught by the two-cell measure): BF set 1 C/S steps 192-199 issued a new
+      target almost every step, 1-4 cells away near the NW depot. With the L0 = 4 floor, very short targets
+      chain. A minimum target distance (> the goal radius + 2) belongs in the same fix round.
+
+================================================================================
+5. ROUTE_BLOCKED GATE (fb3g, SEARCHER_TARGETING 3, 240 steps, the four fx3gS shards; 18 runs)
+================================================================================
+  shard a east 16 -> 16 | b east 14 -> 14 | c east 15 -> 15 | s south 13 -> 16 (gains 404: 1 -> 4, 505: 2 -> 3;
+  NEW loss 202: 4 -> 3). Dead 8 -> 8. Recoveries 7 -> 12. Latched at end 0.
+  TRACE (outputs/_sd_fb3Ts202c / _sd_fb3Ts202b: the campaign's parameters at 360 steps; both reproduce the
+  campaign at 240 - CUR terminal 235, BF 267):
+    first detections  CUR v3 14, v1 16, v2 22, v0 68  |  BF v1 18, v0 18, v2 20, v3 92
+    rescues           CUR v1 42, v3 63, v2 96, v0 235 |  BF v1 44, v0 69, v2 98, v3 267
+  BF finds victim_0 (40,25) 50 steps earlier and victim_3 (25,3) - a RING cell in the edge band - 78 steps
+  later. The last victim's rescue leg is about 170 steps in both arms, so the 240-step cut flips. This is the
+  L3 pattern of session 3a (a search-order shift costs a fixed-horizon rescue), and it is consistent with
+  15.1 (the current searcher's coverage was tuned to find ring cells early). At 360 both arms rescue 4 / 4.
+
+================================================================================
+6. REPORTED, NOT GATED
+================================================================================
+  6.1 FIREFIGHTER (O) (the broad two-cell measure on firefighter positions):
+      set 1 CUR 6 (longest 25) | LO 16 (18) | BD 15 (37) | BF 10 (25) | RW 4 (31)
+      set 2 CUR 7 (32) | LO 7 (15) | BD 17 (30) | BF 19 (34)
+      uniform spawn CUR 13 (29) | BF 12 (31)
+      FLAGGED. Firefighter oscillation rises in several arms: BD and BF set 2 roughly 2.5x, LO set 1 2.7x.
+      A searcher change shifts detection order and with it dispatch, and the reference already has 6-13
+      episodes. Not analysed further this round. It is the dispatch question of session 3a L3 and belongs
+      to a firefighter round. Do not quote any arm's rescued figure without it.
+  6.2 EXPOSURE (searcher UAV-steps on a burning cell):
+      set 1 CUR 0.34% | LO 0.02% | BD 0.35% | BF 0.56%      set 2 CUR 0.20% | LO 0.10% | BD 0.37% | BF 0.62%
+      uniform spawn CUR 0.38% | BF 0.40%                    RW 2.33%
+      SPLIT (outputs/_fb3_exposure_split.txt): after a TARGETING step it is 0.00-0.04% (2 events in about
+      14 000 Bayes targeting steps; 0 in about 8 000 LO steps). The rise is on current-chain steps DURING the search, where the strategy has handed
+      back (no feasible target, or on-cell hazard): 2.8-4.9% on 660-1 335 steps. The targeting route keeps
+      searchers out of fire; its hand-backs do not.
+  6.3 TARGETING COUNTERS:
+      - reachability at issue 100% in every arm, by construction: 4 215 issued targets;
+      - give-ups (unreachable during the leg) 26-65 per 16 runs; swept drops 57-199 (Bayes);
+      - battery drops 1-7; planner / executor mismatches 0.
+      Per-step cost: belief median 2.0-4.2 ms (p95 <= 10.6); planner median 15-17 ms (p95 <= 60). The
+      model step is about 2 000 ms, so the strategies add under 1% median, about 3% at p95.
+  6.4 INVARIANTS: 0 crashes, 0 inline violations, 0 warnings in every arm.
+      Fail-safe DRIFT_TOO_HIGH alarms per 16 runs:
+        CUR 32 / 116 | LO 388 / 160 | BD 122 / 66 | BF 26 / 90 | uniform spawn CUR 104 / BF 190 | RW 394.
+      LO's and RW's rises are flagged; their source (refused targeting steps against a moving UAV,
+      collision yields) is not analysed.
+  6.5 UNIFORM SPAWN: both arms see the same victims per seed 16 / 16; 0 spawn cells on a ring cell.
+
+================================================================================
+7. WHAT EACH FINDING MEANS FOR THE PAPER
+================================================================================
+  - IDENTITY. The method ships OFF, provably value-identical to the session-3a system. Every earlier number
+    stands as a number of the shipped system.
+  - REACHABILITY IS EXACT BY CONSTRUCTION, AND IT WORKS WHERE IT OWNS THE STEP.
+    - 100% of 4 215 issued targets had an admissible path.
+    - 0 oscillation episodes contain a targeting step.
+    - Exposure after targeting steps is about 0.
+    - The baseline that never hands back (LO) passes both oscillation gates and reduces searcher exposure
+      to 0.02-0.10%.
+    This supports session 3b's constraint where the strategy owns the searcher. The causal test (the
+    reachability ablation) is still to be run in the measurement round.
+  - THE HAND-BACK IS THE NEW FAILURE MODE.
+    - A strategy that falls back to a heuristic it does not own inherits that heuristic's livelocks.
+    - It also reaches states the heuristic never reached on its own.
+    This is the same lesson as session 3a, from the other side: one owner to the end. For the paper it is a
+    design rule for MAPE-K plan components that delegate: the delegating component must cover its own end
+    state.
+  - THE RING. On the fixed ring no strategy beats the current searcher. Under uniform spawn the Bayes-flee
+    arm leans better at noise level. That is consistent with 15.1, but 16 pairs cannot show it.
+  - BURN-OVER MISSPECIFICATION. An operator-plausible burn-over (0.5) erased the belief's support for a
+    victim who escaped (C/S). Model mismatch arms are not optional: the sensitivity is a primary result.
+  - FIREFIGHTER OSCILLATION rises with searcher changes. A searcher-side method must report firefighter
+    livelock next to its own (session3b_first_constraint.txt's warning, now measured).
+  - THE 240-STEP HORIZON flips outcomes by search order (D/south 202), as in session 3a. The measurement
+    round's horizon sensitivity (10.7) is necessary.
+  - COMPUTE. The method costs under 1% of a model step at the median (2-4 ms belief, 15-17 ms planning).
+
+================================================================================
+8. WHAT IS NEXT (for the maintainer's ruling)
+================================================================================
+  R-1 The end-state fix: (i) one owner to the end (recommended), (ii) a reset hand-back, or (iii) mission
+      complete -> return. Plus a minimum target distance (4.5).
+  R-2 A re-screen of BD + BF (sets 1-2 + uniform spawn, 80 runs, about 1.5 h) with the same gates, before
+      any measurement run.
+  R-3 Burn-over: keep 0.5 as pre-registered, with its sensitivity, or rule a lower operator value now -
+      before the measurement round, not after seeing it.
+  R-4 The measurement round's n: the pilot SD (37 under uniform spawn, up to 47 on the ring) gives n = 10 per
+      cell by the 10.3 rule, as planned. That is 10 arms x 16 cells x 10 = 1 600 main runs (about 27 h), plus
+      the secondary and sensitivity runs.
+  R-5 Firefighter (O) and the LO / RW drift-alarm rises: report only, or a firefighter round.
+
+================================================================================
+9. FULL SUITE (at 0dce532f; outputs/_fb3_fullsuite.log)
+================================================================================
+  1 failed / 1515 passed (4277 s). Failing set EXACTLY {T5}:
+    tests/test_uav_sector_assignment.py::test_fire_tracker_uavs_receive_different_target_sets (the known T5).
+  1515 = session 3a's 1468 + the 47 new tests in tests/test_searcher_targeting.py.  PASS.
+
+HOUSEKEEPING
+  - Agents this session: 9 mapping / review (Part 1) + 1 review (Part 2). Review agents: 3 of 3 USED.
+  - Quarantine: no contact. Every agent reported no read, list or traversal. Disclosed rule breaches,
+    without contact:
+    - early recursive greps without --exclude-dir, rooted at src_extension/ / tests / named files;
+    - one root grep with --exclude-dir for the quarantine and outputs/;
+    - non-recursive outputs/ globs.
+  - Runs: 16 identity (a0b834a7) + 164 screen (0dce532f) + 2 traces, 0 FAIL.
+    Tags: fb3id, fb3idb, fb3lo, fb3bd, fb3bf, fb3lo2, fb3bd2, fb3bf2, fb3rw, fb3vs0, fb3vs3,
+    fb3ga / gb / gc / gs, fb3Ts202c, fb3Ts202b - all unused before this round.
+  STOP - nothing merged.

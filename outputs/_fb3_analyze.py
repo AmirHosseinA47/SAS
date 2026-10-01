@@ -342,13 +342,22 @@ def sec_targeting():
             t = fb.get("timing") or {}
             bms += (t.get("belief_ms") or {}).get("raw") or []
             pms += (t.get("plan_ms") or {}).get("raw") or []
-            for row in d["rows_uav"]:
+            times = det_times(d)
+            t_all = max(times.values()) if times and all(t is not None for t in times.values()) else None
+            for t, row in enumerate(d["rows_uav"]):
                 for u in row:
                     if u[3] == "victim_searcher" and not (u[5] or u[6]):
+                        own = str(u[8]) in ("victim_search_targeting", "victim_search_random_walk")
                         steps += 1
-                        steer += 1 if str(u[8]) in ("victim_search_targeting", "victim_search_random_walk") else 0
+                        steer += 1 if own else 0
+                        if t_all is None or t + 1 < t_all:          # an undetected victim remains
+                            tot["_pre_steps"] += 1
+                            tot["_pre_steer"] += 1 if own else 0
         q = lambda xs, f: sorted(xs)[min(len(xs) - 1, int(f * len(xs)))] if xs else 0
+        pre_s, pre_n = tot.pop("_pre_steer", 0), tot.pop("_pre_steps", 0)
         out("  %-7s %s" % (tag, dict(sorted(tot.items()))))
+        out("          WHILE AN UNDETECTED VICTIM REMAINS: strategy-steered airborne searcher steps %d / %d (%.1f%%)" % (
+            pre_s, pre_n, 100.0 * pre_s / pre_n if pre_n else 0.0))
         out("          issued %d, reachable at issue %d (%.1f%%) | strategy-steered airborne searcher steps %d / %d (%.1f%%)"
             " | belief ms median %.2f p95 %.2f | planner ms median %.2f p95 %.2f" % (
                 issued, reach, 100.0 * reach / issued if issued else 0.0, steer, steps,
