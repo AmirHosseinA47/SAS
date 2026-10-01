@@ -34,6 +34,17 @@ NAMES = {"fx3mS": "CUR set1", "fx3mS2": "CUR set2", "fb3lo": "LO", "fb3bd": "BD"
          "fb3lo2": "LO", "fb3bd2": "BD", "fb3bf2": "BF", "fb3vs0": "CUR spawn1", "fb3vs3": "BF spawn1"}
 H = 360
 _COV = {}
+IDENT_TAGS = ("fb3id", "fb3idb")
+RB_TAG = "fb3g"
+if "--rescreen" in _ARGS:            # rulings R-1..R-3: the re-screened Bayes arms, the same references and gates
+    _ARGS.remove("--rescreen")
+    SET1 = ("fx3mS", ("fb3bd", "fb3bdr", "fb3bf", "fb3bfr"))
+    SET2 = ("fx3mS2", ("fb3bd2", "fb3bdr2", "fb3bf2", "fb3bfr2"))
+    SPAWN = ("fb3vs0", ("fb3vs3", "fb3vs3r"))
+    GATED = {"fb3bdr", "fb3bfr", "fb3bdr2", "fb3bfr2", "fb3vs3r"}
+    NAMES.update({"fb3bdr": "BD-R", "fb3bfr": "BF-R", "fb3bdr2": "BD-R", "fb3bfr2": "BF-R", "fb3vs3r": "BF-R spawn1"})
+    IDENT_TAGS = ("fb3idc",)
+    RB_TAG = "fb3h"
 
 
 def out(*a):
@@ -166,7 +177,7 @@ def eligible_victims(d_ref, d_arm):
 def sec_prov():
     out("=" * 110)
     out("PROVENANCE - heads, source hashes vs this tree, fix3b switches, probe, CRN")
-    for tag in ("fb3id",) + SET1[1] + SET2[1] + SPAWN + SPAWN[1]:
+    for tag in IDENT_TAGS + SET1[1] + SET2[1] + (SPAWN[0],) + SPAWN[1]:
         runs = load(tag)
         if not runs:
             out("  %-7s (no runs)" % tag)
@@ -184,7 +195,7 @@ def sec_ident():
     out("=" * 110)
     out("ID - fb3id (every switch at default, the new probe, CRN off) vs fx3mS (11785ae6 source): value identity on"
         " the fx3m FIELDS + every mf2 section")
-    for tag in ("fb3id", "fb3idb"):
+    for tag in IDENT_TAGS:
         if not load(tag):
             out("  %s (no runs)" % tag)
             continue
@@ -399,11 +410,11 @@ def sec_spawn():
 
 def sec_rbgate():
     out("=" * 110)
-    out("ROUTE_BLOCKED GATE - fb3g (SEARCHER_TARGETING 3) vs fx3gS (the shipped state); no NEW loss")
+    out("ROUTE_BLOCKED GATE - %s (SEARCHER_TARGETING 3) vs fx3gS (the shipped state); no NEW loss" % RB_TAG)
     pooled = collections.Counter()
     for sh, w in (("a", "east"), ("b", "east"), ("c", "east"), ("s", "south")):
         fr = os.path.join(HERE, "_rblatch_camp2_fx3gS%s_D_%s.json" % (sh, w))
-        fs = os.path.join(HERE, "_rblatch_camp2_fb3g%s_D_%s.json" % (sh, w))
+        fs = os.path.join(HERE, "_rblatch_camp2_%s%s_D_%s.json" % (RB_TAG, sh, w))
         if not (os.path.exists(fr) and os.path.exists(fs)):
             out("  shard %s MISSING" % sh)
             continue

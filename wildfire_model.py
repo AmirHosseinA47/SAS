@@ -2731,7 +2731,7 @@ class WildFireModel(mesa.Model):
         return MotionParams(mode=mode, q=f("SEARCHER_BELIEF_DIFFUSION_Q", 0.1), d50=f("SEARCHER_BELIEF_FLEE_D50", 5.0),
                             s=f("SEARCHER_BELIEF_FLEE_S", 1.5), p_go=f("SEARCHER_BELIEF_FLEE_P_GO", 0.8),
                             beta=f("SEARCHER_BELIEF_FLEE_BETA", 1.5), q_calm=f("SEARCHER_BELIEF_FLEE_Q_CALM", 0.02),
-                            burnover=f("SEARCHER_BELIEF_BURNOVER", 0.5))
+                            burnover=f("SEARCHER_BELIEF_BURNOVER", 0.1))
 
     def _update_victim_search_belief(self, buffer: MonitoringBuffer, current_time: float) -> None:
         """Post-move (2.6): PREDICT -> MEASURE (every UAV's disc at its post-move cell) -> BURN-OVER ->

@@ -208,10 +208,15 @@ SEARCHER_BELIEF_FLEE_S = 1.5             # (b) alarm logistic scale
 SEARCHER_BELIEF_FLEE_P_GO = 0.8          # (b) an alarmed victim moves with this probability
 SEARCHER_BELIEF_FLEE_BETA = 1.5          # (b) softmax weight on the fire-distance gain
 SEARCHER_BELIEF_FLEE_Q_CALM = 0.02       # (b) an unalarmed victim's move probability
-SEARCHER_BELIEF_BURNOVER = 0.5           # alive mass on a burning cell -> DEAD with this probability
+# Burn-over, per step, of alive mass still on a burning cell after the predict step. 0.1 (ruling R-3,
+# 2026-10-01, set AFTER the screen and BEFORE the measurement round; 0.5 was the pre-registered value and is
+# kept as a sensitivity): victims flee fire, so a burning cell does not imply its victim is likely dead.
+SEARCHER_BELIEF_BURNOVER = 0.1
 SEARCHER_BELIEF_STRIDE = 2               # candidate lattice stride
 SEARCHER_TARGETING_TOP_M = 12            # candidates scored exactly (along-path gain)
 SEARCHER_TARGETING_L0 = 4                # floor of the path length in the ratio
+SEARCHER_TARGETING_MIN_DIST = 5          # Bayes targets need an admissible path of >= this many steps
+                                         # (ruling R-1: = L0 + 1, so the floor never binds; fix3b report 4.5)
 SEARCHER_TARGETING_SWEPT_RHO = 0.25      # held target dropped when its disc mass < rho * at issue
 SEARCHER_TARGETING_GIVEUP_COOLDOWN = 15  # G: steps an unreachable target's area is excluded
 SEARCHER_TARGETING_FALLBACK_HOLD = 10    # R: steps before retrying after a fallback

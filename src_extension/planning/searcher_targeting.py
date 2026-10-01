@@ -179,13 +179,18 @@ def apply_searcher_targeting(path_decisions: dict, runtime_models: Any) -> dict:
         st["cooldown"] = [c for c in st["cooldown"] if c[2] > step]      # issued at s, excluded s+1 .. s+G
         elig[uid] = {"agent": agent, "ex": ex, "here": here, "bfs": ex._targeting_bfs(agent, model), "st": st}
 
-    lam = belief.intensity() if mode in (2, 3) else None
+    # RULING R-1 - ONE OWNER TO THE END: once every victim is detected (N_unf = 0) a Bayes arm continues with
+    # the least-observed rule (the mode-1 rule, unchanged) instead of handing the searcher back to the current
+    # chain. eff is the rule in force this step.
+    eff = 1 if (mode == 1 or belief.n_unfound == 0) else mode
+    d_min = max(1, int(f("SEARCHER_TARGETING_MIN_DIST", 5)))
+    lam = belief.intensity() if eff in (2, 3) else None
     S = disc_convolve(lam, offsets) if lam is not None else None
     # The swept rule compares the held target's disc mass of p (one victim's posterior), so a detection
     # elsewhere (N_unf falls) does not 'sweep' it (review LOW-3).
     Sp = disc_convolve(belief.p, offsets) if lam is not None else None
-    tiles = tile_layout(H, W, band, tile_size) if mode == 1 else []
-    ages = _tile_ages(belief, tiles, burning, smoke, step) if mode == 1 else {}
+    tiles = tile_layout(H, W, band, tile_size) if eff == 1 else []
+    ages = _tile_ages(belief, tiles, burning, smoke, step) if eff == 1 else {}
 
     pool_cells = [(x, y) for x in range(band, H - band) for y in range(band, W - band)
                   if x % stride == 0 and y % stride == 0]          # non-band stride lattice (both arms)
@@ -243,7 +248,9 @@ def apply_searcher_targeting(path_decisions: dict, runtime_models: Any) -> dict:
             reason = "drop_reached"
         elif not battery_ok(e, goal, route[1]):
             reason = "drop_battery"
-        elif mode in (2, 3) and float(Sp[goal]) < rho * float(st["s_issue"]):
+        elif eff == 1 and mode in (2, 3) and st["tile"] is None:
+            reason = "drop_all_detected"     # a Bayes point target when the search is complete (R-1)
+        elif eff in (2, 3) and float(Sp[goal]) < rho * float(st["s_issue"]):
             reason = "drop_swept"
         if reason is not None:
             _bump(model, uid, reason)
@@ -260,7 +267,7 @@ def apply_searcher_targeting(path_decisions: dict, runtime_models: Any) -> dict:
     # ---- 2. free searchers choose (greedy sequential) ------------------------------------------------------
     def choose(e: dict, lam_cond: np.ndarray | None, taken_tiles: set) -> dict | None:
         here = e["here"]
-        if mode == 1:
+        if eff == 1:
             best = None
             for t in tiles:
                 if t["index"] in taken_tiles or ages.get(t["index"]) is None:
@@ -287,7 +294,7 @@ def apply_searcher_targeting(path_decisions: dict, runtime_models: Any) -> dict:
             if s <= 0.0:
                 continue
             L, cell = length(e, c)
-            if L is None or L == 0:
+            if L is None or L < d_min:          # the minimum target distance (R-1; >= 1 also excludes 'reached')
                 continue
             cands.append((s / max(float(L), L0), s, L, c, cell))
         cands.sort(key=lambda r: (-r[0], r[2], r[3]))
@@ -315,7 +322,7 @@ def apply_searcher_targeting(path_decisions: dict, runtime_models: Any) -> dict:
     for uid in in_hold:
         _bump(model, uid, "fallback_steps")
     free = [uid for uid in free if uid not in in_hold]
-    if mode in (2, 3):
+    if eff in (2, 3):
         base = lam * ~claimed if coordination else lam
         alone = {uid: choose(elig[uid], base, set()) for uid in free}
         order = sorted(free, key=lambda u: (-(alone[u]["score"] if alone[u] else -1.0), int(u)))
@@ -352,7 +359,7 @@ def apply_searcher_targeting(path_decisions: dict, runtime_models: Any) -> dict:
                                    None if pick["G"] is None else round(pick["G"], 5),
                                    None if pick["S"] is None else round(pick["S"], 5), bool(reachable_at_issue)])
         if coordination:
-            if mode == 1:
+            if eff == 1:
                 claimed_tiles.add(pick["tile"])
             else:
                 claimed |= pick["mask"]
@@ -371,6 +378,8 @@ def apply_searcher_targeting(path_decisions: dict, runtime_models: Any) -> dict:
         ctx["searcher_targeting_step"] = step
         out[uid] = dataclasses.replace(pd, waypoints_by_uav={uid: (target,)}, uncertainty_context=ctx)
         _bump(model, uid, "delivered_steps")
+        if eff == 1 and mode in (2, 3):
+            _bump(model, uid, "lo_continuation_steps")
     timing = getattr(model, "_searcher_targeting_timing", None)
     if not isinstance(timing, dict):
         timing = {"belief_ms": [], "plan_ms": []}

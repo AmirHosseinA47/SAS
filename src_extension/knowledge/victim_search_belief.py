@@ -102,7 +102,7 @@ class MotionParams:
     p_go: float = 0.8                # flee: an alarmed victim moves with this probability
     beta: float = 1.5                # flee: softmax weight on the fire-distance gain
     q_calm: float = 0.02             # flee: an unalarmed victim's move probability
-    burnover: float = 0.5            # alive mass on a burning cell -> DEAD with this probability
+    burnover: float = 0.1            # alive mass on a burning cell -> DEAD with this probability (R-3)
 
 
 @dataclass

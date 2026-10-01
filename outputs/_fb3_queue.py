@@ -59,6 +59,22 @@ def main() -> int:
         lines += [probe_line("fb3rw", *c, sets=["SEARCHER_TARGETING=4"]) for c in set1]
         lines += [probe_line("fb3vs0", *c, sets=["VICTIM_SPAWN_MODE=1"]) for c in set1]
         lines += [probe_line("fb3vs3", *c, sets=["VICTIM_SPAWN_MODE=1", "SEARCHER_TARGETING=3"]) for c in set1]
+    elif wave == "rescreen":
+        # rulings R-1..R-3 (2026-10-01): the 80 ruled runs (BD + BF sets 1 and 2, BF uniform spawn) plus the same
+        # gates' identity arm and route_blocked shards
+        for item in [json.loads(ln) for ln in open(os.path.join(HERE, "_fx3_q_p3all.jsonl"), encoding="utf-8")]:
+            if re.fullmatch(r"fx3gS[a-z]", item["name"]):
+                suffix = item["name"][-1]
+                tag = "fb3h" + suffix
+                argv = list(item["argv"])
+                argv[argv.index("--tag") + 1] = tag
+                argv += ["--set", "SEARCHER_TARGETING=3"]
+                lines.append({"name": tag, "argv": argv, "out": item["out"].replace("fx3gS" + suffix, tag), "cwd": REPO})
+        lines += [probe_line("fb3idc", *c, sets=[]) for c in set1]
+        for tag, mode in (("fb3bfr", 3), ("fb3bdr", 2)):
+            lines += [probe_line(tag, *c, sets=["SEARCHER_TARGETING=%d" % mode]) for c in set1]
+            lines += [probe_line(tag + "2", *c, sets=["SEARCHER_TARGETING=%d" % mode]) for c in set2]
+        lines += [probe_line("fb3vs3r", *c, sets=["VICTIM_SPAWN_MODE=1", "SEARCHER_TARGETING=3"]) for c in set1]
     elif wave == "rb":
         q = [json.loads(ln) for ln in open(os.path.join(HERE, "_fx3_q_p3all.jsonl"), encoding="utf-8")]
         for item in q:

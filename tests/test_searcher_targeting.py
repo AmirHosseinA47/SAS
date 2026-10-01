@@ -419,3 +419,50 @@ def test_a_real_model_builds_and_updates_the_belief(monkeypatch):
     assert abs(float(b.p.sum()) + b.dead - 1.0) < 1e-9
     model.visibility_model.state.observation_status_map[(7, 7)] = ObservationStatus.SMOKE_OBSCURED
     assert (7, 7) in model._fix3b_true_fire()[1]
+
+
+# ============================================================================ rulings R-1 / R-3 (after the screen)
+def test_a_bayes_arm_continues_with_the_least_observed_rule_once_every_victim_is_detected(_shipped, monkeypatch):
+    """R-1 one owner to the end: N_unf = 0 -> the mode-1 rule (a tile anchor), not a hand-back to the current
+    chain (no fallback hold, a delivered target)."""
+    model, (u,), dec = _world([(2502, (25, 10), 100.0)], {(25, 18): 1.0}, fire=WALL, mode=3, monkeypatch=monkeypatch)
+    b = model.victim_search_belief
+    b.detected_ids.add("victim_0")                    # n_brief 1 -> every victim detected
+    b.last_cover[:, :] = STEP
+    b.last_cover[:, 31:] = -1
+    stale = [t for t in stg.tile_layout(H, W, 4, 7) if t["anchor"] == (42, 14)][0]
+    (xa, xb), (ya, yb) = stale["x"], stale["y"]
+    b.last_cover[xa:xb + 1, ya:yb + 1] = 15
+    out = _plan(model, dec)
+    assert _target(out, 2502) == (42, 14)
+    assert model._searcher_targeting_state["2502"]["fallback_until"] == -1
+    assert model._searcher_targeting_stats["2502"].get("lo_continuation_steps") == 1
+
+
+def test_a_bayes_point_target_is_dropped_when_the_search_completes(_shipped, monkeypatch):
+    model, (u,), dec = _world([(2502, (25, 10), 100.0)], {(25, 22): 1.0}, monkeypatch=monkeypatch)
+    assert _target(_plan(model, dec), 2502) is not None
+    model.victim_search_belief.detected_ids.add("victim_0")
+    _plan(model, dec)
+    assert model._searcher_targeting_stats["2502"].get("drop_all_detected") == 1
+    assert model._searcher_targeting_state["2502"]["tile"] is not None      # now a least-observed tile
+
+
+def test_no_bayes_target_closer_than_the_minimum_distance(_shipped, monkeypatch):
+    """R-1's minimum target distance: every issued Bayes target has an admissible route of >= 5 steps, even
+    when the richest mass sits right next to the searcher."""
+    mass = {(25, 13): 0.9, (25, 30): 0.1}
+    model, (u,), dec = _world([(2502, (25, 10), 100.0)], mass, monkeypatch=monkeypatch)
+    t = _target(_plan(model, dec), 2502)
+    ex = UAVExecutor("2502", model, u)
+    route = UAVExecutor._targeting_route(ex._targeting_bfs(u, model), t)
+    assert route is not None and route[1] >= 5
+
+
+def test_burn_over_ships_at_the_ruled_value():
+    import importlib
+
+    src = open(importlib.import_module("common_fixed_variables").__file__, encoding="utf-8").read()
+    assert "\nSEARCHER_BELIEF_BURNOVER = 0.1\n" in src
+    assert "\nSEARCHER_TARGETING_MIN_DIST = 5" in src
+    assert MotionParams().burnover == 0.1
