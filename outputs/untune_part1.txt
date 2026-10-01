@@ -1,0 +1,435 @@
+================================================================================
+UNTUNE - PART 1: DESIGN AND PRE-REGISTRATION                          outputs/untune_part1.txt
+The UNTUNED CURRENT SEARCH: remove the ring tuning (item 1) and the privileged information (item 2) from
+the current searcher (SEARCHER_TARGETING 0), behind ONE switch that ships OFF.
+Branch untune, cut from main ba664332 (= tag bayes-search 55c1f804 + one outputs-only commit; bayes-search
+verified an ancestor of main). Clean tree, nothing running. STOP after this part for confirmation.
+================================================================================
+
+0. SCOPE AND WHAT IS NOT TOUCHED
+  IN SCOPE: the current searcher chain (local_adaptation_generator.py wind-aware search, the path planner's
+  retarget flags, the executor's victim branches) and the mission-goal count that drives the mission phase.
+  NOT TOUCHED: the Bayesian search (searcher_targeting.py, victim_search_belief.py, their constants); the
+  evaluation environment (fire, victims, flee rule, spawn, firefighters); the measurement round's choice of
+  victim placement (pending with the maintainer's supervisors); the dashboards (observer displays, see 3.6).
+  Read first: fix3b_merge_notes.txt, fix3b_part1.txt sections 15-18, fix3b_information_map.txt (the "map").
+  Line numbers below are at ba664332.
+
+1. THE CRITERION - WHEN A SETTING IS "RING-SPECIFIC"
+  Every constant in the current chain was set or kept while the fixed ring was the only spawn (15.1 c), so
+  "measured on the ring" cannot be the test - it would cover every number in the chain and no neutral
+  replacement exists for most of them. The test used here is what the setting ENCODES:
+    RING-SPECIFIC (replaced) - the setting
+      (i)   names an absolute grid cell or coordinate, or
+      (ii)  makes the searcher prefer one compass side, or behave differently under one named wind, in a
+            way not derived from the fire (downwind / upwind) or from the searcher's own state, or
+      (iii) is justified in its commit or code by ring victim positions or ring-only diagnoses, or
+      (iv)  is asymmetric across compass directions with no stated derivation (it cannot be shown general,
+            so it is treated as tuned).
+    GENERAL (kept) - the setting is expressed relative to the grid bounds, the fire, the sensor or the
+    searcher's own history, is symmetric under reflecting the grid together with the wind, and either fixes
+    a defect that occurs whatever the victim placement (livelock, unreachable release, camping,
+    oscillation, hazard) or is a plain design weight.
+  RESIDUAL (stated, not removed): general-form weights selected under ring-only gates (15.1 c). See 2.4.
+  The rule for a defect fix: KEEP THE FIX, REMOVE THE SIDE. Where a general defect (edge camping, an
+  unreachable release) was fixed on one side only, the untuned search applies the same fix on both sides.
+
+  THE RING, for reference (wildfire_model.py:950-968, N = 5, 50 x 50): victims at about (40,25), (32,46),
+  (13,34), (7,12), (30,11) - x = 40, 32, 13, 7, 30. The absolute constants below sit on this geometry:
+  38 just west of the x = 40 victim; 12 just east of the x = 7 / 13 pair; 25 and 8 / 30 bracket it.
+
+2. ITEM 1 - EVERY SETTING, ITS CLASS, ITS EVIDENCE, ITS REPLACEMENT
+  Notation: safe_x_min = x_min + 2, safe_x_max = x_max - 2 (WIND_EDGE_MARGIN). On the 50 grid the x-strips
+  (2.2 T8) are WEST STRIP x <= 12 and EAST STRIP x >= 37.
+
+2.1 REPLACED (ring-specific)
+  T1  CORRIDOR_DIVERSITY_X_BAND = 38 in _corridor_diversity_failure (generator :100, :799).
+      Class: RING-SPECIFIC (i)+(ii): absolute x, east side only; initial commit a4a01b4b.
+      Live effect at HEAD: NONE. All of the last 20 x >= 38 implies an x-span <= 11 <= CORRIDOR_NARROW_X_SPAN
+      18, so the narrow-span test at :806 already returns True for every such tail (proof by inclusion).
+      Replacement: the symmetric strip-camp test (all of the last 20 x in the WEST STRIP or all in the EAST
+      STRIP, grid-relative, any wind). Still subsumed by the narrow-span test - no behaviour change; it is
+      replaced so no absolute coordinate remains.
+  T2  x >= 38 in _corridor_target_x_cap (generator :249-250) - LIVE. An east-camped searcher's escape
+      candidates are capped at x <= min(tail) - 8 (pushed west); nothing mirrors it for a west camp.
+      Class: RING-SPECIFIC (i)+(ii). Evidence: absolute, one-sided; a4a01b4b.
+      Replacement: KEEP THE FIX, REMOVE THE SIDE. East-strip camp -> cap x <= min(tail) - 8 (as now);
+      west-strip camp -> FLOOR x >= max(tail) + 8 (the mirror, new); any wind. 8 = UAV_OBSERVATION_RADIUS:
+      the target leaves the camped band by one sensor radius (general). The floor is applied wherever the
+      cap is (the candidate loop :3715 and the no-candidate fallback :3803).
+  T3  x >= 38 duplicated in the path planner (local_uav_path_planner.py:135-136). It sets
+      corridor_diversity_failure -> unresolved_coverage_active -> force_coverage_escape and
+      force_wind_retarget. LIVE only where the other two terms are off (no post-rescue burst and not
+      (count > 0 and coverage_priority >= 0.85)), i.e. mostly once the count is 0.
+      Class: RING-SPECIFIC (i)+(ii); a4a01b4b. Replacement: the same symmetric strip-camp test as T1
+      (shared helper, the strips computed from the planner's own grid bounds _grid_height/_grid_width).
+  T4  CORRIDOR_WEST_CAMP_X = 12, west wind only (generator :104, :252-256, :801-804) - commit 66dc728c.
+      Class: RING-SPECIFIC (i)+(ii)+(iii). Evidence: the commit diagnosed misses as "the EAST spawn
+      cluster (x=30-40)" and validated by ring victim ids ("western victims A v3 (7,12), B v1 (3,25), D v2
+      (10,25) all still found").
+      Live effect at HEAD: NONE. In the failure test it is subsumed by the narrow span (all x <= 12 ->
+      span <= 12 <= 18). In the cap it returns safe_x_max, the value the coverage-active branch returns
+      anyway; the only difference would be with coverage inactive, a path reached only if
+      _gradual_escape_target returns None (map CUR-36: never). So 66dc728c's explicit constant is inert
+      today - FINDING F1 (section 9).
+      Replacement: covered by T1/T2 (the west strip, any wind).
+  T5  CORRIDOR_WEST_TARGET_X_MAX = 25 (generator :103, :259): with coverage inactive, escape targets are
+      capped at x <= 25. Class: RING-SPECIFIC (i)+(ii) (absolute, west half only); a4a01b4b.
+      Dead by inference (T4). Replacement: safe_x_max (no side cap), the coverage-active value.
+  T6  COVERAGE_INTERIOR_X_MIN / _MAX = 8 / 30 (generator :106-107, fallbacks at :1214-1224).
+      Class: RING-SPECIFIC (i). DEAD: every caller passes x_min and x_max (map CUR-37).
+      Replacement: the grid-relative safe bounds _coverage_safe_x_min(0) / _coverage_safe_x_max(HEIGHT-1)
+      (x maps to HEIGHT-1, map CUR-25) - no behaviour change; removed so no absolute coordinate remains.
+  T7  THE WEST-WIND-ONLY SWEEP ORDER (66dc728c): _allow_east_force (:197-200, true only under west wind),
+      the west branch of _finalize_coverage_target (:1239-1255), the west-only branch of the escape score
+      (:3767-3782) and the west-only east pull of the corridor score (:3927-3934).
+      Class: RING-SPECIFIC (ii)+(iii). Evidence: the commit is "west wind only"; it validated by ring victim
+      ids; its docstring "Second-sweep east pull is only for west wind".
+      What it does today, per wind:
+        - _finalize_coverage_target: the west branch and the else branch are BEHAVIOURALLY EQUAL (under west
+          wind _allow_east_force is True), so the clamp is "west strip first, then east strip, one-way
+          latches" under EVERY wind.
+        - escape score: west wind -> the same latched west-then-east pull; every OTHER wind -> an UNLATCHED
+          west pull, (ax - cx) * 0.75 for any cell west of the searcher, forever (pre-66dc728c code).
+        - corridor score: the east pull exists under west wind only.
+      So the chain prefers WEST under every wind, with an east second sweep only under west wind.
+      Replacement: ONE wind-uniform latched two-strip sweep, used identically in all three places:
+        - ORDER (decision D-1): along the wind axis (east / west wind) the DOWNWIND strip first, then the
+          upwind strip - the rule fix2 item 3a (ruling D-6, SEARCHER_WIND_COVERAGE_FIX) already uses for y
+          under north / south wind, and the direction the hybrid wind term already scores; across the wind
+          (north / south wind) the NEARER strip first, decided once from the searcher's own x and latched
+          (no compass preference; a tie cannot occur on the 50 grid: safe bounds 2 / 47).
+          Under WEST wind this equals the shipped order (west = downwind: "hybrid downwind scoring prefers
+          low x", 66dc728c). It changes the order under EAST wind (east first) and NORTH / SOUTH (nearer).
+        - the second strip's pull applies under every wind (no _allow_east_force);
+        - the latches, thresholds and the 0.75 weight are unchanged (T8);
+        - x-lanes still suppress the pull (:1233-1238, general, unchanged).
+  T9  _downwind_edge_blocked widths (generator :1671-1683): north blocks 4 rows (y >= y_max-3), south 3
+      (y <= y_min+2), east 5 columns (x >= x_max-4), west 4 (x <= x_min+3).
+      Class: RING-SPECIFIC (iv) - asymmetric across compass directions with no derivation; a4a01b4b.
+      The block ITSELF is general (66dc728c kept it with evidence: "57 of its 200 blocked cells were on
+      fire" - the downwind edge is where the fire goes).
+      Replacement (decision D-4): 4 cells on every downwind edge (margin 3, the value two of the four winds
+      already use). Changes south (3 -> 4) and east (5 -> 4).
+
+2.2 KEPT (general) - with evidence
+  T8  The x-strip latches (66dc728c, :156-194): west strip reached at x_lo <= safe_x_min + 6 + 4, east at
+      x_hi >= safe_x_max - 6 - 4. The +4 is justified in the code by a ring run ("A/west 505 median x was
+      11"). GENERAL: that run's median is the SEARCHER's position, set by the system's own margins (the
+      downwind edge block x <= 3 and WIND_INTERIOR_MARGIN 6), not by victims; the defect it fixes - a
+      release condition (x <= 5) the searcher cannot occupy, so the pull never released - is a livelock
+      that occurs under any placement. The same values re-derive from the margins alone:
+      x_min + WIND_INTERIOR_MARGIN + COVERAGE_SWEEP_BAND_MARGIN = 12 = safe_x_min + 10, and mirrored 37.
+      Kept; the docstring is reworded to this derivation (comment only).
+  T10 Cross-wind lanes (66dc728c, :332-398): disjoint bands by searcher index, relative to the bounds.
+      LIVE in B, C and D (2 searchers each: serve_dashboard.py BUILTIN_SCENARIOS, half rule) - the map's
+      "inert for n <= 1" holds only for A. GENERAL: a coordination partition with no positional content,
+      reflection-symmetric. Kept.
+  T11 The y-commit (COVERAGE_Y_* 15/4/6/6, fix2 3a downwind-first): grid half split, own history, wind
+      derived; symmetric. GENERAL. Kept.
+  T12 CORRIDOR_NARROW_X_SPAN 18, CORRIDOR_DIVERSITY_MIN_STEPS 20: own-history span, either side.
+      GENERAL in content (an absolute SPAN, not a coordinate; every run is 50 x 50). Note: the test is on x
+      only (no y analogue) - x and y are not symmetric, but east and west are. Kept.
+  T13 Lawnmower (executor :4662-4700): origin along the wind axis mirrors with the wind (reflection
+      symmetric); the cross-axis start is always the low-index edge - an arbitrary fixed corner of the LAST
+      fallback, no positional content. Kept; listed as a residual orientation choice.
+  T14 The hazard gate, A1-R route, edge band 4, pocket / saturation / dwell / blacklist / hold constants,
+      front distance 12, hybrid weights, coverage / never-seen / uncovered bonuses - GENERAL in form (own
+      state, fire, grid-relative, symmetric). Kept (see 2.4).
+
+2.3 DEAD, NOT CHANGED (on the cleanup list; a test guards that they stay uncalled)
+  _south_edge_extra_penalty (WIND_SOUTH_EDGE_PENALTY 15), _east_edge_extra_penalty
+  (WIND_EAST_INTERIOR_MARGIN 6), _opposite_quadrant_escape_target, _corridor_front_distance_penalty,
+  _score_wind_aware_cell - compass-specific in two cases but with no caller (map CUR-59). Changing dead
+  code changes nothing; if one is ever called again, the new test fails.
+
+2.4 RESIDUAL TUNING EXPOSURE - STATED, NOT REMOVED
+  The general-form weights of T14 were selected under ring-only never_detected / rescued gates (15.1 c).
+  They encode no position or side, but their VALUES were chosen on one geometry. No neutral value exists
+  without re-deriving the chain, which is not this round's job. The paper states: "the untuned current
+  search removes every absolute coordinate, every compass-side preference and every privileged count; its
+  remaining weights were selected on the fixed ring". The measurement round may add sensitivity; not here.
+
+3. ITEM 2 - PRIVILEGED READS AND WHAT REPLACES THEM
+3.1 THE REPLACEMENT COUNT (one function, used everywhere below)
+  KNOWN_UNRESOLVED = N_brief - #rescued - #observed_dead
+    N_brief        = the model's NUM_VICTIMS (the scenario's briefing count, class B; the fix3b belief's
+                     n_brief reads the same global, wildfire_model.py:2715). Never len(managed_victims).
+    rescued        = managed state.rescued or state.status == "rescued" - set only by finalize_rescue
+                     (wildfire_model.py:5103-5125), a completed rescue the team carried out (S).
+    observed_dead  = dead AND confirmed. confirmed is the detection flag: set at first in-radius detection
+                     (:1459-1462) or at dispatch, which requires it (:4926); never reset (grep: only True
+                     writers). A death is OBSERVED iff the victim had been detected (decision D-2): the
+                     team holds its position (runtime record) and, from dispatch, tracks it (A7). A victim
+                     that dies undetected is never observed: the detection pass skips dead markers
+                     (:1427-1436), so it stays counted - a real team keeps looking for it.
+  The marker objects (victim_marker_agents) are NOT read. "Unreachable" / "cancelled" are NOT subtracted
+  (decision D-3: the instruction's formula; an unreachable victim is detected, alive and unresolved).
+  Properties: KNOWN_UNRESOLVED >= the privileged count at every step (it subtracts a subset). They differ
+  exactly when a victim died unseen or was declared unreachable; their ">0" tests differ only when the
+  privileged count is 0 and the known one is not - i.e. in the END GAME, when every remaining victim died
+  unseen or is unreachable. There the shipped chain drops out of coverage mode ("knows" nothing is left)
+  and the untuned chain keeps searching.
+
+3.2 P1 - _count_unresolved_victims (generator :763-789). Reads managed status/flags of EVERY victim incl.
+  undetected ones, and marker status; subtracts unseen deaths. Consumers, all switched by replacing the
+  ONE call at :1350 (_update_unresolved_coverage_state -> wind_state["unresolved_victim_count"]):
+    coverage mode (:812, ends in return True), coverage priority 0.9 (:1384), hybrid wind weight and the
+    never-seen / uncovered bonuses (:1409-1428), the y-commit update (:1274), the path planner's relayed
+    count (wildfire_model.py:1996-1998 -> local_uav_path_planner.py:132), the debug payload (:4416).
+  Under the switch :1350 calls the KNOWN count. The function itself is left unchanged: the dashboards
+  (alert_manager.py:195, dashboard_state_builder.py:153) display ground truth to the observer, which is
+  evaluation, not the managing system (decision D-6).
+3.3 P2 - the post-rescue burst gate (wildfire_model.py:3975-3977, _activate_post_rescue_coverage_for_
+  searchers): arms the 50-step burst only if the privileged count > 0. Under the switch: the known count.
+3.4 P3 - the mission-goal count alive_victims_remaining (wildfire_model.py:3691-3734; map O1). It counts
+  every marker not dead / rescued / unreachable (incl. undetected), drops unseen deaths, and drives
+  MissionGoalModel._derive_mission_phase ('evacuation' at severity >= 0.65 and count > 0) and
+  prioritize_victim_search (mission_goal_model.py:198-235), hence the +0.12 option confidence
+  (generator :1892-1899), the communication planner's phase test (communication_adaptation_planner.py:152)
+  and rescue_urgency (rescue_adaptation_generator.py:31 - option metadata, no reader: grep).
+  Under the switch: alive_victims_remaining = KNOWN_UNRESOLVED, replaced at the source so every consumer
+  of the mission goals sees the known value.
+  active_rescues (same loop) is ALREADY P-free in value: only detected victims can be rescue_assigned or
+  have an active firefighter, and their deaths are observed. Under the switch it is computed over
+  confirmed victims only, so the loop no longer touches an undetected victim's truth (same value).
+3.5 OTHER READS FOUND ON THE SEARCHER / MISSION-PHASE PATH
+  P4  Executor victim-known handled check (uav_executor.py:1718-1761): managed flags, then the MARKER
+      status (:1753-1761, a ground-truth object). The victim is always a runtime record (detected), so the
+      managed flags it reads are observations (3.1); the marker read is not. INERT (confirmed returns True
+      first, map CUR-04). Under the switch the marker read is skipped. No behaviour change.
+  P5  Planner victim-known branch (generator :3414-3461): managed flags only, for a detected victim ->
+      observations under 3.1. Inert. No change needed; stated.
+  P6  Mission-phase fire severity and coverage ratio (wildfire_model.py:3745-3790): the fire belief, which
+      the environment monitor stamps from the true fire - assumption A3, not P. Unchanged, stated.
+  P7  Fail-safe inputs: the global analyzer reads victim_runtime_model only (detected, S;
+      global_analyzer.py:1333-1469). No victim truth. Unchanged.
+  P8  Global planner (global_adaptation_generator.py:462-469): len(managed_victims) (= N, B-equivalent)
+      and confirmed (S). GLOBAL_PLANNER_MODE ships 0. Not P; unchanged.
+  P9  adaptation_manager._check_rescue_assignment_invariant (:225): logging only, "Does not repair state".
+  OFF THE SEARCHER / PHASE PATH, NOT CHANGED: firefighter dispatch and tracking read the true victim cell
+  (A7, map TABLE-23) - the rescue side, identical in every arm; the implicit spawn rule (item 1).
+
+4. THE BAYESIAN ARMS' HAND-BACK (confirmation requested)
+  On a hand-back step (R-1 residual: LO no-tile hold, on-hazard skip, route-field-inactive, return legs,
+  fail-safe pre-dispatch; map C4 / 17.3) the current chain steers. With SEARCHER_UNTUNED = 1 that chain
+  reads KNOWN_UNRESOLVED (B + S) instead of P1, the post-rescue gate reads it instead of P2, the mission
+  goals carry it instead of P3, and the marker read P4 is skipped. The strategies' own reads are P-free
+  (map M2: the belief reads only the confirmed flag and runtime-record keys). So with the switch on, NO
+  privileged victim information reaches a Bayes arm on any step; A3 (true fire) and A7 (firefighters) are
+  unchanged assumptions. Part 2 verifies it by test (6.2 c) with SEARCHER_TARGETING 2 and 3.
+  CAVEAT, NOT A CHANGE: this holds only for Bayes arms RUN WITH THE SWITCH ON. Whether the measurement
+  round does that is the maintainer's decision; this round does not amend the measurement round.
+  The hand-back steps also run under the untuned settings of item 1 (same switch).
+
+5. THE SWITCH
+  SEARCHER_UNTUNED in common_fixed_variables.py, shipped 0. Accessor agents.searcher_untuned() ->
+  _exact_integer(raw) == 1 (enables ONLY on an exact 1; junk, 0.5, "1.0", True-as-string are off).
+  Every change in sections 2-3 sits in an `if agents.searcher_untuned():` branch; the else branch is the
+  existing code, unedited, so switch-off is the shipped program by construction (verified by identity,
+  7.2). Read at call time (no by-name import of a cached value - memory by-name-import-defeats-patch).
+  Kill switch = 0 = shipped. No other switch is added.
+
+6. PART 2 - IMPLEMENTATION AND TESTS
+6.1 FILES: common_fixed_variables.py (switch), agents.py (accessor), local_adaptation_generator.py (T1, T2,
+  T4-T7, T9, the known count + :1350), local_uav_path_planner.py (T3), wildfire_model.py (P2, P3),
+  uav_executor.py (P4); new tests/test_searcher_untuned.py. No other file.
+6.2 TESTS
+  (a) SWITCH-EFFECT tests - each fails if the switch's effect is removed (each asserts on=1 behaviour that
+      differs from off=0, and off=0 equals the shipped behaviour):
+      T1/T3 symmetric strip camp (a west-strip tail triggers on, not off, in the planner); T2 floor for a
+      west camp on, absent off; T5/T6 no absolute value reachable on; T7 order per wind (east wind: east
+      strip first on, west first off; north/south: nearer first on; west: identical on/off) in all three
+      places, and the unlatched west escape pull gone on; T9 widths 4/4/4/4 on, 4/3/5/4 off; the known
+      count vs P1 after an unseen death; P2 burst armed on / not armed off when only an unseen-dead victim
+      remains; P3 phase 'evacuation' on / 'exploration' off in the same state.
+  (b) PRIVILEGED-READ GUARD - fails if any privileged read returns (metamorphic, information-flow):
+      build a model, detect some victims, then PERTURB ONLY UNDETECTED-VICTIM TRUTH (kill one unseen, set
+      marker statuses, move markers, flip unreachable on an undetected one). With the switch on, these
+      must be unchanged: wind_state unresolved count for every searcher, the path context, the post-rescue
+      arming, the mission context (alive_victims_remaining, active_rescues), the mission phase and goal
+      priorities. With the switch off the same perturbation MUST change at least the count and the phase
+      (proves the guard bites). Plus a static guard: the untuned count function and the untuned branches
+      reference no victim_marker_agents, and P4's untuned branch skips the marker read (patched marker
+      dict raising on access).
+  (c) HAND-BACK: the guard of (b) repeated with SEARCHER_TARGETING 2 and 3 on a stepped model.
+  (d) DEAD-HELPER guard: the 2.3 helpers have no caller (AST scan of src_extension and root modules).
+  (e) The accessor's exact-1 rule (0, 1, 2, "1", "1.0", 0.5, True, None, junk).
+6.3 REVIEW: at most 3 review agents for the round; planned 1 on the Part 2 diff, 1 held in reserve.
+
+7. PART 3 - PRE-REGISTERED SCREEN (a development check, NOT the measurement; not reported as a result)
+7.1 SETUP. 360 steps; outputs/_fb3_probe.py (--hazard, GLOBAL_PLANNER_MODE 0, BATCH_SIZE 360); all 4
+  scenarios x 4 winds; seed set 1 (9601-9616) and set 2 (9621-9636), each cell's scenario / wind / seed
+  read from fx3mS / fx3mS2's .argv as _fb3_queue.py does. Tag prefix "ut" (0 files in outputs/ contain
+  "_ut"; checked again before the first wave). One 13-14-process wave at a time; wave checks every 20-30
+  minutes. The parent .venv (mesa 1.2.1).
+  ARMS (CRN on, FM2P_CRN via --crn, so per-seed deltas are attributable; CRN arms compared only with CRN
+  arms):
+    ut0r / ut0r2   SEARCHER_UNTUNED 0, ring (VICTIM_SPAWN_MODE 0), sets 1 / 2          (as shipped)
+    ut1r / ut1r2   SEARCHER_UNTUNED 1, ring, sets 1 / 2                                 (untuned)
+    ut0u / ut0u2   SEARCHER_UNTUNED 0, uniform spawn (VICTIM_SPAWN_MODE 1), sets 1 / 2
+    ut1u / ut1u2   SEARCHER_UNTUNED 1, uniform spawn, sets 1 / 2
+  IDENTITY (CRN off, every switch at default, explicit SEARCHER_UNTUNED 0):
+    utid           set 1, ring -> vs fb3idg (55c1f804) 16/16 VALUE identity on the fx3m fields + every mf2
+                   section (the fb3 rule).
+    utidu          set 1, VICTIM_SPAWN_MODE 1 -> vs fb3vs0 (same probe, 1d8a215a) 16/16. The current
+                   chain is unchanged since (later fix3b commits touched only the Bayes arms), so identity
+                   is expected; a mismatch STOPs the round for diagnosis before any arm is read.
+  ROUTE_BLOCKED: the four fx3gS shards' argv + SEARCHER_UNTUNED 1, 240 steps (18 runs), as fb3g did.
+  TOTAL: 128 arm runs + 32 identity + 18 rb = 178 runs, about 3 h at 13-14 processes; then the full
+  suite (about 1.5 h). Order: utid + utidu first; nothing else is read until both pass.
+7.2 GATES (untuned vs as-shipped, per placement x seed set, same seeds, CRN; any fail = FAIL):
+    ID    utid 16/16 and utidu 16/16 value-identical, else STOP.
+    G-N   runs that never finish: must not rise; target 0.
+    G-O   searcher oscillation episodes of EVERY kind (broad <= 2 cells, >= 4 changes in 10 steps, plus
+          the pocket kind): must not rise; target 0; each episode's mechanism class reported (BAND / FIRE
+          / ROUTE / YIELD / PLAN / TARGETING), and whether it falls in the end game of 3.1.
+7.3 REPORTED - WHAT CHANGES AND WHERE (per placement, per set, per scenario x wind; both directions):
+    - detection time: per victim, the first [Victim Detection] stdout event; median and the paired per-seed
+      difference; time to first detection;
+    - never_detected from the stdout detection events (the eval field undercounts, R5);
+    - rescued, dead (and dead-undetected separately);
+    - coverage over time: the share of cells inside any searcher's Euclidean-8 disc so far, in 30-step
+      bins (the fb3 coverage / POS(t) measure);
+    - WHERE: for the ring, by victim id / ring cell; for uniform spawn, by spawn region (west / east half,
+      north / south half, the 4-cell edge band of 18.8 b);
+    - ATTRIBUTION COUNTS (from the run's own events, record only): steps where KNOWN > the privileged
+      count, steps where their ">0" tests differ (the end game), mission-phase steps that differ, T2
+      floor / cap firings, T7 order choices per wind;
+    - invariants (inline violations, crashes, warnings): 0 new;
+    - route_blocked gate: no NEW loss vs fx3gS;
+    - full suite: failing set exactly {T5} (test_uav_sector_assignment.py::test_fire_tracker_uavs_
+      receive_different_target_sets) + the new tests green;
+    - firefighter oscillation episodes, drone steps in fire, searcher strict fire / smoke steps (report).
+7.4 PREDICTIONS, FIXED NOW (so the screen can check attribution, not to judge success):
+    - Item 2 changes behaviour only in the end game of 3.1, so its effect on detection time should be
+      nil; any late difference should coincide with an unseen death or an unreachable declaration.
+    - Item 1 changes the sweep order under EAST / NORTH / SOUTH wind (T7) and the edge widths under SOUTH /
+      EAST (T9); under WEST wind only T2's floor and T3 differ. So ring differences should concentrate on
+      the east / north / south winds; west-wind cells may be identical on seeds where no searcher camps in
+      the west strip.
+    - No direction is predicted for rescued / dead / never_detected on either placement. On the ring the
+      untuned search may do worse (it lost its home-ground fit, 15.1); that is the expected sign, not a
+      defect, and it is not a result.
+7.5 NOT DONE: no claim, no comparison reported as a result, no change to the measurement round's arms or
+  environment. The as-shipped arm is a development reference only.
+
+8. DECISIONS FOR THE MAINTAINER (recommendation first)
+  D-1 T7 sweep order: (a) RECOMMENDED - downwind strip first along the wind axis, nearer strip first
+      across it (wind-relative and own-state only; equals shipped under west wind; mirrors fix2's y rule).
+      (b) minimal - "west strip first, then east" under every wind (the shipped finalize rule extended to
+      the two score loops; keeps a fixed compass order).
+  D-2 observed dead: (a) RECOMMENDED - dead AND detected before death. (b) stricter - also require a UAV's
+      detection disc over the victim, or a dispatched firefighter, at the step of death.
+  D-3 unreachable / cancelled: (a) RECOMMENDED - stay counted (the instruction's formula, literally).
+      (b) subtract the team's own "unreachable" declarations (an S decision about a detected victim).
+  D-4 T9 width: (a) RECOMMENDED 4 cells on every downwind edge; (b) 3.
+  D-5 the screen on sets 1 AND 2 (178 runs, about 3 h): RECOMMENDED; set 1 only would halve it.
+  D-6 dashboards keep displaying the true count (observer view, not the managing system): RECOMMENDED.
+
+9. WHAT EACH FINDING MEANS FOR THE PAPER
+  F1 The explicit ring fix of 66dc728c (CORRIDOR_WEST_CAMP_X 12) is INERT at HEAD: subsumed by the
+     narrow-span test and equal to the coverage-active cap. What survives of 66dc728c is its west-wind-only
+     sweep order (T7), which is live. The paper's 15.1 (a) should say "explicit, partly inert today; the
+     live part is the wind-specific sweep order", not that the constant still steers.
+  F2 Under every wind but west, the shipped escape score pulls the searcher WEST without a release
+     (unlatched, pre-66dc728c), while its finalize clamp uses latches - the chain carries a fixed compass
+     preference. The untuned search removes it; the paper lists it among the ring-era asymmetries.
+  F3 The downwind-edge block is asymmetric (3 / 4 / 4 / 5 cells) with no derivation; stated as a tuned
+     setting.
+  F4 Privileged information reaches the current searcher through ONE function at ONE call site (P1, :1350)
+     plus the mission-goal count (P3) and the post-rescue gate (P2); both counts are replaced by the
+     briefing count minus observations. The two differ only in the end game; the paper states the shipped
+     baseline's advantage as "it knows when no findable victim is left".
+  F5 With the switch on, the Bayes arms' hand-back steps read no privileged victim information (section 4);
+     with it off (as in fix3b's screens), they do on 5-10% of post-detection steps (17.3).
+  F6 Residual (2.4): the untuned search's general weights were selected on the ring; the paper says so.
+  F7 The map's "lanes inert" (CUR-26) holds for scenario A only; B, C and D run 2 searchers with lanes.
+     A correction to the information map, recorded here.
+
+10. HOUSEKEEPING
+  - Quarantine: every recursive search this round excludes outputs/_firemech_rewound_20260914 (and
+    outputs, .venv, .git where not needed); none traversed it.
+  - Run tags: prefix "ut", unused (0 files with "_ut"); re-checked before the first wave, and no tracked
+    _ffr_ut* / _sd_ut* path exists.
+  - .venv: the parent .venv only; this round creates no worktree, so no .venv junction.
+  - Switch rule: SEARCHER_UNTUNED ships OFF and enables only on an exact 1.
+  - Review agents: 0 of 3 used so far.
+  - Nothing has been run; no source file has been edited.
+
+STOP. Awaiting confirmation of this design and decisions D-1..D-6 before Part 2.
+
+================================================================================
+11. RULINGS (maintainer, 2026-10-01) - GOVERN WHERE THEY DIFFER FROM SECTIONS 0-10
+================================================================================
+11.1 D-1 (a): sweep order - downwind strip first along the wind, nearer strip first across it.
+     Symmetric under every wind. (T7 as designed.)
+11.2 D-2 (a): observed dead = any victim detected (confirmed) before it died.
+11.3 D-3 - A CORRECTION TO THE FORMULA: TWO COUNTS, TWO QUESTIONS, TWO REPLACEMENTS.
+     The two privileged counts answer different questions, so they get different replacements:
+       SEARCHER COUNT (P1 and the post-rescue gate P2) - "is any victim still to be FOUND?"
+         KNOWN_UNDETECTED = N_brief - #detected
+         detected = confirmed (the detection flag, 3.1) union the runtime-record ids, as the fix3b belief
+         builds detected_ids (wildfire_model.py:2767-2771). A detected victim - alive, awaiting rescue,
+         unreachable or dead - no longer needs searching. A victim that died unseen stays counted, as for
+         a real team.
+       MISSION-GOAL COUNT (P3) - "is the mission finished?"
+         KNOWN_MISSION_UNRESOLVED = N_brief - #rescued - #observed_dead   (3.1 as written)
+         Unreachable victims stay counted.
+     WHY THEY DIFFER: the single formula of 3.1 used for the searcher would have counted detected victims
+     awaiting rescue (or declared unreachable) as unresolved, keeping searchers in coverage mode hunting for
+     victims already found. Finding and finishing are different questions.
+     CONSEQUENCES FOR THE DESIGN (supersede 3.1's "Properties" for the searcher count):
+       - Every consumer of the searcher count tests only "> 0" (coverage mode :812, priority :1384, hybrid
+         :1409-1428, y-commit :1274, planner :132-141, the post-rescue gate). Against the privileged count
+         the ">0" test differs in TWO cases:
+           (A) ALL FOUND, NOT ALL FINISHED - every victim detected, some still awaiting rescue or
+               unreachable: privileged > 0, known = 0. The untuned searcher LEAVES coverage mode at the
+               last detection; the shipped one stays in it until the last victim is resolved. COMMON: it
+               occurs in every run in which all victims are detected before all are resolved.
+           (B) ONLY UNSEEN DEAD LEFT - every undetected victim has died unseen and the rest are resolved:
+               privileged = 0, known > 0. The untuned searcher keeps searching; the shipped one stops.
+         Before the last detection both counts are > 0 (an undetected victim is either alive - counted by
+         both - or dead unseen - counted by the known count), so item 2 cannot change a step before the
+         last detection or before case (B). It therefore cannot change any detection time by itself: after
+         the last detection there is nothing left to detect, and in case (B) only dead victims remain.
+       - The mission-goal count is >= the privileged mission count (it subtracts a subset) and differs in
+         its ">0" test only when every remaining victim died unseen or is unreachable.
+11.4 D-4 (a): 4 cells on every downwind edge.
+11.5 D-5 (a): both seed sets (178 runs).
+11.6 D-6 (a): the dashboards are the observer's view and keep the true count.
+11.7 PAPER WORDING (binding): the retained weights are described as "parameters inherited from earlier
+     development, used unchanged". Neither they nor anything else is described in terms of the fixed ring
+     or of tuning. Sections 2.4 and 9 are reworded accordingly in the report; the classification in
+     section 2 is internal design evidence, not paper text.
+11.8 F2 IS A DEFECT THIS ROUND REMOVES: under every wind but west, the shipped escape score pulled the
+     searcher west with no release ((ax - cx) * 0.75 for any cell west of it, unlatched). Under the switch
+     the escape score uses the latched two-strip order of T7.
+
+11.9 UPDATED TESTS (6.2)
+     (a) adds: the searcher count equals N_brief - detected and ignores rescue / unreachable / death of a
+         DETECTED victim (case A: known 0 while the privileged count is > 0); an unseen death keeps it
+         counted (case B); the post-rescue burst is not armed in case A on, armed off; the mission count
+         keeps an unreachable victim counted and drops a detected-then-dead one.
+     (b) the metamorphic guard is unchanged in form (perturb ONLY undetected-victim truth -> every
+         searcher / mission output unchanged with the switch on, changed with it off), and adds the case-A
+         check that the two untuned counts are computed separately (the searcher count is 0 while the
+         mission count is > 0 in the same state).
+
+11.10 UPDATED PREDICTIONS (replace 7.4's first bullet; the others stand)
+     - Item 2 changes the SEARCHER only in cases (A) and (B) of 11.3. Case (A) is the common one: after the
+       last detection the untuned searcher runs the chain's non-coverage branch (higher wind weight, no
+       forced coverage escape, no x clamp or target hold in _finalize_coverage_target, no y-commit update,
+       no post-rescue burst). So searcher trajectories after the last detection will differ in most runs
+       in which every victim is found; detection times cannot be changed by item 2.
+     - That non-coverage branch is rarely exercised by the shipped chain while victims are unresolved. The
+       screen's G-O risk is therefore concentrated AFTER THE LAST DETECTION; every episode is reported with
+       its position relative to the last detection and to cases (A) / (B).
+     - Item 2's mission-goal change acts only when every remaining victim died unseen or is unreachable.
+     - Rescued / dead: no direction predicted. Item 2 can affect them only through searcher positions after
+       the last detection (UAV cells enter other agents' blocked sets), so any per-seed difference there is
+       expected to be small; item 1 acts from step 0.
+     - ATTRIBUTION COUNTS (7.3) are reported separately for the two counts: steps in case (A), steps in
+       case (B), mission-phase steps that differ.
+
+PROCEEDING to Part 2 and Part 3 as pre-registered, with 11.3 / 11.9 / 11.10.
