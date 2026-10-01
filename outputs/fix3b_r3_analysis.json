@@ -1,0 +1,700 @@
+[
+ {
+  "key": "code",
+  "analysis": {
+   "summary": "TASK A1 (code: how the DEAD mass and burn-over affect decisions). Read-only on E:\\Projects\\SAS. No simulator, probe, pool or pytest was run. Scratch scripts are in C:\\Users\\ahrar\\AppData\\Local\\Temp\\claude\\E--Projects-SAS\\aeac90fa-d510-40d8-a309-ad58f8606230\\scratchpad\\r3wf\\a1\\: a1_synth.py (belief algebra, planner scale invariance, swept rule), a1_front.py (per-step fate of mass near the fire), a1_rec.py, a1_nunf.py and a1_zero.py (recorded fb3 JSON, read-only).\n\nHEADLINE FINDINGS\n1. No decision reads the DEAD mass (verified). `belief.dead` is used only in measure's normalisation (victim_search_belief.py:208-211), in burn_over (:226) and in summary() (:245). Of the derived quantities, only `n_unfound` drives a decision (the R-1 switch, searcher_targeting.py:185). expected_unfound_alive and coverage_share appear only in summary(). The planner reads n_unfound, intensity() = n_unfound*p, p and last_cover, and nothing else.\n2. The Bayes target choice is invariant to multiplying p (or lambda) by any positive constant, up to floating-point near-ties. This covers the s>0 filter, pre-rank, top-M, exact gain, score, tie-breaks, the order of free searchers and the coordination conditioning. Proof by linearity, plus 60 synthetic planner calls with 0 target mismatches at c = 0.5, 0.0022, 1e-3 and 0.37. So the DEAD share by itself changes no target. Burn-over acts only through (a) the SHAPE of p: it removes the fraction p_bo of the mass on burning cells only, with no renormalisation; and (b) the swept rule, and only locally.\n3. The report's section-15 claim \"(i) ... a global loss of alive mass to DEAD looks like a sweep\" (outputs/fix3b_rescreen_report.txt:409-410) is WRONG, as the lead suspected.\n   - Measure divides the uncovered alive mass and DEAD by the same z = 1 - r. A held target whose disc was not covered therefore has its Sp RAISED by 1/(1 - r).\n   - Burn-over changes only burning cells and never renormalises.\n   - Synthetic check: DEAD went 0.2 -> 0.333 while Sp at the held target went 0.4 -> 0.667, and there was no drop_swept.\n   - Burn-over can trigger drop_swept only when the target's disc overlaps burning cells. Worst case (all of the disc's mass on burning cells, nothing else changing): 14 steps at p_bo 0.1, 3 steps at 0.5.\n4. DEAD-share algebra (the total p.sum() + dead = 1 is invariant; the recorded summaries agree within 1e-6 in all 10 arms x 16 runs):\n   - Measure sends D -> D/(1 - r). The share rises by the factor 1/(1 - r) without adding any DEAD mass. Equivalently, the dead:alive odds rise by 1/(1 - f), where f = r/A is the fraction of the alive mass swept that step.\n   - Burn-over sends D -> D + p_bo * (alive mass on burning cells).\n   - Closed form with no further burn-over: D_t = D_s / (D_s + A_s * prod(1 - f_k)). Any seed D_s > 0 is pushed past 0.5 by sweeping alone, so any p_bo > 0 can fail R-3.\n   - At p_bo = 0, dead stays exactly 0: it starts at 0.0, measure keeps 0/z = 0, and burn_over returns early.\n5. Setting SEARCHER_BELIEF_BURNOVER = 0:\n   - Path: common_fixed_variables.py:214 -> agents.fix3b_param (agents.py:2209-2215; float(), NaN falls back to the default, no clamp) -> wildfire_model._fix3b_motion_params (:2734) -> MotionParams.burnover -> burn_over (victim_search_belief.py:217: `if not burning or p_bo <= 0.0: return`).\n   - Nothing rejects or clamps 0. Negative values also act as 0. Values above 1 are not clamped.\n   - One test pins the value: tests/test_searcher_targeting.py:462-468 test_burn_over_ships_at_the_ruled_value. Line 466 asserts the cfv text \"SEARCHER_BELIEF_BURNOVER = 0.1\". Line 468 asserts MotionParams().burnover == 0.1, which changes only if the dataclass default at victim_search_belief.py:105 is also changed. The fallback default at wildfire_model.py:2734 (0.1) and the comment at common_fixed_variables.py:211-213 should change with it.\n   - Tests that pass 0.5 explicitly (:171-180, :199-206) are unaffected. The integration test (:401-422, sum == 1) still holds.\n6. Under burn-over 0:\n   - No mass can flow INTO burning cells (predict's avail excludes burning destinations). Mass is captured only when a cell holding it ignites.\n   - Interior burning cells (no available neighbour) keep all their mass in both modes, and it is scaled up by every renormalisation.\n   - Per-step outflow from a fire-front cell: 10% in diffusion (stays 0.900), about 63% in flee (stays 0.368).\n   - Captured mass is released into burnt-out cells when the cell stops burning, and then attracts searchers to the burnt ground once it is admissible.\n   - The support of p, and with it the set of s>0 candidates and the fallback condition, does not depend on p_bo < 1 for the same trajectory. R-1 depends only on n_unfound.\n   - n_unfound keeps counting victims that died unseen: verified in 18 recorded re-screen runs, where R-1 continuation never triggered (lo_continuation_steps = 0). This is the same at any p_bo. Because of scale invariance, the over-count has no effect on decisions.\n7. Other findings:\n   - searcher_targeting.py:188 computes S = disc_convolve(lam) and never uses it (dead code).\n   - A Bayes target can be up to Manhattan 2 closer to the fire than any cell the searcher can stand on (the route's goal radius), so its scored disc reaches about 2 rows deeper into the fire than the searcher's own disc will. Burn-over is currently the only thing that drains mass deeper in the fire, which no searcher disc can reach; at 0, that mass waits for burnout.\n\nBurning cells are not recorded per step, so the split between the measure and burn-over channels in the 15 failures cannot be recovered from the recorded runs.",
+   "quarantine_contact": "None. I did not read, list or traverse E:\\Projects\\SAS\\outputs\\_firemech_rewound_20260914.\n- Every recursive grep passed --exclude-dir=_firemech_rewound_20260914 at the search level.\n- Recorded runs were loaded through _fb3_analyze.load -> _fx3r_analyze.load, which uses a non-recursive name glob (outputs/_sd_<tag>_*.json, _fx3r_analyze.py:47).\n- I ran `git status --porcelain` 3 times to confirm the tracked tree was unchanged. The quarantine directory is in .git/info/exclude (line 10, /outputs/_firemech_rewound_20260914/), so git treats it as ignored and does not descend into it. Nothing from it appeared in any output.",
+   "claims": [
+    {
+     "id": "A1-1a",
+     "claim": "Where the belief update sits in MAPE-K. All of it runs in the post-move Knowledge stage of step t. adaptation_manager._run_post_move_cycle calls _detect_victims_in_uav_radius (adaptation_manager.py:171), then _refresh_knowledge_from_post_move_monitoring (:174-177). That calls wildfire_model._apply_monitoring_to_knowledge (wildfire_model.py:3449), which calls _update_victim_search_belief (:2480-2481). The planner runs in the pre-move cycle of step t+1: adaptation_manager.py:114 _run_planning -> wildfire_model.py:2345 planning_coordinator.run_planning -> planning_coordinator.py:89 apply_searcher_targeting. So every decision at step t+1 reads the belief as left by step t's post-move update. The prior and one launch measure at step 0 come from wildfire_model.py:2712-2724, built only when searcher_targeting_uses_belief(), i.e. modes 1-3 (wildfire_model.py:405-406; agents.py:2170-2172).",
+     "evidence": "Read adaptation_manager.py:80-185, wildfire_model.py:2472-2481, 3446-3453, 6217-6268, planning_coordinator.py:86-89.",
+     "status": "verified"
+    },
+    {
+     "id": "A1-1b",
+     "claim": "Order of operations inside one update (wildfire_model.py:2736-2773). (1) The burning and smoke sets are read once, after the move, at :2748 (the fire has already advanced in schedule.step). (2) PREDICT, modes 2 and 3 only (:2751-2752). (3) MEASURE on every UAV's post-move cell, all roles; the position comes from the monitoring buffer, or from a.pos if a UAV filed none (:2753-2764). (4) BURN-OVER, modes 2 and 3 only (:2765-2766), with the same burning set as predict. (5) detected_ids is extended from managed_victims[...].confirmed and from victim_runtime_model.victims (:2767-2771). This step's detections were already made at adaptation_manager.py:171, before the update. At mode 1 only measure (last_cover) acts. With SEARCHER_BELIEF_MOTION=0 the motion mode is 'off', which skips predict but still applies burn-over (:2728-2729, 2765).",
+     "evidence": "Read wildfire_model.py:2726-2773.",
+     "status": "verified"
+    },
+    {
+     "id": "A1-1c",
+     "claim": "Mass bookkeeping per operation; A = p.sum(), D = dead, and A + D = 1 is invariant. PREDICT (victim_search_belief.py:139-196) keeps A and D: the move weights plus w_stay sum to 1 per source cell, and moves go only to in-bounds neighbours that are not burning (:148-157, 188-196). So the DEAD share is unchanged and only the shape of p changes. MEASURE (:198-213): p <- p(1 - pd*cover); z = A - r + D = 1 - r; p <- p/z; D <- D/z. So A' = (A - r)/(1 - r), D' = D/(1 - r), and the total is 1. BURN_OVER (:215-226): on burning cells only, p(c) <- (1 - p_bo) p(c); D <- D + p_bo * sum over burning cells of p(c). The total is unchanged, there is no renormalisation, and p off the fire is unchanged. Recorded data: |alive_mass + dead_mass - 1| = 0 at 6-decimal rounding in every sampled summary of all 10 arms (fb3bdr, bfr, bdr2, bfr2, vs3r, bd, bf, bd2, bf2, vs3; 16 runs each).",
+     "evidence": "Code read. a1_synth.py check 1: A = 0.8, D = 0.2, discs at (10,10) and (30,30): r = 0.126080, D' = 0.228854 = 0.2/(1 - 0.126080), uncovered p'/p = 1.144269 = 1/(1 - r), total 1.000000000000. Check 2: burn_over at p_bo 0, 0.1, 0.5 gives D + p_bo * M_B exactly, off-fire cells bit-identical. a1_rec.py: max |alive + dead - 1| = 0.00e+00 in every arm.",
+     "status": "verified"
+    },
+    {
+     "id": "A1-1d",
+     "claim": "How the DEAD share evolves: D_{t+1} = D_t/(1 - r_t) + p_bo * B_t, where r_t is the alive mass inside this step's discs and B_t is the alive mass on burning cells after measure. Measure raises the DEAD share by the factor 1/(1 - r) and adds no DEAD mass. In odds form, D/A is multiplied by A/(A - r) = 1/(1 - f), where f = r/A is the fraction of the remaining alive mass swept that step. Closed form with no further burn-over after step s: D_t = D_s / (D_s + A_s * prod_k(1 - f_k)). The share passes 0.5 once the unswept alive mass A_s * prod(1 - f_k) falls below D_s. Example: a seed D_s = 0.05 passes 0.5 after 94.7% of the alive mass has been swept (0.95 * prod = 0.05 gives prod = 0.0526). So any p_bo > 0 can fail R-3 through sweeping alone. This is the exact Bayes posterior P(dead | no detection) under the belief's own model.",
+     "evidence": "Algebra from victim_search_belief.py:207-211 and :215-226, checked numerically by a1_synth.py check 1.",
+     "status": "verified"
+    },
+    {
+     "id": "A1-1e",
+     "claim": "At p_bo = 0, D is exactly 0 at every step. dead starts at 0.0 (dataclass default, victim_search_belief.py:115; with_uniform_prior does not set it, :122-136). Measure gives 0/z = 0 (:211). burn_over returns before touching anything when p_bo <= 0 (:217). So the R-3 DEAD share is 0 by construction, p.sum() is 1 after every measure, and expected_unfound_alive equals n_unfound.",
+     "evidence": "Code read. a1_synth.py check 2 at p_bo = 0.0: dead 0.100000 -> 0.100000, p unchanged.",
+     "status": "verified"
+    },
+    {
+     "id": "A1-2a",
+     "claim": "Every consumer of the belief quantities outside victim_search_belief.py (grep over *.py, quarantine excluded): (1) n_unfound -> eff, the R-1 switch (searcher_targeting.py:185). (2) intensity() -> lam (:187), used as base / lam_cur / lam_cond in coordination (:326, 332, 366), in the pre-rank field S_c (:288) and in the exact gain g (:310). (3) belief.p -> Sp = disc_convolve(p) (:191), used by the swept test (:253) and as the issue value S (:317 -> s_issue :354, logged at :360). (4) last_cover -> least-observed tile ages (:99, eff 1 only). (5) S = disc_convolve(lam) at :188 is computed and never read (dead code). (6) dead, expected_unfound_alive() and coverage_share() are read only by summary() (victim_search_belief.py:243-246), which only the instrument outputs/_fb3_probe.py:138,155 and tests read. No executor, dispatcher, dashboard, evaluator or analyzer code reads the victim-search belief. The only 'belief' in uav_executor.py is the fire runtime model's (:5419).",
+     "evidence": "grep -rn --exclude-dir=_firemech_rewound_20260914 for victim_search_belief|intensity()|expected_unfound_alive|coverage_share(|n_unfound|last_cover|belief.dead|belief.p|burn_over|BURNOVER, plus a grep for '\\bS\\b' in searcher_targeting.py (only :188).",
+     "status": "verified"
+    },
+    {
+     "id": "A1-2b",
+     "claim": "Which consumers react to a uniform rescaling of p (a change in the DEAD share alone) and which to a change in its SHAPE. (1) n_unfound: neither; it is a count. (2) lam in choose(): not to a rescale (see A1-3a); yes to a shape change, because S_c, the pre-rank, g and the score are all mass-weighted. (3) Sp / swept: not to a rescale that applies at both issue and now; not invariant to a change of scale BETWEEN issue and now, but no code path scales p down uniformly (see A1-4b); yes to local shape changes. (4) last_cover: neither; burn_over and predict never touch it, only measure writes it (victim_search_belief.py:212). (5) dead, expected_unfound_alive, coverage_share: no decision effect at all.",
+     "evidence": "searcher_targeting.py:98-109, 185-193, 253, 268-318, 326-366.",
+     "status": "verified"
+    },
+    {
+     "id": "A1-3a",
+     "claim": "Proof that the Bayes choice is invariant to lambda -> c*lambda for any c > 0. disc_convolve and dilate-mask sums are linear (victim_search_belief.py:56-66), so S_c -> c S_c and g -> c g. The filter s <= 0 (:294) keeps the same cells because the sign is preserved. The pre-rank s/max(L, L0) scales by c, so the sort (-pre, L, cell) at :300 keeps its order. Battery, top-M and min-dist do not involve lam (:297, 302-306). The score g/max(L, L0) scales by c, so the key (score, -L, (-x, -y)) at :312 keeps its argmax. The 'alone' order at :328 uses -(score), with +1.0 for None; non-None scores are > 0 because g >= S_c[c] > 0, so the order is kept. Coordination: the claimed masks depend on geometry only (:263, 365), and lam*~claimed is linear (:326, 332, 366). Caveat: when c is not a power of two, floating-point rounding could in principle flip an exact near-tie.",
+     "evidence": "Code read. a1_synth.py check 3: 12 random sparse gamma fields, 3 searchers and a fire wall at y = 40, run at c in {1, 0.5, 0.0022, 1e-3, 0.37}: 60 planner calls, 0 target mismatches against c = 1. Sample targets [(22,14), (10,28), (40,32)].",
+     "status": "verified"
+    },
+    {
+     "id": "A1-3b",
+     "claim": "Absolute thresholds that involve the belief mass. There is exactly one cross-time ratio: drop_swept, Sp_now < rho * s_issue with rho = 0.25 (:253). It is invariant only when the same constant applies at issue and now. The other mass threshold is the exact zero test s <= 0.0 (:294), which is scale-free for c > 0. Nothing else reads the mass: fallback (choose returns None, :336-351), the boxed-by-UAVs check (:341-347, reachability only), battery (:219-226, L and battery only), give-up and cooldown (:179, 228-229, 245-258, routes and steps), MIN_DIST (:186, 297), drop_reached (:247) and drop_all_detected (:251, n_unfound and tile) are all independent of p's scale. The least-observed rule (eff 1) reads only last_cover ages, with the burning and smoke cells excluded (:98-109, 270-287).",
+     "evidence": "Code read of searcher_targeting.py:113-388.",
+     "status": "verified"
+    },
+    {
+     "id": "A1-4a",
+     "claim": "What the swept rule compares. 'S at issue' is Sp at the chosen target, where Sp = disc_convolve(belief.p) over the radius-8 disc of p (ONE victim's posterior, not lambda) (:191, 317, 354). It is computed in the pre-move planning stage of the issuing step, from the belief after the previous step's post-move update. 'Sp now' is the same p-based quantity recomputed every step at :191 and tested at :253 for held targets, only while eff is 2 or 3. The issued-log field S (index 5 of fb3['issued']) is this p-based value; G (index 4) is the lam_cond-based gain.",
+     "evidence": "searcher_targeting.py:187-191, 249-254, 315-318, 352-360.",
+     "status": "verified"
+    },
+    {
+     "id": "A1-4b",
+     "claim": "Which belief operations can lower Sp at a held target T. MEASURE: Sp(T) -> (Sp(T) - covered part of the disc)/(1 - r). With no overlap it RISES by 1/(1 - r) >= 1. It falls only when the disc of T is itself swept enough that the removed share exceeds the inflation. BURN_OVER: Sp(T) -> Sp(T) - p_bo * (mass on burning cells inside the disc of T). This is purely local, and nothing changes when the disc has no burning cell. PREDICT: conserves mass but can move it out of the disc (flee away from the fire, diffusion spreading a peak). A detection elsewhere does not change p (test :191-196, and the LOW-3 test :375-384 pins no sweep). Therefore global DEAD-share growth CANNOT trigger drop_swept: it comes from (a) measure renormalisation, which raises an uncovered target's Sp, or (b) burn-over elsewhere, which leaves Sp(T) untouched. Burn-over triggers drop_swept only when the target's disc overlaps burning cells. The report claim (i) at fix3b_rescreen_report.txt:409-410 is wrong.",
+     "evidence": "a1_synth.py check 4: target (24,16) issued with s_issue 0.4 and dead 0.2; a measure covering the other mass gave dead 0.3333 and Sp[T] 0.6667; burn_over off the disc left Sp[T] at 0.6667; the next planner call held the target with drop_swept None.",
+     "status": "verified"
+    },
+    {
+     "id": "A1-4c",
+     "claim": "How fast burn-over alone can sweep a held target. With all of the disc's mass on burning cells and no measure inflation, Sp falls below 0.25 * s_issue after 14 steps at p_bo 0.1 (0.9^14 = 0.229 < 0.25; 0.9^13 = 0.254) and after 3 steps at 0.5 (0.5^2 = 0.25 is not strictly below). Every measure step slows this by its 1/(1 - r) factor. At p_bo 0 this trigger does not exist. Recorded drop_swept totals (all searchers, 16 runs per arm): fb3bdr 120, fb3bfr 155, fb3bdr2 69, fb3bfr2 79, fb3vs3r 109; screen at 0.5: fb3bd 176, fb3bf 199, fb3bd2 78, fb3bf2 108, fb3vs3 57. These totals cannot be split by cause offline, because burning cells are not recorded.",
+     "evidence": "a1_synth.py check 4(d): 14 and 3 steps. a1_rec.py stats sums of the drop_swept counter in d['fb3']['stats'].",
+     "status": "verified"
+    },
+    {
+     "id": "A1-5a",
+     "claim": "How predict treats mass near and on the fire. Mass never moves INTO a burning cell in either mode: avail[k] requires the destination neighbour to be in bounds and not burning (victim_search_belief.py:148-156). DIFFUSION (q = 0.1): any cell with at least one available neighbour moves exactly 0.1 of its mass per step, split equally (:160-162). That includes a burning FRONT cell, which keeps 0.900 per step. An interior burning cell (k = 0) keeps 1.000. FLEE: the alarm logistic on Euclidean distance d to fire is 0.966 at d = 0 and 0.5 at d = 5; the softmax gain is d(n) - d(c) (:164-187). A front burning cell keeps 0.368 per step (0.632 leaves), an interior one keeps 1.000. A non-burning cell adjacent to the fire keeps 0.351; one at 6 cells (y = 14 vs a fire edge at y = 20) keeps 0.751; one at 10 cells keeps 0.957. So burn-over hits a large standing front mass in mode 2 but mostly interior mass captured at ignition in mode 3. The latter is inferred to fit the report's observation that lowering p_bo reduced failures in the diffusion arms (14 -> 9) but not in the flee arms (4 -> 6).",
+     "evidence": "a1_front.py: fire band y = 20..30 on the 50x50 grid, unit mass, one predict step: diffusion front 0.9000, interior 1.0000, outside 0.9000; flee front 0.3678, interior 1.0000, y=19 0.3507, y=14 0.7506, y=10 0.9567, mass entering the fire 0.0000 in every outside case. The link to the arm difference is an inference.",
+     "status": "verified"
+    },
+    {
+     "id": "A1-5b",
+     "claim": "Which near-fire mass a searcher disc can ever clear. Searchers move only over admissible cells: not burning, not strict smoke, not another UAV's cell, and at Manhattan distance >= clearance = min(d0, SEARCHER_ROUTE_CLEARANCE = SEARCHER_GATE_NEAR_RANGE = 6) from every burning cell (uav_executor.py:2390-2440; agents.py:2064, 2089). The detection disc is Euclidean radius 8 (197 cells). Against a straight front a searcher at Manhattan 6 covers burning cells only 0..2 deep ((x + 6)^2 <= 64 gives x <= 2), slightly deeper at corners (for example (2,2) of a quadrant fire from (-3,-3): 25 + 25 = 50 <= 64). Mass deeper inside a burning region cannot be cleared by any searcher while the region burns. Smoke cells are also not admissible, which pushes searchers further out. Measure uses every UAV's disc including fire trackers (wildfire_model.py:2753-2761); whether trackers fly near enough to clear the fire interior was not checked. Target goals may lie up to Manhattan 2 closer to the fire than any admissible cell (route goal radius, uav_executor.py:2443-2463; drop_reached when route[1] == 0, searcher_targeting.py:247). So the scored target disc can reach about 2 rows deeper than the disc the searcher actually flies.",
+     "evidence": "Geometry for a straight front computed from the code constants. The fire-tracker coverage of the interior is not verified.",
+     "status": "verified"
+    },
+    {
+     "id": "A1-5c",
+     "claim": "What burn-over drains that nothing else can. Burn-over is the only operation that removes alive mass from the uncoverable fire interior while it burns. Interior mass left after 25 steps: p_bo 0 gives 1.0000, 0.1 gives 0.0718, 0.5 gives about 0.0000. The burn length of about 21-30 steps is inferred from FUEL 7-10, BURNING_RATE 1 per fire tick and FIRE_SPREAD_SPEED 3 (agents.py:23, 99-111; common_fixed_variables.py:22-31). At p_bo 0 that mass waits until the cell burns out. It is then a normal cell (predict excludes only burning cells; the BFS excludes burning, smoke and clearance cells) and pulls searchers to sweep burnt ground. The true victims there have been killed by _check_fire_casualties (wildfire_model.py:5609-5641).",
+     "evidence": "a1_front.py: (1 - p_bo)^25 printed. The burn duration is inferred from the fuel constants, not measured.",
+     "status": "inferred"
+    },
+    {
+     "id": "A1-6a",
+     "claim": "Trace of SEARCHER_BELIEF_BURNOVER = 0 through the code. common_fixed_variables.py:214 -> agents.fix3b_param (agents.py:2209-2215): float(getattr(cfv, name, default)); non-numeric gives the default, NaN gives the default, no clamp, so 0 returns 0.0. -> wildfire_model._fix3b_motion_params (:2726-2734) passes burnover=f('SEARCHER_BELIEF_BURNOVER', 0.1). -> MotionParams is a dataclass with no validation (victim_search_belief.py:96-105). -> burn_over is called at wildfire_model.py:2766 and returns at victim_search_belief.py:217. No guard rejects 0 or falls back to the default. A negative value behaves exactly like 0. A value above 1 would make p negative; it is unclamped and unused. The harness key is passed through by outputs/_fb3_probe.py:39 (FIX3B_KEYS).",
+     "evidence": "Code read of all listed lines.",
+     "status": "verified"
+    },
+    {
+     "id": "A1-6b",
+     "claim": "Tests that pin the burn-over value or behaviour. tests/test_searcher_targeting.py:462-468 test_burn_over_ships_at_the_ruled_value asserts '\\nSEARCHER_BELIEF_BURNOVER = 0.1\\n' in the cfv source (:466), which must change. It also asserts MotionParams().burnover == 0.1 (:468), which must change only if the dataclass default at victim_search_belief.py:105 is changed. For consistency the fallback default at wildfire_model.py:2734 and the comment at common_fixed_variables.py:211-213 should change too. Unaffected: :170-180 test_predict_and_burn_over_conserve_mass (explicit 0.5), :199-206 test_the_belief_draws_no_random_numbers (explicit 0.5), and :401-422 test_a_real_model_builds_and_updates_the_belief (asserts p.sum() + dead == 1; still true at 0). No other test file references MotionParams, VictimSearchBelief or the belief. Suggested new test: burn_over(B, 0) leaves p and dead bit-identical and dead stays 0 across predict/measure cycles.",
+     "evidence": "Read the test lines. grep of tests/ for MotionParams|VictimSearchBelief|victim_search_belief finds only test_searcher_targeting.py.",
+     "status": "verified"
+    },
+    {
+     "id": "A1-7a",
+     "claim": "Where alive mass on burning cells goes each step at p_bo = 0. Front cells leak 0.1 per step (mode 2) or about 0.63 per step (mode 3) to non-burning neighbours. Interior cells hold all of it. Mass cannot flow into the fire, so the fire's absolute mass grows only by (a) igniting cells that hold mass and (b) the shared renormalisation 1/(1 - r), which scales every uncovered cell. The fire's RELATIVE share of p therefore rises as the rest is searched, but the fire cannot concentrate mass by inflow. On burnout the mass sits on burnt cells and becomes coverable once admissible. dead stays 0, so p.sum() = 1 and lambda = n_unfound * p always.",
+     "evidence": "victim_search_belief.py:148-196, 207-211, 217; a1_front.py.",
+     "status": "verified"
+    },
+    {
+     "id": "A1-7b",
+     "claim": "R-1 continuation, fallback and swept at p_bo = 0. R-1: eff = 1 iff mode == 1 or n_unfound == 0 (:185), independent of p_bo. Fallback: support(p) does not depend on p_bo < 1 for the same trajectory, because predict's support depends only on burning/avail, measure zeroes exactly the covered cells, and burn_over with p_bo < 1 scales but never zeroes. So the s>0 candidate set and whether choose() returns None are unchanged. Only which target wins (shape) changes, and through it the later trajectory. Swept: the local burn-over trigger disappears; Sp can then fall only through predict outflow or measure sweeping.",
+     "evidence": "Code read of searcher_targeting.py:185, 289-299, 336-351, 253 and victim_search_belief.py:188-196, 207, 222-224.",
+     "status": "verified"
+    },
+    {
+     "id": "A1-7c",
+     "claim": "n_unfound keeps counting victims that died unseen, and this does not depend on burn-over. n_unfound = n_brief - |detected_ids| (victim_search_belief.py:229-231). detected_ids grows only from confirmed managed victims or victim_runtime_model entries (wildfire_model.py:2767-2771). confirmed is set by detection (:1461), by dispatch (:4926) and by rescue_executor.py:568; _check_fire_casualties marks the victim dead without confirming it (wildfire_model.py:5609-5680). That dispatch requires a prior detection is inferred, not checked. Recorded: in all 80 re-screen runs the final n_unfound equals the number of never-detected victims. 18 runs end with one unseen, dead victim (fb3bdr 5, fb3bfr 6, fb3bdr2 2, fb3bfr2 2, fb3vs3r 3), and in each of them lo_continuation_steps = 0, so the R-1 rule never takes over. Because of scale invariance, the resulting over-count in lambda has no decision effect at any p_bo. At p_bo > 0 the belief ends near DEAD (final dead_mass 0.68-1.00 in those runs), but no code reads that, so the searchers keep looking either way.",
+     "evidence": "a1_nunf.py output: 16/16 agreement in each arm; listed runs with status ['dead'] and lo_cont_steps = 0.",
+     "status": "verified"
+    },
+    {
+     "id": "A1-7d",
+     "claim": "A degenerate edge case. If every cell holding mass is covered in one measure, z = A - r + D: at p_bo 0 that is 0 and the `if z > 0` guard skips normalisation, so p stays all zero and p.sum() + dead = 0. At p_bo > 0, p becomes all zero and dead becomes 1. In both cases every S_c = 0, choose() returns None, and the fallback hold repeats while n_unfound > 0. The support is the same at both p_bo values, so the outcome is the same. The recorded 6-decimal summaries cannot tell an exact 0 from < 5e-7. Rounded-zero alive mass with n_unfound > 0 appears in fb3vs3r C_E (steps 280+) and in the screen arms, so this was neither confirmed nor excluded.",
+     "evidence": "victim_search_belief.py:207-211. a1_zero.py counts rounded-zero samples: fb3vs3r 9, fb3bd 11, fb3bf 12, fb3bd2 23, fb3bf2 14; 0 in fb3bdr, fb3bfr, fb3bdr2, fb3bfr2, fb3vs3.",
+     "status": "inferred"
+    },
+    {
+     "id": "A1-8",
+     "claim": "Review of the report's section-15 MECHANISM text against the code. Channels (1) burn-over adding DEAD mass and (2) negative evidence renormalising against DEAD (fix3b_rescreen_report.txt:412-417) are correct, and 'any p_bo > 0 can cross 0.5' follows from the closed form in A1-1d. Two parts need correcting. First, claim (i) at :409-410: the swept rule is NOT triggered by global DEAD growth; renormalisation raises an uncovered held target's Sp, and burn-over can sweep only discs that overlap burning cells. Second, 'a UNIFORM rescaling ... does not change which target is chosen' (:407-408) is correct but incomplete: it should add that no decision reads dead at all, so burn-over acts on decisions only through the shape of p on burning cells and the local swept trigger.",
+     "evidence": "A1-1d, A1-2a, A1-3a, A1-4b.",
+     "status": "verified"
+    }
+   ]
+  },
+  "verification": {
+   "verdicts": [
+    {
+     "id": "A1-1a",
+     "verdict": "confirmed",
+     "correction": "",
+     "evidence": "I re-read src_extension/adaptation_manager.py:80-127 and :130-185. The pre-move cycle calls _run_planning at :114 and the post-move cycle calls _detect_victims_in_uav_radius at :171, then _refresh_knowledge_from_post_move_monitoring at :174-177. wildfire_model.py:3449 calls _apply_monitoring_to_knowledge, and :2480-2481 calls _update_victim_search_belief. :2345 calls run_planning, which calls apply_searcher_targeting at planning_coordinator.py:89; grep found that call at :89 only and run_planning only at :2345. Model.step at wildfire_model.py:6217-6262 runs counter++, the pre-move cycle, schedule.step, then the post-move cycle. The init path is at :405-406 and :2712-2724, and agents.py:2170-2172 restricts it to modes 1-3."
+    },
+    {
+     "id": "A1-1b",
+     "verdict": "confirmed",
+     "correction": "",
+     "evidence": "I re-read wildfire_model.py:2736-2773. The fire is read once at :2748. predict runs only for modes 2 and 3 (:2751-2752). measure uses buffer positions or a.pos (:2753-2764). burn_over runs only for modes 2 and 3, with the same `burning` variable (:2765-2766). detected_ids is updated at :2767-2771. MOTION=0 maps to mode 'off' (:2728-2729), so predict returns at victim_search_belief.py:141 while burn_over still runs."
+    },
+    {
+     "id": "A1-1c",
+     "verdict": "confirmed",
+     "correction": "",
+     "evidence": "victim_search_belief.py:148-196: the weights w_n are zero wherever a neighbour is unavailable and w_stay = 1 - sum(w_n), so mass is conserved. :207-211 give z = (A-r) + D. :217-226 apply the local burn-over with no renormalisation. My v1/v_syn.py check 1 gives dead 0.2 -> 0.3333 with sum 1.0. My v1/v_rec.py reproduces maxdev 0.00e+00 over 576 samples in each of the 10 arms."
+    },
+    {
+     "id": "A1-1d",
+     "verdict": "confirmed",
+     "correction": "",
+     "evidence": "Algebra: D' = D/(1-r) and A' = (A-r)/(1-r), so the odds D/A are multiplied by 1/(1-f) with f = r/A. The closed form D_s/(D_s + A_s*prod(1-f_k)) follows, and the example gives prod < 0.0526. Order is predict -> measure -> burn_over (wildfire_model.py:2752, 2762, 2766)."
+    },
+    {
+     "id": "A1-1e",
+     "verdict": "corrected",
+     "correction": "dead stays exactly 0 at p_bo = 0, as claimed. But 'p.sum() is 1 after every measure' has an exception, the analyst's own A1-7d case. If one measure covers every cell holding mass, then z = 0, the guard skips normalisation, and p.sum() + dead = 0.",
+     "evidence": "victim_search_belief.py:115, :122-136, :209-211, :217. My v1/v_syn.py check 3 at p_bo 0 gives p.sum 0.0 and dead 0.0 after a full cover."
+    },
+    {
+     "id": "A1-2a",
+     "verdict": "confirmed",
+     "correction": "",
+     "evidence": "grep -rn with --exclude-dir=_firemech_rewound_20260914, .git and .venv excluded, over *.py, for the belief accessors. The only consumers are searcher_targeting.py:99, 124, 185, 187 and 191, wildfire_model.py (the update and init), and tests/test_searcher_targeting.py. `S` at searcher_targeting.py:188 is never read again (the other matches are the dict key 'S' and S_c). In uav_executor.py, 'belief' appears only at :5419-5423, which is the fire_runtime_model belief. The probe reads summary() at outputs/_fb3_probe.py:136-138 and :153-155."
+    },
+    {
+     "id": "A1-2b",
+     "verdict": "confirmed",
+     "correction": "",
+     "evidence": "searcher_targeting.py:98-109 reads last_cover only. :185 is a count. :187-191, :288-318 and :326-366 are linear in lam. :253 is the only cross-time comparison. last_cover is written only at victim_search_belief.py:212. My v1/v_syn.py check 2: with measures away from the fire, the off-fire p at p_bo 0.1 and at p_bo 0 differ by at most 4.3e-19 after 10 steps, because z = 1 - r does not depend on D."
+    },
+    {
+     "id": "A1-3a",
+     "verdict": "confirmed",
+     "correction": "",
+     "evidence": "I checked the linearity proof against the code: disc_convolve (victim_search_belief.py:56-66) and the mask sum (searcher_targeting.py:310) are linear. The filter at :294 depends only on sign. The sort at :300 and the max key at :312 keep their order under scaling. At :328, None maps to +1.0 and every non-None score is > 0. The claimed masks at :263 and :365 are geometric. Exact floating-point ties are the stated caveat. I did not re-run the 60-call synthetic test."
+    },
+    {
+     "id": "A1-3b",
+     "verdict": "confirmed",
+     "correction": "",
+     "evidence": "searcher_targeting.py:113-388. The only cross-time mass comparison is at :253 and the only other mass test is :294 (s <= 0). The battery check (:219-226), cooled (:228-229), the drop rules (:245-252), fallback/boxed (:336-351) and MIN_DIST (:186, :297) are free of p's scale."
+    },
+    {
+     "id": "A1-4a",
+     "verdict": "confirmed",
+     "correction": "Minor addition: the swept test runs only on steps when the searcher is in `elig`. Return-leg steps drop the target (:165-170). On-hazard and route-field-inactive steps skip the test (:173-178).",
+     "evidence": "searcher_targeting.py:191, 253, 317, 354, 358-360. The issued row is [step, uid, target, L, G, S, reach], so G is index 4 and S is index 5."
+    },
+    {
+     "id": "A1-4b",
+     "verdict": "confirmed",
+     "correction": "",
+     "evidence": "measure divides every uncovered cell by z = 1 - r <= 1 (victim_search_belief.py:207-211). burn_over is local (:220-226). The LOW-3 test is at :375-384. My v1/v_syn.py check 1 gives dead 0.2 -> 0.3333 and Sp[T] 0.4 -> 0.6667. Check 2 shows the off-fire p is identical at p_bo 0.1 and at p_bo 0. The report's claim at :409-410 is wrong."
+    },
+    {
+     "id": "A1-4c",
+     "verdict": "confirmed",
+     "correction": "",
+     "evidence": "0.9^13 = 0.2542 and 0.9^14 = 0.2288; 0.5^2 = 0.25 is not < 0.25, and 0.5^3 = 0.125 is. My v1/v_rec.py reproduces the drop_swept sums exactly: 120 / 155 / 69 / 79 / 109 in the re-screen arms and 176 / 199 / 78 / 108 / 57 in the screen arms."
+    },
+    {
+     "id": "A1-5a",
+     "verdict": "confirmed",
+     "correction": "",
+     "evidence": "v1/v_syn.py check 4 (band fire y = 20..30). Diffusion: front 0.9000, interior 1.0000, outside 0.9000. Flee: front 0.3678, interior 1.0000, y = 19 0.3507, y = 14 0.7506, y = 10 0.9567. Mass entering the fire is 0.0 in every case. I also checked the flee front value by hand. The link to the arm difference is correctly labelled an inference."
+    },
+    {
+     "id": "A1-5b",
+     "verdict": "corrected",
+     "correction": "'Searchers move only over admissible cells' holds only on steps the targeting steers. The admissible set is _targeting_bfs (uav_executor.py:2390-2440, Manhattan field at :2312-2329). On fallback-hold, on-hazard (:176-178), route-field-inactive (:173-175), return-leg (:165-170) and R-1 residual steps, the current chain and the hazard gate move the searcher. Also, clearance = min(d0, 6) shrinks when the searcher is already within 6 of the fire. So 'about 0..2 rows deep' is typical, not a hard bound. The Manhattan-2 goal radius (:2442-2463) and the straight-front geometry are correct. The claim was marked 'verified' although its fire-tracker part was not checked.",
+     "evidence": "uav_executor.py:2312-2329, 2390-2463; agents.py:2064, 2089; searcher_targeting.py:165-178, 247."
+    },
+    {
+     "id": "A1-5c",
+     "verdict": "confirmed",
+     "correction": "",
+     "evidence": "Fire.step in agents.py: fuel goes down by BURNING_RATE every FIRE_SPREAD_SPEED = 3 steps with fuel 7-10 (common_fixed_variables.py:21-29), so a cell burns about 21-30 steps (inferred, as stated). 0.9^25 = 0.0718. Interior cells keep their mass under predict (k = 0). _check_fire_casualties (wildfire_model.py:5609-5641) kills any victim on an is_burning cell."
+    },
+    {
+     "id": "A1-6a",
+     "verdict": "confirmed",
+     "correction": "",
+     "evidence": "common_fixed_variables.py:214; agents.py:2209-2215 (NaN -> default, no clamp); wildfire_model.py:2726-2734; victim_search_belief.py:96-105, :217. The probe's --set parses '0' with int() (outputs/_sd_probe.py:56). FIX3B_KEYS (outputs/_fb3_probe.py:35-41) only records values."
+    },
+    {
+     "id": "A1-6b",
+     "verdict": "confirmed",
+     "correction": "",
+     "evidence": "tests/test_searcher_targeting.py:462-468. :170-180 and :199-206 pass 0.5 explicitly. :401-422 asserts sum == 1. A grep of tests/ finds the belief only in this file. Documents also cite the value: outputs/fix3b_part1.txt:184-186, :770, 16.2 and 17.2."
+    },
+    {
+     "id": "A1-7a",
+     "verdict": "confirmed",
+     "correction": "",
+     "evidence": "victim_search_belief.py:148-196, 207-211, 217; v1/v_syn.py check 4."
+    },
+    {
+     "id": "A1-7b",
+     "verdict": "confirmed",
+     "correction": "",
+     "evidence": "searcher_targeting.py:185. Predict's support depends only on burning/avail: the flee weights are > 0 because exp of a clipped gain is > 0 and alarm is in (0,1). measure zeroes exactly the covered cells. burn_over with p_bo < 1 never zeroes a cell (victim_search_belief.py:222-224)."
+    },
+    {
+     "id": "A1-7c",
+     "verdict": "confirmed",
+     "correction": "",
+     "evidence": "victim_search_belief.py:229-231; wildfire_model.py:2767-2771, 1461, 4926; rescue_executor.py:568. My v1/v_rec.py gives nunf_match 16/16 in all 10 arms. The unseen, dead runs number 5 / 6 / 2 / 2 / 3 = 18, all with lo_continuation 0, and final dead runs from 0.682342 (fb3bfr A_N) to 1.0."
+    },
+    {
+     "id": "A1-7d",
+     "verdict": "confirmed",
+     "correction": "",
+     "evidence": "v1/v_syn.py check 3: at p_bo 0, p.sum 0 and dead 0; at p_bo > 0, p.sum 0 and dead 1.0. v1/v_rec.py counts rounded-zero samples as fb3vs3r 9, fb3bd 11, fb3bf 12, fb3bd2 23, fb3bf2 14, and 0 in the others, matching exactly. It is correctly labelled inferred."
+    },
+    {
+     "id": "A1-8",
+     "verdict": "confirmed",
+     "correction": "Both corrections are right. The analyst did not review part (ii) of the report text (fix3b_rescreen_report.txt:410-411), which is imprecise. Burn-over removes mass ON burning cells, where no alive victim can be at the post-move check (wildfire_model.py:5609-5641). Its effect on the near-fire zone is indirect: it reduces what predict later moves out of the front cells.",
+     "evidence": "fix3b_rescreen_report.txt:407-417 read against A1-1d, A1-3a and A1-4b."
+    }
+   ],
+   "missing": [
+    "SIMULATOR TRUTH FOR THE OPTIONS (verified). A victim still on an is_burning cell at the post-move check dies with certainty (wildfire_model.py:5609-5641), and the victim's flee step runs in advance() after Fire.advance (agents.py:2385-2393). The belief runs predict, which is the flight, then burn_over on the same post-advance burning set. So the burn-over value that matches the simulator is 1, and p_bo = 0 is the most misspecified end with respect to deaths. The R-3 failures therefore point to spatial misspecification of the motion model combined with negative-information renormalisation, not to p_bo being too large. The rationale at common_fixed_variables.py:211-213 and fix3b_part1.txt:824 holds only before the predict step.",
+    "A VACUOUS CHECK AT p_bo = 0. R-3 passes by construction and no longer detects that the belief has emptied the area around an alive victim. Option (A) needs a replacement diagnostic, for example the p-mass in the true victim's disc relative to its prior share, or the percentile rank of the true cell. The pre-registered 17.2 field 'mass burn-over moved to DEAD' (fix3b_part1.txt:862) becomes identically 0. The sensitivity set (16.2) and the parameter table (:184-186, :770) cite the old values.",
+    "THE MOTION-OFF ABLATION CHANGES MEANING. SEARCHER_BELIEF_MOTION = 0 is identity plus burn-over (fix3b_part1.txt:187; wildfire_model.py:2728-2729, 2765-2766). At p_bo = 0 it becomes the pure identity, blind to the fire, and any ablation comparison must say so.",
+    "THE FIRE-EDGE ATTRACTOR AT p_bo = 0 (inferred, not measured). Interior mass that no searcher can clear is inflated by every renormalisation, so late in the search lambda concentrates at the fire boundary. Targets near the fire edge then end in drop_reached (searcher_targeting.py:247) and a re-issue near the same edge, until the region burns out. This could add oscillation or G-O exposure and should be checked in the re-screen.",
+    "n_unfound LAGS BY ONE STAGE. Victims detected in the pre-move pass (adaptation_manager.py:101) before planning (:114) reach detected_ids only in the post-move update (wildfire_model.py:2767-2771). This is minor and has no DEAD effect.",
+    "SUPPORTING COUNTERFACTUAL (v1/v_syn.py check 2). With measures that do not reach the fire, the off-fire p at p_bo 0.1 and at p_bo 0 agree to 4.3e-19. This confirms that burn-over acts only through mass on burning cells and what flows out of them, and that z = 1 - r does not depend on the DEAD mass."
+   ],
+   "summary": "I checked every cited line in the A1 code analysis myself, on fix3b at 06d83bb8. Repo access was read-only; I ran no simulator, probe, pool or pytest.\n\nScratch files are in C:\\Users\\ahrar\\AppData\\Local\\Temp\\claude\\E--Projects-SAS\\aeac90fa-d510-40d8-a309-ad58f8606230\\scratchpad\\r3wf\\v1\\:\n- v_rec.py: the recorded JSON, loaded through _fb3_analyze.load.\n- v_syn.py: synthetic checks on vsb_copy.py, a scratch copy of the belief module.\n\nVerdicts: 22 confirmed, 2 corrected, 0 refuted. Every recorded number I re-derived matched exactly:\n- alive + dead = 1 in all 10 arms;\n- the drop_swept totals;\n- the rounded-zero counts;\n- n_unfound equals the never-detected count in 16/16 runs of every arm;\n- 18 unseen, dead runs, all with lo_continuation 0.\n\nThe predict retention values also matched.\n\nThe headline holds:\n- No decision reads `dead`.\n- The Bayes choice does not change if p is multiplied by a constant.\n- The report's section-15 claim (i) is wrong.\n\nThe two corrections:\n- A1-1e: p.sum() is not 1 in the case where one measure covers every cell holding mass (z = 0).\n- A1-5b: 'searchers move only over admissible cells' holds only on steered steps, and the clearance shrinks to d0 when the searcher is already within 6 of the fire.\n\nThe main thing the analysis missed, for the options: the simulator kills any victim still on a burning cell after the flee step. So the burn-over value that matches the simulator is 1, and 0 is the most misspecified value with respect to deaths. At 0, R-3 passes trivially and needs a replacement diagnostic. The motion-off ablation also becomes fully fire-blind.\n\nThe analysis also left the report's text (ii) unreviewed, which is imprecise for the same reason.",
+   "quarantine_contact": "None. I did not read, list or traverse E:\\Projects\\SAS\\outputs\\_firemech_rewound_20260914.\n- The recursive greps passed --exclude-dir=_firemech_rewound_20260914 at the search level.\n- Recorded runs were loaded through a non-recursive glob (_fx3r_analyze.py:47).\n- The ls calls on outputs/ were non-recursive globs.\n- I wrote files only under the scratchpad r3wf\\v1 folder."
+  }
+ },
+ {
+  "key": "data",
+  "analysis": {
+   "summary": "TASK A2: recorded data only. Nothing was re-run and nothing under E:\\Projects\\SAS was written. All scripts and outputs are in C:\\Users\\ahrar\\AppData\\Local\\Temp\\claude\\E--Projects-SAS\\aeac90fa-d510-40d8-a309-ad58f8606230\\scratchpad\\r3wf\\a2.\n\nThe R-3 list reproduces exactly: 15 flagged victims and 268 non-flagged sampled victims. Only 10 of the 15 are distinct (seed, victim) pairs, because C_E, C_S and D_S on set 1 and B_N and B_S on set 2 are flagged in both the diffusion and the flee arm. 13 of the 15 are victim_0, which starts on the ring cell (40,25).\n\nWhat the data show:\n(1) The belief does NOT measurably steer targets away from the flagged victims compared with the others. Targets land within 8 cells of the victim at about chance rate in both groups (1.17x vs 1.25x chance over the full window; 2.09x vs 2.25x late).\n(2) What sets the flagged victims apart is motion and position, not targeting:\n- They move about 3x as often (0.119 vs 0.043 moves per window step).\n- Their undetected window is about 6x longer (median 165 vs 27.5 steps).\n- In the high-DEAD period they sit at the map edge: 78.7% of steps within 4 cells of the edge, median edge distance 1.\n- They sit in neighbourhoods the fleet had NOT searched recently (8-cell disc covered in the last 30 steps: 0.17, against 0.47 for the grid).\n- In 49.7% of high-DEAD steps the victim's own cell had been cleared earlier (median 125 steps before), so it moved into searched ground. The figure for non-flagged victims is 0.3%. This is a motion-model miss and is concentrated in C_S/D_S (4 runs at 84-100%). The other 11 sat in cells never covered.\n(3) 9 of the 12 found were found by the targeting strategy itself (TARGETING label at t and t-1, active target 2-9 cells from the victim). The other 3 were found by fire trackers. That 25% fire-tracker share matches the non-flagged baseline (24.6%).\n(4) Compared with the current searcher on the same seed, 11 of 15 were found later (median +128 steps, range +39 to never-vs-49). In all 11 the current searcher found the same victim at the same position, before the two victims' paths diverged. 3 were found earlier, and 1 was never found in either arm.\n(5) G tracks n_unf*alive (Spearman 0.80; log-log Pearson 0.83 diffusion, 0.65 flee). When DEAD > 0.5, the median G falls about 500-fold (0.153 to 0.0003; flee arms 0.151 to 0.0000). In the flee arms half of the DEAD > 0.5 targets (171/348) were issued on G < 5e-6: the planner keeps choosing targets on essentially zero mass, which is what scale invariance implies. The belief's expected number of unfound alive victims at those issues has median 0.035-0.045.\n(6) Association only: runs with a flagged victim have 3x the drop_swept per Bayes-delivered step (0.039 vs 0.012). Strategy steering does not collapse when DEAD is high: the share of searcher steps steered by targeting rises from 82-87% to 86-94%.\n(7) The screen (burn-over 0.5) vs re-screen (0.1) shares above 0.5 per arm are in finding F7.\n\nCode check: the lead is right. measure() divides uncovered p AND dead by the same z<1, and burn_over() never renormalises. Global DEAD growth therefore cannot trigger drop_swept, and the report's section 15 (i) is wrong as worded.",
+   "findings": [
+    {
+     "id": "F0",
+     "finding": "Reproduction and step alignment. The R-3 flagged list reproduces exactly: 15 victims, the same first-above-0.5 steps and the same maxima as the task list. DEAD mass never decreases between samples in any of 160 runs, so after the first sample above 0.5 every later step is above 0.5. n_unfound at sample s equals n_brief minus #{first detection <= s} at every sample, which confirms that rows_vic[s-1] is step s and that stdout detection steps share the probe's step clock. Distinct pairs: 10, since C_E/C_S/D_S (set 1) and B_N/B_S (set 2) are flagged in both arms. 13 of the 15 are victim_0 starting at the ring cell (40,25); the other two are A_N victim_4 (30,11) and D_E victim_2 (10,25) on set 1, plus A_W victim_4 (48,47) on uniform spawn.",
+     "numbers": "Flagged 15; non-flagged 268 (alive and undetected at one or more sampled steps, max DEAD <= 0.5); monotonicity violations 0/160 runs; n_unf mismatches 0/2880 samples.",
+     "method": "a2_main.py section 0. classify() reimplements _fb3_r3_check.py:30-47. Field meanings verified in source: rows_uav and rows_vic fields at _sd_probe.py:219-266 (rows_vic[t] = [vid, x, y, marker status, managed status, ...]); coverage sampled every 10 steps at _fb3_probe.py:135-138; issued rows at searcher_targeting.py:358-360. DEAD can only grow because measure divides it by z<=1 (victim_search_belief.py:208-211), burn_over adds to it (:226), and predict conserves p.",
+     "status": "verified"
+    },
+    {
+     "id": "F1",
+     "finding": "Paths and issued targets. There is no evidence that the belief steers targets away from the flagged victims more than from the others. In both groups issued targets fall within 8 or 16 cells of the victim's true position at about the chance rate for a uniform pool cell. Late in the window both groups rise to about 2x chance. What differs is the victims themselves: flagged victims move far more and stay undetected far longer, and their nearest-searcher distance is the same as for the others.",
+     "numbers": "FLAGGED, full window (496 issues): target-to-victim distance min 1.4, median 24.0; within 8: 0.069 (chance 0.059, 1.17x); within 16: 0.250 (chance 0.228, 1.10x).\nFLAGGED, steps >= first sample above 0.5 (122 issues): median 22.4; within 8: 0.082 (chance 0.039, 2.09x); within 16: 0.279 (1.51x).\nNON-FLAGGED, full window (1984 issues): median 23.9; within 8: 0.103 (chance 0.082, 1.25x); within 16: 0.269 (0.95x).\nNON-FLAGGED, steps >= 70 (119 issues): within 8: 0.160 (chance 0.071, 2.25x); within 16: 0.370 (1.57x).\nActive-target steps within 8: flagged 0.139 (full) / 0.201 (high-DEAD); non-flagged 0.104 / 0.233 (late).\nNearest-searcher distance per window step, median: flagged 20.8, non-flagged 21.2.\nPaths: flagged moves median 21 (range 0-48), net displacement median 7.8; non-flagged moves median 0. Moves per window step 0.119 vs 0.043. Window length median 165 vs 27.5 steps.\nPer victim (issues in window / min / median distance): e.g. bdr A_N v0 19 / 24.8 / 34.1 (none within 16); bdr C_S v0 49 / 5.7 / 21.6; bdr D_S v0 54 / 5.4 / 34.0. Full table in a2_main.txt.",
+     "method": "a2_main.py section 1. Window = steps s with s < first detection and rows_vic status not dead/rescued.\n- Issued distance: Euclidean from row[2] to the victim's rows_vic position at the issue step.\n- Chance: share of the stride-2 pool lattice [4,45]^2 (searcher_targeting.py:195-196, band 4 at agents.py:2086) within 8 or 16 of the victim.\n- Active target: the latest issued target of a uid whose row label at s is 'victim_search_targeting'. This relies on delivery happening only while a target is held (searcher_targeting.py:352-380), so it is a proxy.",
+     "status": "verified (computation); active-target attribution inferred"
+    },
+    {
+     "id": "F2",
+     "finding": "Coverage around the flagged victims. They are NOT in a gap the fleet had just searched around: their 8-cell neighbourhood was covered recently far less than the grid as a whole. They sit at the map edge. In half of the high-DEAD steps the victim's own cell had been covered by a UAV disc earlier, on average about 125 steps before, so the victim moved into ground the belief had already cleared. That is a motion-model miss (slow refill under diffusion/flee). It is concentrated in four runs (bdr C_S 0.84, bdr D_S 1.00, bfr C_S 1.00, bfr D_S 1.00 of steps). The other 11 flagged victims sat in cells never covered (own-cell-previously-covered 0.00), mostly in under-covered edge neighbourhoods. Non-flagged victims are almost never in previously covered cells. A fire-proximity proxy shows no difference, and the fire-distance upper bound from mf2 is uninformative.",
+     "numbers": "FLAGGED, steps >= first above 0.5 (862 victim-steps):\n- covered share of the 8-cell disc in the previous 10 steps: 0.090 (grid 0.340); previous 30 steps: 0.172 (grid 0.466)\n- 16-cell disc, previous 30 steps: 0.349\n- ever covered: 8-cell disc 0.498 vs grid 0.864\n- own cell covered earlier: 0.497 of steps, age median 125 steps\n- edge distance median 1; within 4 of the edge: 0.787\nNON-FLAGGED, steps >= 70 (1449 victim-steps): 8-cell disc previous 30 steps 0.116 (grid 0.366); ever 0.168 vs grid 0.565; own cell covered earlier 0.003; within 4 of the edge: 0.334.\nFLAGGED full window: own cell covered earlier 0.220; within 4 of the edge 0.552. NON-FLAGGED full window: 0.001; 0.275.\nDistance to the nearest airborne fire tracker, median: flagged 26.0 (late 26.4), non-flagged 25.6 (late 24.2).",
+     "method": "a2_main.py section 2 and a2_extra.py X4. Cover stack = union of Euclidean-8 disc_mask over every UAV in rows_uav at the end of each step (the belief's own footprint; disc helpers at victim_search_belief.py:34-53). 'Previous W' = steps s-W to s-1. Own-cell age = s minus the last earlier cover step. Fire proximity: burning cells are not recorded. The mf2 fire_dist bound (_mf2_probe.py:10-15,196-198) gives only an upper bound (median 31-33, uninformative). The fire-tracker distance is a weak proxy.",
+     "status": "verified (computation); interpretation as motion-model miss inferred"
+    },
+    {
+     "id": "F3",
+     "finding": "How the 12 found flagged victims were detected.\n- 9 were found by a victim_searcher labelled 'victim_search_targeting' at both t and t-1, i.e. by the strategy itself, not a hand-back. Each detecting searcher's active target was 2.0-9.0 cells from the victim at detection, so the strategy went there deliberately.\n- 3 were found by fire trackers on PLAN labels: bdr A_N v0 and v4 (UAV 2501) and bdr C_E v0 (UAV 2502).\n- The baseline is the same mix.\nSeveral of the strategy finds came from targets issued on almost no mass: bdr D_S v0 was found on a target issued at step 269 with G=0.00023 at DEAD 1.000; bdr2 B_N at G 0.027 (DEAD 0.899); bdr2 B_S at G 0.032 (DEAD 0.912).",
+     "numbers": "Flagged: (fire_tracker, PLAN, PLAN) 3; (victim_searcher, TARGETING, TARGETING) 9 [the 10th, bfr C_S, is also TARGETING; 3+10 = 13 rows incl. bdr C_S/D_E]. Detection distance at t 7.2-8.0, at t-1 8.1-9.1 (post-move detections).\nNon-flagged detected at step >= 10: 252 detections; fire_tracker 62 (24.6%); searcher TARGETING/TARGETING 177, ROUTE/ROUTE 9, TARGETING/ROUTE 3, TARGETING/YIELD 1.\nAll re-screen detections: fire_tracker 94, searcher TARGETING 197, searcher ROUTE 11.",
+     "method": "a2_main.py section 3 and a2_detect_target.py. The detecting UAV is parsed from the stdout line '[Victim Detection] step=t UAV-<id> detected <vid>' (printed at wildfire_model.py:1461-1464). The detection pass runs both pre-move and post-move (adaptation_manager.py:101,171). Role and label are taken from rows_uav[t-1] and rows_uav[t-2]; labels are mapped with _fb3_analyze.mech plus the TARGETING label.",
+     "status": "verified. Note: the numbers line contains an arithmetic slip. The counter output reports 10 flagged victims as (victim_searcher, TARGETING, TARGETING), not 9 (bdr C_S, bdr D_E, bdr D_S, bfr C_S, bfr D_S, bdr2 B_N, bdr2 B_S, bfr2 B_N, bfr2 B_S, vs3r A_W). The correct split of the 13 detected is 10 by targeting searchers and 3 by fire trackers. bdr C_E and bfr C_E: bdr C_E was detected at 127 by fire tracker 2502 and died; bfr C_E and bdr D_N were never detected. So 13 detections in all, of which 12 were found while alive and later rescued or died: 10 targeting plus 3 fire-tracker. Where the finding text says 9 of 12, read it as 10 of 13 (the 13 includes C_E bdr, which died after detection)."
+    },
+    {
+     "id": "F4",
+     "finding": "Detection delay against the paired current-searcher run on the same seed. Every pair has identical victim positions at step 1 (and identical spawn on the uniform-spawn set). 11 of 15 flagged victims were found later in the Bayes arm. In all 11, the current searcher found the same victim BEFORE the two victims' paths first diverged, i.e. at the same position. 3 were found earlier in the Bayes arm and 1 was never found in either arm. Victim_0 is reached later in set 1 only.",
+     "numbers": "(arm vs ref first detection; delta):\n- bdr A_N v0 179 vs 55 (+124); bdr A_N v4 192 vs 92 (+100); bdr D_E v2 92 vs 53 (+39); bdr D_N v0 never vs 49; bdr D_S v0 270 vs 98 (+172)\n- bfr D_S 157 vs 98 (+59)\n- bdr2 B_N 193 vs 51 (+142); bdr2 B_S 156 vs 28 (+128); bfr2 B_N 251 vs 51 (+200); bfr2 B_S 166 vs 28 (+138)\n- vs3r A_W v4 158 vs 39 (+119)\n- Median of the 10 finite positive deltas: 125.5 (124 and 128 straddle the middle).\n- Earlier in the Bayes arm: bdr C_E 127 vs never (died in both); bdr C_S 241 vs 337; bfr C_S 238 vs 337.\n- Never in both: bfr C_E.\nPaths first diverge at steps 54-165, always after the ref detection in the 11 later cases.\nFirst step a searcher comes within 8 of (40,25), median over 16 seeds: set 1 fx3mS 55, fb3bdr 87.5, fb3bfr 93; set 2 fx3mS2 55.5, fb3bdr2 52, fb3bfr2 52.5.\nVictim_0 first detection, median: fx3mS 55, fb3bdr 98, fb3bfr 55.5, fx3mS2 52, fb3bdr2 50, fb3bfr2 51.",
+     "method": "a2_main.py section 4 and a2_extra.py X3. Pairs: fx3mS for fb3bdr/fb3bfr, fx3mS2 for the set-2 arms, fb3vs0 for fb3vs3r. Victim positions compared on rows_vic[0], plus fb3.spawn where both have it. Divergence = first s where the victim's rows_vic position differs. 'Never' counted as 361.",
+     "status": "verified"
+    },
+    {
+     "id": "F5",
+     "finding": "Scale of the belief and G. G tracks n_unf*alive_mass, which fits a scale-invariant choice. When DEAD > 0.5 the absolute gains collapse, yet targets are still issued, because the only requirement is s>0 (searcher_targeting.py:293-295). In the flee arms half of the DEAD > 0.5 targets were issued on G < 5e-6. The share of the remaining alive mass that a chosen path captures, G/(n_unf*alive), also falls with DEAD in the flee arms but not in the diffusion arms. At DEAD > 0.5 issues the belief's expected unfound-alive count n_unf*alive has median 0.035 (diffusion) and 0.045 (flee). The logged S is Sp, the disc mass of p at the target, not the lambda-based S.",
+     "numbers": "Diffusion (bdr+bdr2), 816 issues: Pearson(G, n_unf*alive) 0.727, Spearman 0.853, log-log Pearson on G>0 0.829.\n- DEAD <= 0.5: G median 0.1551 (max 0.6818), fraction median 0.085.\n- DEAD > 0.5: G median 0.0012 (max 0.1864), fraction 0.071.\n- G < 5e-6: 7/476 at DEAD <= 0.5, 66/340 at DEAD > 0.5.\nFlee (bfr+bfr2+vs3r), 1206 issues: Pearson 0.604, Spearman 0.769, log-log 0.649.\n- DEAD <= 0.5: G median 0.1509 (max 0.9047), fraction 0.084.\n- DEAD > 0.5: G median 0.0000 (max 0.3233), fraction 0.001.\n- G < 5e-6: 35/858 at DEAD <= 0.5, 171/348 at DEAD > 0.5.\nPooled, by DEAD bin (G median): [0,.1) 0.171; [.1,.25) 0.114; [.25,.5) 0.044; [.5,.75) 0.020; [.75,1] 0.0001.\nLogged S (Sp at issue) median: 0.0757 at DEAD <= 0.5, 0.0002 at DEAD > 0.5.",
+     "method": "a2_more.py section 5 and a2_extra.py X1.\n- n_unf at issue step s = n_brief - #{detection <= s-1}, because detected_ids updates post-move (wildfire_model.py:2770-2774) and planning runs pre-move.\n- alive_mass and DEAD come from the nearest 10-step sample.\n- Issued rows: G = lambda_cond mass over the dilated path (searcher_targeting.py:309-311, logged round(G,5) at :359). Logged S = Sp[target] (:317, :360).\n- Caveats: lambda_cond excludes claimed areas, so G understates the uncoordinated gain. A nearest sample after a detection can show n_unf 0 (e.g. bfr C_S at 240).",
+     "status": "verified (computation); proportionality interpretation inferred"
+    },
+    {
+     "id": "F6",
+     "finding": "Association only, not causal. Runs with a flagged victim show:\n- more drop_swept, both in total and per Bayes-delivered step;\n- more selections, giveups and fallback steps;\n- fewer LO-continuation steps, because they stay longer in Bayes mode, which confounds the comparison.\nStrategy steering does not collapse at high DEAD: while an undetected victim remains, the share of airborne searcher steps steered by targeting is higher when DEAD > 0.5. The issue rate per searcher-step is lower, except in vs3r. Code check on the swept rule (the lead's correction is right): measure() divides uncovered p and dead by the same z<1, which RAISES Sp at an uncovered held target. burn_over() moves mass only on burning cells and never renormalises. predict() conserves mass. A held target's Sp therefore falls only through local loss (coverage of its disc, burn-over on burning cells inside it, motion outflow), never through global DEAD growth. The report's section 15 (i) is wrong as worded. The higher drop_swept rate in flagged runs fits local depletion of a thin residual, but the recorded data cannot separate the channels.",
+     "numbers": "Per run, WITH (14 runs) vs WITHOUT (66 runs) a flagged victim:\n- drop_swept mean 14.93 vs 4.89 (median 16.5 vs 0)\n- drop_swept per Bayes-delivered step 0.039 vs 0.012 (median 0.044 vs 0)\n- drop_swept/selections 0.264 vs 0.092\n- selections 52.9 vs 40.4; giveup_unreachable 5.57 vs 3.30\n- fallback_entries 7.71 vs 5.32; fallback_steps 67.0 vs 41.7\n- lo_continuation_steps 177 vs 349; Bayes-delivered steps median 294 vs 91.5\nSteered share, DEAD <= 0.5 vs > 0.5: bdr 82.3% vs 86.2%; bfr 83.3% vs 90.4%; bdr2 86.6% vs 92.7%; bfr2 86.2% vs 93.7%; vs3r 83.4% vs 89.7%.\nIssues per searcher-step: bdr 0.126 vs 0.081; bfr 0.113 vs 0.089; bdr2 0.135 vs 0.081; bfr2 0.128 vs 0.058; vs3r 0.111 vs 0.126.",
+     "method": "a2_more.py section 6 and a2_extra.py X2. Counters are fb3.stats summed over searchers. Bayes-delivered = delivered_steps - lo_continuation_steps (searcher_targeting.py:380-382). Time split by DEAD at s from the monotone samples; ambiguous steps between samples are excluded. Code: victim_search_belief.py:139-196 (predict), 207-211 (measure), 215-226 (burn_over); swept rule at searcher_targeting.py:253; Sp at :191.",
+     "status": "counters verified; association only; code claim verified by reading"
+    },
+    {
+     "id": "F7",
+     "finding": "Screen (burn-over 0.5) vs re-screen (0.1), DEAD share over sampled alive and undetected victim-steps. Lowering burn-over reduced the share above 0.5 in the flee arms. In the diffusion arms it fell on set 1's run DEAD@100 but the share above 0.5 ROSE on set 1 (0.166 to 0.210) and rose slightly on set 2 (0.063 to 0.077). The runs differ in path (R-1), so this is not like-for-like.",
+     "numbers": "(victim-steps n: max, median, share > 0.5, victims above 0.5; run DEAD@100 / DEAD@360 median)\nScreen, 0.5:\n- fb3bd 289: 0.9995, 0.1156, 0.166, 10/59; 0.640 / 0.991\n- fb3bf 309: 0.8105, 0.0143, 0.107, 2/59; 0.137 / 0.920\n- fb3bd2 221: 0.9383, 0.0471, 0.063, 4/59; 0.695 / 0.984\n- fb3bf2 219: 0.4878, 0.0037, 0.000, 0/59; 0.083 / 0.895\n- fb3vs3 259: 0.8346, 0.0137, 0.073, 2/48; 0.184 / 0.943\nRe-screen, 0.1:\n- fb3bdr 290: 0.9978, 0.0863, 0.210, 7/59; 0.611 / 0.989\n- fb3bfr 286: 0.6744, 0.0056, 0.038, 3/59; 0.104 / 0.748\n- fb3bdr2 222: 0.9121, 0.0183, 0.077, 2/59; 0.454 / 0.971\n- fb3bfr2 226: 0.8664, 0.0014, 0.013, 2/59; 0.064 / 0.693\n- fb3vs3r 204: 0.5088, 0.0017, 0.005, 1/47; 0.130 / 0.870",
+     "method": "a2_more.py section 7: classify() points per arm, plus the per-run DEAD sample at steps 100 and 360. The burn-over value is read from fb3.switches.SEARCHER_BELIEF_BURNOVER of each arm. The samples are every 10 steps, so maxima are lower bounds.",
+     "status": "verified"
+    },
+    {
+     "id": "F8",
+     "finding": "Limits of these data. There is no offline belief replay, because burning cells are not recorded. For the 11 flagged victims sitting in never-covered cells, the recorded data cannot say whether the belief's LOCAL mass there was low (burn-over or flee outflow) or merely small in absolute terms after global normalisation. DEAD share is a global scalar shared by every undetected victim, so it does not show where alive mass sits. The every-10-step sampling makes every maximum a lower bound. Victims detected before step 10 are absent from the comparison sets.",
+     "numbers": "Sampled victims per ring arm: 59 of 64; uniform spawn: 47-48. The fire-distance upper bound is uninformative (flagged median 31-33).",
+     "method": "Read from _fb3_probe.py:120-141 (sampling) and the mf2 fields (_mf2_probe.py:8-22).",
+     "status": "verified"
+    }
+   ],
+   "scripts": [
+    "C:\\Users\\ahrar\\AppData\\Local\\Temp\\claude\\E--Projects-SAS\\aeac90fa-d510-40d8-a309-ad58f8606230\\scratchpad\\r3wf\\a2\\common.py",
+    "C:\\Users\\ahrar\\AppData\\Local\\Temp\\claude\\E--Projects-SAS\\aeac90fa-d510-40d8-a309-ad58f8606230\\scratchpad\\r3wf\\a2\\a2_main.py",
+    "C:\\Users\\ahrar\\AppData\\Local\\Temp\\claude\\E--Projects-SAS\\aeac90fa-d510-40d8-a309-ad58f8606230\\scratchpad\\r3wf\\a2\\a2_main.txt",
+    "C:\\Users\\ahrar\\AppData\\Local\\Temp\\claude\\E--Projects-SAS\\aeac90fa-d510-40d8-a309-ad58f8606230\\scratchpad\\r3wf\\a2\\a2_more.py",
+    "C:\\Users\\ahrar\\AppData\\Local\\Temp\\claude\\E--Projects-SAS\\aeac90fa-d510-40d8-a309-ad58f8606230\\scratchpad\\r3wf\\a2\\a2_more.txt",
+    "C:\\Users\\ahrar\\AppData\\Local\\Temp\\claude\\E--Projects-SAS\\aeac90fa-d510-40d8-a309-ad58f8606230\\scratchpad\\r3wf\\a2\\a2_extra.py",
+    "C:\\Users\\ahrar\\AppData\\Local\\Temp\\claude\\E--Projects-SAS\\aeac90fa-d510-40d8-a309-ad58f8606230\\scratchpad\\r3wf\\a2\\a2_extra.txt",
+    "C:\\Users\\ahrar\\AppData\\Local\\Temp\\claude\\E--Projects-SAS\\aeac90fa-d510-40d8-a309-ad58f8606230\\scratchpad\\r3wf\\a2\\a2_detect_target.py",
+    "C:\\Users\\ahrar\\AppData\\Local\\Temp\\claude\\E--Projects-SAS\\aeac90fa-d510-40d8-a309-ad58f8606230\\scratchpad\\r3wf\\a2\\a2_detect_target.txt",
+    "C:\\Users\\ahrar\\AppData\\Local\\Temp\\claude\\E--Projects-SAS\\aeac90fa-d510-40d8-a309-ad58f8606230\\scratchpad\\r3wf\\a2\\explore.py"
+   ],
+   "quarantine_contact": "None. Nothing under E:\\Projects\\SAS\\outputs\\_firemech_rewound_20260914 was read, listed or traversed. The only searches were non-recursive: named files, _fb3_analyze/_fx3r_analyze load(), which globs outputs/_sd_<tag>_*.json in the top-level outputs directory only, a plain grep over outputs/*.py, and one recursive grep over the repo with --exclude-dir=_firemech_rewound_20260914 --exclude-dir=outputs --exclude-dir=.venv."
+  },
+  "verification": {
+   "verdicts": [
+    {
+     "id": "F0",
+     "verdict": "corrected",
+     "correction": "Every number reproduces except one count. 12 of the 15 flagged entries are victim_0 at the ring cell (40,25), not 13. The finding itself goes on to list three others: bdr A_N victim_4 (30,11), bdr D_E victim_2 (10,25) and vs3r A_W victim_4 (48,47). Among the 10 distinct (seed, victim) pairs, 7 are victim_0.\n\nThe step-alignment conclusion stands, but the n_unf test only shows that the detection steps and the sample steps share one clock. The fact that rows_vic[t] is step t+1 comes from the probe source: rows are appended after model.step() and step += 1, at _sd_probe.py:201-203 and :234/:266.",
+     "evidence": "verify_data/v_main.py F0 section, output in v_main.txt:\n- flagged 15 (bdr 7, bfr 3, bdr2 2, bfr2 2, vs3r 1); non-flagged 268; distinct pairs 10\n- DEAD monotonicity violations 0 in every arm\n- n_unf == n_brief - #{det <= s} has 0 mismatches over 2880 samples; with det < s there are 33 mismatches. This confirms the '<=' clock.\n- All 15 first-above-0.5 steps and all 15 maxima match the task list exactly.\n\nSpawn counts from rows_vic[0]: victim_0 at (40,25) appears 12 times; the others are A_N v4 (30,11), D_E v2 (10,25) and A_W v4 (48,47).\n\nCode (verified):\n- the step counter is incremented at the start of the step (wildfire_model.py:6235) and is the one printed in the detection line (:1461-1464);\n- coverage is sampled when step%10==0 (_fb3_probe.py:135-138);\n- rows_vic fields are [vid, x, y, marker status, managed status, ff_id, ...] (_sd_probe.py:259-265)."
+    },
+    {
+     "id": "F1",
+     "verdict": "corrected",
+     "correction": "All the numbers reproduce exactly. The conclusion is stronger than the data allow.\n\nThe raw within-8 rate in the high-DEAD period is about half for the flagged victims: 0.082 (10 of 122 issues) against 0.160 (19 of 119) for non-flagged steps >= 70. The ratio comes out near chance only because the chance baseline is itself halved. The pool lattice excludes the 4-cell edge band (searcher_targeting.py:195-196, x and y in 4..44 at stride 2), and the flagged victims sit at edge distance median 1. So the chance normalisation hides a structural fact: edge-hugging victims cannot be the centre of a target.\n\nThe two groups also use different windows: steps >= the first sample above 0.5 for flagged, steps >= 70 for non-flagged. Only 10 distinct pairs and 10 to 19 within-8 issues are involved, and the arms share seeds, so they are not independent.\n\nWhat the data support is 'no detectable difference in chance-normalised targeting', not 'the belief does NOT steer away'.",
+     "evidence": "v_main.txt F1 (target position Euclidean to the rows_vic[s-1] position at the issue step; chance = share of the POOL lattice within 8/16 of the victim, averaged per issue):\n- FLAGGED full: n=496, min 1.4, median 24.0, within 8 0.069 (chance 0.059, 1.17x), within 16 0.250 (0.228, 1.10x)\n- FLAGGED >= first: n=122, 22.4, within 8 0.082 (0.039, 2.09x), within 16 0.279 (1.51x)\n- NONFL full: n=1984, 23.9, within 8 0.103 (0.082, 1.25x), within 16 0.269 (0.95x)\n- NONFL >= 70: n=119, within 8 0.160 (0.071, 2.25x), within 16 0.370 (1.57x)\n\nMotion: flagged moves median 21, 0.119 moves per window step, window median 165; non-flagged 0, 0.043, 27.5.\n\nv_extra.txt:\n- nearest searcher distance median 20.8 vs 21.2;\n- active target within 8: flagged 0.139 (full) and 0.201 (late), non-flagged 0.104 and 0.233. All match."
+    },
+    {
+     "id": "F2",
+     "verdict": "corrected",
+     "correction": "The numbers reproduce exactly. Two parts of the interpretation are wrong.\n\n(a) 'Neighbourhoods the fleet had NOT searched recently' does NOT set the flagged victims apart. Non-flagged victims late (steps >= 70) have an even lower recent-cover share of their 8-disc: 0.116 against grid 0.366, a ratio of 0.32, versus 0.172/0.466 (0.37) for flagged. That is expected for any undetected victim, since a UAV within 8 would have detected it. On ever-covered, the flagged neighbourhoods were searched relatively MORE: 0.498/0.864 against 0.168/0.565.\n\n(b) The headline 0.497 'own cell covered earlier' is weighted by steps. It comes from 4 victim-runs on 2 distinct seeds (set-1 C_S and D_S, each in both arms): 456 of the 862 high-DEAD steps. Per victim it is 4/15 runs (2/10 distinct pairs). The other 11 have own-cell-covered 0.000.\n\nCalling it a 'motion-model miss from slow refill' is inferred. The flagged victims' true move rate (0.119 per step) is close to the diffusion q=0.1, so the miss is more likely directional (drift to the edge) than slow in rate. The flee model's calm rate q_calm=0.02 is slower.",
+     "evidence": "v_main.txt F2 (cover stack = union of Euclidean-8 discs of every rows_uav position at the end of each step; 'previous W' = steps s-W..s-1):\n- FL >= first: n=862; 8-disc previous 10 steps 0.090 (grid 0.340); previous 30 0.172 (grid 0.466); ever 0.498 (grid 0.864); own 0.497, age median 125; edge median 1; within 4 of the edge 0.787\n- NF >= 70: n=1449; previous 30 0.116 (grid 0.366); ever 0.168 (grid 0.565); own 0.003; within 4 of the edge 0.334\n- FL full: own 0.220, edge 0.552. NF full: own 0.001, edge 0.275.\n\nPer victim, own-covered share: bdr C_S 0.836 (n 171), bdr D_S 1.000 (190), bfr C_S 1.000 (58), bfr D_S 1.000 (37); the other 11 are 0.000.\n\nMotion rates: belief diffusion q in MotionParams (victim_search_belief.py:99,159-162); flee q_calm (:104,170)."
+    },
+    {
+     "id": "F3",
+     "verdict": "corrected",
+     "correction": "13 flagged victims were detected; bdr D_N and bfr C_E never were.\n- 10 were detected by a victim_searcher labelled TARGETING at both t and t-1: bdr C_S, D_E, D_S; bfr C_S, D_S; bdr2 B_N, B_S; bfr2 B_N, B_S; vs3r A_W.\n- 3 were detected by fire trackers on PLAN labels: bdr A_N v0 and v4 (UAV 2501), and bdr C_E v0 (UAV 2502; this victim later died).\n\n12 were rescued. The summary's '9 of the 12 found' and the 25% fire-tracker share are wrong: the share is 3/13 = 23.1%, which is still close to the non-flagged 62/252 = 24.6%.\n\nThe detection distance at t-1 is 8.1-8.5 when measured to the victim's detection position, not 8.1-9.1 (a minor difference). All detections are post-move.\n\n'The strategy went there deliberately' is inferred. Three of the targets that led to a detection were issued 49-62 steps earlier with L of 51-54 (D_E issued at 43, bfr D_S at 97, bfr2 B_N at 189), so those detections came at the end of long paths.",
+     "evidence": "v_main.txt F3. The detecting UAV is parsed from the stdout line '[Victim Detection] step=t UAV-<id> detected <vid> at (x, y)' (wildfire_model.py:1461-1464). Role and label come from rows_uav[t-1] and rows_uav[t-2], mapped with A.mech.\n\nFLAGGED counts: (fire_tracker, PLAN, PLAN) 3; (victim_searcher, TARGETING, TARGETING) 10.\nNon-flagged detections at t >= 10: 252 in all; fire_tracker 62; TARGETING/TARGETING 177; ROUTE/ROUTE 9; TARGETING/ROUTE 3; TARGETING/YIELD 1. This matches the analysis.\n\nDistance from the last issued target to the victim at detection: 5.7, 4.1, 7.3, 2.0, 5.4, 3.2, 5.0, 5.1, 9.0, 8.1.\nIssues confirmed: D_S at step 269 G=0.00023; bdr2 B_N at 192 G=0.02737; B_S at 152 G=0.03233."
+    },
+    {
+     "id": "F4",
+     "verdict": "corrected",
+     "correction": "Every pair and delta reproduces. One arithmetic slip: the median of the 10 finite positive deltas [39,59,100,119,124,128,138,142,172,200] is (124+128)/2 = 126.0, not 125.5. The summary's '+128' is the median of 11 values that count D_N 'never' as 361 (a delta of 312). The text should say which convention it uses.\n\n'Found before the paths diverged' is close to a tautology. A detection in the reference changes that victim's handling (confirmation, then rescue), so divergence after the reference detection is expected. The informative fact is narrower: when the reference detected the victim, the Bayes arm's copy of it was at the same cell and no Bayes-arm UAV came within 8.\n\n'Victim_0 reached later in set 1 only' holds for searchers, with medians of 87.5 and 93 steps against 55. But victim_0's median first detection in fb3bfr is 55.5 (any-UAV median 56.5, because fire trackers find it), so the delay shows up only in fb3bdr (98).",
+     "evidence": "v_main.txt F4. Pairs: fx3mS / fx3mS2 / fb3vs0 by the same seed key. rows_vic[0] is identical for all 15. Divergence = first s where the victim's rows_vic position differs.\n- Deltas: A_N v0 +124 (div 66), A_N v4 +100 (112), D_E +39 (85), D_N never vs 49 (no divergence), D_S +172 (165), bfr D_S +59 (165), bdr2 B_N +142 (54), B_S +128 (82), bfr2 B_N +200 (54), B_S +138 (82), vs3r A_W +119 (105).\n- Earlier in the Bayes arm: bdr C_E 127 vs never; C_S 241 vs 337; bfr C_S 238 vs 337. Never in either: bfr C_E.\n\nv_extra.txt X3, median over 16 seeds of the first step a victim_searcher comes within 8 of (40,25): fx3mS 55, fb3bdr 87.5, fb3bfr 93, fx3mS2 55.5, fb3bdr2 52, fb3bfr2 52.5. For any UAV: 54.5 / 62 / 56.5 / 55.5 / 52 / 52.5. Victim_0 first detection median: 55 / 98 / 55.5 / 52 / 50 / 51."
+    },
+    {
+     "id": "F5",
+     "verdict": "confirmed",
+     "correction": "The numbers reproduce. Two small caveats:\n- The 'nearest sample' can come from up to 5 steps after the issue, while the planner at step s sees the belief as of step s-1. Using the last sample at or before s-1 changes the counts slightly (diffusion 442/325; flee 798/335, of which 168 have G<5e-6) and leaves the conclusion intact.\n- 'Scale invariance' is verified in code: the score is g/max(L,L0), and the only mass requirement is s>0.",
+     "evidence": "v_main.txt F5 (nearest rule):\n- diffusion: DEAD<=.5 n 476, median 0.1551, 7 below 5e-6; DEAD>.5 n 340, median 0.0012, 66 below\n- flee: 858, 0.1509, 35; 348, 0.0000, 171\n\nv_extra.txt correlations:\n- diffusion: Pearson 0.727, Spearman 0.853, log-log 0.829\n- flee: 0.604, 0.769, 0.649\n- pooled G median 0.1531 -> 0.0003\n\nv_f5b.txt: expected unfound alive median 0.0349 (diffusion) and 0.0445 (flee); G/(n_unf*alive) median 0.085/0.071 (diffusion) and 0.084/0.001 (flee).\n\nCode: searcher_targeting.py:293-295 (s<=0 skip), :299 and :311 (score g/max(L,L0)), :310 (g = lam_cond[mask].sum()), :317 (S = Sp[target]), :358-360 (logged)."
+    },
+    {
+     "id": "F6",
+     "verdict": "confirmed",
+     "correction": "The counters, steered shares and issue rates reproduce exactly. The code claim is correct.\n\nmeasure() multiplies covered cells by (1-pd), then divides both p and dead by z = p.sum()+dead <= 1. This raises Sp at any uncovered held target. burn_over() moves mass from p to dead only on burning cells and does not renormalise (the total stays 1). predict() conserves mass. So Sp at a held target falls only through cover inside its disc, burn-over on burning cells inside its disc, or motion outflow, which includes the flee drift and burning cells that block inflow. Global DEAD growth cannot trigger drop_swept, and report section 15 (i) is wrong as worded.\n\nThe with/without comparison is confounded, as the analysis already says.",
+     "evidence": "v_main.txt F6:\n- WITH 14 runs: drop_swept mean 14.93, median 16.5; per Bayes-delivered step 0.039; Bayes-delivered median 294; selections 52.9\n- WITHOUT 66 runs: 4.89, 0, 0.012, 91.5, 40.4\n\nv_extra.txt, steered share lo/hi: bdr 0.823/0.862, bfr 0.833/0.904, bdr2 0.866/0.927, bfr2 0.862/0.937, vs3r 0.834/0.897. Issues per searcher-step: 0.126/0.081, 0.113/0.089, 0.135/0.081, 0.128/0.058, 0.111/0.126.\n\nCode:\n- victim_search_belief.py:207-211 (measure normalisation), :215-226 (burn_over, no renormalisation, early return at p_bo<=0), :188-196 (predict conserves mass), :155 (burning neighbours unavailable)\n- searcher_targeting.py:191 (Sp = disc_convolve(p)), :253 (swept rule), :354 (s_issue = Sp at issue)\n- wildfire_model.py:2758-2775 (order: predict, then measure, then burn_over, then detected_ids)."
+    },
+    {
+     "id": "F7",
+     "verdict": "corrected",
+     "correction": "Every per-arm number reproduces. 'Lowering burn-over reduced the share above 0.5 in the flee arms' is false for set 2: fb3bf2 to fb3bfr2 the share rose from 0.000 to 0.013 and the victims above 0.5 from 0/59 to 2/59. The flee arms fell only on set 1 (0.107 to 0.038) and on uniform spawn (0.073 to 0.005). By victim count the flee arms rose overall, 4 to 6, as report section 15 already says. Pooled over flee victim-steps the share fell, from about 52/787 to about 15/716.\n\nIn the diffusion arms the victim counts fell (10 to 7 on set 1, 4 to 2 on set 2) while the step share rose on both sets.",
+     "evidence": "v_main.txt F7 (classify points per arm; DEAD@100 and DEAD@360 run medians; burn-over value from fb3.switches):\n- fb3bd 0.5: share 0.166, 10/59\n- fb3bf: 0.107, 2/59\n- fb3bd2: 0.063, 4/59\n- fb3bf2: 0.000, 0/59\n- fb3vs3: 0.073, 2/48\n- fb3bdr 0.1: 0.210, 7/59\n- fb3bfr: 0.038, 3/59\n- fb3bdr2: 0.077, 2/59\n- fb3bfr2: 0.013, 2/59\n- fb3vs3r: 0.005, 1/47\nThe maxima, medians and DEAD@100/@360 all match the analysis."
+    },
+    {
+     "id": "F8",
+     "verdict": "confirmed",
+     "correction": "Correct as a list of limits. I would add three:\n- The 15 flagged entries are 10 distinct pairs, and the arms share seeds, so no inferential statistic applies.\n- The step-weighted aggregates are dominated by bdr C_S and bdr D_S: 361 of the 862 high-DEAD steps.\n- The planner sees the belief as of step s-1, while some analyses use the nearest sample, which can be later than the issue.",
+     "evidence": "The sampling every 10 steps and at the last step is at _fb3_probe.py:135-138 and 152-155. Sampled victims: 59/64 per ring arm; uniform spawn 48 (screen) and 47 (re-screen), from v_main.txt F7. That DEAD is one scalar shared by all undetected victims follows from victim_search_belief.py:115 and :233-235. The mf2 fire-distance bound was NOT independently checked."
+    },
+    {
+     "id": "SUMMARY",
+     "verdict": "corrected",
+     "correction": "The summary carries these errors from the findings:\n- (F0) 12 of the 15 are victim_0, not 13.\n- (2) 'neighbourhoods not searched recently' is not a differentiator: non-flagged victims are lower still.\n- (2) the 49.7% figure comes from 2 seeds.\n- (3) the count is 10 of 13 detected by targeting and 3 by fire trackers (23%), not 9 of 12 (25%).\n- (4) say which median convention is used: 126 over the 10 finite deltas, 128 with never counted as 361.\n- (7) the flee-arm reduction does not hold on set 2.\n\nThe code verdict, that global DEAD growth cannot trigger drop_swept and section 15 (i) is wrong, is confirmed.",
+     "evidence": "See F0, F2, F3, F4, F6 and F7 above. The scripts are verify_data/v_main.py, v_extra.py and v_f5b.py, with outputs v_main.txt, v_extra.txt and v_f5b.txt."
+    }
+   ],
+   "missing": [
+    "The DEAD share is the posterior P(dead | not yet seen). It grows through the normalisation in measure(), not only through burn-over: dead/z with z<1 (victim_search_belief.py:208-211). At burn-over 0, dead stays exactly 0 for the whole run: initial dead=0.0 (:115), burn_over returns early when p_bo<=0 (:217), and measure only divides 0. R-3 therefore passes by construction at 0, and any p_bo>0 can be amplified past 0.5 by negative information. The analysis never decomposes the two channels or says which one dominates for the 15. Report section 15 states the mechanism only as a hypothesis.",
+    "Edge-band structure. The Bayes candidate pool excludes the 4-cell band (searcher_targeting.py:195-196, band = SEARCHER_EDGE_BAND). Flagged victims sit at edge distance median 1 (78.7% within 4 of the edge), so they can only be covered by discs centred at least 3-4 cells inward. The F1 chance normalisation absorbs this instead of reporting it. It may be part of why edge victims go unfound, and it is relevant to the fix options: a band-aware pool or edge-aware S.",
+    "Motion-rate vs direction. The flagged victims' true move rate is 0.119 per window step, close to the diffusion q=0.1 (victim_search_belief.py:99); the flee model's calm rate is 0.02 (:104). The 'motion-model miss' is therefore more plausibly directional (drift toward the edge) than a slow refill rate. This is inferred.",
+    "Concentration on one spawn. 12 of 15 entries (7 of 10 distinct pairs) are victim_0 at (40,25). In set 1, searchers in the Bayes arms first come within 8 of (40,25) at median 87.5/93 against 55 for the reference, while set 2 is unchanged (52/52.5 against 55.5). The analysis reports this but does not examine why set 1's geometry (depots and launch) makes the Bayes arms deprioritise that cell early. That deprioritisation, more than the DEAD share, is what delays these detections.",
+    "Sample-size and dependence caveat. There are 10 distinct (seed, victim) pairs. The diffusion and flee arms share seeds, so 5 pairs are counted twice. Two seeds (set-1 C_S and D_S) supply 456 of the 862 high-DEAD victim-steps. Every flagged/non-flagged contrast is descriptive only.",
+    "Belief clock vs issue step. The planner at step s uses the belief updated at the end of step s-1 (wildfire_model.py:2736-2775 runs post-move; searcher_targeting.py:128 reads the step counter). Analyses that attach the 'nearest' 10-step sample can use a belief from up to 5 steps after the issue. The effect is not material (F5 counts move by at most 3%), but it should be stated."
+   ],
+   "summary": "I re-implemented the analysis independently and almost every number reproduces exactly: the classification, target distances, coverage, detection attribution, paired delays, G statistics, counters and per-arm figures. Nothing was run except my own read-only scripts on the recorded JSON. Scripts and outputs are in C:\\Users\\ahrar\\AppData\\Local\\Temp\\claude\\E--Projects-SAS\\aeac90fa-d510-40d8-a309-ad58f8606230\\scratchpad\\r3wf\\verify_data: v_main.py, v_extra.py, v_f5b.py and their .txt outputs.\n\nRow-index meanings check out against the source:\n- rows_*[t] is step t+1 (_sd_probe.py:201-203, 234, 266).\n- rows_vic fields are [vid, x, y, marker status, managed status, ...] (:259-265).\n- rows_uav fields are [uid, x, y, role, battery, rtb_active, rtb_docked, berth, action label] (:229-233).\n- Detection and coverage share one clock: 0 mismatches over 2880 samples with det <= s, 33 with det < s.\n\nThe code claim is confirmed. Global DEAD growth cannot trigger drop_swept, so report section 15 (i) is wrong as worded:\n- measure() divides p and dead by the same z <= 1, which raises Sp at an uncovered held target.\n- burn_over() never renormalises.\n- predict() conserves mass.\n\nCorrections:\n- F0: 12 of the 15 are victim_0, not 13.\n- F1: the conclusion is too strong. The raw within-8 rate in the high-DEAD period is half that of the non-flagged victims (0.082 vs 0.160, with 10 vs 19 issues). The near-chance ratio hides that edge victims cannot be target centres, because the pool lattice excludes the 4-cell band.\n- F2: 'not searched recently' does not set the flagged victims apart; non-flagged victims are lower (0.116 vs 0.172). The 49.7% own-cell-covered figure comes from two seeds (456 of 862 steps).\n- F3: 10 of 13 detected victims were found by targeting searchers and 3 by fire trackers (23%), not 9 of 12 (25%).\n- F4: the median of the 10 finite deltas is 126.0, not 125.5. 'Found before divergence' is close to a tautology.\n- F7: the flee-arm reduction is false on set 2. fb3bf2 to fb3bfr2 went from 0.000 to 0.013, and from 0/59 to 2/59 victims.\n\nThe main thing the analysis missed: DEAD share also grows through normalisation, and at burn-over 0 dead stays exactly 0 for the whole run (victim_search_belief.py:115, 217, 208-211). R-3 therefore passes by construction at 0.",
+   "quarantine_contact": "None. I did not read, list or traverse E:\\Projects\\SAS\\outputs\\_firemech_rewound_20260914. I ran no recursive search. Every file access was to a named file. The only globs were the top-level, non-recursive patterns outputs/_sd_<tag>_* used by `ls` and by _fx3r_analyze.load. Every grep or sed was on a named file."
+  }
+ },
+ {
+  "key": "options",
+  "analysis": {
+   "summary": "The R-3 check fails for a structural reason, and changing the burn-over value cannot fix it. I recommend option H: keep 0.1, record the R-3 FAIL as is, and replace the per-victim threshold with pre-registered calibration and belief-at-truth checks. Burn-over = 0 (A) is defensible, but it passes the check by construction. I am leaving the decision to you. I did not run the simulator, any probe, any pool or pytest, and wrote nothing in the repo; my scripts and outputs are in C:\\Users\\ahrar\\AppData\\Local\\Temp\\claude\\E--Projects-SAS\\aeac90fa-d510-40d8-a309-ad58f8606230\\scratchpad\\r3wf.\n\n1. The claim in report section 15 is WRONG (verified; fix3b_rescreen_report.txt:409-411).\n- The claim: \"a global loss of alive mass to DEAD looks like a sweep\".\n- Before measure, p.sum() + dead = 1. predict conserves mass (victim_search_belief.py:188-196) and so does burn_over (:219-226).\n- measure zeroes the covered cells, then divides p AND dead by z = 1 - (covered alive mass) <= 1 (:207-211).\n- So for a held target whose disc is uncovered and not burning, Sp is left alone by burn-over elsewhere and multiplied by 1/z >= 1 by measure. Global DEAD growth only slows Sp's rise; it can never trigger drop_swept (searcher_targeting.py:253).\n- Sp falls only through LOCAL loss inside the target's disc: coverage there, motion out of it, or burn-over on burning cells in it. The last one is the intended \"the fire took its mass\" channel (fix3b_part1.txt:261).\n- Replacement wording: \"(i) burn-over on burning cells inside a held target's disc looks like a sweep (by design); a global rise of DEAD only slows the rise of the target's mass and cannot cause a drop.\"\n\n2. DEAD does not change which target is chosen (verified).\n- Ranking ignores the overall scale of lambda: the checks are s > 0 (:293-295), the pre-rank s/max(L,L0) (:299) and g/max(L,L0) with key (score,-L,cell) (:310-312).\n- The DEAD scalar is read only by the reported summaries: expected_unfound_alive (victim_search_belief.py:237-238) and the 10.5 POS(t) metric.\n- Burn-over affects targeting only through the SHAPE of p near the fire and the local swept channel.\n\n3. The DEAD share is a ratchet (verified).\n- Every stage is linear and normalisation is one common scale, so dead_mass = d_raw/(d_raw + a_raw). d_raw (the raw mass burn-over moved) never shrinks; a_raw (the raw alive mass) never grows. So the DEAD share never decreases.\n- Recorded data agree: 0 decreases in 5 600 sample pairs over all 10 Bayes arms (monotone.py).\n- Because p is shared, the per-victim R-3 check is a RUN-LEVEL CLOCK: every alive victim detected after the run's first D > 0.5 sample fails.\n- p_bo barely moves that clock. Median DEAD at step 100: BD-R 0.611 vs BD at 0.5 0.640; BF-R 0.104 vs 0.137 (dead_traj.py; not like-for-like because of R-1). Mass trapped in fire is 89-96% removed over a 21-30-step burn at any p_bo >= 0.1.\n- The fire burns a median of 929-1348 of 2500 cells per arm, and coverage reaches 0.94-0.98 by step 200. So any p_bo > 0 fails R-3 for victims that stay undetected late.\n\n4. Calibration (POST HOC, descriptive; triples are correlated, 10-15 distinct victims per high bin).\n- BF-R (3 arms): 15 alive victim-steps above 0.5, vs 38.7 that a calibrated DEAD share would produce. Brier 0.0748 vs climatology 0.2122. Calibrated to UNDER-confident.\n- BD-R: 78 vs 31.6, Brier 0.0971 vs 0.2063. OVER-confident.\n- Sources: expected_alive.py, reliab.py. The 15 and 78 match _fb3_r3_check.txt's FAIL-sample counts (11+3+1, 61+17).\n- Late in runs most undetected victims really are dead: at step 200, BF-R pooled has 11 dead vs 2 alive (calib.py).\n- So the misspecification the data show is BD's fire-agnostic motion, which is the designed contrast, not the DEAD state as such.\n\n5. Burn-over = 0 (option A), mechanically.\n- dead stays exactly 0: burn_over returns at :217, and measure keeps dead at 0 (:211). The check passes by construction and detects nothing.\n- Alive mass then persists on burning and burnt cells, where in the simulator any victim would already be dead (wildfire_model.py:5610-5641). How much: roughly the current DEAD share, median 0.92 BD-R / 0.46 BF-R at step 200 (inferred; it cannot be replayed because burning cells are not recorded).\n- The 10.5 POS(t) metric degenerates, because expected_unfound_alive becomes N_unf.\n\n6. Two facts about the code and docs.\n- The 17.2 per-step instrument is not implemented anywhere (grep of src_extension, wildfire_model.py and _fb3_probe.py).\n- Your instruction (HOLD THE MERGE) contradicts lines already in the repo: fix3b_rescreen_report.txt:6-8 and :367, and fix3b_part1.txt:876 (17.6), all of which say \"MERGE ... ruled\" or \"fix3b merged\". Those lines need amending on fix3b.\n\nScratch scripts, all read-only on recorded JSON: explore.py, dead_traj.py (+ .txt), burnt.py, calib.py (+ .txt), reliab.py (+ .txt), expected_alive.py (+ .txt), monotone.py, evalkeys.py.",
+   "recommendation": "Option H. Keep burn-over 0.1 and leave the belief and targeting unchanged (no src change). Record the R-3 FAIL verbatim.\n\nWhat to pre-register for the measurement round (Part 1 section 18, fixed before any run):\n- (1) calibration of the DEAD share against the true fate of undetected victims;\n- (2) belief-at-truth (r_v) and its percentile;\n- (3) the old R-3 count, exact per step, reported but not gating.\n\nHow to implement and re-check:\n- Put the instrument in outputs/_fb3_probe.py. Truth must stay out of the managing system.\n- Re-run the 80 Bayes strategy runs with the extended probe, about 80 min, and REQUIRE value identity with the recorded re-screen.\n- Then the full suite once, about 70 min, then merge.\n- Recording the burning set per step also makes burn-over 0 assessable offline before you ever spend a wave on it.\n\nReasoning:\n- (a) The R-3 quantity is a run-level ratchet, d_raw/(d_raw + a_raw), shared by all victims and never decreasing. That makes it a clock a calibrated forecaster would also fail, not a per-victim error.\n- (b) Target choice does not read it at all: ranking ignores the overall scale.\n- (c) Every belief change that \"passes\" R-3 does so either by construction (A, E, I), so the check detects nothing, or unpredictably while staying a ratchet (C, D, F, K), and each adds a post-screen change.\n- (d) The only misspecification the recorded data show is BD's over-confidence. That is the fire-agnostic reference arm, i.e. the designed motion-awareness contrast.\n\nSecond choice, if you hold R-3 as a design principle (\"the belief must not declare live victims dead\"): option A.\n- Primary 0, with sensitivity {0.1, 0.5}.\n- The full 100-job re-screen (about 1 h 40), then the suite.\n- The same instrument, made mandatory.\n- POS(t) redefined from the mass the negative update removes.\n- The third post-screen value disclosed.\n\nReject C, D, E, F, G, I and K.",
+   "change_my_mind": "Any of these would make me switch from H to A:\n- (1) The offline replay (once burning sets are recorded) shows that burn-over at 0.1 removes belief mass from the discs of alive undetected victims, i.e. r_v near the fire is systematically lower at 0.1 than at 0, while phantom mass at 0 stays small in burnt terrain. Then burn-over is hurting targeting and A is better.\n- (2) BF's DEAD calibration turns over-confident on a second seed set or in the measurement round, like BD's. The screen evidence is n = 16 per arm with 10-15 distinct victims per high bin. A screen is not evidence (the canonical-13 lesson).\n- (3) The swept-cause record shows that drop_swept from burn-over inside the target disc often drops targets whose disc later detects an alive victim.\n- (4) You rule that R-3 is a modelling principle, not a validity test: A with the instrument.\n\nEither of these would make me move away from both H and A:\n- (5) A literature check finds that SAR practice (SAROPS / IAMSAR) treats survival only outside the location map. A then gains citation support.\n- (6) The value-identity re-run fails. The probe is then not record-only, and H's instrument must be redone before anything else.",
+   "replacement_instrument": "Placement: in outputs/_fb3_probe.py's step wrapper (:120-142), after the post-move belief update, EVERY step. It is record-only: no RNG draw and no simulation write.\n- It reads true victim positions, so it lives in the evaluation probe, never in src_extension (the information boundary of 15.1(d)).\n- Belief internals are read through class-level wrappers on VictimSearchBelief.measure and burn_over. Each wrapper reads p before and after and calls the original unchanged.\n\nPer step, record:\n(1) The 17.2 fields: dead_mass, alive_mass, n_unfound, the mass burn-over moved, and the alive mass the negative update removed before renormalising.\n(2) For every victim alive (marker status not dead or rescued) and undetected (step < first [Victim Detection]) at the step:\n- a_v = (sum of p over disc8(x_v)) / p.sum(). This is the alive-conditional mass in the Euclidean-8 disc around the victim's TRUE cell x_v. It does not depend on DEAD, so it is comparable across p_bo values (0, 0.1, 0.5) and across BD / BF.\n- u_v = |disc8(x_v) ∩ H0 support| / |H0 support|.\n- r_v = a_v / u_v (1 = as good as the uniform prior; < 1 = the belief disfavours the victim's area).\n- pct_v = the share of non-band stride-2 candidate cells whose Sp exceeds Sp at x_v. This is where targeting would rank the victim's location.\n(3) The burning and smoke sets (rows_uav already has the UAV cells). This enables an EXACT offline belief replay at any p_bo on the recorded trajectories. Validate it by reproducing the per-step summary to float precision before using it.\n(4) At each drop_swept, the held target's Sp loss split into coverage / motion / burn-over.\n(5) References: the LO arm builds p with measure only, no predict or burn-over (wildfire_model.py:2751-2752, :2765-2766). That gives a motion-free reference r_v. Optionally, a shadow belief for the CUR arm computed in the probe.\n\nPRE-REGISTRATION (Part 1 section 18, before any measurement run; unit = run; bootstrap over runs; per arm and at every p_bo sensitivity point):\n- PRIMARY belief-validity quantities: the median over alive-undetected victim-steps of log r_v, and the share of those steps with r_v < 1. Compared BF vs BD vs the LO reference, descriptive with CIs.\n- DEAD calibration (when DEAD exists): reliability in the fixed bins [0, .25, .5, .75, .9, 1]; Brier vs climatology; observed alive above 0.5 vs the calibrated expectation sum(1 - D). A pre-stated two-sided criterion: over- or under-confidence when the observed count falls outside the 95% run-bootstrap interval of the expectation.\n- The old R-3 count, exact per step, REPORTED, not gating.\n\nUnder option A, items (1)-(2) except the DEAD fields remain fully meaningful; the R-3 count is identically 0 and must be labelled vacuous.\n\nValidation of the instrument itself: in the re-check, the 80 re-run Bayes runs must be value-identical to the recorded re-screen.",
+   "quarantine_contact": "None. I never read, listed or entered outputs/_firemech_rewound_20260914. The one recursive grep passed --exclude-dir=_firemech_rewound_20260914 and was rooted only at src_extension, wildfire_model.py and outputs/_fb3_probe.py. Every other read named a file directly. No glob or listing of outputs/ was done; recorded runs were read only through _fb3_analyze.load(tag).",
+   "options": [
+    {
+     "id": "A",
+     "name": "Burn-over = 0: the belief models location only, not deaths",
+     "what_it_does": "BELIEF (verified in code): with p_bo = 0, burn_over returns at once (victim_search_belief.py:217 'if not burning or p_bo <= 0.0: return'). dead stays at its initial 0.0 (:115), and measure's dead/z (:211) keeps it at 0. measure then rescales p to sum 1 (:208-210). The belief becomes the location posterior of a model in which nobody dies.\nTARGETING (verified): ranking does not depend on the overall scale of lambda. The checks are s > 0 (searcher_targeting.py:293-295), the pre-rank (:299) and the exact score with its key (:310-312). So the DEAD scalar never affected which target is chosen, and removing it changes only the SHAPE of p near the fire:\n(1) Mass on burning cells is no longer removed. predict never moves mass INTO a burning cell (avail = ~burn, :149-156). Diffusion drains a burning cell by only q = 0.1 per step when it has a non-burning neighbour (:159-162). A cell whose neighbours all burn (k = 0) keeps all its mass until it burns out, and then that mass is free again. Flee drains front cells faster (:163-187).\n(2) The swept rule loses its 'the fire took its mass' channel (fix3b_part1.txt:261; searcher_targeting.py:253).\nPHANTOM MASS (inferred; it cannot be replayed because burning cells are not recorded): in the simulator, a victim on a burning cell dies immediately (wildfire_model.py:5610-5641, verified). The mass the current belief sends to DEAD therefore stays under A as 'alive' mass on burning or burnt cells. The current DEAD share measures how much: median 0.923 (BD-R) and 0.464 (BF-R) at step 200 (dead_traj.py). The fire burns a median of 929-1348 of 2500 cells per arm (burnt.py).\nN_unf keeps every victim that died undetected, so lambda = N_unf * p would assert that all of them are alive in unsearched cells. In fact, at step 200 the BF-R arms pooled have 11 truly dead vs 2 alive undetected (calib.py).",
+     "code_changes": "- common_fixed_variables.py:211-214: the comment, and SEARCHER_BELIEF_BURNOVER = 0.1 -> 0.0.\n- victim_search_belief.py:105: MotionParams.burnover default 0.1 -> 0.0.\n- wildfire_model.py:2734: the default in f(\"SEARCHER_BELIEF_BURNOVER\", 0.1) -> 0.0.\n- tests/test_searcher_targeting.py:462-468: 0.1 -> 0.0.\n- New test: at p_bo = 0, after predict + measure + burn_over on a fire, dead == 0 and p.sum() == 1.\n- :170-180 is unchanged (it passes 0.5 explicitly).\n- Part 1: a new section 18 amending 2.4 (:184-186), the 15.3 burn-over row (:770-772) and 16.2 (:821-834).\n- 10.5 POS(t) (:516-517) degenerates, because expected_unfound_alive becomes N_unf (victim_search_belief.py:237-238). Redefine it from the mass the negative update removed (a 17.2 field).\n- The replacement instrument becomes mandatory.",
+     "cost": "- Implementation: about 1 h.\n- Re-screen REQUIRED: behaviour changes in every Bayes arm and in the fb3h route_blocked shards (mode 3). That is the same 100 pool jobs, about 1 h 40 at 14 parallel, then the full suite once, about 70 min.\n- New parameter: none.\n- Disclosure: a SECOND post-screen change to the same parameter (0.5 -> 0.1 -> 0), chosen after the R-3 data, not on outcomes.\n- Sensitivity: replace {0.2, 0.5} with {0.1, 0.5}, both previously ruled values, at the same 2 x 48 runs. It then reads as 'with vs without a death model'.",
+     "r3_check": "Passes BY CONSTRUCTION (dead is 0 at every step), so it becomes MEANINGLESS. It cannot see the phantom-mass error that A introduces. The replacement instrument is mandatory.",
+     "paper": "\"The belief models where an unfound victim is, not whether it is alive (burn-over 0); an absorbing death state was tried first (0.5, then 0.1, both after the screen and disclosed) and is reported as a sensitivity.\" Any statement that classical search theory separates location from survival is TO VERIFY BY THE MAINTAINER. Part 1 15.3 cites SAROPS (Kratzke, Stone & Frost 2010) for an absorbing survival state, so A departs from the practice the design cited.",
+     "risks_conflicts": "- D-5: removes a cited component. It is not P and not fitted, but it was chosen after the R-3 data.\n- Forking paths: three values of one parameter.\n- Inconsistent with the prior's own K4 exclusion of burning cells (fix3b_part1.txt:132-133).\n- Family A BF-BD: BD's fire-agnostic motion leaves more phantom mass in burnt terrain, so the gap would partly come from a death channel, not from motion.\n- Inferred late-run harm: searchers drawn to sweep burnt terrain where undetected victims are mostly dead and undetectable.",
+     "verdict": "Defensible, but NOT the primary. If ruled: the instrument is mandatory, and preferably first bound the phantom mass by an offline replay at p_bo = 0 (needs H's burning-set recording)."
+    },
+    {
+     "id": "B",
+     "name": "Keep 0.1 and report the R-3 failure as a known misspecification (status quo)",
+     "what_it_does": "Nothing changes. What the DEAD state does (verified):\n- Ranking ignores the overall scale. DEAD acts only through the shape near the fire and the LOCAL burn-over swept channel.\n- Every stage is linear and measure applies one common scale (victim_search_belief.py:188-196, 207-211, 219-226). So dead_mass = d_raw/(d_raw + a_raw), with d_raw never shrinking and a_raw never growing. The DEAD share is MONOTONE: 0 decreases in 5 600 recorded sample pairs (monotone.py).\n- With p shared, the per-victim R-3 check is a RUN-LEVEL CLOCK: every alive victim detected after the run's first D > 0.5 sample fails.\n- p_bo barely moves the clock. Median DEAD at step 100: BD-R 0.611 vs BD at 0.5 0.640; BF-R 0.104 vs 0.137 (dead_traj.py; not like-for-like). Trapped mass is 89-96% removed over a 21-30-step burn at any p_bo >= 0.1.",
+     "code_changes": "No code.\n- Docs: a Part 1 section 18 disclosure.\n- Correct report section 15 sentence (i) (fix3b_rescreen_report.txt:409-411).\n- The 17.2 instrument is still unimplemented (verified by grep).",
+     "cost": "- No belief run.\n- Still needs the 17.2 instrument.\n- Leaves your own criterion unmet, with nothing replacing it.\n- No forking path.\n- Sensitivity unchanged.",
+     "r3_check": "Fails now and again in the measurement round. Per-step counting can only raise the count (10-step sampling is a lower bound; D is monotone). It carries no per-victim information.",
+     "paper": "\"With an absorbing death state (burn-over 0.1), the posterior gave more than half its probability to death for 15 alive, undetected victims; reported as a misspecification.\"",
+     "risks_conflicts": "- No rule conflict.\n- A stated validity criterion is failed with no remedy and no better instrument.\n- The 16.2 reasoning is shown not to achieve its aim.",
+     "verdict": "Honest but incomplete. Superseded by H."
+    },
+    {
+     "id": "H",
+     "name": "Keep 0.1; replace the per-victim DEAD threshold with pre-registered calibration + belief-at-truth checks; per-step instrument; value-identical re-check (NEW, RECOMMENDED)",
+     "what_it_does": "Belief and targeting are unchanged (no src change).\nFor the measurement round, the R-3 pass/fail is replaced by:\n(1) DEAD calibration against the true fate of undetected victims;\n(2) belief-at-truth r_v.\nThe old R-3 count is reported, exact per step.\nPOST HOC evidence (descriptive; correlated triples, 10-15 distinct victims per high bin):\n- BF-R: 15 alive victim-steps above 0.5 vs 38.7 calibrated-expected. Brier 0.0748 vs climatology 0.2122. Bins: mean D 0.598 -> 0.821 truly dead; 0.825 -> 0.957; 0.976 -> 1.000. UNDER-confident.\n- BD-R: 78 vs 31.6, Brier 0.0971 vs 0.2063. Bins: 0.608 -> 0.440; 0.853 -> 0.538; 0.985 -> 0.874. OVER-confident.\n(expected_alive.py, reliab.py; 15 and 78 equal _fb3_r3_check.txt's FAIL-sample counts.)\nThe misspecification the data show is BD's fire-agnostic motion, which is the designed contrast.",
+     "code_changes": "PROBE ONLY, record-only; src unchanged.\n- outputs/_fb3_probe.py step wrapper :120-142 (today the summary is taken every 10 steps, :136-138). Every step, record:\n  (a) the 17.2 fields, via class-level wrappers on VictimSearchBelief.measure / burn_over;\n  (b) r_v and the Sp-percentile per alive undetected victim;\n  (c) the burning and smoke sets, for exact offline replay at any p_bo;\n  (d) the drop_swept cause split.\n- A probe self-test that replays one run's belief and matches the per-step summary.\n- Docs: Part 1 section 18; report section 15 corrected.",
+     "cost": "- Probe work: about half a day.\n- Re-check: re-run the 80 Bayes runs, about 80 min (inferred), REQUIRING value identity with the recorded fb3bdr / fb3bfr / fb3bdr2 / fb3bfr2 / fb3vs3r. That proves the probe is record-only.\n- No identity wave or route_blocked shards (src unchanged; fb3idf 16/16 at 06d83bb8, as reported by the user).\n- Full suite once, about 70 min.\n- No new model parameter. One new pre-registered criterion.\n- Sensitivity unchanged. Optionally add p_bo = 0 (+48 runs, about 50 min), or assess it free by offline replay (open loop).",
+     "r3_check": "The old check is still reported and still fails. The new checks may pass or fail; this cannot be predicted for fresh seeds. They stay MEANINGFUL: calibration fails in either direction (BD-R already fails), and r_v is what targeting consumes.",
+     "paper": "\"Our first criterion (never more than half of an alive victim's probability on death) failed for 15 victims; since one posterior is shared by all unfound victims, it is a run-level clock that a calibrated forecaster would also fail, so we report calibration against ground truth and the belief's mass at each undetected victim's true location (fire-aware model calibrated or under-confident in the screen, diffusion over-confident; exploratory).\"",
+     "risks_conflicts": "- Changing a criterion after it failed is a forking path. Mitigations:\n  - the FAIL is reported verbatim;\n  - the new criteria are pre-registered before any measurement run;\n  - the screen numbers are labelled post hoc.\n- Does not satisfy R-3 if R-3 is a design principle.\n- No conflict with D-2 or D-5.",
+     "verdict": "RECOMMENDED."
+    },
+    {
+     "id": "C",
+     "name": "Burn-over only in the fire interior, or after a cell has burned k steps",
+     "what_it_does": "Spares front mass, but d_raw comes mostly from TRAPPED mass, which C still removes: 89-96% of trapped mass over a 21-30-step burn at 0.1. The DEAD odds would barely change (inferred), D stays monotone, and long-undetected victims still cross 0.5. Held targets near the front are dropped less.",
+     "code_changes": "- victim_search_belief.py burn_over :215-226, plus burn-age state and a MotionParams field.\n- _fix3b_true_fire returns sets only (wildfire_model.py:2687-2699), so it needs new bookkeeping.\n- A new constant in common_fixed_variables.py, passed through wildfire_model.py:2726-2734 and :2766.\n- New tests; Part 1 section 18.",
+     "cost": "- About 1 day.\n- Re-screen 100 jobs, about 1 h 40, plus the suite.\n- NEW uncited parameter k: D-5 demands a cited form and a sensitivity point (+2 x 48 runs).",
+     "r3_check": "Cannot be predicted; inferred likely FAIL. Still the run-clock check.",
+     "paper": "\"Burn-over only after k steps\" - reads as tuned.",
+     "risks_conflicts": "- D-5.\n- Forking paths.\n- A3 needs fire age.\n- Likely does not fix the failure.",
+     "verdict": "REJECT."
+    },
+    {
+     "id": "D",
+     "name": "P_d < 1 in the belief's negative update",
+     "what_it_does": "Covered cells keep (1 - pd) of their mass (victim_search_belief.py:202, :207), and z = 1 - pd * c. a_raw decays geometrically instead of being zeroed, so the ratchet slows but stays monotone. Targeting re-searches covered ground.",
+     "code_changes": "- common_fixed_variables.py:203.\n- Test :161-167.\n- Part 1 2.3 (:146-161), A5 (:653-654), D-2 (:668-670).",
+     "cost": "- One constant.\n- Re-screen 100 jobs, about 1 h 40, plus the suite.\n- A value with no derivation.",
+     "r3_check": "May pass for a while; cannot be predicted. Long-undetected victims still cross.",
+     "paper": "\"The belief assumes P_d < 1 although the sensor is certain\" - contradicts A5.",
+     "risks_conflicts": "- Direct conflict with D-2 / the brief (update DERIVED from the deterministic disc, P_d = 1). A fudge factor.\n- PD_SMOKE 0.5 is already the sanctioned misspecification point.",
+     "verdict": "REJECT."
+    },
+    {
+     "id": "E",
+     "name": "Do not renormalise DEAD, or cap the DEAD share",
+     "what_it_does": "E1 leaves dead unnormalised (p.sum() + dead != 1). E2 clamps dead to at most 0.5. Ranking ignores scale, so both change essentially only the recorded scalar: behaviourally cosmetic.",
+     "code_changes": "victim_search_belief.py:208-211; one test.",
+     "cost": "- Trivial code.\n- Still a re-screen and the suite.\n- Maximal credibility cost.",
+     "r3_check": "E2 passes BY CONSTRUCTION (meaningless). E1: undefined, no longer a probability.",
+     "paper": "Not describable as a posterior.",
+     "risks_conflicts": "- Not a valid posterior.\n- Passes the check without changing what any searcher does.\n- Breaks the conservation tests (:170-180, :419).",
+     "verdict": "REJECT (indefensible)."
+    },
+    {
+     "id": "F",
+     "name": "Change the motion model (faster flee, larger q)",
+     "what_it_does": "Lowers d_raw (inferred). BF's DEAD is already calibrated or under-confident. BD's over-confidence comes from its fire-agnostic q = 0.1 (victim_search_belief.py:159-162), which is exactly what the BF-BD test (10.6) measures.",
+     "code_changes": "- common_fixed_variables.py:205-210.\n- victim_search_belief.py:99-104.\n- wildfire_model.py:2731-2733.\n- Part 1 15.3 (:750-775).",
+     "cost": "- Re-screen 100 jobs, about 1 h 40, plus the suite.\n- Changes cited, pre-registered values after a screen.\n- The 10.7 sensitivity (q {0.05, 0.3}, D50 {3, 8}) already covers this direction.",
+     "r3_check": "Cannot be predicted; still a ratchet.",
+     "paper": "\"Motion parameters changed after the screen\". A move toward trigger 3 / leash 6 is the inverse crime (fix3b_part1.txt:182-183).",
+     "risks_conflicts": "- D-5 and P.\n- Forking paths.\n- Blurs BF-BD.",
+     "verdict": "REJECT now; covered by the sensitivity."
+    },
+    {
+     "id": "G",
+     "name": "Location belief (A) plus a separate survival weight (POA x survivability)",
+     "what_it_does": "Gain on lambda * sigma, with sigma(c,t) = P(alive | at c, fire history).\n- If sigma comes from the same joint chain, lambda * sigma equals today's alive intensity: a re-derivation in factored form.\n- If computed independently, it is a new model with new parameters.\nThe swept rule and coordination move to lambda * sigma.",
+     "code_changes": "- A new knowledge component.\n- searcher_targeting.py:187-191, :253, :288-318, :326-366.\n- New constants, tests and design section, plus a review agent.",
+     "cost": "- Days of work.\n- Re-screen 100 jobs plus a design review; suite.\n- New sensitivity points.\n- Reopens D-4 and D-5.",
+     "r3_check": "The location part passes by construction. The survival part needs the same calibration instrument.",
+     "paper": "POA x survivability is SAR practice (TO VERIFY BY THE MAINTAINER); here it would be a post-screen redesign.",
+     "risks_conflicts": "- The largest forking path.\n- Delays the round.\n- Reopens rulings.",
+     "verdict": "REJECT for this round; future work."
+    },
+    {
+     "id": "I",
+     "name": "Burn-over = 1 with conditioning on survival (K4 every step, no DEAD)",
+     "what_it_does": "Zero the mass on burning cells and renormalise p: P(location | alive). For ranking this is identical to the current design at p_bo = 1. It matches K4 (fix3b_part1.txt:132-133) and the simulator.",
+     "code_changes": "- victim_search_belief.py:215-226.\n- A constant.\n- Tests :170-180.\n- Docs.",
+     "cost": "- Re-screen 100 jobs, about 1 h 40, plus the suite.\n- A third post-screen value.",
+     "r3_check": "Vacuous: there is no DEAD state.",
+     "paper": "\"Conditioned on survival\" - but 16.2's own reasoning (imprecise front) argues against annihilating front mass.",
+     "risks_conflicts": "- Contradicts 16.2.\n- Forking paths.\n- Vacuous check.",
+     "verdict": "REJECT."
+    },
+    {
+     "id": "K",
+     "name": "A smaller burn-over value (e.g. 0.02)",
+     "what_it_does": "Scales d_raw down. D stays monotone, and coverage (median 0.94-0.98 at step 200) drives a_raw toward 0, so long-undetected victims still cross 0.5.",
+     "code_changes": "Same constants and test as A.",
+     "cost": "Re-screen 100 jobs, about 1 h 40, plus the suite.",
+     "r3_check": "May pass on this seed set; cannot be predicted. A value picked to pass is FITTED to the check.",
+     "paper": "\"Burn-over lowered twice after the screen\".",
+     "risks_conflicts": "Value search against a validity check: forking paths, D-5.",
+     "verdict": "REJECT."
+    }
+   ]
+  },
+  "verification": {
+   "verdicts": [
+    {
+     "id": "claim1-section15-swept-claim-wrong",
+     "verdict": "confirmed",
+     "correction": "Main point holds: a global rise of DEAD cannot trigger drop_swept. One phrase needs tightening. Compared with p_bo = 0, the z in measure is 1 - c in both beliefs, because p.sum() + dead = 1 before measure. So DEAD slows Sp's rise only through the alive mass that coverage would otherwise have removed, which is second-order: synthetic ratio 1.137 at 0.1 vs 1.145 at 0. It slows the rise strongly only compared with renormalising on survival (option I): 1.54 there.",
+     "evidence": "VERIFIED. measure zeroes the covered cells, then divides p and dead by z = p.sum() + dead (victim_search_belief.py:207-211). burn_over moves mass with no renormalisation (:219-226). predict conserves mass (:188-196). Driver order is predict, measure, burn_over (wildfire_model.py:2752-2766). In raw terms Sp(t)/Sp(issue) = [raw disc(t) / raw disc(issue)] x [T(issue) / T(t)], where T = raw alive + raw dead, which only measure can lower. So for an uncovered disc with no burning cell and no outflow, the ratio is >= 1. Synthetic check (scratch r3wf/adv/swept_norm2.py, real VictimSearchBelief class, no simulator), held target never covered: ratio at step 100 = 1.1366 with dead 0.289 (p_bo 0.1), 1.1454 (p_bo 0), 1.5364 (zero + renormalise). The claim sits at fix3b_rescreen_report.txt:409-411."
+    },
+    {
+     "id": "claim2-DEAD-does-not-change-choice",
+     "verdict": "confirmed",
+     "correction": "Ranking is invariant to the overall scale. The DEAD scalar reaches the held-target rule only through the second-order z effect in claim1. Option A therefore changes swept timing slightly even far from the fire, not only through shape near it.",
+     "evidence": "VERIFIED. Checks: s<=0 (searcher_targeting.py:293-295); pre-rank s/max(L,L0) (:299); score g/max(L,L0) with key (score,-L,cell) (:310-313); coordination order by stand-alone score (:328). All are invariant to a common scale. A grep over src_extension, wildfire_model.py and agents.py (--exclude-dir=_firemech_rewound_20260914) finds belief.dead read only at victim_search_belief.py:208, 211, 226 and in summary() (:245). The only other belief consumer is searcher_targeting.py:124."
+    },
+    {
+     "id": "claim3-ratchet-and-clock",
+     "verdict": "corrected",
+     "correction": "The ratchet and the clock are correct. 'p_bo barely moves that clock' is WRONG on the full data: it quotes set 1 at step 100 only. Median DEAD at step 200, 0.5 -> 0.1: BF set 1 0.770 -> 0.464, BF set 2 0.697 -> 0.379, BF spawn 0.773 -> 0.531. BD set 2 at step 100: 0.695 -> 0.454. p_bo shifts the clock substantially, though it cannot stop it. Not like-for-like (R-1). Wording fix: 'every victim alive and undetected at a sample with D > 0.5 fails', which also covers never-found victims.",
+     "evidence": "VERIFIED. D = d_raw/(d_raw + a_raw). d_raw is only added to (:226); a_raw is non-increasing (predict conserves it; measure and burn_over remove from it). I re-ran monotone.py: 10 tags x 560 pairs = 5 600 pairs, 0 decreases. Per-arm figures from r3wf/dead_traj.txt; quoted 0.611 / 0.640 / 0.104 / 0.137 are fb3bdr / fb3bd / fb3bfr / fb3bf at step 100. 1 - 0.9^21 = 0.891 and 1 - 0.9^30 = 0.958 (89-96%). Burnt-cell medians 929-1348 confirmed by re-running burnt.py (eval burnt_cells, end of run). Coverage at step 200: 0.942-0.976."
+    },
+    {
+     "id": "claim4-calibration",
+     "verdict": "corrected",
+     "correction": "Numbers verified. Two corrections. (1) BF-R is UNDER-confident in every bin (0.026 vs 0.067 truly dead; 0.390 vs 0.467; 0.598 vs 0.821; 0.825 vs 0.957; 0.976 vs 1.000). That is miscalibration, not 'calibrated'. (2) So 'the only misspecification the data show is BD's' overclaims: BF-R's 15 observed vs 38.7 expected may fail H's own two-sided criterion. Also: dead victims stay undetected and contribute every later sample, so high bins are weighted toward victims that died early (10-15 distinct victims per high bin).",
+     "evidence": "VERIFIED. r3wf/expected_alive.txt: BD-R 274 triples, 78 alive vs 31.6 expected, Brier 0.0971 vs 0.2063. BF-R 241 triples, 15 alive vs 38.7 expected, Brier 0.0748 vs 0.2122. These match _fb3_r3_check.txt FAIL samples: 61+17 = 78 (lines 3, 215) and 11+3+1 = 15 (lines 136, 299, 369). Bins from r3wf/reliab.txt. Step-200 pooled BF-R from calib.txt: dead 6+2+3 = 11, alive 1+1+0 = 2."
+    },
+    {
+     "id": "claim5-optionA-mechanics",
+     "verdict": "corrected",
+     "correction": "Mechanics verified. Two errors. (1) Phantom mass: the current DEAD share is an approximate UPPER BOUND on A's phantom share, not 'roughly' equal to it. In raw terms phantom <= d_raw: mass that diffuses or flees out of burning cells, and later coverage of burnt terrain, both remove it. (2) POS(t) does not newly 'degenerate' under A. Under the CURRENT design, 1 - alive mass equals dead_mass per victim (p.sum() + dead = 1), so 10.5's 'POS(t) = 1 - expected unfound-alive mass' is already not a search-theory POS (that is 1 - the unnormalised remaining mass, i.e. the cumulative mass the negative update removed).",
+     "evidence": "VERIFIED. :217 returns when p_bo <= 0; dead initialised 0.0 at :115; 0/z = 0 at :211; p/z sums to 1 at :208-210. Diffusion moves nothing into burning cells (avail = ~burn, :148-156). A burning cell drains q (:160-162); k = 0 means stay 1, in both modes (:160, :185). Simulator: a victim on a burning cell is marked dead (wildfire_model.py:5609-5641). POS is defined at fix3b_part1.txt:516-517 and is computed nowhere (grep of _fb3_analyze.py and the reports: no hits)."
+    },
+    {
+     "id": "claim6-instrument-unimplemented-and-merge-lines",
+     "verdict": "confirmed",
+     "correction": "Add: outputs/fix3b_merge_notes.txt is cited as the merge record at report :8, :367 and part1 :877, but it does NOT EXIST. Also 17.1 ('A RULING ON THE BELIEF IS PENDING ... the measurement round does not start before it') already conflicts with 17.6 ('fix3b merged') inside the same section.",
+     "evidence": "VERIFIED. _fb3_probe.py:135-138 records the summary only when step % 10 == 0; there is no per-step dead/moved/removed record. The grep for the 17.2 fields found nothing in src or the probe. fix3b_rescreen_report.txt:6-8, :367 and fix3b_part1.txt:876-877 read as quoted. 'ls outputs/fix3b_merge_notes.txt' -> No such file."
+    },
+    {
+     "id": "A",
+     "verdict": "corrected",
+     "correction": "Mechanism, code list, cost structure, the 'passes by construction' check and the K4 conflict are correct. Fix: the phantom-mass figure is an upper bound (claim5). The POS problem predates A (claim5). A also removes DEAD's second-order damping of the swept ratio (claim1). The SAROPS citation is correctly marked TO VERIFY. The code list is complete: other tests pass p_bo explicitly (:178, :205); test :466 must also change its string '= 0.1' to '= 0.0'; _fb3_probe.py:39 only lists the key. 100 jobs = 80 + 16 identity + 4 route_blocked (report :62-63); identity is still needed because 17.6 requires the final head.",
+     "evidence": "VERIFIED: common_fixed_variables.py:211-214; victim_search_belief.py:105; wildfire_model.py:2734, :2766; tests/test_searcher_targeting.py:171-180, :205, :462-468; part1 :132-133 (K4), :184-186, :770-772 (SAROPS cited for the absorbing loss state), :821-834, :516-517. Sensitivity {0.2, 0.5} at part1:833. Durations are inferred from part1 10.4 (about 60 runs/h)."
+    },
+    {
+     "id": "B",
+     "verdict": "confirmed",
+     "correction": "'Carries no per-victim information' is slightly strong: per victim, it carries the detection time relative to the run clock. Otherwise accurate.",
+     "evidence": "VERIFIED: no code change; the 17.2 instrument is absent (probe :135-138). Per-step sampling can only add FAIL samples."
+    },
+    {
+     "id": "H",
+     "verdict": "corrected",
+     "correction": "Missed conflicts. (1) Part 1 17.2 PRE-REGISTERED the per-victim R-3 check ('any such share > 0.5 is a failure ... per arm and at every burn-over sensitivity point'), and 17.1 says a ruling ON THE BELIEF is pending. Demoting R-3 to 'reported, not gating' amends a binding ruled section, which must be disclosed; 'No conflict with D-2 or D-5' is incomplete. (2) It reverses report section 15's own recommendation (A) without saying so. (3) The paper sentence says the fire-aware model was 'calibrated or under-confident'; the data say under-confident in every bin. (4) Skipping the identity wave departs from the letter of 17.6 (identity on the final head). It is defensible only if the identity runs do not go through the modified probe, and it must be stated. (5) If H is ruled, the user's 'fix' is a change of criterion plus instrument, not a belief change; make that explicit.",
+     "evidence": "VERIFIED: part1:855-866 (17.1, 17.2), :876-877 (17.6). Report :425-427 recommends (A). Bin data from reliab.txt. No src change between 3e0973d9 and 06d83bb8 (git diff --stat on src/tests/probes is empty), so value identity of a record-only probe re-run is achievable in principle. Time estimates are inferred."
+    },
+    {
+     "id": "C",
+     "verdict": "corrected",
+     "correction": "The verdict (reject) stands. 'd_raw comes mostly from TRAPPED mass' is an unmeasured inference: burning sets are not recorded. 'Needs new bookkeeping' may be overstated: Fire agents carry a steps_counter (used by the CRN draw, _fb3_probe.py:109). Whether that counter equals burn age is NOT verified.",
+     "evidence": "VERIFIED: burn_over :215-226; _fix3b_true_fire returns two sets (wildfire_model.py:2687-2710); parameter pass-through :2726-2734. INFERRED: the d_raw composition."
+    },
+    {
+     "id": "D",
+     "verdict": "confirmed",
+     "correction": "Minor: test :161-167 calls measure() with its own default pd = 1.0, so changing the config constant does not break it. The wildfire_model defaults f('SEARCHER_BELIEF_PD', 1.0) (:2724, :2763) are the ones that matter.",
+     "evidence": "VERIFIED: pd_grid (:202), (1 - pd) (:207), z = 1 - pd*c; a_raw stays non-increasing, so D stays monotone. common_fixed_variables.py:203; part1 A5 :653-654, D-2 :668-670."
+    },
+    {
+     "id": "E",
+     "verdict": "corrected",
+     "correction": "Tests :170-180 would NOT break: that test never calls measure, and its dead is about 0.004, so a clamp would not bind. Only :419 (and :167 if the clamp sits in measure) would break. E1 is not 'behaviourally cosmetic': normalising p without dead changes p's scale each step, and so the swept ratio (the claim1 mechanism). The reject verdict stands.",
+     "evidence": "VERIFIED: tests/test_searcher_targeting.py:171-180 (predict + burn_over only), :419 (p.sum() + dead == 1); measure :208-211."
+    },
+    {
+     "id": "F",
+     "verdict": "confirmed",
+     "correction": "'BF already calibrated or under-confident' should read 'under-confident' (claim4).",
+     "evidence": "VERIFIED: common_fixed_variables.py:205-210; victim_search_belief.py:99-104; wildfire_model.py:2731-2733; part1 :182-183 (inverse crime), :539 (q {0.05, 0.3}, D50 {3, 8}), :750-775."
+    },
+    {
+     "id": "G",
+     "verdict": "confirmed",
+     "correction": "None needed; SAR-practice wording correctly flagged TO VERIFY.",
+     "evidence": "VERIFIED: the cited targeting lines exist (searcher_targeting.py:187-191, :253, :288-318, :326-366)."
+    },
+    {
+     "id": "I",
+     "verdict": "confirmed",
+     "correction": "Add: target ranking is identical to the current design at p_bo = 1, but the swept rule is NOT. Renormalising on survival makes a held target's Sp rise much faster (synthetic: 1.54 vs 1.14), so drop_swept fires less often.",
+     "evidence": "VERIFIED: linear stages plus a scale-invariant ranking. 16.2 (part1:824-831) argues against annihilating front mass. Tests :171-180 would break (they assert dead == 0.5 * alive_on_fire). Synthetic: r3wf/adv/swept_norm2.py."
+    },
+    {
+     "id": "K",
+     "verdict": "confirmed",
+     "correction": "The data in claim3 show that a lower p_bo shifts D materially at steps 150-200. So K could pass on a given seed set, which makes the 'fitted to the check' risk real, not hypothetical.",
+     "evidence": "VERIFIED: D = d/(d + a) -> 1 as coverage drives a -> 0 with d > 0. Coverage 0.94-0.98 at step 200 (dead_traj.txt)."
+    },
+    {
+     "id": "recommendation",
+     "verdict": "corrected",
+     "correction": "Argument (a) is valid and strong: one shared D, monotone, and a calibrated forecaster fails a 0.5 threshold. In BF-R, 38.7 alive above 0.5 would be expected under calibration. Argument (b) holds for choice, with a second-order caveat for swept timing. Argument (d) overclaims: BF-R is miscalibrated too, in the opposite direction. H is a defensible recommendation, but it needs three more things: disclosure that it amends 17.1/17.2 and reverses report 15's (A); unconfounded instrument comparisons (see instrument); and an honest statement that it gives no belief 'fix' of the kind the user's message anticipates. Second choice A is correctly conditioned on the instrument.",
+     "evidence": "VERIFIED against expected_alive.txt, reliab.txt, part1 17.1-17.2 and report section 15. The decision is correctly left to the maintainer."
+    },
+    {
+     "id": "replacement_instrument",
+     "verdict": "corrected",
+     "correction": "READ-ONLY: yes. Class-level wrappers on VictimSearchBelief methods are seen through the by-name import (the class object is shared), and the belief draws no RNG. _fix3b_true_fire is a pure read (wildfire_model.py:2687-2710). It is placed after ostep, where the belief is already updated (wildfire_model.py:2480-2481). DOES IT MEASURE MISSPECIFICATION? Only partly. (1) With P_d = 1, an undetected victim's true cell is never inside a current disc, so negative information alone pushes r_v above 1 as coverage grows. The PRIMARY 'share r_v < 1' and the comparison 'BF vs BD vs LO' ACROSS ARMS are confounded by each arm's coverage path and by which victims remain undetected. They need a within-run paired comparison: shadow BD/BF/motion-off/p_bo in {0, 0.1, 0.5} beliefs on the same observation stream, or an exact offline replay of each run under every model. (2) Part 1 10.7 already pre-registers a CALIBRATION measure, the predictive log-likelihood of BD vs BF on recorded victim trajectories; the instrument should reuse or extend it, not add a parallel one. (3) pct_v ranks by Sp, but targeting ranks by coordination-conditioned S/L on admissible cells (:288-312), so it is not 'where targeting would rank'. (4) Per-step burning sets mean up to about 1 000 cells x 360 steps per run in the JSON; state the size. (5) The offline replay must also reproduce the measure cell source (LocalObservation.current_position with UAV-pos fallback, wildfire_model.py:2754-2762) and the launch measure (:2722).",
+     "evidence": "VERIFIED: _fb3_probe.py:118-143; victim_search_belief.py:198-226; part1:542-543 (10.7 CALIBRATION); searcher_targeting.py:288-312. INFERRED: the size estimate."
+    },
+    {
+     "id": "change_my_mind",
+     "verdict": "confirmed",
+     "correction": "Conditions are reasonable. Condition (2) should note that BF is already miscalibrated (under-confident), so 'turns over-confident' is a sign flip, not a new failure.",
+     "evidence": "Consistent with reliab.txt and the canonical-13 lesson."
+    }
+   ],
+   "missing": [
+    "Part 1 17.2 already PRE-REGISTERED the per-victim R-3 check for the measurement round, and 17.1 says a ruling on the BELIEF is pending. H amends both binding sections, which must be disclosed as a third post-screen change of criterion.",
+    "Report section 15 already recommended (A) (fix3b_rescreen_report.txt:425-427). The analysis reverses that recommendation without saying so.",
+    "10.5 POS(t) = 1 - expected unfound-alive mass is already misdefined under the CURRENT design (1 - alive mass = dead mass per victim, since p.sum() + dead = 1). True POS is 1 - the unnormalised remaining mass, from the mass the negative update removed. It is computed nowhere yet (part1:516-517).",
+    "Part 1 10.7 already pre-registers a CALIBRATION measure (predictive log-likelihood of BD vs BF on recorded victim trajectories, part1:542-543). The new instrument should build on it.",
+    "r_v compared across arms is confounded by coverage and by which victims stay undetected. Use shadow beliefs within each run (all motion models and p_bo values on the same observation stream; the belief draws no RNG, so this stays record-only) or an exact offline replay.",
+    "'p_bo barely moves the clock' uses set 1 at step 100 only. At step 200, BF median DEAD falls 0.770 -> 0.464, 0.697 -> 0.379 and 0.773 -> 0.531 (dead_traj.txt). Lower p_bo shifts the clock materially, which strengthens the forking-path risk of K.",
+    "BF-R is under-confident in every reliability bin. That is miscalibration too, and H's own two-sided criterion could flag it.",
+    "outputs/fix3b_merge_notes.txt is cited as the merge record (report :8, :367; part1 :877) but does not exist.",
+    "17.6 requires identity on the final head. H's 'no identity wave' needs an explicit justification: the src tree is unchanged, and the identity runs either do not go through the modified probe or are covered by the value-identity re-run."
+   ],
+   "summary": "I checked the 'options' analysis against the code and the recorded runs (fix3b, HEAD 06d83bb8).\n\n**Verified and correct:**\n- The report section 15 swept claim is wrong. Sp at an uncovered, non-burning held target can only rise. A synthetic check with the real VictimSearchBelief class gives 1.137 at p_bo 0.1 with DEAD 0.29.\n- Target ranking ignores the overall scale of lambda.\n- The DEAD share is a monotone ratchet: I re-ran monotone.py, 5 600 sample pairs, 0 decreases.\n- The calibration counts match the R-3 FAIL samples (78 = 61+17 for BD-R, 15 = 11+3+1 for BF-R).\n- The cited code lines exist, and option A's change list is complete.\n- The proposed instrument is genuinely read-only.\n\n**Corrections:**\n- 'p_bo barely moves the clock' is wrong. It uses set 1 at step 100 only; at step 200 BF median DEAD falls from about 0.70-0.77 to 0.38-0.53.\n- The phantom mass under A is approximately bounded above by the DEAD share, not roughly equal to it.\n- POS(t) as defined in 10.5 is already not a search-theory POS under the current design (1 - alive mass equals the DEAD mass), not only under A.\n- BF-R is under-confident in every bin. That is miscalibration too, so 'the only misspecification is BD's' overclaims.\n- Option E would not break tests :170-180.\n- Under option I, the swept rule behaves differently even though ranking is identical.\n\n**Missed:**\n- H amends the binding pre-registration: 17.2 made the R-3 check part of the measurement round, and 17.1 says a ruling on the belief is pending.\n- H reverses report section 15's own recommendation (A) without saying so.\n- 10.7 already pre-registers a predictive log-likelihood calibration that the instrument should build on.\n- r_v compared across arms is confounded by each arm's coverage and by which victims stay undetected. It needs shadow beliefs within each run, or an exact offline replay.\n- fix3b_merge_notes.txt is cited three times but does not exist.\n\nThe recommendation (H) is defensible on argument (a), that a calibrated forecaster would also fail a shared 0.5 threshold. It needs the disclosures above and the paired-instrument fix.\n\nMy scratch scripts are in C:\\Users\\ahrar\\AppData\\Local\\Temp\\claude\\E--Projects-SAS\\aeac90fa-d510-40d8-a309-ad58f8606230\\scratchpad\\r3wf\\adv (swept_norm.py, swept_norm2.py). I re-ran monotone.py and burnt.py there. I did not run the simulator, any probe, pool or pytest, and wrote nothing in the repo.",
+   "quarantine_contact": "None. I never read, listed or traversed E:\\Projects\\SAS\\outputs\\_firemech_rewound_20260914. My one recursive grep used --exclude-dir=_firemech_rewound_20260914 and was rooted at src_extension plus named root files (wildfire_model.py, agents.py, local_adaptation_generator.py). A second grep was rooted only at src_extension and did not pass that flag, so it could not reach outputs/. Every other read named a file directly. The only directory listing was of my own scratchpad (r3wf). Recorded runs were read only through _fb3_analyze.load, via the analysis's own scripts."
+  }
+ }
+]
