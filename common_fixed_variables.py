@@ -184,6 +184,43 @@ SCENARIO_B_RETURN_DELAY = 1
 # The battery-scenario MARKER (a run parameter, not a switch): B's preset sets 1, every other preset 0
 # (serve_dashboard.scenario_extra_params). agents.battery_scenario.
 BATTERY_SCENARIO = 0
+
+# ---- fix3b (session 3b): searcher targeting strategies (outputs/fix3b_part1.txt, rulings in its section
+# 15). SEARCHER_TARGETING ships 0 = the current searcher, unchanged; any value that is not exactly one of the
+# integers below is 0. agents.searcher_targeting.
+#   0 current | 1 least-observed tile (baseline) | 2 Bayes, diffusion motion | 3 Bayes, fire-aware flee
+#   motion | 4 random walk (exemplar-equivalent baseline)
+SEARCHER_TARGETING = 0
+# Ablation switches of the strategies 1-3 (inert at SEARCHER_TARGETING 0). Each ships 1; only an exact 0
+# turns one off. REACHABILITY 0 is for the ablation ONLY and is never shipped (a test pins 1).
+SEARCHER_TARGETING_COORDINATION = 1
+SEARCHER_TARGETING_REACHABILITY = 1
+SEARCHER_TARGETING_BATTERY = 1
+SEARCHER_BELIEF_MOTION = 1
+# The random walk passes through the searcher hazard gate only on an exact 1 (a control; primary = ungated).
+SEARCHER_TARGETING_RW_GATED = 0
+# Belief / targeting parameters, fixed before any run (fix3b_part1.txt 2.4, 3.4-3.6, 15.3).
+SEARCHER_BELIEF_PD = 1.0                 # P_d inside the Euclidean-8 disc (the simulator's rule: 1)
+SEARCHER_BELIEF_PD_SMOKE = 1.0           # P_d the belief assumes for smoke cells (sensitivity 0.5)
+SEARCHER_BELIEF_DIFFUSION_Q = 0.1        # (a) lazy random walk: move probability
+SEARCHER_BELIEF_FLEE_D50 = 5.0           # (b) alarm logistic midpoint, cells (Euclidean to fire)
+SEARCHER_BELIEF_FLEE_S = 1.5             # (b) alarm logistic scale
+SEARCHER_BELIEF_FLEE_P_GO = 0.8          # (b) an alarmed victim moves with this probability
+SEARCHER_BELIEF_FLEE_BETA = 1.5          # (b) softmax weight on the fire-distance gain
+SEARCHER_BELIEF_FLEE_Q_CALM = 0.02       # (b) an unalarmed victim's move probability
+SEARCHER_BELIEF_BURNOVER = 0.5           # alive mass on a burning cell -> DEAD with this probability
+SEARCHER_BELIEF_STRIDE = 2               # candidate lattice stride
+SEARCHER_TARGETING_TOP_M = 12            # candidates scored exactly (along-path gain)
+SEARCHER_TARGETING_L0 = 4                # floor of the path length in the ratio
+SEARCHER_TARGETING_SWEPT_RHO = 0.25      # held target dropped when its disc mass < rho * at issue
+SEARCHER_TARGETING_GIVEUP_COOLDOWN = 15  # G: steps an unreachable target's area is excluded
+SEARCHER_TARGETING_FALLBACK_HOLD = 10    # R: steps before retrying after a fallback
+SEARCHER_TARGETING_TILE = 7              # least-observed tile size (cells)
+SEARCHER_TARGETING_AGE_BUCKET = 10       # least-observed: ages within this many steps tie
+# Environment (D-1): victim spawn. 0 = the legacy fixed ring (DEFAULT); 1 = i.i.d. uniform over the cells
+# that are not a depot and not burning at t0, from a dedicated digest-seeded stream (the fire stream is
+# unchanged). agents.victim_spawn_mode.
+VICTIM_SPAWN_MODE = 0
 # The ONE battery threshold pair (fix1 item 2), read at call time through
 # agents.battery_low_threshold() / battery_critical_threshold() by every reader: the UAV
 # labels, both analyzers, the resource model, the global monitor, the dashboard alert and

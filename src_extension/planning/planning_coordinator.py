@@ -12,6 +12,7 @@ from .fail_safe_planner import FailSafePlanner
 from .global_mission_planner import GlobalMissionPlanner
 from .local_uav_path_planner import LocalUAVPathPlanner
 from .rescue_planner import RescuePlanner
+from .searcher_targeting import apply_searcher_targeting
 
 
 @dataclass
@@ -83,6 +84,9 @@ class PlanningCoordinator:
                 context=analysis_snapshot,
                 timestamp=resolved_timestamp,
             )
+        # fix3b: the joint searcher-target allocation post-pass (SEARCHER_TARGETING 1-3); returns the same
+        # dict untouched at the shipped 0 (outputs/fix3b_part1.txt sections 4 and 5).
+        path_decisions = apply_searcher_targeting(path_decisions, runtime_models)
 
         communication_adaptation_space = None
         if isinstance(runtime_models, dict):

@@ -2147,6 +2147,69 @@ def battery_scenario() -> bool:
     return _exact_integer(getattr(cfv, "BATTERY_SCENARIO", 0)) == 1
 
 
+# --- fix3b (session 3b): searcher targeting strategies (outputs/fix3b_part1.txt) ----------------------
+
+SEARCHER_TARGETING_VALUES = (0, 1, 2, 3, 4)
+
+
+def searcher_targeting() -> int:
+    """SEARCHER_TARGETING - the victim searcher's targeting strategy. Shipped 0 (the current searcher).
+
+      0 current | 1 least-observed tile | 2 Bayes-diffusion | 3 Bayes-flee | 4 random walk
+
+    The value iff _exact_integer(raw) is one of these integers, else 0 (junk and off are one value)."""
+    value = _exact_integer(getattr(cfv, "SEARCHER_TARGETING", 0))
+    return value if value in SEARCHER_TARGETING_VALUES else 0
+
+
+def searcher_targeting_uses_belief() -> bool:
+    """The strategies that read the victim-search belief (1 reads its last-cover map)."""
+    return searcher_targeting() in (1, 2, 3)
+
+
+def searcher_targeting_coordination() -> bool:
+    """SEARCHER_TARGETING_COORDINATION - joint allocation. Ships 1; only an exact 0 turns it off."""
+    return _fix2_switch("SEARCHER_TARGETING_COORDINATION")
+
+
+def searcher_targeting_reachability() -> bool:
+    """SEARCHER_TARGETING_REACHABILITY - the hard reachability filter. Ships 1; an exact 0 is the
+    ABLATION ONLY (never shipped)."""
+    return _fix2_switch("SEARCHER_TARGETING_REACHABILITY")
+
+
+def searcher_targeting_battery() -> bool:
+    """SEARCHER_TARGETING_BATTERY - the hard battery-feasibility filter. Ships 1; only an exact 0 turns
+    it off."""
+    return _fix2_switch("SEARCHER_TARGETING_BATTERY")
+
+
+def searcher_belief_motion() -> bool:
+    """SEARCHER_BELIEF_MOTION - the belief's predict step. Ships 1; an exact 0 = identity + burn-over."""
+    return _fix2_switch("SEARCHER_BELIEF_MOTION")
+
+
+def searcher_targeting_rw_gated() -> bool:
+    """SEARCHER_TARGETING_RW_GATED - the random walk passes the searcher hazard gate. Ships 0 (the
+    exemplar had no gate); on only on an exact 1."""
+    return _exact_integer(getattr(cfv, "SEARCHER_TARGETING_RW_GATED", 0)) == 1
+
+
+def victim_spawn_mode() -> int:
+    """VICTIM_SPAWN_MODE - 0 the legacy fixed ring (default), 1 i.i.d. uniform spawn. 1 only on an exact
+    1, else 0."""
+    return 1 if _exact_integer(getattr(cfv, "VICTIM_SPAWN_MODE", 0)) == 1 else 0
+
+
+def fix3b_param(name: str, default: float) -> float:
+    """A fix3b numeric parameter read at call time (so --set reaches it); a non-numeric value -> default."""
+    try:
+        value = float(getattr(cfv, name, default))
+    except (TypeError, ValueError):
+        return float(default)
+    return value if value == value else float(default)
+
+
 def scenario_b_staggered_launch() -> bool:
     """SCENARIO_B_STAGGERED_LAUNCH - fix3a B2. Shipped 1 (ruling R-5); acts only in the battery scenario.
 

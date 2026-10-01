@@ -27,6 +27,7 @@ from src_extension.knowledge.mission_goal_model import MissionGoalModel
 from src_extension.knowledge.shared_operational_picture import SharedOperationalPicture
 from src_extension.knowledge.uav_resource_model import UAVResourceModel
 from src_extension.knowledge.victim_runtime_model import VictimRuntimeModel
+from src_extension.knowledge.victim_search_belief import MotionParams, VictimSearchBelief
 from src_extension.knowledge.visibility_model import ObservationStatus, VisibilityModel
 from src_extension.managed.environment_bridge import EnvironmentBridge
 from src_extension.managed.firefighter_state import FirefighterOperationalState
@@ -175,6 +176,15 @@ class WildFireModel(mesa.Model):
         # state BEFORE anything draws from it, so it is a pure function of the run
         # seed, and getstate() consumes nothing. Must precede set_fire_agents().
         self._ff_absence_rng = self._make_ff_absence_rng()
+        # fix3b: dedicated streams for the uniform victim spawn (VICTIM_SPAWN_MODE 1) and the searcher
+        # random walk (SEARCHER_TARGETING 4), from the same pre-draw state with their own salts - they
+        # consume nothing from SYSTEM_RANDOM, so the fire stays seed-identical. None when unused.
+        self._victim_spawn_rng = (
+            self._make_salted_rng("fix3b-victim-spawn") if agents.victim_spawn_mode() == 1 else None
+        )
+        self._searcher_rw_rng = (
+            self._make_salted_rng("fix3b-searcher-random-walk") if agents.searcher_targeting() == 4 else None
+        )
         self.unique_agents_id = 0
         # Inverted width and height order, because of matrix accessing purposes, like in many examples:
         #   https://snyk.io/advisor/python/Mesa/functions/mesa.space.MultiGrid
@@ -388,6 +398,12 @@ class WildFireModel(mesa.Model):
         self._uav_target_switch_counts: dict[str, int] = {}
         self._victim_escape_memory: dict[str, dict[str, Any]] = {}
         self._victim_sweep_state: dict[str, dict[str, Any]] = {}
+        # fix3b: the victim-search belief (strategies 1-3 only) and the targeting planner's per-searcher
+        # commitment store / counters (src_extension/planning/searcher_targeting.py).
+        self.victim_search_belief = None
+        self._searcher_targeting_state: dict[str, dict[str, Any]] = {}
+        if agents.searcher_targeting_uses_belief():
+            self._init_victim_search_belief()
         self._wind_search_target_state: dict[str, dict[str, Any]] = {}
         self._agents_pending_removal: list[Any] = []
         self.pending_removal_failures_last_step = 0
@@ -475,7 +491,7 @@ class WildFireModel(mesa.Model):
                 "y_min": 0,
                 "y_max": WIDTH - 1,
             }
-        for name in ("_wind_search_target_state", "_victim_sweep_state"):
+        for name in ("_wind_search_target_state", "_victim_sweep_state", "_searcher_targeting_state"):
             store = getattr(self, name, None)
             if isinstance(store, dict):
                 store.pop(uid, None)
@@ -923,7 +939,15 @@ class WildFireModel(mesa.Model):
         self.victim_marker_agents = {}
 
         positions = {}
-        for i in range(NUM_VICTIMS):
+        if agents.victim_spawn_mode() == 1 and getattr(self, "_victim_spawn_rng", None) is not None:
+            # fix3b D-1: i.i.d. uniform over the prior's support (not a depot, not burning at t0), from the
+            # dedicated stream; with replacement, exactly the H0 generating distribution.
+            excluded = self.victim_search_prior_excluded()
+            support = [(x, y) for x in range(HEIGHT) for y in range(WIDTH) if (x, y) not in excluded]
+            for i in range(NUM_VICTIMS):
+                x, y = support[self._victim_spawn_rng.randrange(len(support))]
+                positions[f"victim_{i}"] = (float(x), float(y))
+        for i in range(NUM_VICTIMS if not positions else 0):
             angle = (2 * math.pi * i) / max(NUM_VICTIMS, 1)
             r_x = 0.3 + 0.15 * (i % 2)
             r_y = 0.3 + 0.15 * (i % 2)
@@ -2294,6 +2318,11 @@ class WildFireModel(mesa.Model):
 
     def _run_planning(self, current_step_time: float) -> None:
         """Step 9: structured planning only; no execution or dispatch."""
+        if agents.searcher_targeting() == 4:
+            # fix3b: the random walk's draws, one per UAV every step whatever the planning outcome.
+            from src_extension.planning.searcher_targeting import draw_random_walk
+
+            draw_random_walk(self)
         if self.latest_analysis_snapshot is None or self.latest_adaptation_space_snapshot is None:
             self.latest_planning_result = None
             return
@@ -2448,6 +2477,8 @@ class WildFireModel(mesa.Model):
         self._apply_uav_resource_updates(buffer, current_time)
         self._apply_communication_updates(buffer, current_time)
         self._apply_local_observation_model_reports(buffer)
+        if getattr(self, "victim_search_belief", None) is not None:
+            self._update_victim_search_belief(buffer, current_time)   # fix3b (2.6)
 
     # function that creates all fire agents in a grid
     def set_fire_agents(self):
@@ -2624,6 +2655,122 @@ class WildFireModel(mesa.Model):
             return random.Random()
         digest = hashlib.sha256(repr(state).encode("utf-8")).hexdigest()
         return random.Random(int(digest, 16))
+
+    @staticmethod
+    def _make_salted_rng(salt: str) -> random.Random:
+        """fix3b: a dedicated stream like _make_ff_absence_rng, with its own salt so it never duplicates
+        the absence stream. getstate() consumes nothing; an unseeded SystemRandom run uses OS entropy."""
+        try:
+            state = SYSTEM_RANDOM.getstate()
+        except (NotImplementedError, AttributeError):
+            return random.Random()
+        digest = hashlib.sha256((repr(state) + "|" + str(salt)).encode("utf-8")).hexdigest()
+        return random.Random(int(digest, 16))
+
+    # ------------------------------------------------------------------
+    # fix3b: the victim-search belief (knowledge) - outputs/fix3b_part1.txt sections 2 and 15
+    # ------------------------------------------------------------------
+    def victim_search_prior_excluded(self) -> set:
+        """Mission-briefing exclusions of the prior H0 (and the uniform spawn's support): the depot
+        footprints and the cells burning at t0 (the reported ignition)."""
+        excluded: set = set()
+        station = getattr(self, "base_station", None)
+        if isinstance(station, dict):
+            for depot in station.get("depots") or ():
+                for cell in depot.get("cells") or ():
+                    excluded.add((int(cell[0]), int(cell[1])))
+        for item in self.schedule.agents:
+            if type(item) is agents.Fire and item.pos is not None and item.is_burning():
+                excluded.add((int(item.pos[0]), int(item.pos[1])))
+        return excluded
+
+    def _fix3b_true_fire(self) -> tuple[set, set]:
+        """(burning cells, smoke cells) as the planner sees them - the TRUE fire (assumption A3): the
+        burning Fire agents, and smoke = an active Fire-agent smoke or a visibility smoke-obscured cell
+        (the searcher hazard gate's strict smoke)."""
+        burning: set = set()
+        smoke: set = set()
+        for item in self.schedule.agents:
+            if type(item) is not agents.Fire or item.pos is None:
+                continue
+            cell = (int(item.pos[0]), int(item.pos[1]))
+            if item.is_burning():
+                burning.add(cell)
+            sm = getattr(item, "smoke", None)
+            if sm is not None and sm.is_smoke_active():
+                smoke.add(cell)
+        vis = getattr(self, "visibility_model", None)
+        for cell in (getattr(vis, "smoke_obscured_cells", None) or ()):
+            smoke.add((int(cell[0]), int(cell[1])))
+        return burning, smoke
+
+    def _init_victim_search_belief(self) -> None:
+        """The prior H0 plus one MEASURE at the launch geometry (step 0), before any move."""
+        self.victim_search_belief = VictimSearchBelief.with_uniform_prior(
+            HEIGHT, WIDTH, int(NUM_VICTIMS), self.victim_search_prior_excluded(),
+            # the detection pass's own radius (this module's global, which apply_scenario_config sets)
+            radius=float(UAV_OBSERVATION_RADIUS),
+        )
+        cells = [(int(a.pos[0]), int(a.pos[1])) for a in self.schedule.agents
+                 if type(a) is agents.UAV and a.pos is not None]
+        _, smoke = self._fix3b_true_fire()
+        self.victim_search_belief.measure(
+            cells, smoke, 0, pd=agents.fix3b_param("SEARCHER_BELIEF_PD", 1.0),
+            pd_smoke=agents.fix3b_param("SEARCHER_BELIEF_PD_SMOKE", 1.0))
+
+    def _fix3b_motion_params(self) -> MotionParams:
+        mode = {2: "diffusion", 3: "flee"}.get(agents.searcher_targeting(), "diffusion")
+        if not agents.searcher_belief_motion():
+            mode = "off"
+        f = agents.fix3b_param
+        return MotionParams(mode=mode, q=f("SEARCHER_BELIEF_DIFFUSION_Q", 0.1), d50=f("SEARCHER_BELIEF_FLEE_D50", 5.0),
+                            s=f("SEARCHER_BELIEF_FLEE_S", 1.5), p_go=f("SEARCHER_BELIEF_FLEE_P_GO", 0.8),
+                            beta=f("SEARCHER_BELIEF_FLEE_BETA", 1.5), q_calm=f("SEARCHER_BELIEF_FLEE_Q_CALM", 0.02),
+                            burnover=f("SEARCHER_BELIEF_BURNOVER", 0.5))
+
+    def _update_victim_search_belief(self, buffer: MonitoringBuffer, current_time: float) -> None:
+        """Post-move (2.6): PREDICT -> MEASURE (every UAV's disc at its post-move cell) -> BURN-OVER ->
+        detections. Footprints come from the monitoring buffer's LocalObservation.current_position (the
+        UAV's own report), falling back to the UAV's cell when a UAV filed none this step. N_unf counts
+        DISTINCT FIRST DETECTIONS (an honest observable), never the leaky unresolved counts."""
+        import time as _time
+
+        belief = getattr(self, "victim_search_belief", None)
+        if belief is None:
+            return
+        t0 = _time.perf_counter()
+        step = int(current_time)
+        burning, smoke = self._fix3b_true_fire()
+        motion = self._fix3b_motion_params()
+        # The least-observed baseline reads only the last-cover map; it needs no motion or burn-over.
+        if agents.searcher_targeting() in (2, 3):
+            belief.predict(burning, motion)
+        cells: dict = {}
+        observations = getattr(buffer, "local_observations", {}) or {}
+        for uid, obs in observations.items():
+            pos = getattr(obs, "current_position", None)
+            if pos is not None:
+                cells[str(uid)] = (int(round(float(pos[0]))), int(round(float(pos[1]))))
+        for a in self.schedule.agents:
+            if type(a) is agents.UAV and a.pos is not None and str(a.unique_id) not in cells:
+                cells[str(a.unique_id)] = (int(a.pos[0]), int(a.pos[1]))
+        belief.measure(list(cells.values()), smoke, step,
+                       pd=agents.fix3b_param("SEARCHER_BELIEF_PD", 1.0),
+                       pd_smoke=agents.fix3b_param("SEARCHER_BELIEF_PD_SMOKE", 1.0))
+        if agents.searcher_targeting() in (2, 3):
+            belief.burn_over(burning, motion.burnover)
+        for vid, state in (getattr(self, "managed_victims", {}) or {}).items():
+            if getattr(state, "confirmed", False):
+                belief.detected_ids.add(str(vid))
+        for vid in (getattr(getattr(self, "victim_runtime_model", None), "victims", {}) or {}):
+            belief.detected_ids.add(str(vid))
+        belief.step = step
+        belief.updates += 1
+        timing = getattr(self, "_searcher_targeting_timing", None)
+        if not isinstance(timing, dict):
+            timing = {"belief_ms": [], "plan_ms": []}
+            self._searcher_targeting_timing = timing
+        timing["belief_ms"].append(round((_time.perf_counter() - t0) * 1000.0, 3))
 
     def _draw_firefighter_absence_duration(self) -> int:
         """Steps a firefighter stays off the grid after a rescue; 0 means disabled.

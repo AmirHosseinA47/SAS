@@ -344,6 +344,12 @@ class UAVExecutor:
         fail_safe_decision: FailSafeDecision | None = None,
     ) -> dict[str, object]:
         self._flank_hold_in_place = False  # fix2 item 2: never carried across decisions
+        import agents as agents_module  # lazy: agents is a root module
+
+        if agents_module.searcher_targeting() != 0:
+            # fix3b: the routed-step method label is never carried across decisions (V1 (d)); at the
+            # shipped SEARCHER_TARGETING 0 nothing changes.
+            self._last_escape_method = None
         agent = self._resolve_agent()
         if agent is None:
             return {"applied": False, "reason": "agent_not_found", "uav_id": self.uav_id}
@@ -454,7 +460,11 @@ class UAVExecutor:
                 "retarget_to_interior" in str(action or "")
                 and str(getattr(self, "_last_escape_method", "") or "") != ""
             )
-            if action != "victim_search_escape_bfs" and not pathfinding_routed:
+            # fix3b: a targeting step is planned within the gate's guard by the admissible BFS (exempt like
+            # A1-R's routed steps - the label AND the method); the random walk is exempt unless
+            # SEARCHER_TARGETING_RW_GATED (the exemplar had no gate).
+            fix3b_exempt = self._fix3b_gate_exempt(action)
+            if action != "victim_search_escape_bfs" and not pathfinding_routed and not fix3b_exempt:
                 chosen_dir, action = self._apply_victim_searcher_hazard_gate(
                     agent, chosen_dir, action,
                 )
@@ -465,7 +475,10 @@ class UAVExecutor:
             chosen_dir, action = self._apply_final_direction_safety(
                 agent, chosen_dir, action
             )
-        self._sync_wind_search_execution_state(agent, decision, action)
+        if not self._fix3b_owned_step():
+            # fix3b: a targeting / random-walk step does not advance the current chain's wind-search
+            # state, so a fallback resumes from that chain's own state (fix3b_part1.txt section 5).
+            self._sync_wind_search_execution_state(agent, decision, action)
         self._commit_execution_direction(agent, chosen_dir, action)
 
         if self._execution_log is not None:
@@ -1336,6 +1349,12 @@ class UAVExecutor:
                 uid = str(self.uav_id)
                 pos = getattr(agent, "pos", None)
 
+                # fix3b: the searcher-targeting strategies (SEARCHER_TARGETING 1-4) steer here, before the
+                # current chain; None (and always at the shipped 0) leaves the current chain unchanged.
+                targeted = self._searcher_targeting_direction(agent, decision, model)
+                if targeted is not None:
+                    return targeted
+
                 sweep_states = (
                     getattr(model, "_victim_sweep_state", {})
                     if model is not None
@@ -2163,21 +2182,8 @@ class UAVExecutor:
         x_max = int(getattr(model, "HEIGHT", getattr(model, "height", 50)) or 50) - 1
         y_max = int(getattr(model, "WIDTH", getattr(model, "width", 50)) or 50) - 1
         # The exact Manhattan distance of every cell to the nearest burning cell: one multi-source BFS on
-        # the obstacle-free 4-neighbour grid.
-        from collections import deque
-
-        dist: dict[tuple[int, int], int] = {}
-        queue: deque[tuple[int, int]] = deque()
-        for cell in fire:
-            dist[cell] = 0
-            queue.append(cell)
-        while queue:
-            cell = queue.popleft()
-            for d in range(4):
-                nxt = (cell[0] + _MOVE_X[d], cell[1] + _MOVE_Y[d])
-                if 0 <= nxt[0] <= x_max and 0 <= nxt[1] <= y_max and nxt not in dist:
-                    dist[nxt] = dist[cell] + 1
-                    queue.append(nxt)
+        # the obstacle-free 4-neighbour grid (shared with the fix3b targeting route).
+        dist = self._burning_distance_field(fire, x_max, y_max)
 
         def fire_distance(cell: tuple[int, int]) -> int:
             return dist.get((int(cell[0]), int(cell[1])), 99)
@@ -2220,11 +2226,7 @@ class UAVExecutor:
         # (every step keeps >= T, a retreat strictly raises it) - so no cycle is possible in a static fire.
         clearance = min(d0, int(agents_module.SEARCHER_ROUTE_CLEARANCE))
         self._last_escape_method = None
-        occupied = set()
-        schedule = getattr(model, "schedule", None) if model is not None else None
-        for item in (getattr(schedule, "agents", ()) or ()):
-            if type(item).__name__ == "UAV" and item is not agent and getattr(item, "pos", None) is not None:
-                occupied.add((int(item.pos[0]), int(item.pos[1])))
+        occupied = self._other_uav_cells(model, agent)
         inside = {cell for cell, value in dist.items() if value < clearance}
         smoke = self._collect_strict_smoke_cells(model)
         max_depth = self._bfs_escape_max_depth(agent)
@@ -2303,6 +2305,221 @@ class UAVExecutor:
                     queue.append(nxt)
             depth += 1
         return None
+
+    @staticmethod
+    def _burning_distance_field(fire: set, x_max: int, y_max: int) -> dict:
+        """The exact Manhattan distance of every cell to the nearest burning cell: one multi-source BFS on
+        the obstacle-free 4-neighbour grid (A1-R's field; shared with the fix3b targeting route)."""
+        from collections import deque
+
+        dist: dict[tuple[int, int], int] = {}
+        queue: deque[tuple[int, int]] = deque()
+        for cell in fire:
+            dist[cell] = 0
+            queue.append(cell)
+        while queue:
+            cell = queue.popleft()
+            for d in range(4):
+                nxt = (cell[0] + _MOVE_X[d], cell[1] + _MOVE_Y[d])
+                if 0 <= nxt[0] <= x_max and 0 <= nxt[1] <= y_max and nxt not in dist:
+                    dist[nxt] = dist[cell] + 1
+                    queue.append(nxt)
+        return dist
+
+    @staticmethod
+    def _other_uav_cells(model: Any | None, agent: Any) -> set:
+        """The cells of every UAV other than `agent` (A1-R's occupied set; shared with fix3b)."""
+        occupied = set()
+        schedule = getattr(model, "schedule", None) if model is not None else None
+        for item in (getattr(schedule, "agents", ()) or ()):
+            if type(item).__name__ == "UAV" and item is not agent and getattr(item, "pos", None) is not None:
+                occupied.add((int(item.pos[0]), int(item.pos[1])))
+        return occupied
+
+    # ---- fix3b: searcher targeting (outputs/fix3b_part1.txt sections 3 and 5) ---------------------------
+    # ONE OWNER: the planner's reachability check (src_extension/planning/searcher_targeting.py) and this
+    # executor's steer call the SAME _targeting_bfs on the same pre-move snapshot, so a target is issued
+    # only if the steer that follows it has an admissible path.
+    TARGETING_LABEL = "victim_search_targeting"
+    TARGETING_METHOD = "targeting_bfs"
+    RANDOM_WALK_LABEL = "victim_search_random_walk"
+    RANDOM_WALK_METHOD = "random_walk"
+
+    def _fix3b_owned_step(self) -> bool:
+        """This execute()'s direction came from a fix3b strategy (targeting route or random walk)."""
+        import agents as agents_module  # lazy: agents is a root module
+
+        if agents_module.searcher_targeting() == 0:
+            return False
+        return str(getattr(self, "_last_escape_method", "") or "") in (self.TARGETING_METHOD,
+                                                                       self.RANDOM_WALK_METHOD)
+
+    def _fix3b_gate_exempt(self, action: str) -> bool:
+        """The searcher hazard gate's fix3b exemptions: a targeting step (label AND method), and the random
+        walk unless SEARCHER_TARGETING_RW_GATED is on. Always False at the shipped SEARCHER_TARGETING 0."""
+        import agents as agents_module  # lazy: agents is a root module
+
+        if agents_module.searcher_targeting() == 0:
+            return False
+        method = str(getattr(self, "_last_escape_method", "") or "")
+        if action == self.TARGETING_LABEL and method == self.TARGETING_METHOD:
+            return True
+        return (action == self.RANDOM_WALK_LABEL and method == self.RANDOM_WALK_METHOD
+                and not agents_module.searcher_targeting_rw_gated())
+
+    def _targeting_edge_move_ok(self, cur: tuple[int, int], nxt: tuple[int, int], x_max: int, y_max: int) -> bool:
+        """The searcher edge filter (_victim_edge_blocked_direction) for an arbitrary move cur -> nxt."""
+        import agents as agents_module  # lazy: agents is a root module
+
+        if agents_module.searcher_corner_escape():
+            band = int(agents_module.SEARCHER_EDGE_BAND)
+
+            def penetration(cx: int, cy: int) -> int:
+                return (max(0, band - min(cx, x_max - cx)) + max(0, band - min(cy, y_max - cy)))
+
+            here_p = penetration(cur[0], cur[1])
+            if here_p == 0:
+                return True
+            return penetration(nxt[0], nxt[1]) < here_p
+        dist_before = min(cur[0], cur[1], x_max - cur[0], y_max - cur[1])
+        dist_after = min(nxt[0], nxt[1], x_max - nxt[0], y_max - nxt[1])
+        return not (dist_before <= 3 and dist_after <= dist_before)
+
+    def _targeting_bfs(self, agent: Any, model: Any | None = None) -> dict | None:
+        """BFS from the searcher's cell over the ADMISSIBLE set (fix3b_part1.txt 3.2): in bounds; not
+        burning; not strict smoke (visibility smoke-obscured or an active Fire-agent smoke - the hazard
+        gate's strict smoke); burning distance >= T = min(d0, SEARCHER_ROUTE_CLEARANCE) (A1-R's fire-mode
+        clearance); not another UAV's cell; every move legal under the searcher edge filter. Returns
+        {"start", "dist", "first", "parent"} (first = the first direction of a shortest path, level order,
+        directions 0..3), or None without a position."""
+        import agents as agents_module  # lazy: agents is a root module
+        from collections import deque
+
+        pos = getattr(agent, "pos", None)
+        if pos is None:
+            return None
+        model = model or self._resolve_model(agent)
+        x_max = int(getattr(model, "HEIGHT", getattr(model, "height", 50)) or 50) - 1
+        y_max = int(getattr(model, "WIDTH", getattr(model, "width", 50)) or 50) - 1
+        here = (int(pos[0]), int(pos[1]))
+        fire = self._collect_strict_active_fire_cells(model)
+        smoke = set(self._collect_strict_smoke_cells(model))
+        schedule = getattr(model, "schedule", None) if model is not None else None
+        for item in (getattr(schedule, "agents", ()) or ()):
+            if type(item).__name__ != "Fire" or getattr(item, "pos", None) is None:
+                continue
+            sm = getattr(item, "smoke", None)
+            active = getattr(sm, "is_smoke_active", None) if sm is not None else None
+            if callable(active) and active():
+                smoke.add((int(item.pos[0]), int(item.pos[1])))
+        dist_fire = self._burning_distance_field(fire, x_max, y_max)
+        d0 = dist_fire.get(here, 99)
+        clearance = min(d0, int(agents_module.SEARCHER_ROUTE_CLEARANCE))
+        blocked = set(fire) | smoke | self._other_uav_cells(model, agent)
+        blocked |= {cell for cell, value in dist_fire.items() if value < clearance}
+        dist = {here: 0}
+        first: dict[tuple[int, int], int] = {}
+        parent: dict[tuple[int, int], tuple[int, int] | None] = {here: None}
+        queue: deque[tuple[int, int]] = deque([here])
+        while queue:
+            cell = queue.popleft()
+            for d in range(4):
+                nxt = (cell[0] + _MOVE_X[d], cell[1] + _MOVE_Y[d])
+                if nxt in dist or not (0 <= nxt[0] <= x_max and 0 <= nxt[1] <= y_max) or nxt in blocked:
+                    continue
+                if not self._targeting_edge_move_ok(cell, nxt, x_max, y_max):
+                    continue
+                dist[nxt] = dist[cell] + 1
+                first[nxt] = d if cell == here else first[cell]
+                parent[nxt] = cell
+                queue.append(nxt)
+        return {"start": here, "dist": dist, "first": first, "parent": parent}
+
+    @staticmethod
+    def _targeting_route(bfs: dict | None, goal: tuple[int, int]) -> tuple[tuple[int, int], int] | None:
+        """The route to `goal` in a _targeting_bfs result: the reached cell within Manhattan 2 of the goal
+        (the route's goal radius) with the least BFS distance, ties by cell. None: no admissible path.
+        Distance 0: the searcher is already within the goal radius (the target is reached)."""
+        if not bfs:
+            return None
+        gx, gy = int(goal[0]), int(goal[1])
+        best = None
+        for dx in range(-2, 3):
+            for dy in range(-2, 3):
+                if abs(dx) + abs(dy) > 2:
+                    continue
+                cell = (gx + dx, gy + dy)
+                value = bfs["dist"].get(cell)
+                if value is None:
+                    continue
+                key = (value, cell)
+                if best is None or key < best:
+                    best = key
+        if best is None:
+            return None
+        return best[1], best[0]
+
+    def _targeting_stat(self, model: Any | None, key: str) -> None:
+        if model is None:
+            return
+        stats = getattr(model, "_searcher_targeting_stats", None)
+        if not isinstance(stats, dict):
+            stats = {}
+            model._searcher_targeting_stats = stats
+        per = stats.setdefault(str(self.uav_id), {})
+        per[key] = int(per.get(key, 0)) + 1
+
+    def _searcher_targeting_direction(
+        self, agent: Any, decision: PathDecision, model: Any | None,
+    ) -> tuple[int, str] | None:
+        """fix3b DELIVERY (fix3b_part1.txt section 5): the searcher's no-victim branch steers to the target
+        the planner post-pass delivered in PathDecision.waypoints_by_uav - only when that decision carries
+        THIS step's marker - by the first step of the same admissible BFS that checked it. None: the
+        current chain runs (no decision, a stale or absent marker, an on-cell hazard, no admissible path).
+        Strategy 4 (random walk) takes the step's pre-drawn direction instead."""
+        import agents as agents_module  # lazy: agents is a root module
+
+        mode = agents_module.searcher_targeting()
+        if mode == 0:
+            return None
+        self._last_escape_method = None          # never inherit a stale routed-step label (V1 (d))
+        step = int(getattr(model, "evaluation_timesteps_counter", -1)) if model is not None else -1
+        if mode == 4:
+            draws = getattr(model, "_searcher_rw_draws", None) if model is not None else None
+            if not isinstance(draws, dict) or draws.get("step") != step:
+                return None
+            direction = (draws.get("dirs") or {}).get(str(self.uav_id))
+            if direction is None:
+                return None
+            self._last_escape_method = self.RANDOM_WALK_METHOD
+            return int(direction), self.RANDOM_WALK_LABEL
+        ctx = getattr(decision, "uncertainty_context", None)
+        if not isinstance(ctx, dict) or ctx.get("searcher_targeting_step") != step:
+            return None
+        waypoints = (getattr(decision, "waypoints_by_uav", None) or {}).get(self.uav_id) or ()
+        if not waypoints:
+            return None
+        if not self._route_fire_field_active():
+            return None
+        goal = (int(round(float(waypoints[0][0]))), int(round(float(waypoints[0][1]))))
+        pos = getattr(agent, "pos", None)
+        if pos is None:
+            return None
+        if self._strict_victim_hazard_level((int(pos[0]), int(pos[1]))) > 0:
+            self._targeting_stat(model, "exec_onhazard_fallback")
+            return None
+        bfs = self._targeting_bfs(agent, model)
+        route = self._targeting_route(bfs, goal)
+        if route is None:
+            self._targeting_stat(model, "exec_nopath_mismatch")
+            return None
+        cell, value = route
+        if value == 0:
+            self._targeting_stat(model, "exec_already_reached")
+            return None
+        self._last_escape_method = self.TARGETING_METHOD
+        self._targeting_stat(model, "exec_steps")
+        return int(bfs["first"][cell]), self.TARGETING_LABEL
 
     def _apply_retarget_with_pathfinding_fallback(
         self,
