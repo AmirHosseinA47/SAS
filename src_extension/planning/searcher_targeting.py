@@ -127,12 +127,17 @@ def apply_searcher_targeting(path_decisions: dict, runtime_models: Any) -> dict:
     t0 = time.perf_counter()
     step = int(getattr(model, "evaluation_timesteps_counter", 0))
     f = agents_module.fix3b_param
-    G = int(f("SEARCHER_TARGETING_GIVEUP_COOLDOWN", 15))
-    R = int(f("SEARCHER_TARGETING_FALLBACK_HOLD", 10))
+    G = max(0, int(f("SEARCHER_TARGETING_GIVEUP_COOLDOWN", 15)))
+    R = max(0, int(f("SEARCHER_TARGETING_FALLBACK_HOLD", 10)))
     M = max(1, int(f("SEARCHER_TARGETING_TOP_M", 12)))
     L0 = max(1.0, f("SEARCHER_TARGETING_L0", 4))
     rho = f("SEARCHER_TARGETING_SWEPT_RHO", 0.25)
     stride = max(1, int(f("SEARCHER_BELIEF_STRIDE", 2)))
+    tile_size = max(1, int(f("SEARCHER_TARGETING_TILE", 7)))
+    age_bucket = max(1.0, f("SEARCHER_TARGETING_AGE_BUCKET", 10))
+    # a lower bound of every value rtb_trigger_level_at can return (max(reserve >= 0, 0.3 d + margin), or
+    # CRITICAL without a berth / below BASE_STATION_MODE 2): a budget at or under it is infeasible, no call needed
+    margin = min(float(agents_module.base_station_return_margin()), float(agents_module.battery_critical_threshold()))
     band = int(agents_module.SEARCHER_EDGE_BAND)
     coordination = agents_module.searcher_targeting_coordination()
     reach_on = agents_module.searcher_targeting_reachability()
@@ -165,16 +170,25 @@ def apply_searcher_targeting(path_decisions: dict, runtime_models: Any) -> dict:
             continue
         ex = UAVExecutor(uid, model, agent)
         here = (int(agent.pos[0]), int(agent.pos[1]))
+        if not ex._route_fire_field_active():
+            _bump(model, uid, "skip_route_field_inactive")      # the hook would not steer (review LOW-5)
+            continue
         if ex._strict_victim_hazard_level(here) > 0:
             _bump(model, uid, "skip_onhazard")
             continue
-        st["cooldown"] = [c for c in st["cooldown"] if c[2] >= step]
+        st["cooldown"] = [c for c in st["cooldown"] if c[2] > step]      # issued at s, excluded s+1 .. s+G
         elig[uid] = {"agent": agent, "ex": ex, "here": here, "bfs": ex._targeting_bfs(agent, model), "st": st}
 
     lam = belief.intensity() if mode in (2, 3) else None
     S = disc_convolve(lam, offsets) if lam is not None else None
-    tiles = tile_layout(H, W, band, int(f("SEARCHER_TARGETING_TILE", 7))) if mode == 1 else []
+    # The swept rule compares the held target's disc mass of p (one victim's posterior), so a detection
+    # elsewhere (N_unf falls) does not 'sweep' it (review LOW-3).
+    Sp = disc_convolve(belief.p, offsets) if lam is not None else None
+    tiles = tile_layout(H, W, band, tile_size) if mode == 1 else []
     ages = _tile_ages(belief, tiles, burning, smoke, step) if mode == 1 else {}
+
+    pool_cells = [(x, y) for x in range(band, H - band) for y in range(band, W - band)
+                  if x % stride == 0 and y % stride == 0]          # non-band stride lattice (both arms)
 
     def path_mask(e: dict, cell: tuple[int, int]) -> np.ndarray:
         mask = np.zeros((H, W), dtype=bool)
@@ -201,7 +215,10 @@ def apply_searcher_targeting(path_decisions: dict, runtime_models: Any) -> dict:
         if not battery_on:
             return True
         agent = e["agent"]
-        return float(agent.battery_level) - PER_MOVE * float(L) > agents_module.rtb_trigger_level_at(agent, goal)
+        budget = float(agent.battery_level) - PER_MOVE * float(L + 2)    # + the goal radius (review LOW-2)
+        if budget <= margin:                       # the trigger is >= the margin: infeasible, no call needed
+            return False
+        return budget > agents_module.rtb_trigger_level_at(agent, goal)
 
     def cooled(e: dict, cell: tuple[int, int]) -> bool:
         return any(abs(cell[0] - c[0]) + abs(cell[1] - c[1]) <= 3 for c in e["st"]["cooldown"])
@@ -226,7 +243,7 @@ def apply_searcher_targeting(path_decisions: dict, runtime_models: Any) -> dict:
             reason = "drop_reached"
         elif not battery_ok(e, goal, route[1]):
             reason = "drop_battery"
-        elif mode in (2, 3) and float(S[goal]) < rho * float(st["s_issue"]):
+        elif mode in (2, 3) and float(Sp[goal]) < rho * float(st["s_issue"]):
             reason = "drop_swept"
         if reason is not None:
             _bump(model, uid, reason)
@@ -254,7 +271,7 @@ def apply_searcher_targeting(path_decisions: dict, runtime_models: Any) -> dict:
                 L, cell = length(e, a)
                 if L is None or L == 0 or not battery_ok(e, a, L):
                     continue
-                key = (int(ages[t["index"]] // float(f("SEARCHER_TARGETING_AGE_BUCKET", 10))), -L, -t["index"])
+                key = (int(ages[t["index"]] // age_bucket), -L, -t["index"])
                 if best is None or key > best[0]:
                     best = (key, a, L, t["index"], cell)
             if best is None:
@@ -262,16 +279,8 @@ def apply_searcher_targeting(path_decisions: dict, runtime_models: Any) -> dict:
             return {"target": best[1], "L": best[2], "tile": best[3], "G": None, "S": None,
                     "score": float(best[0][0]), "cell": best[4]}
         S_c = disc_convolve(lam_cond, offsets)
-        if reach_on:
-            pool = [c for c in e["bfs"]["dist"]] if e["bfs"] else []
-        else:
-            pool = [(x, y) for x in range(H) for y in range(W)]
         cands = []
-        for c in pool:
-            if c[0] % stride or c[1] % stride:
-                continue
-            if min(c[0], c[1], H - 1 - c[0], W - 1 - c[1]) < band:
-                continue
+        for c in pool_cells:
             if abs(c[0] - here[0]) + abs(c[1] - here[1]) <= 2 or cooled(e, c):
                 continue
             s = float(S_c[c])
@@ -298,7 +307,7 @@ def apply_searcher_targeting(path_decisions: dict, runtime_models: Any) -> dict:
                 best = (key, c, L, g, s, cell, mask)
         if best is None:
             return None
-        return {"target": best[1], "L": best[2], "G": best[3], "S": float(S[best[1]]), "tile": None,
+        return {"target": best[1], "L": best[2], "G": best[3], "S": float(Sp[best[1]]), "tile": None,
                 "score": best[0][0], "cell": best[5], "mask": best[6]}
 
     free = [uid for uid, e in elig.items() if e["st"]["target"] is None]
@@ -318,6 +327,17 @@ def apply_searcher_targeting(path_decisions: dict, runtime_models: Any) -> dict:
         e = elig[uid]
         pick = choose(e, lam_cur if coordination else lam, claimed_tiles if coordination else set())
         if pick is None:
+            # Review MEDIUM-1: a searcher boxed in only by other UAVs (a crowded depot at launch) is not
+            # held off for R steps - the current chain moves it this step and the strategy retries next step.
+            # "Boxed by UAVs" = the admissible BFS reaches NO candidate cell at all, while the same search
+            # without the other-UAV cells does (not merely "nothing worth targeting", which still holds).
+            def any_candidate(bfs):
+                return bfs is not None and any(UAVExecutor._targeting_route(bfs, c) for c in pool_cells)
+
+            free_bfs = e["ex"]._targeting_bfs(e["agent"], model, ignore_uavs=True) if e["bfs"] else None
+            if not any_candidate(e["bfs"]) and any_candidate(free_bfs):
+                _bump(model, uid, "fallback_boxed_by_uavs")
+                continue
             e["st"]["fallback_until"] = step + R
             _bump(model, uid, "fallback_entries")
             _bump(model, uid, "fallback_steps")

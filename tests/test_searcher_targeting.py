@@ -336,3 +336,86 @@ def test_uniform_spawn_is_on_the_prior_support_reproducible_and_leaves_the_fire_
     assert burn1 == burn0 and state1 == state0          # the fire stream is untouched by the spawn
     assert spawn1 != spawn0                              # and the victims are not on the ring
     assert model.victim_search_belief is None            # no belief at SEARCHER_TARGETING 0
+
+
+# ============================================================================ review fixes (Part 2 review)
+def test_a_searcher_boxed_only_by_uavs_gets_no_fallback_hold(_shipped, monkeypatch):
+    """MEDIUM-1: at a crowded depot the admissible BFS reaches no candidate because of other UAVs - the
+    strategy retries next step instead of holding off R steps."""
+    model, (u,), dec = _world([(2502, (0, 0), 100.0)], {(25, 25): 1.0}, monkeypatch=monkeypatch)
+    for i, cell in enumerate(((1, 0), (0, 1))):
+        model.schedule.agents.append(_uav(9000 + i, cell))
+    _plan(model, dec)
+    st = model._searcher_targeting_state["2502"]
+    assert st["target"] is None and st["fallback_until"] == -1
+    assert model._searcher_targeting_stats["2502"].get("fallback_boxed_by_uavs") == 1
+
+
+def test_a_searcher_with_nothing_reachable_is_held_off(_shipped, monkeypatch):
+    """...whereas fire (not UAVs) enclosing the searcher starts the R hold."""
+    ring = {(x, y) for x in range(15, 36) for y in range(15, 36)} - {(x, y) for x in range(18, 33) for y in range(18, 33)}
+    model, (u,), dec = _world([(2502, (25, 25), 100.0)], {(5, 5): 1.0}, fire=ring, monkeypatch=monkeypatch)
+    _plan(model, dec)
+    st = model._searcher_targeting_state["2502"]
+    assert st["target"] is None and st["fallback_until"] == STEP + 10
+
+
+def test_only_fix3b_method_labels_are_cleared(_shipped, monkeypatch):
+    """MEDIUM-3: the current chain's own (stale) method label is untouched, so the fallback chain is the
+    current chain; a stale fix3b label is cleared."""
+    ex, u, model, pd = _delivered(monkeypatch, step=STEP - 1)      # stale marker: the hook falls through
+    ex._last_escape_method = "bfs_fire_field"
+    assert ex._searcher_targeting_direction(u, pd, model) is None
+    assert ex._last_escape_method == "bfs_fire_field"
+    ex._last_escape_method = UAVExecutor.TARGETING_METHOD
+    assert ex._searcher_targeting_direction(u, pd, model) is None
+    assert ex._last_escape_method is None
+
+
+def test_a_detection_elsewhere_does_not_sweep_a_held_target(_shipped, monkeypatch):
+    """LOW-3: the swept rule reads p, not lambda = N_unf * p."""
+    model, (u,), dec = _world([(2502, (25, 10), 100.0)], {(25, 22): 0.5, (5, 45): 0.5}, monkeypatch=monkeypatch)
+    model.victim_search_belief.n_brief = 3
+    t = _target(_plan(model, dec), 2502)
+    assert t is not None
+    model.victim_search_belief.detected_ids.update({"victim_1", "victim_2"})   # N_unf 3 -> 1
+    out = _plan(model, dec)
+    assert _target(out, 2502) == t
+    assert not model._searcher_targeting_stats["2502"].get("drop_swept")
+
+
+def test_the_probe_refuses_every_form_of_the_crn_key(tmp_path):
+    import subprocess
+    import sys as _sys
+
+    probe = __import__("os").path.join(__import__("os").path.dirname(__file__), "..", "outputs", "_fb3_probe.py")
+    for extra in (["--set", "FM2P_CRN=1"], ["--set=FM2P_CRN=1"], ["--set", "fm2p_crn=1"]):
+        r = subprocess.run([_sys.executable, probe, "--", "--scenario", "D", "--seed", "1", "--out",
+                            str(tmp_path / "x.json")] + extra, capture_output=True, text=True, timeout=120)
+        assert r.returncode == 3, (extra, r.stderr)
+    r = subprocess.run([_sys.executable, probe, "--CRN", "--", "--seed", "1", "--out", str(tmp_path / "x.json")],
+                       capture_output=True, text=True, timeout=120)
+    assert r.returncode == 2
+
+
+def test_a_real_model_builds_and_updates_the_belief(monkeypatch):
+    """Integration (LOW-7): a real WildFireModel at SEARCHER_TARGETING 3 builds the belief, updates it once per
+    step post-move, and the planner's true-fire smoke includes the visibility status map's smoke (LOW-1)."""
+    import wildfire_model as wf
+    from src_extension.knowledge.visibility_model import ObservationStatus
+
+    rng = random.Random(9613)
+    for mod in (cfv, wf):
+        monkeypatch.setattr(mod, "SYSTEM_RANDOM", rng, raising=False)
+    monkeypatch.setattr(agents, "random", rng, raising=False)
+    monkeypatch.setattr(cfv, "SEARCHER_TARGETING", 3, raising=False)
+    monkeypatch.setattr(cfv, "VICTIM_SPAWN_MODE", 0, raising=False)
+    model = wf.WildFireModel()
+    b = model.victim_search_belief
+    assert b is not None and b.updates == 0 and (b.last_cover == 0).any()      # the launch measure
+    for _ in range(3):
+        model.step()
+    assert b.updates == 3 and b.step == 3
+    assert abs(float(b.p.sum()) + b.dead - 1.0) < 1e-9
+    model.visibility_model.state.observation_status_map[(7, 7)] = ObservationStatus.SMOKE_OBSCURED
+    assert (7, 7) in model._fix3b_true_fire()[1]

@@ -37,7 +37,10 @@ FIX3B_KEYS = ("SEARCHER_TARGETING", "SEARCHER_TARGETING_COORDINATION", "SEARCHER
               "SEARCHER_BELIEF_PD", "SEARCHER_BELIEF_PD_SMOKE", "SEARCHER_BELIEF_DIFFUSION_Q",
               "SEARCHER_BELIEF_FLEE_D50", "SEARCHER_BELIEF_FLEE_S", "SEARCHER_BELIEF_FLEE_P_GO",
               "SEARCHER_BELIEF_FLEE_BETA", "SEARCHER_BELIEF_FLEE_Q_CALM", "SEARCHER_BELIEF_BURNOVER",
-              "SEARCHER_BELIEF_STRIDE", "VICTIM_SPAWN_MODE")
+              "SEARCHER_BELIEF_STRIDE", "SEARCHER_TARGETING_TOP_M", "SEARCHER_TARGETING_L0",
+              "SEARCHER_TARGETING_SWEPT_RHO", "SEARCHER_TARGETING_GIVEUP_COOLDOWN",
+              "SEARCHER_TARGETING_FALLBACK_HOLD", "SEARCHER_TARGETING_TILE", "SEARCHER_TARGETING_AGE_BUCKET",
+              "VICTIM_SPAWN_MODE")
 
 
 def _crn_uniform():
@@ -62,8 +65,17 @@ def main() -> int:
         return 2
     own = argv[:argv.index("--")]
     probe_args = argv[argv.index("--") + 1:]
+    unknown = [a for a in own if a not in ("--crn", "--hazard")]
+    if unknown:
+        print("FB3 REFUSED: unknown own flag(s) %r (only --crn, --hazard)" % (unknown,), file=sys.stderr)
+        return 2
     for i, a in enumerate(probe_args):
-        if a == "--set" and i + 1 < len(probe_args) and probe_args[i + 1].split("=", 1)[0].strip() == "FM2P_CRN":
+        key = None
+        if a == "--set" and i + 1 < len(probe_args):
+            key = probe_args[i + 1]
+        elif a.startswith("--set="):
+            key = a[len("--set="):]
+        if key is not None and key.split("=", 1)[0].strip().upper() == "FM2P_CRN":
             print("FB3 REFUSED: --set FM2P_CRN is ignored by _fx3_probe/_sd_probe; use --crn", file=sys.stderr)
             return 3
     use_crn = "--crn" in own
@@ -151,7 +163,10 @@ def main() -> int:
             "issued": getattr(m, "_searcher_targeting_issued", None) or [],
             "timing": {k: _summ(list(v)) for k, v in timing.items()},
             "switches": {k: getattr(cfv, k, None) for k in FIX3B_KEYS},
-            "eff": {"searcher_targeting": am.searcher_targeting(), "victim_spawn_mode": am.victim_spawn_mode()},
+            "eff": {"searcher_targeting": am.searcher_targeting(), "victim_spawn_mode": am.victim_spawn_mode(),
+                    "belief_built": getattr(m, "victim_search_belief", None) is not None,
+                    "rw_stream_built": getattr(m, "_searcher_rw_rng", None) is not None,
+                    "spawn_stream_built": getattr(m, "_victim_spawn_rng", None) is not None},
         }
         tmp = out_path + ".fb3tmp"
         with open(tmp, "w", encoding="utf-8", newline="\n") as fh:

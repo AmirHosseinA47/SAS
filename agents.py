@@ -1125,6 +1125,11 @@ class UAV(mesa.Agent):
             # fix2 item 2: a hold intends its own cell - owned by this switch, so a stationary
             # hold cannot create a drift sample even with FAILSAFE_REAL_ALARMS off.
             intended_delta = (0, 0)
+        if not moved and str(getattr(self, "execution_action", "") or "") == "victim_search_random_walk":
+            # fix3b (review MEDIUM-2): the exemplar-equivalent random walk wastes a refused draw (no re-draw);
+            # that is the walk's own rule, not drift - so it must not trip the drift alarms, and through them
+            # the fleet fail-safe modes the exemplar never had. The label occurs only at SEARCHER_TARGETING 4.
+            intended_delta = (0, 0)
         if not moved and getattr(self, "execution_yield", False) and stationary_yield_fix():
             # fix2 item 2 follow-up: a YIELD step is right-of-way coordination, not the UAV's own
             # course - a refused step aside or backstop escape is not a drift (COLLISION_RISK

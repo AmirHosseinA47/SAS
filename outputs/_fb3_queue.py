@@ -50,6 +50,8 @@ def main() -> int:
     set1, set2 = cells("fx3mS"), cells("fx3mS2")
     if wave == "id":
         lines += [probe_line("fb3id", *c, sets=[]) for c in set1]
+    elif wave == "id2":                       # identity again at the final screen head (after the review fixes)
+        lines += [probe_line("fb3idb", *c, sets=[]) for c in set1]
     elif wave == "arms":
         for tag, mode in (("fb3bf", 3), ("fb3lo", 1), ("fb3bd", 2)):
             lines += [probe_line(tag, *c, sets=["SEARCHER_TARGETING=%d" % mode]) for c in set1]

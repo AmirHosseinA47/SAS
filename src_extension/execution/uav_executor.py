@@ -346,9 +346,11 @@ class UAVExecutor:
         self._flank_hold_in_place = False  # fix2 item 2: never carried across decisions
         import agents as agents_module  # lazy: agents is a root module
 
-        if agents_module.searcher_targeting() != 0:
-            # fix3b: the routed-step method label is never carried across decisions (V1 (d)); at the
-            # shipped SEARCHER_TARGETING 0 nothing changes.
+        if (agents_module.searcher_targeting() != 0
+                and getattr(self, "_last_escape_method", None) in (self.TARGETING_METHOD, self.RANDOM_WALK_METHOD)):
+            # fix3b: a fix3b method label is never carried across decisions (V1 (d)). ONLY fix3b's own: the
+            # current chain's methods keep their (pre-existing) behaviour, so the fallback chain stays the
+            # current chain (review MEDIUM-3). At the shipped SEARCHER_TARGETING 0 nothing changes.
             self._last_escape_method = None
         agent = self._resolve_agent()
         if agent is None:
@@ -2385,13 +2387,14 @@ class UAVExecutor:
         dist_after = min(nxt[0], nxt[1], x_max - nxt[0], y_max - nxt[1])
         return not (dist_before <= 3 and dist_after <= dist_before)
 
-    def _targeting_bfs(self, agent: Any, model: Any | None = None) -> dict | None:
+    def _targeting_bfs(self, agent: Any, model: Any | None = None, ignore_uavs: bool = False) -> dict | None:
         """BFS from the searcher's cell over the ADMISSIBLE set (fix3b_part1.txt 3.2): in bounds; not
         burning; not strict smoke (visibility smoke-obscured or an active Fire-agent smoke - the hazard
         gate's strict smoke); burning distance >= T = min(d0, SEARCHER_ROUTE_CLEARANCE) (A1-R's fire-mode
         clearance); not another UAV's cell; every move legal under the searcher edge filter. Returns
         {"start", "dist", "first", "parent"} (first = the first direction of a shortest path, level order,
-        directions 0..3), or None without a position."""
+        directions 0..3), or None without a position. ignore_uavs: the same search without the other-UAV
+        cells - used ONLY by the planner to tell a launch-boxed searcher from an enclosed one (review MEDIUM-1)."""
         import agents as agents_module  # lazy: agents is a root module
         from collections import deque
 
@@ -2415,7 +2418,7 @@ class UAVExecutor:
         dist_fire = self._burning_distance_field(fire, x_max, y_max)
         d0 = dist_fire.get(here, 99)
         clearance = min(d0, int(agents_module.SEARCHER_ROUTE_CLEARANCE))
-        blocked = set(fire) | smoke | self._other_uav_cells(model, agent)
+        blocked = set(fire) | smoke | (set() if ignore_uavs else self._other_uav_cells(model, agent))
         blocked |= {cell for cell, value in dist_fire.items() if value < clearance}
         dist = {here: 0}
         first: dict[tuple[int, int], int] = {}
@@ -2482,7 +2485,8 @@ class UAVExecutor:
         mode = agents_module.searcher_targeting()
         if mode == 0:
             return None
-        self._last_escape_method = None          # never inherit a stale routed-step label (V1 (d))
+        if getattr(self, "_last_escape_method", None) in (self.TARGETING_METHOD, self.RANDOM_WALK_METHOD):
+            self._last_escape_method = None      # never inherit a stale fix3b label (V1 (d); review MEDIUM-3)
         step = int(getattr(model, "evaluation_timesteps_counter", -1)) if model is not None else -1
         if mode == 4:
             draws = getattr(model, "_searcher_rw_draws", None) if model is not None else None

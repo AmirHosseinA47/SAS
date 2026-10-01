@@ -2699,9 +2699,14 @@ class WildFireModel(mesa.Model):
             sm = getattr(item, "smoke", None)
             if sm is not None and sm.is_smoke_active():
                 smoke.add(cell)
-        vis = getattr(self, "visibility_model", None)
-        for cell in (getattr(vis, "smoke_obscured_cells", None) or ()):
+        # The visibility smoke lives on the model's STATE (review LOW-1): its smoke_obscured_cells set and the
+        # status map the searcher gate reads (UAVExecutor._collect_strict_smoke_cells).
+        state = getattr(getattr(self, "visibility_model", None), "state", None)
+        for cell in (getattr(state, "smoke_obscured_cells", None) or ()):
             smoke.add((int(cell[0]), int(cell[1])))
+        for cell, status in (getattr(state, "observation_status_map", None) or {}).items():
+            if str(getattr(status, "value", status) or "").strip().lower() == "smoke_obscured":
+                smoke.add((int(cell[0]), int(cell[1])))
         return burning, smoke
 
     def _init_victim_search_belief(self) -> None:
