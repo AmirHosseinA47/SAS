@@ -433,3 +433,76 @@ STOP. Awaiting confirmation of this design and decisions D-1..D-6 before Part 2.
        case (B), mission-phase steps that differ.
 
 PROCEEDING to Part 2 and Part 3 as pre-registered, with 11.3 / 11.9 / 11.10.
+
+================================================================================
+12. AMENDMENTS FROM PART 2 - RECORDED BEFORE ANY PART 3 RUN (governs where it differs)
+================================================================================
+12.1 FOUR MORE ONE-SIDED RULES FOUND WHILE IMPLEMENTING, mirrored under the same switch by the section-1
+     criterion (iv) (asymmetric across compass directions, no stated derivation; all from a4a01b4b):
+     T15 the escape's minimum target distance relaxes near the WEST safe bound only (ax < safe_x_min + 4)
+         -> also near the east bound (ax > safe_x_max - 4).
+     T16 the y-commit scores: a NORTH commit adds a band bonus (cy - y_force_min) * 0.45 and a gradual-band
+         bonus 0.55 that a SOUTH commit does not get (escape and corridor loops) -> the south mirrors, at the
+         same places in the operation sequence (helper _add_y_commit_terms).
+     T17 the force-interior corridor pick: north takes the DEEPEST north point then the farthest, south the
+         SHALLOWEST south point then the nearest -> south takes the deepest, then the farthest
+         (helper _south_commit_interior_pick).
+     T18 the edge-sweep bonus of _uncovered_region_bonus: 10 at the west edge, 8.5 at the east -> 10 at both.
+     Found by the review (3 of 3 review agents, one per lens: identity, privileged reads, symmetry):
+     T19 the y-camping GATE of _wind_aware_y_commit: lower camping reaches 6 rows past the midline (all
+         y <= 30) while upper camping stops at it (all y >= 25), so under north / south wind a tail over
+         y 14..29 is gated in and its mirror over 20..35 is not -> upper camping mirrored (all y >= 19)
+         for the gate. East / west wind is unchanged (the disjoint-halves rule decides after the gate).
+12.2 REVIEW FIXES (BLOCKER and MINOR, all under the switch):
+     - x-LANES: the untuned escape pull and the corridor second-strip pull are now suppressed inside an
+       x-lane, as _finalize_coverage_target already suppressed its clamp. Without it, under north / south
+       wind in B, C and D (2 searchers, x-lanes 0..24 / 25..49) each searcher's other strip is unreachable
+       and its pull would never release - the F2 defect class.
+     - an exact tie in the nearer-strip choice (on the 50 grid only the generator's unknown-position
+       fallback ax = 24.5) neither pulls nor latches.
+     - the communication planner's rescue test skips undetected victims (value-inert).
+     - the T8 docstring now gives the margin derivation instead of a single run.
+     - the hand-back guards also run SEARCHER_TARGETING 2.
+12.3 CORRECTIONS TO THE TEXT ABOVE
+     - 11.8 / T7: the untuned ESCAPE score is ORDER-FREE - each pending strip pulls the cells on its side
+       (the shipped west-wind rule, generalised; equal to it under west wind). The T7 order is enforced by
+       _finalize_coverage_target's clamp and the corridor's second-strip pull.
+     - 11.10, case (A): after the last detection _finalize_coverage_target applies no x clamp and no target
+       hold and the generator forces no coverage escape, but the y-commit is STILL updated by the corridor
+       generator and applied by _finalize_coverage_target.
+     - T13 (lawnmower, kept): its lanes always advance toward +x and an east / west-wind sweep starts at
+       y_min. It is reached essentially only outside coverage mode (in the untuned arm: after the last
+       detection). A residual orientation, not a mirror of the wind as 2.2 said.
+     - SECTION 4 / F5, REWORDED (review lens 2): with the switch on, no privileged victim information is
+       READ by the searcher chain, by the Bayes arms (hand-back steps included) or by the mission-goal
+       computation. It can still reach them INDIRECTLY through the rescue side, which this round does not
+       touch: the route_blocked revalidation (wildfire_model.py _revalidate_route_blocked_firefighters,
+       victim_cells over every live marker, detected or not), the stale clear gated on
+       _any_victim_needs_rescue, and the release relabel test every LIVE victim's TRUE cell. That changes
+       firefighter availability, dispatch timing and firefighting, and so the fire the searcher sees (A3),
+       active rescues and the mission phase. These three read sites are rescue-side privileged reads beyond
+       A7 ("after detection"); they are added to the record for the information map. Closing them changes
+       rescue behaviour and needs its own ruling.
+     - the stepped hand-back test (6.2 c) verifies the CALL SITES on stepped models (targeting 0 / 2 / 3);
+       the information-flow guard runs on a frozen state. Neither proves the absence of the indirect
+       channel above.
+12.4 RESIDUAL ORIENTATION TIE-BREAKS - FOUND, RECORDED, NOT CHANGED (they are iteration / tie orders, not
+     settings; changing them reworks hazard routing and needs a ruling):
+     - the greedy route step and its BFS fallbacks try E, S, W, N and keep the first strictly better
+       (uav_executor.py _forced_progress_direction and neighbours): diagonal legs are x-first in three
+       quadrants and y-first in the south-west, on every routed coverage step;
+     - direction choosers: _choose_best_direction ties go N > W > S > E; the gate retreat and re-rank ties
+       E > S > W > N; the exploration fallback adds +0.5 to a compass direction fixed by the UAV id;
+     - lattice / scan order: the gradual-escape centre (x_min+x_max)//2 = 24 (mirror 25), its sidestep
+       order, the escape picker's odd/odd skip anchored at x_min / y_min, argmax scans low-x-first, the
+       legacy fallback's even lattice.
+     So the untuned search contains no absolute coordinate and no compass-side SETTING; it still breaks
+     exact ties in fixed compass orders.
+12.5 UPDATED PREDICTIONS (replace 7.4's second bullet)
+     - Item 1 acts under EVERY wind: T18 from step 0 whenever a searcher's x-span is under 0.55 of the grid
+       span (most early steps); T15 near the east bound; T16 / T17 under any south commit; T19 under north
+       / south wind; T7 under east / north / south wind; T9 under south / east wind; T2 / T3 on a strip
+       camp. So almost every seed will differ between the arms under every wind, west included.
+     - T15-T19 are not attributed separately; item 1 is attributed as a whole, item 2 by cases (A) / (B).
+12.6 Review agents: 3 of 3 used. Any later fix is verified by tests and the identity wave, not by a further
+     review agent.

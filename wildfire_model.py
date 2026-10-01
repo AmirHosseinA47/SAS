@@ -58,6 +58,8 @@ from src_extension.adaptation.global_adaptation_generator import GlobalAdaptatio
 from src_extension.adaptation.local_adaptation_generator import (
     LocalAdaptationSpaceGenerator,
     POST_RESCUE_COVERAGE_DURATION,
+    _count_known_mission_unresolved,
+    _count_known_undetected_victims,
     _count_unresolved_victims,
     _wind_search_state,
     resolve_victim_searcher_uav_ids,
@@ -3696,14 +3698,32 @@ class WildFireModel(mesa.Model):
 
         alive_victims_remaining = 0
         active_rescues = 0
-        for payload in victims.values():
-            if not isinstance(payload, dict):
-                continue
-            if payload.get("dead") or payload.get("rescued") or payload.get("unreachable"):
-                continue
-            alive_victims_remaining += 1
-            if payload.get("rescue_assigned") or payload.get("active_firefighter_id"):
-                active_rescues += 1
+        if agents.searcher_untuned():
+            # untune P3 (ruling D-3): "is the mission finished?" = briefing - rescued - observed dead
+            # (unreachable stays counted); never the fate of an undetected victim. active_rescues keeps its
+            # value - only a detected victim can be assigned - but is taken over detected victims only, so
+            # this loop reads no undetected victim's truth.
+            alive_victims_remaining = _count_known_mission_unresolved(self)
+            managed = getattr(self, "managed_victims", None)
+            for vid, payload in victims.items():
+                if not isinstance(payload, dict):
+                    continue
+                state = managed.get(vid) if isinstance(managed, dict) else None
+                if state is None or not bool(getattr(state, "confirmed", False)):
+                    continue
+                if payload.get("dead") or payload.get("rescued") or payload.get("unreachable"):
+                    continue
+                if payload.get("rescue_assigned") or payload.get("active_firefighter_id"):
+                    active_rescues += 1
+        else:
+            for payload in victims.values():
+                if not isinstance(payload, dict):
+                    continue
+                if payload.get("dead") or payload.get("rescued") or payload.get("unreachable"):
+                    continue
+                alive_victims_remaining += 1
+                if payload.get("rescue_assigned") or payload.get("active_firefighter_id"):
+                    active_rescues += 1
 
         alive_firefighters = sum(
             1
@@ -3973,7 +3993,12 @@ class WildFireModel(mesa.Model):
             self._sync_firefighter_operational_knowledge()
 
     def _activate_post_rescue_coverage_for_searchers(self) -> None:
-        if _count_unresolved_victims(self) <= 0:
+        if agents.searcher_untuned():
+            # untune P2 (ruling D-3): the burst is a SEARCH burst - armed only while a victim is still to be
+            # found (briefing minus detected), not while a found victim awaits rescue.
+            if _count_known_undetected_victims(self) <= 0:
+                return
+        elif _count_unresolved_victims(self) <= 0:
             return
         for vs_id in resolve_victim_searcher_uav_ids(self):
             wind_state = _wind_search_state(self, vs_id)

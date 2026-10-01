@@ -2206,6 +2206,12 @@ def victim_spawn_mode() -> int:
     return 1 if _exact_integer(getattr(cfv, "VICTIM_SPAWN_MODE", 0)) == 1 else 0
 
 
+def searcher_untuned() -> bool:
+    """SEARCHER_UNTUNED - the untuned current search (outputs/untune_part1.txt). Ships 0; on ONLY when
+    _exact_integer(raw) == 1. Read at call time, never cached."""
+    return _exact_integer(getattr(cfv, "SEARCHER_UNTUNED", 0)) == 1
+
+
 def fix3b_param(name: str, default: float) -> float:
     """A fix3b numeric parameter read at call time (so --set reaches it); a non-numeric value -> default."""
     try:

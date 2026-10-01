@@ -226,6 +226,14 @@ SEARCHER_TARGETING_AGE_BUCKET = 10       # least-observed: ages within this many
 # that are not a depot and not burning at t0, from a dedicated digest-seeded stream (the fire stream is
 # unchanged). agents.victim_spawn_mode.
 VICTIM_SPAWN_MODE = 0
+# ---- untune round (outputs/untune_part1.txt, rulings in its section 11): the UNTUNED CURRENT SEARCH.
+# Ships 0 = the current searcher exactly as before; on ONLY on an exact 1 (agents.searcher_untuned).
+# On: (item 1) no absolute grid coordinate and no compass-side preference in the current chain - the x-strip
+# camp escape is symmetric (T1-T5), the absolute fallbacks are grid-relative (T6), the x-sweep order is
+# wind-uniform (downwind strip first along the wind, nearer strip first across it; T7) and every downwind
+# edge blocks 4 cells (T9); (item 2) no privileged victim count - the searcher's count is the briefing total
+# minus victims DETECTED, the mission-goal count is the briefing total minus rescued minus observed dead.
+SEARCHER_UNTUNED = 0
 # The ONE battery threshold pair (fix1 item 2), read at call time through
 # agents.battery_low_threshold() / battery_critical_threshold() by every reader: the UAV
 # labels, both analyzers, the resource model, the global monitor, the dashboard alert and

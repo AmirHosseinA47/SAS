@@ -1750,7 +1750,13 @@ class UAVExecutor:
                     return True
                 if status in handled_statuses:
                     return True
-        markers = getattr(model, "victim_marker_agents", None)
+        # untune P4: the marker is the ground-truth agent, not an observation - skipped when SEARCHER_UNTUNED
+        # is on. (Inert either way: a runtime record's victim is confirmed, which returned True above.)
+        import agents as agents_module  # lazy: agents is a root module
+
+        markers = (
+            None if agents_module.searcher_untuned() else getattr(model, "victim_marker_agents", None)
+        )
         if isinstance(markers, dict):
             marker = markers.get(victim_id)
             if marker is not None:

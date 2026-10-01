@@ -156,9 +156,11 @@ def _coverage_y_span(wind_state: dict[str, Any]) -> tuple[int | None, int | None
 def _west_strip_reached(wind_state: dict[str, Any], safe_x_min: int) -> bool:
     """True once the searcher has occupied the reachable west interior.
 
-    The static downwind west edge (x <= 3) is not a stable camp; A/west 505
-    median x was 11. Release west-first pull at that reachable band so an
-    upwind (east) sweep can start before the never_detected timeout.
+    The static downwind west edge (x <= 3) is not a stable camp. The strip is the band a
+    searcher can occupy next to the downwind edge block and the interior margin:
+    x <= x_min + WIND_INTERIOR_MARGIN + COVERAGE_SWEEP_BAND_MARGIN (= safe_x_min + 10 = 12 on the
+    50 grid; mirrored x >= 37 by _east_strip_reached). Release the west-first pull there so the
+    other sweep can start before the never_detected timeout.
     """
     x_lo, _ = _coverage_x_span(wind_state)
     if x_lo is None:
@@ -231,7 +233,8 @@ def _uncovered_region_bonus(
             if cx <= safe_x_lo + COVERAGE_SWEEP_BAND_MARGIN:
                 bonus += COVERAGE_EDGE_SWEEP_BONUS
             if cx >= safe_x_hi - COVERAGE_SWEEP_BAND_MARGIN:
-                bonus += COVERAGE_EDGE_SWEEP_BONUS * 0.85
+                # untune T18: the same bonus at both x edges (shipped: the east edge at 0.85 of the west's).
+                bonus += COVERAGE_EDGE_SWEEP_BONUS * (1.0 if _searcher_untuned() else 0.85)
     return bonus
 
 
@@ -257,6 +260,264 @@ def _corridor_target_x_cap(
     if coverage_active:
         return safe_x_hi
     return max(_coverage_safe_x_min(x_min), min(CORRIDOR_WEST_TARGET_X_MAX, safe_x_hi))
+
+
+# ---- untune round (outputs/untune_part1.txt): the untuned current search, behind SEARCHER_UNTUNED. Every
+# helper below is reached only when agents.searcher_untuned() is True; at the shipped 0 none is called.
+
+
+def _searcher_untuned() -> bool:
+    import agents as agents_module  # lazy: agents is a root module
+
+    return agents_module.searcher_untuned()
+
+
+def _x_strip_edges(x_min: int, x_max: int) -> tuple[int, int]:
+    """The two x-strips of the coverage sweep: (west strip's inner edge, east strip's inner edge).
+
+    The thresholds of _west_strip_reached / _east_strip_reached: COVERAGE_SWEEP_BAND_MARGIN + 4 inside the
+    safe bounds, i.e. x_min + WIND_EDGE_MARGIN + COVERAGE_SWEEP_BAND_MARGIN + 4 = x_min + 12 on the west side
+    (= x_min + WIND_INTERIOR_MARGIN + COVERAGE_SWEEP_BAND_MARGIN: the band a searcher can occupy next to the
+    downwind edge block and the interior margin) and its mirror x_max - 12 on the east (untune T8).
+    """
+    west_edge = _coverage_safe_x_min(x_min) + COVERAGE_SWEEP_BAND_MARGIN + 4
+    east_edge = _coverage_safe_x_max(x_max) - COVERAGE_SWEEP_BAND_MARGIN - 4
+    return west_edge, east_edge
+
+
+def _x_strip_camp_side(recent_x: Any, x_min: int, x_max: int) -> str | None:
+    """untune T1-T3: 'west' / 'east' when all of the last CORRIDOR_DIVERSITY_MIN_STEPS x samples lie in that
+    x-strip, else None. Symmetric and grid-relative, any wind (replaces the absolute east band x >= 38 and
+    the west-wind-only x <= 12)."""
+    recent = list(recent_x or [])
+    if len(recent) < CORRIDOR_DIVERSITY_MIN_STEPS:
+        return None
+    tail = [int(x) for x in recent[-CORRIDOR_DIVERSITY_MIN_STEPS:]]
+    if not tail:
+        return None
+    west_edge, east_edge = _x_strip_edges(x_min, x_max)
+    if all(x <= west_edge for x in tail):
+        return "west"
+    if all(x >= east_edge for x in tail):
+        return "east"
+    return None
+
+
+def _corridor_target_x_bounds_untuned(
+    wind_state: dict[str, Any], x_min: int, x_max: int,
+) -> tuple[int | None, int]:
+    """untune T2 / T4 / T5: (floor, cap) on the x of escape candidates when the corridor fails.
+
+    KEEP THE FIX, REMOVE THE SIDE: a searcher camped in the EAST strip is capped at min(tail) - 8 (the shipped
+    rule), one camped in the WEST strip gets the mirror floor max(tail) + 8 - one sensor radius out of the
+    camped band either way, under any wind. Otherwise no side cap: safe_x_max, whether coverage is active or
+    not (no CORRIDOR_WEST_TARGET_X_MAX). floor None = no floor.
+    """
+    safe_x_lo = _coverage_safe_x_min(x_min)
+    safe_x_hi = _coverage_safe_x_max(x_max)
+    recent = list(wind_state.get("recent_x_positions") or [])
+    side = _x_strip_camp_side(recent, x_min, x_max)
+    if side is not None:
+        tail = [int(x) for x in recent[-CORRIDOR_DIVERSITY_MIN_STEPS:]]
+        if side == "east":
+            return None, max(safe_x_lo, min(tail) - 8)
+        return min(safe_x_hi, max(tail) + 8), safe_x_hi
+    return None, safe_x_hi
+
+
+def _untuned_x_sweep_first(
+    wind_state: dict[str, Any],
+    wind_label: Any,
+    ax: float | None,
+    safe_x_min: int,
+    safe_x_max: int,
+) -> str | None:
+    """untune T7 (ruling D-1): the x-strip a coverage sweep visits FIRST, symmetric under every wind.
+
+    Along the wind (east / west) the DOWNWIND strip: wind_vector_from_direction pushes fire to -x under
+    'west' and to +x under 'east' - the side the hybrid wind term already scores, as fix2's y rule does for
+    north / south. Across the wind (north / south) the strip NEARER the searcher the first time it is asked,
+    latched per wind in wind_state (no compass preference). None - no pull, nothing latched - while the
+    searcher's position is unknown or exactly equidistant (the shipped rule also needs ax).
+    """
+    w = normalize_wind_direction(wind_label)
+    if w in ("east", "west"):
+        return w
+    latch = wind_state.get("untuned_x_sweep_first")
+    if isinstance(latch, (list, tuple)) and len(latch) == 2 and latch[0] == w:
+        return str(latch[1])
+    if ax is None:
+        return None
+    d_west, d_east = float(ax) - safe_x_min, safe_x_max - float(ax)
+    if d_west == d_east:
+        # an exact tie (on the 50 grid only the generator's unknown-position fallback ax = 24.5): no
+        # compass default - no pull and no latch until a position decides it
+        return None
+    first = "west" if d_west < d_east else "east"
+    wind_state["untuned_x_sweep_first"] = (w, first)
+    return first
+
+
+def _untuned_x_sweep_pull(
+    first: str | None,
+    wind_state: dict[str, Any],
+    ax: float | None,
+    safe_x_min: int,
+    safe_x_max: int,
+) -> str | None:
+    """untune T7: the strip the coverage clamp pulls toward now - the first strip while it is pending, then
+    the second - under the shipped latches and agent-position guards (_finalize_coverage_target's west-wind
+    rule with the order made wind-uniform). None = no pull."""
+    if first is None or ax is None:
+        return None
+    second = "east" if first == "west" else "west"
+    for side in (first, second):
+        if (
+            side == "west"
+            and _west_sweep_pending(wind_state, safe_x_min)
+            and float(ax) > safe_x_min + 4
+        ):
+            return "west"
+        if (
+            side == "east"
+            and _east_sweep_pending(wind_state, safe_x_max)
+            and float(ax) < safe_x_max - 4
+        ):
+            return "east"
+    return None
+
+
+def _untuned_second_strip_pull(
+    first: str | None, west_pending: bool, east_pending: bool,
+) -> str | None:
+    """untune T7: the corridor score's second-sweep pull - toward the SECOND strip once the first is done
+    and while the second is pending (shipped: toward east, under west wind only)."""
+    if first == "west" and not west_pending and east_pending:
+        return "east"
+    if first == "east" and not east_pending and west_pending:
+        return "west"
+    return None
+
+
+def _south_commit_interior_pick(
+    candidates: list[tuple[float, float]], ax: float, ay: float,
+) -> tuple[float, float]:
+    """The force-interior corridor pick under a SOUTH y-commit.
+
+    Shipped: min over (-y, distance) - the SHALLOWEST south point, then the nearest - while the north pick is
+    max over (y, distance), the deepest north point, then the farthest. untune T17: the mirror of the north
+    pick, min over (y, -distance): the deepest south point, then the farthest."""
+    if _searcher_untuned():
+        return min(
+            candidates,
+            key=lambda point: (
+                float(point[1]),
+                -(abs(point[0] - ax) + abs(point[1] - ay)),
+            ),
+        )
+    return min(
+        candidates,
+        key=lambda point: (
+            -float(point[1]),
+            abs(point[0] - ax) + abs(point[1] - ay),
+        ),
+    )
+
+
+def _add_escape_x_pull(
+    score: float,
+    *,
+    untuned: bool,
+    wind_label: str,
+    west_pending: bool,
+    east_pending: bool,
+    ax: float,
+    cx: int,
+    safe_x_min: int,
+    safe_x_max: int,
+    wind_state: dict[str, Any],
+) -> float:
+    """The escape score's x-sweep pull (coverage mode): the shipped operations, in the shipped order.
+
+    Shipped: under west wind a latched pull toward a pending strip on either side (east only through
+    _allow_east_force); under every other wind an UNLATCHED pull west, (ax - cx) * 0.75 for any cell west of
+    the searcher, with no release - the F2 defect. untune T7 / F2 (ruling 11.8): the latched both-sides rule
+    under EVERY wind (symmetric under reflecting x together with the pending flags), and none inside an x-lane.
+    The escape score is ORDER-FREE (each pending strip pulls cells on its side); the T7 order is enforced by
+    _finalize_coverage_target's clamp and the corridor's second-strip pull."""
+    if untuned:
+        if _active_lane_axis(wind_state) == "x":
+            # as in _finalize_coverage_target: inside an x-lane the other strip is unreachable, so its pull
+            # would never release (the F2 defect class) - no x-sweep pull at all
+            return score
+        if (
+            west_pending
+            and ax > safe_x_min + 4
+            and cx < ax
+        ):
+            score += (ax - cx) * 0.75
+        elif (
+            east_pending
+            and ax < safe_x_max - 4
+            and cx > ax
+        ):
+            score += (cx - ax) * 0.75
+    elif wind_label == "west":
+        if (
+            west_pending
+            and ax > safe_x_min + 4
+            and cx < ax
+        ):
+            score += (ax - cx) * 0.75
+        elif (
+            east_pending
+            and _allow_east_force(wind_state)
+            and ax < safe_x_max - 4
+            and cx > ax
+        ):
+            score += (cx - ax) * 0.75
+    elif ax > safe_x_min + 4 and cx < ax:
+        score += (ax - cx) * 0.75
+    return score
+
+
+def _add_y_commit_terms(
+    score: float,
+    *,
+    untuned: bool,
+    coverage_active: bool,
+    commit: Any,
+    cy: int,
+    ay: float,
+    y_min: int,
+    y_max: int,
+    y_force_min: int | None,
+    y_force_max: int | None,
+) -> float:
+    """The y-commit terms of the escape and corridor scores: the shipped operations, in the shipped order.
+
+    Shipped: a north commit adds a band bonus (cy - y_force_min) * 0.45 and a gradual-band bonus 0.55 that a
+    south commit does not get. untune T16: the south mirrors of both, at the same places in the sequence
+    (symmetric under reflecting y)."""
+    if coverage_active and y_force_min is not None and cy >= y_force_min:
+        score += (cy - y_force_min) * 0.45
+    if untuned and coverage_active and y_force_max is not None and cy <= y_force_max:
+        # untune T16: the south mirror of the north commit's band bonus above.
+        score += (y_force_max - cy) * 0.45
+    if coverage_active and commit == "north" and y_force_min is not None:
+        if ay < y_max - COVERAGE_Y_COMMIT_PENETRATE_MARGIN:
+            north_band = float(ay) + COVERAGE_Y_COMMIT_GRADUAL_STEP
+            if float(cy) <= north_band:
+                score += (float(cy) - float(ay)) * 0.55
+        score += max(0.0, float(cy) - float(ay)) * 0.35
+    if coverage_active and commit == "south" and y_force_max is not None:
+        if untuned and ay > y_min + COVERAGE_Y_COMMIT_PENETRATE_MARGIN:
+            # untune T16: the south mirror of the north commit's gradual-band bonus.
+            south_band = float(ay) - COVERAGE_Y_COMMIT_GRADUAL_STEP
+            if float(cy) >= south_band:
+                score += (float(ay) - float(cy)) * 0.55
+        score += max(0.0, float(ay) - float(cy)) * 0.35
+    return score
 
 
 _VICTIM_SEARCHER_ROLES = frozenset({"victim_searcher", "victim_search"})
@@ -789,6 +1050,83 @@ def _count_unresolved_victims(simulation: Any | None) -> int:
     return unresolved
 
 
+# ---- untune item 2 (outputs/untune_part1.txt sections 3 and 11.3): what a real team knows. TWO counts for
+# TWO questions. Neither reads victim_marker_agents, a victim's position, or the fate of a victim nobody has
+# detected.
+
+
+def _victim_briefing_count(simulation: Any | None) -> int:
+    """N_brief, the mission briefing's victim total: the model module's NUM_VICTIMS (apply_scenario_config
+    sets it; the fix3b belief's n_brief reads the same global), else common_fixed_variables'. Never
+    len(managed_victims)."""
+    if simulation is not None:
+        import sys
+
+        for cls in type(simulation).__mro__:
+            module = sys.modules.get(getattr(cls, "__module__", "") or "")
+            value = getattr(module, "NUM_VICTIMS", None) if module is not None else None
+            if isinstance(value, int) and not isinstance(value, bool):
+                return max(0, value)
+    import common_fixed_variables as cfv_module  # lazy: a root module
+
+    return max(0, int(getattr(cfv_module, "NUM_VICTIMS", 0) or 0))
+
+
+def _detected_victim_ids(simulation: Any | None) -> set[str]:
+    """Victims the team has DETECTED: the managed confirmed flag (set at the first in-radius detection, or at
+    dispatch, which needs it; never reset) union the victim runtime model's record ids - the fix3b belief's
+    detected_ids (wildfire_model.py:2767-2771). Detection events only (S)."""
+    detected: set[str] = set()
+    if simulation is None:
+        return detected
+    managed = getattr(simulation, "managed_victims", None)
+    if isinstance(managed, dict):
+        for vid, state in managed.items():
+            if state is not None and bool(getattr(state, "confirmed", False)):
+                detected.add(str(vid))
+    runtime = getattr(simulation, "victim_runtime_model", None)
+    records = getattr(runtime, "victims", None) if runtime is not None else None
+    if isinstance(records, dict):
+        detected.update(str(vid) for vid in records)
+    return detected
+
+
+def _count_known_undetected_victims(simulation: Any | None) -> int:
+    """The SEARCHER's count (ruling D-3): "is any victim still to be FOUND?" = N_brief - victims detected.
+
+    A detected victim - alive, awaiting rescue, unreachable or dead - needs no more searching. A victim that
+    died unseen stays counted, as it would for a real team. Replaces _count_unresolved_victims on the
+    searcher path when SEARCHER_UNTUNED is on. No simulation -> 0, as the shipped count."""
+    if simulation is None:
+        return 0
+    return max(0, _victim_briefing_count(simulation) - len(_detected_victim_ids(simulation)))
+
+
+def _count_known_mission_unresolved(simulation: Any | None) -> int:
+    """The MISSION-GOAL count (ruling D-3): "is the mission finished?" = N_brief - rescued - observed dead.
+
+    rescued: the managed rescued flag / status, set only by a completed rescue. observed dead: dead AND
+    detected before it died (ruling D-2). Nothing about an undetected victim is read but its detection flag
+    (a rescue needs a detection, so restricting both terms to detected victims changes no value). Unreachable
+    victims stay counted. Replaces the mission goals' alive_victims_remaining when SEARCHER_UNTUNED is on."""
+    if simulation is None:
+        return 0
+    detected = _detected_victim_ids(simulation)
+    resolved = 0
+    managed = getattr(simulation, "managed_victims", None)
+    if isinstance(managed, dict):
+        for vid, state in managed.items():
+            if state is None or str(vid) not in detected:
+                continue
+            status = str(getattr(state, "status", "") or "").strip().lower()
+            if bool(getattr(state, "rescued", False)) or status == "rescued":
+                resolved += 1
+                continue
+            if bool(getattr(state, "dead", False)) or status == "dead":
+                resolved += 1
+    return max(0, _victim_briefing_count(simulation) - resolved)
+
+
 def _corridor_diversity_failure(wind_state: dict[str, Any]) -> bool:
     recent = list(wind_state.get("recent_x_positions") or [])
     if len(recent) < CORRIDOR_DIVERSITY_MIN_STEPS:
@@ -796,6 +1134,10 @@ def _corridor_diversity_failure(wind_state: dict[str, Any]) -> bool:
     tail = [int(x) for x in recent[-CORRIDOR_DIVERSITY_MIN_STEPS:]]
     if not tail:
         return False
+    if _searcher_untuned():
+        # untune T1: no absolute band. A camp in either x-strip (_x_strip_camp_side) spans at most 12 cells,
+        # so the narrow-span test below already covers it - the result is the shipped one for every tail.
+        return max(tail) - min(tail) <= CORRIDOR_NARROW_X_SPAN
     if all(x >= CORRIDOR_DIVERSITY_X_BAND for x in tail):
         return True
     if (
@@ -852,6 +1194,23 @@ def _coverage_y_upper_camping(
     lower_max, upper_min = _grid_y_half_split(y_min, y_max)
     tail = [int(y) for y in recent[-COVERAGE_Y_SWEEP_MIN_STEPS:]]
     return bool(tail) and min(tail) >= upper_min
+
+
+def _coverage_y_upper_camping_untuned(
+    wind_state: dict[str, Any], y_min: int, y_max: int,
+) -> bool:
+    """untune T19: the mirror of _coverage_y_lower_camping for the camping GATE of _wind_aware_y_commit.
+
+    Lower camping reaches COVERAGE_SWEEP_BAND_MARGIN rows past the midline (all y < upper_min + margin, y <= 30
+    on the 50 grid) while the shipped upper camping stops at the midline (all y >= upper_min = 25): under north
+    / south wind a tail over y 14..29 is gated in, its mirror over 20..35 is not. Mirrored: all y > lower_max -
+    margin (y >= 19)."""
+    recent = list(wind_state.get("recent_y_positions") or [])
+    if len(recent) < COVERAGE_Y_SWEEP_MIN_STEPS:
+        return False
+    lower_max, _ = _grid_y_half_split(y_min, y_max)
+    tail = [int(y) for y in recent[-COVERAGE_Y_SWEEP_MIN_STEPS:]]
+    return bool(tail) and min(tail) > lower_max - COVERAGE_SWEEP_BAND_MARGIN
 
 
 def _coverage_y_commit_penetrated(
@@ -952,7 +1311,11 @@ def _wind_aware_y_commit(
     """
     if not (
         _coverage_y_lower_camping(wind_state, y_min, y_max)
-        or _coverage_y_upper_camping(wind_state, y_min, y_max)
+        or (
+            _coverage_y_upper_camping_untuned(wind_state, y_min, y_max)
+            if _searcher_untuned()
+            else _coverage_y_upper_camping(wind_state, y_min, y_max)
+        )
     ):
         return None
     wind = str(wind_state.get("last_wind_direction") or "").strip().lower()
@@ -1212,16 +1575,27 @@ def _finalize_coverage_target(
         return target
     tx = float(target[0])
     ty = float(target[1])
-    safe_x_min = (
-        _coverage_safe_x_min(x_min)
-        if x_min is not None
-        else COVERAGE_INTERIOR_X_MIN
-    )
-    safe_x_max = (
-        _coverage_safe_x_max(x_max)
-        if x_max is not None
-        else COVERAGE_INTERIOR_X_MAX
-    )
+    untuned = _searcher_untuned()
+    if untuned:
+        # untune T6: grid-relative fallbacks instead of the absolute 8 / 30 (every caller passes both bounds,
+        # so neither fallback is reached either way). x runs over HEIGHT (_grid_bounds).
+        import common_fixed_variables as cfv_module  # lazy: a root module
+
+        safe_x_min = _coverage_safe_x_min(x_min if x_min is not None else 0)
+        safe_x_max = _coverage_safe_x_max(
+            x_max if x_max is not None else int(getattr(cfv_module, "HEIGHT", 50)) - 1
+        )
+    else:
+        safe_x_min = (
+            _coverage_safe_x_min(x_min)
+            if x_min is not None
+            else COVERAGE_INTERIOR_X_MIN
+        )
+        safe_x_max = (
+            _coverage_safe_x_max(x_max)
+            if x_max is not None
+            else COVERAGE_INTERIOR_X_MAX
+        )
     coverage_active = _coverage_mode_active(wind_state)
     if coverage_active:
         tx = max(safe_x_min, min(safe_x_max, tx))
@@ -1236,6 +1610,16 @@ def _finalize_coverage_target(
         east_goal = float(safe_x_max - COVERAGE_SWEEP_BAND_MARGIN)
         if x_lane_active:
             pass
+        elif untuned:
+            # untune T7 (ruling D-1): one wind-uniform order - the first strip while pending, then the
+            # second; under west wind this is exactly the branch below.
+            _mark_x_strip_progress(wind_state, safe_x_min, safe_x_max)
+            first = _untuned_x_sweep_first(wind_state, wind_label, ax, safe_x_min, safe_x_max)
+            pull = _untuned_x_sweep_pull(first, wind_state, ax, safe_x_min, safe_x_max)
+            if pull == "west":
+                tx = min(tx, west_goal)
+            elif pull == "east":
+                tx = max(tx, east_goal)
         elif wind_label == "west":
             _mark_x_strip_progress(wind_state, safe_x_min, safe_x_max)
             if (
@@ -1347,7 +1731,11 @@ def _update_unresolved_coverage_state(
     agent_x: int | float | None = None,
     agent_y: int | float | None = None,
 ) -> None:
-    wind_state["unresolved_victim_count"] = _count_unresolved_victims(simulation)
+    if _searcher_untuned():
+        # untune item 2 (ruling D-3): the searcher's question is "is any victim still to be FOUND?"
+        wind_state["unresolved_victim_count"] = _count_known_undetected_victims(simulation)
+    else:
+        wind_state["unresolved_victim_count"] = _count_unresolved_victims(simulation)
     step_index = _simulation_step(simulation)
     post_rescue = int(wind_state.get("post_rescue_coverage_steps_remaining", 0) or 0)
     # fix1 item 6: POST_RESCUE_COVERAGE_DURATION counts steps, not calls.
@@ -1672,6 +2060,18 @@ def _downwind_edge_blocked(
     wind_direction: str, cx: int, cy: int, x_min: int, x_max: int, y_min: int, y_max: int,
 ) -> bool:
     w = normalize_wind_direction(wind_direction)
+    if _searcher_untuned():
+        # untune T9 (ruling D-4): the same 4-cell block on every downwind edge (shipped: 4 / 3 / 5 / 4 cells
+        # for north / south / east / west, an asymmetry with no derivation).
+        if w == "north":
+            return cy >= y_max - 3
+        if w == "south":
+            return cy <= y_min + 3
+        if w == "east":
+            return cx >= x_max - 3
+        if w == "west":
+            return cx <= x_min + 3
+        return False
     if w == "north" and cy >= y_max - 3:
         return True
     if w == "south" and cy <= y_min + 2:
@@ -3675,13 +4075,24 @@ class LocalAdaptationSpaceGenerator:
             min_escape_dist = max(min_escape_dist, 20.0)
         safe_x_min = _coverage_safe_x_min(x_min)
         safe_x_max = _coverage_safe_x_max(x_max)
+        untuned = _searcher_untuned()
         if coverage_active and ax < safe_x_min + 4:
+            min_escape_dist = max(4.0, min(min_escape_dist, 8.0))
+        elif untuned and coverage_active and ax > safe_x_max - 4:
+            # untune T15: the mirror of the west-bound relaxation above, at the east bound.
             min_escape_dist = max(4.0, min(min_escape_dist, 8.0))
         corridor_fail = _corridor_diversity_failure(wind_state)
         lower_y_max, upper_y_min = _grid_y_half_split(y_min, y_max)
-        corridor_x_cap = _corridor_target_x_cap(
-            wind_state, x_min, x_max, coverage_active=coverage_active,
-        )
+        corridor_x_floor: int | None = None
+        if untuned:
+            # untune T2 / T4 / T5: symmetric strip-camp floor / cap, any wind, no absolute coordinate.
+            corridor_x_floor, corridor_x_cap = _corridor_target_x_bounds_untuned(
+                wind_state, x_min, x_max,
+            )
+        else:
+            corridor_x_cap = _corridor_target_x_cap(
+                wind_state, x_min, x_max, coverage_active=coverage_active,
+            )
         _update_coverage_y_commit(wind_state, y_min, y_max, float(ay))
         commit = wind_state.get("coverage_y_commit")
         y_force_min = _coverage_y_commit_target_y(wind_state, y_min, y_max) if (
@@ -3713,6 +4124,8 @@ class LocalAdaptationSpaceGenerator:
                 if not _lane_allows_cell(lane, cx, cy):
                     continue
                 if corridor_fail and cx > corridor_x_cap:
+                    continue
+                if corridor_fail and corridor_x_floor is not None and cx < corridor_x_floor:
                     continue
                 if coverage_active:
                     if cx < safe_x_min or cx > safe_x_max:
@@ -3765,32 +4178,30 @@ class LocalAdaptationSpaceGenerator:
                 )
                 score += dist_agent * 0.35
                 if coverage_active:
-                    if _wind_label_from_vector(wind_vector) == "west":
-                        if (
-                            west_pending
-                            and ax > safe_x_min + 4
-                            and cx < ax
-                        ):
-                            score += (ax - cx) * 0.75
-                        elif (
-                            east_pending
-                            and _allow_east_force(wind_state)
-                            and ax < safe_x_max - 4
-                            and cx > ax
-                        ):
-                            score += (cx - ax) * 0.75
-                    elif ax > safe_x_min + 4 and cx < ax:
-                        score += (ax - cx) * 0.75
-                if coverage_active and y_force_min is not None and cy >= y_force_min:
-                    score += (cy - y_force_min) * 0.45
-                if coverage_active and commit == "north" and y_force_min is not None:
-                    if ay < y_max - COVERAGE_Y_COMMIT_PENETRATE_MARGIN:
-                        north_band = float(ay) + COVERAGE_Y_COMMIT_GRADUAL_STEP
-                        if float(cy) <= north_band:
-                            score += (float(cy) - float(ay)) * 0.55
-                    score += max(0.0, float(cy) - float(ay)) * 0.35
-                if coverage_active and commit == "south" and y_force_max is not None:
-                    score += max(0.0, float(ay) - float(cy)) * 0.35
+                    score = _add_escape_x_pull(
+                        score,
+                        untuned=untuned,
+                        wind_label=_wind_label_from_vector(wind_vector),
+                        west_pending=west_pending,
+                        east_pending=east_pending,
+                        ax=ax,
+                        cx=cx,
+                        safe_x_min=safe_x_min,
+                        safe_x_max=safe_x_max,
+                        wind_state=wind_state,
+                    )
+                score = _add_y_commit_terms(
+                    score,
+                    untuned=untuned,
+                    coverage_active=coverage_active,
+                    commit=commit,
+                    cy=cy,
+                    ay=ay,
+                    y_min=y_min,
+                    y_max=y_max,
+                    y_force_min=y_force_min,
+                    y_force_max=y_force_max,
+                )
                 if isinstance(center, (list, tuple)) and len(center) >= 2:
                     score += (abs(cx - int(center[0])) + abs(cy - int(center[1]))) * 0.45
                 if score > best_score:
@@ -3801,6 +4212,8 @@ class LocalAdaptationSpaceGenerator:
             cy = int((y_min + y_max) // 2)
             if corridor_fail:
                 cx = min(cx, corridor_x_cap)
+                if corridor_x_floor is not None:
+                    cx = max(cx, corridor_x_floor)
                 if coverage_active:
                     cx = max(
                         safe_x_min,
@@ -3882,6 +4295,17 @@ fire_cells=fire_cells, smoke_cells=smoke_cells, step_index=step_index,
         _mark_x_strip_progress(wind_state, safe_x_min, safe_x_max)
         west_pending = _west_sweep_pending(wind_state, safe_x_min)
         east_pending = _east_sweep_pending(wind_state, safe_x_max)
+        untuned = _searcher_untuned()
+        second_strip_pull: str | None = None
+        if untuned and coverage_active and _active_lane_axis(wind_state) != "x":
+            # untune T7 (ruling D-1): once the FIRST strip is done, pull toward the second while it is
+            # pending, under every wind (shipped: east only, west wind only). Under west wind first = west,
+            # so this is exactly the shipped term below. None inside an x-lane (as in finalize).
+            second_strip_pull = _untuned_second_strip_pull(
+                _untuned_x_sweep_first(wind_state, wind_norm, ax, safe_x_min, safe_x_max),
+                west_pending,
+                east_pending,
+            )
         for cx in x_values:
             for cy in y_values:
                 if not _lane_allows_cell(lane, cx, cy):
@@ -3924,7 +4348,12 @@ fire_cells=fire_cells, smoke_cells=smoke_cells, step_index=step_index,
                 score += _uncovered_region_bonus(
                     cx, cy, wind_state, x_min, x_max, y_min, y_max,
                 )
-                if (
+                if untuned:
+                    if second_strip_pull == "east":
+                        score += max(0.0, float(cx) - ax) * 0.75
+                    elif second_strip_pull == "west":
+                        score += max(0.0, ax - float(cx)) * 0.75
+                elif (
                     coverage_active
                     and wind_norm == "west"
                     and not west_pending
@@ -3932,16 +4361,18 @@ fire_cells=fire_cells, smoke_cells=smoke_cells, step_index=step_index,
                     and _allow_east_force(wind_state)
                 ):
                     score += max(0.0, float(cx) - ax) * 0.75
-                if coverage_active and y_force_min is not None and cy >= y_force_min:
-                    score += (cy - y_force_min) * 0.45
-                if coverage_active and commit == "north" and y_force_min is not None:
-                    if ay < y_max - COVERAGE_Y_COMMIT_PENETRATE_MARGIN:
-                        north_band = float(ay) + COVERAGE_Y_COMMIT_GRADUAL_STEP
-                        if float(cy) <= north_band:
-                            score += (float(cy) - float(ay)) * 0.55
-                    score += max(0.0, float(cy) - float(ay)) * 0.35
-                if coverage_active and commit == "south" and y_force_max is not None:
-                    score += max(0.0, float(ay) - float(cy)) * 0.35
+                score = _add_y_commit_terms(
+                    score,
+                    untuned=untuned,
+                    coverage_active=coverage_active,
+                    commit=commit,
+                    cy=cy,
+                    ay=ay,
+                    y_min=y_min,
+                    y_max=y_max,
+                    y_force_min=y_force_min,
+                    y_force_max=y_force_max,
+                )
                 if force_interior and _distance_to_boundary(cx, cy, x_min, x_max, y_min, y_max) < WIND_INTERIOR_MARGIN:
                     score -= WIND_EDGE_PENALTY * 2.0
                 front_dist = min(hazard_dist, smoke_dist)
@@ -4306,13 +4737,7 @@ fire_cells=fire_cells, smoke_cells=smoke_cells, step_index=step_index,
                     ]
                     if southward:
                         interior_candidates = southward
-                    best_target = min(
-                        interior_candidates,
-                        key=lambda point: (
-                            -float(point[1]),
-                            abs(point[0] - ax) + abs(point[1] - ay),
-                        ),
-                    )
+                    best_target = _south_commit_interior_pick(interior_candidates, ax, ay)
                 elif bool(wind_state.get("force_coverage_escape")):
                     center = wind_state.get("pocket_center")
                     if isinstance(center, (list, tuple)) and len(center) >= 2:

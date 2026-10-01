@@ -18,6 +18,8 @@ from ..adaptation.local_adaptation_generator import (
     LocalAdaptationSpaceGenerator,
     WIND_INTERIOR_MARGIN,
     WIND_POCKET_CAMP_THRESHOLD,
+    _searcher_untuned,
+    _x_strip_camp_side,
 )
 from .decision_objects import PathDecision
 from .planner_selection import (
@@ -132,9 +134,7 @@ class LocalUAVPathPlanner:
         unresolved_victims = int(path_context.get("unresolved_victim_count", 0) or 0)
         coverage_priority = float(path_context.get("coverage_priority", 0.0) or 0.0)
         recent_x = [int(x) for x in (path_context.get("recent_x_positions") or [])]
-        corridor_diversity_failure = (
-            len(recent_x) >= 20 and all(x >= 38 for x in recent_x[-20:])
-        )
+        corridor_diversity_failure = _planner_corridor_diversity_failure(recent_x, runtime_models)
         unresolved_coverage_active = (
             post_rescue_coverage > 0
             or (unresolved_victims > 0 and coverage_priority >= 0.85)
@@ -501,6 +501,15 @@ def _resolve_path_context(
         result = snapshot()
         return dict(result) if isinstance(result, dict) else {}
     return {}
+
+
+def _planner_corridor_diversity_failure(recent_x: list[int], runtime_models: object | None) -> bool:
+    """The planner's corridor-diversity flag. Shipped: all of the last 20 x >= 38 (an absolute east band).
+    untune T3: the symmetric, grid-relative x-strip camp (either strip, any wind); x runs over the grid
+    height (_grid_bounds)."""
+    if _searcher_untuned():
+        return _x_strip_camp_side(recent_x, 0, _grid_height(runtime_models) - 1) is not None
+    return len(recent_x) >= 20 and all(x >= 38 for x in recent_x[-20:])
 
 
 def _grid_height(runtime_models: object | None) -> int:

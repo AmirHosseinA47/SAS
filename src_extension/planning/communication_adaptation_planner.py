@@ -162,7 +162,14 @@ def _rescue_coordination_active(runtime_models: object | None) -> bool:
     simulation = _read_runtime(runtime_models, "simulation_model")
     managed = getattr(simulation, "managed_victims", None) if simulation is not None else None
     if isinstance(managed, dict):
+        import agents as agents_module  # lazy: agents is a root module
+
+        untuned = agents_module.searcher_untuned()
         for state in managed.values():
+            if untuned and not bool(getattr(state, "confirmed", False)):
+                # untune (review): nothing about an undetected victim is read on a mission-phase consumer
+                # path - value-inert (assignment and these statuses need a detection)
+                continue
             if bool(getattr(state, "rescue_assigned", False)):
                 return True
             status = str(getattr(state, "status", "") or "").lower()
