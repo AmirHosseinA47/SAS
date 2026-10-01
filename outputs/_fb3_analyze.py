@@ -45,6 +45,9 @@ if "--rescreen" in _ARGS:            # rulings R-1..R-3: the re-screened Bayes a
     NAMES.update({"fb3bdr": "BD-R", "fb3bfr": "BF-R", "fb3bdr2": "BD-R", "fb3bfr2": "BF-R", "fb3vs3r": "BF-R spawn1"})
     IDENT_TAGS = ("fb3idc",)
     RB_TAG = "fb3h"
+if "--final" in _ARGS:               # identity on the final head before the merge
+    _ARGS.remove("--final")
+    IDENT_TAGS = ("fb3idf",)
 
 
 def out(*a):

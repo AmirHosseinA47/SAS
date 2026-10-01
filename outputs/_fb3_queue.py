@@ -3,6 +3,7 @@ from the reference arm's own .argv (fx3mS = set 1, fx3mS2 = set 2), so the pairi
 
 usage: _fb3_queue.py <wave> -> writes outputs/_fb3_q_<wave>.jsonl
   id     fb3id   set 1, every switch at default (identity vs fx3mS; the new probe with CRN off)
+  idf    fb3idf  the same, on the final head before the merge
   arms   fb3lo/fb3bd/fb3bf (SEARCHER_TARGETING 1/2/3) sets 1 and 2 (tags ...2 for set 2), fb3rw (4) set 1,
          fb3vs0 / fb3vs3 (VICTIM_SPAWN_MODE 1 x {0, 3}) set 1
   rb     fb3g route_blocked shards (SEARCHER_TARGETING 3) = the fx3gS shards' argv + the switch
@@ -52,6 +53,8 @@ def main() -> int:
         lines += [probe_line("fb3id", *c, sets=[]) for c in set1]
     elif wave == "id2":                       # identity again at the final screen head (after the review fixes)
         lines += [probe_line("fb3idb", *c, sets=[]) for c in set1]
+    elif wave == "idf":                       # identity on the final head before the merge (maintainer, 2026-10-01)
+        lines += [probe_line("fb3idf", *c, sets=[]) for c in set1]
     elif wave == "arms":
         for tag, mode in (("fb3bf", 3), ("fb3lo", 1), ("fb3bd", 2)):
             lines += [probe_line(tag, *c, sets=["SEARCHER_TARGETING=%d" % mode]) for c in set1]
