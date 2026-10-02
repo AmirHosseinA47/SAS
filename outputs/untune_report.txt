@@ -1,0 +1,237 @@
+================================================================================
+UNTUNE - REPORT (Parts 2 and 3)                                        outputs/untune_report.txt
+The UNTUNED CURRENT SEARCH behind SEARCHER_UNTUNED (ships 0). Branch untune (from main ba664332).
+Design: outputs/untune_part1.txt (sections 0-12; rulings in 11, Part 2 amendments in 12).
+STOP BEFORE MERGING. The screen's G-O gate FAILS (section 5); a ruling is needed (section 11).
+================================================================================
+
+0. SUMMARY
+  - IMPLEMENTED (Part 2) behind ONE switch, SEARCHER_UNTUNED, shipping 0, on only on an exact 1:
+    item 1 - no absolute grid coordinate and no compass-side SETTING in the current searcher chain
+    (T1-T7, T9, T15-T19); item 2 - no privileged victim count: the searcher's count is briefing - detected,
+    the mission-goal count is briefing - rescued - observed dead (ruling D-3), plus two skipped truth reads.
+  - TESTS: tests/test_searcher_untuned.py, 54 tests; 27 of them fail when the switch's effect is removed
+    (mutation check); a metamorphic guard and a read-recording guard fail if a privileged read returns.
+  - REVIEW: 3 of 3 review agents (identity / privileged reads / symmetry). One BLOCKER (x-lanes) and one
+    MAJOR (T19) fixed before any run; the rest fixed or recorded (section 2).
+  - SCREEN (Part 3), 360 steps, 4 scenarios x 4 winds, ring and uniform spawn, seed sets 1 and 2, CRN:
+      ID      PASS - switch off is value-identical to the shipped program on BOTH placements (16/16, 16/16).
+      G-N     PASS - runs that never finish do not rise on any set (0->0, 0->0, 1->1, 1->1).
+      G-O     FAIL on all four sets - searcher oscillation episodes rise: broad 8->10, 4->7, 5->11, 3->8
+              (pocket-anywhere 8->10, 3->7, 5->12, 2->8; pocket-near-depot 0->0 x3, 0->1).
+              The ENTIRE rise is after the last detection (pooled: before 12 -> 7, after 8 -> 29). It is a
+              pre-existing livelock of the chain's NON-COVERAGE branch, which the shipped arm also shows,
+              but only once its privileged count reaches 0; item 2's searcher count runs that branch from
+              the last detection on (section 5).
+      route_blocked gate PASS (58 -> 58, no new loss, 0 latched). Invariants 0 new. Full suite {T5}.
+  - OUTCOMES: rescued, dead and never_detected are IDENTICAL in all 64 cell pairs; mean detection step
+    unchanged in 58 of 64 cells. This is a development check, not a result (section 6).
+
+1. WHAT WAS IMPLEMENTED (commits on branch untune)
+  885c4444  Part 1 + rulings (section 11)
+  d1b4b8de  Part 2: the switch, items 1 and 2, the review fixes, tests, the Part 3 tooling, Part 1 section 12
+  21d7039e  test-only: pin scenario A's team in the untuned tests (section 9)
+  Files: common_fixed_variables.py (SEARCHER_UNTUNED = 0), agents.py (searcher_untuned()),
+  src_extension/adaptation/local_adaptation_generator.py, src_extension/planning/local_uav_path_planner.py,
+  src_extension/planning/communication_adaptation_planner.py, src_extension/execution/uav_executor.py,
+  wildfire_model.py, tests/test_searcher_untuned.py. Every change sits in a switch branch; the shipped
+  branch is the old code (refactors into helpers keep the shipped operations in the shipped order -
+  verified by identity, section 4).
+
+1.1 ITEM 1 - EVERY SETTING CHANGED AND WHAT REPLACED IT (internal design evidence: part1 sections 2, 12)
+  T1  CORRIDOR_DIVERSITY_X_BAND 38 in the corridor-failure test -> dropped; implied by the narrow-span
+      test (no behaviour change, proven over every tail).
+  T2  x >= 38 east-camp cap of escape candidates -> symmetric: east-strip camp cap min(tail)-8, west-strip
+      camp floor max(tail)+8 (one sensor radius), any wind. Fired: floor 271-826, cap 258-814 times per set.
+  T3  x >= 38 in the path planner -> the symmetric strip-camp test (either strip, grid-relative).
+  T4  CORRIDOR_WEST_CAMP_X 12, west wind only (66dc728c) -> covered by T1/T2 (it was inert at HEAD).
+  T5  CORRIDOR_WEST_TARGET_X_MAX 25 -> safe_x_max (no side cap).
+  T6  COVERAGE_INTERIOR_X_MIN/MAX 8/30 -> grid-relative safe bounds (dead fallback either way).
+  T7  the west-wind-only sweep order (66dc728c) -> one wind-uniform order: downwind strip first along the
+      wind, nearer strip first across it (latched; no latch on an exact tie); the second strip's pull
+      under every wind; none inside an x-lane. The escape score is order-free; the clamp and the corridor
+      enforce the order. F2 (the unlatched westward escape pull under every non-west wind) is REMOVED.
+  T9  downwind-edge block 4/3/5/4 cells -> 4 on every edge.
+  T15 west-only escape-distance relaxation -> also at the east bound.
+  T16 north-only y-commit score bonuses (0.45 band, 0.55 gradual band) -> south mirrors.
+  T17 south interior pick (shallowest, nearest) -> mirror of the north pick (deepest, farthest).
+  T18 edge-sweep bonus 10 west / 8.5 east -> 10 both.
+  T19 y-camping gate (lower band 6 rows past the midline, upper band none) -> mirrored for the gate.
+  KEPT: T8 strip latches (re-derived from the system's own margins, identical values; docstring reworded),
+  T10 lanes, T11 y-commit rule (its gate now T19), T12 narrow span, T13 lawnmower, T14 the general weights.
+  RESIDUAL (part1 12.4): fixed compass orders in exact tie-breaks (route step E,S,W,N; direction choosers;
+  lattice parity / scan order) and the lawnmower's +x progression - tie / iteration orders, not settings.
+
+1.2 ITEM 2 - PRIVILEGED READS AND WHAT REPLACED THEM (part1 sections 3, 11.3, 12)
+  P1  _count_unresolved_victims at its one searcher call site -> KNOWN_UNDETECTED = N_brief - detected
+      (detected = the confirmed flag union runtime-record ids; N_brief = the model module's NUM_VICTIMS).
+  P2  post-rescue burst gate -> KNOWN_UNDETECTED.
+  P3  mission-goal alive_victims_remaining -> KNOWN_MISSION_UNRESOLVED = N_brief - rescued - observed dead
+      (both restricted to detected victims; unreachable stays counted); active_rescues over detected
+      victims only (same value).
+  P4  executor handled-check: the victim_marker_agents read is skipped (inert either way).
+  +   communication planner's rescue test: undetected victims skipped (value-inert; review).
+  The dashboards keep the true count (ruling D-6).
+  Found by the guard while testing: the first mission-count draft read `rescued` of undetected victims;
+  fixed so nothing about an undetected victim but its detection flag is read.
+
+2. REVIEW (3 of 3 review agents; journal under the workflow wf_e9161138-86d)
+  LENS 1 identity / correctness: switch-off identity confirmed by reading (float order, short-circuits,
+    no new RNG or state at 0). BLOCKER: the untuned escape and corridor x-pulls were not suppressed inside
+    x-lanes (B, C, D under north / south wind: a pull with no release) -> FIXED. MAJOR: prediction 7.4 stale
+    -> part1 12.5. MINOR: 11.10 y-commit wording, escape order-free, tie latch at ax 24.5, T8 docstring ->
+    fixed or corrected (part1 12.2-12.3).
+  LENS 2 privileged reads: no direct privileged read remains on the searcher / mission path with the switch
+    on. MAJOR: the rescue side reads every LIVE victim's true cell (route_blocked revalidation, stale clear,
+    release relabel), which can reach the searcher and the phase INDIRECTLY (firefighter availability, fire,
+    active rescues) -> recorded, not changed (out of scope; part1 12.3). MINOR: communication planner ->
+    fixed; targeting 2 added to the guards.
+  LENS 3 symmetry: MAJOR T19 -> fixed. MAJOR/MINOR: route-step and direction-chooser tie orders, lawnmower,
+    lattice parity -> recorded as residual (part1 12.4); also re-found the x-lane BLOCKER.
+
+3. SCREEN SETUP AND PROVENANCE
+  outputs/_ut_probe.py = _fb3_probe.py unchanged + read-only recorders (per-step counts under both
+  definitions, both mission phases, escape-bound firings, sweep latches). One pool, 164 runs, 0 FAIL
+  (outputs/_ut_pool_all.log). Every run: source hashes equal to this tree, the switch as intended, CRN as
+  intended, 0 observer errors (outputs/_ut_analysis.txt PROVENANCE). The arm runs carry head d1b4b8de or
+  21d7039e (a test-only commit; source identical).
+  Tags: utid, utidu (identity, CRN off); ut0r/ut1r, ut0r2/ut1r2 (ring sets 1/2), ut0u/ut1u, ut0u2/ut1u2
+  (uniform sets 1/2), CRN on; utg[a,b,c,s] route_blocked shards. Analysis: outputs/_ut_analysis.txt,
+  outputs/_ut_divergence.txt; tools _ut_analyze.py, _ut_episode_diag.py, _ut_divergence.py.
+
+4. IDENTITY WITH THE SWITCH OFF - PASS
+  utid  (ring, defaults + SEARCHER_UNTUNED=0)            vs fb3idg (55c1f804)  16 / 16 value-identical
+  utidu (uniform spawn + SEARCHER_UNTUNED=0)             vs fb3vs0 (1d8a215a)  16 / 16 value-identical
+  (fx3m fields incl. the stdout hash + every mf2 section.) The ut recorders are therefore read-only too.
+
+5. GATES
+5.1 G-N (runs that never finish) - PASS, all four sets: 0->0, 0->0, 1->1 (B_S both arms), 1->1 (D_W both).
+5.2 G-O (searcher oscillation episodes, every kind) - FAIL, all four sets:
+                    broad        pocket near depot   pocket anywhere
+    ring set 1      8 -> 10      0 -> 0              8 -> 10
+    ring set 2      4 -> 7       0 -> 0              3 -> 7
+    uniform set 1   5 -> 11      0 -> 0              5 -> 12
+    uniform set 2   3 -> 8       0 -> 1              2 -> 8
+5.3 DIAGNOSIS (outputs/_ut_analysis.txt GATES, _ut_episode_diag.py, _ut_divergence.txt)
+  - WHEN: pooled over the four sets, broad episodes BEFORE the last detection 12 (shipped) -> 7 (untuned);
+    AFTER it 8 -> 29. The whole rise is after the last detection - the risk 11.10 pre-registered.
+  - WHAT: the untuned post-detection episodes are an even two-label alternation on one cell pair:
+    'victim_search_wind_aware_retarget_to_interior' <-> 'victim_search_wind_aware_sweep' (e.g. ring2 B_S
+    uid 2502, steps 256-360: 53 / 52), or 'victim_search_wind_aware' alone - mechanism ROUTE / PLAN.
+  - WHY: once every victim is detected the untuned searcher's count is 0 (case A), so the chain runs its
+    NON-COVERAGE branch (no coverage escape, no x clamp, no target hold). The shipped chain runs that branch
+    only when its privileged count is 0 - in case B (only victims that died unseen remain) or when all are
+    resolved. THE SAME ALTERNATION APPEARS IN THE SHIPPED ARM in exactly those states (ring1 D_E 5/5,
+    ring2 C_E 7/7, B_E 5/5, ring2 B_E escape_bfs <-> sweep 64/64 over 128 steps). So it is a pre-existing
+    livelock of the non-coverage branch; item 2 moves that branch from the rare case B to the common
+    case A (between the last detection and the last rescue: 767-1495 steps per 16-run set).
+  - Episode start states, pooled (shipped -> untuned): after the last detection in case A 4 -> 13 and in
+    the all-found, all-resolved state ('-') 4 -> 16; before it in case B 9 -> 3 and in '-' 3 -> 4. In the
+    '-' state both arms run the same branch; the untuned searcher arrives there having run it since the
+    last detection, and episodes that begin in case A continue into it (e.g. ring2 B_S uid 2503 213-289).
+  - Before the last detection the untuned arm has FEWER episodes (12 -> 7 pooled), and case-B episodes
+    fall 9 -> 3: the shipped arm's own livelock exposure in case B is where item 2 keeps it searching.
+  By the letter of the gate this is a FAIL. It does not block anything shipped (the switch ships 0).
+
+6. WHAT CHANGES AND WHERE (development check - NOT a result; the as-shipped arm is not a measurement arm)
+  - rescued / dead / never_detected: identical in every one of the 64 cell pairs
+    (ring1 52/12/9, ring2 55/9/3, uniform1 56/7/6, uniform2 52/8/7 in both arms).
+  - detection time (per-run mean first-detection step, eligible victims, paired): unchanged in 58 of 64
+    cells; mean paired difference +1.2 / +0.1 / -0.1 / -0.2 steps (ring1 D_S +18.8 is the largest).
+  - WHERE the arms diverge: the searchers' first different position is after the last detection in 31 of
+    64 cells, before the last detection (or with victims never all found) in 30, never in 3; in only 12
+    cells does a detection still follow the divergence. So item 1, although it changes scores from step 0
+    (T18), rarely changes a searcher's position while victims remain to be found.
+  - coverage over time: within 0.01 at step 60, lower in the untuned arm from step 120 on and at 360 on
+    every set (0.959->0.945, 0.973->0.956, 0.953->0.945, 0.950->0.941) - the searcher leaves coverage mode
+    at the last detection.
+  - by region (uniform: west/east, north/south, edge band; ring: per victim): no region moves by more than
+    1.9 steps on average; one ring victim (40,25) moves +4.7 on set 1, all from the single D_S cell
+    (outputs/_ut_analysis.txt WHERE).
+  - by wind: every cell's trajectories differ except 3 uniform-set-2 cells (A_E, A_W, D_W); no wind shows a
+    rescued or dead difference.
+
+7. ATTRIBUTION (ut recorders)
+  - case A steps (privileged searcher count > 0, known = 0) per 16-run set: 767-1495, in 8-13 runs;
+    case B steps: 780-1762, in 3-8 runs.
+  - mission phase: the two mission counts differ in their ">0" test on 809-1762 steps per set, but the
+    DERIVED PHASE NEVER DIFFERS (0 steps, all sets): 'evacuation' needs fire severity >= 0.65, never met
+    with that count difference. prioritize_victim_search (exploration phase) can still differ; not recorded.
+  - escape x bounds (untuned): floor 271-826 firings, cap 258-814 per set; shipped east cap 582-853.
+  - sweep latches at the end: 2 of 28 searchers per set hold a cross-wind choice - scenario A's single
+    searcher under north and under south wind, both 'west' (the nearer strip at the time). B, C and D run
+    x-lanes under north / south wind, where no x-sweep pull applies; along-wind needs no latch.
+  - T15-T19 are not attributed separately (part1 12.5).
+
+8. OTHER CHECKS
+  - invariants: crashed 0, inline violations 0, warnings 0 in every arm; fail-safe alarm counts similar
+    (SEARCH_MODE_REQUIRED within 2%, COLLISION_RISK +5% to +16%, DRIFT 162->136, 72->74, 72->76, 160->120).
+  - route_blocked gate (utg vs fx3gS, 240 steps): PASS - rescued 58 -> 58, no new loss, 0 latched.
+  - firefighter oscillation (reported): 10->10, 14->11, 6->6, 9->9; R-5: no rise with a lost rescue.
+  - drone steps in fire / smoke (searcher): 0.71->0.70 / 1.05->1.20, 0.18->0.16 / 0.09->0.12,
+    1.07->0.90 / 1.36->1.11, 0.22->0.38 / 0.22->0.57 % - mixed, uniform set 2 up.
+
+9. FULL SUITE
+  - First run (d1b4b8de, alongside the screen): 5 failed / 1569 passed (8649 s). Failing set = {T5} +
+    4 untune tests (test_two_counts_two_questions and the three targeting cases of the metamorphic guard),
+    which pass alone: earlier tests (test_dashboard_panel and others) call apply_scenario_config with
+    NUM_VICTIMS=3 and leave it set, and the tests assumed 5. FIXED in 21d7039e (the tests pin scenario A's
+    team); verified in the leaking order (test_dashboard_panel then the untune file: 55 passed).
+  - Second run on 21d7039e (machine idle): 1 failed / 1573 passed (4338 s). The failing set is EXACTLY
+    {T5}: tests/test_uav_sector_assignment.py::test_fire_tracker_uavs_receive_different_target_sets.
+    Log: outputs/_ut_fullsuite2.log (first run: outputs/_ut_fullsuite.log).
+
+10. THE BAYESIAN ARMS' HAND-BACK
+  With SEARCHER_UNTUNED = 1, the chain a Bayes arm hands back to reads the known searcher count, the post-
+  rescue gate and mission goals read known counts, and the marker read is skipped: no privileged victim
+  information is READ on a hand-back step (verified on stepped models at SEARCHER_TARGETING 0 / 2 / 3: the
+  privileged count has no caller but the dashboards, and the searcher count equals briefing - detected).
+  It can still arrive INDIRECTLY through the rescue side's reads of every live victim (part1 12.3), which
+  this round does not touch. This holds only for Bayes arms run with the switch on - the measurement
+  round's decision, not amended here.
+
+11. WHAT THE G-O FAILURE NEEDS - OPTIONS FOR A RULING (nothing changed; STOP)
+  (A) RECOMMENDED - fix the non-coverage branch's livelock (retarget_to_interior <-> sweep, escape_bfs <->
+      sweep) as its own round. It is a defect of the shipped chain (the shipped arm shows it in case B and
+      after all victims are resolved); fixing it serves both arms. Then re-screen this switch unchanged.
+  (B) define what a searcher does when nothing is left to find (briefing - detected = 0): e.g. keep the
+      coverage mode while the MISSION count (known, non-privileged) is > 0, which reproduces the shipped
+      mode timing in case A without privileged information - but that keeps searchers sweeping for victims
+      already found, which ruling D-3 set out to avoid; or recall / hold the searchers. A design change.
+  (C) accept and record: the rise is after the last detection and cannot change a detection time (the
+      measurement round's primary metric); the gate stays FAIL by the letter. Not recommended for a gate.
+
+12. WHAT EACH FINDING MEANS FOR THE PAPER (wording per ruling 11.7: retained weights are "parameters
+    inherited from earlier development, used unchanged"; nothing is described in terms of the fixed
+    placement's geometry or of tuning)
+  - Identity: with the switch off the system is unchanged on both victim placements; earlier results stand.
+  - The current search, as the paper's baseline, uses no absolute grid coordinate, no compass-side setting
+    and no privileged victim count. Its remaining parameters are inherited from earlier development and used
+    unchanged. It still breaks exact ties in fixed compass orders (state as an implementation detail).
+  - The baseline's knowledge is the briefing count and detection / rescue events, with two separate counts:
+    "still to find" (briefing - detected) for the searchers and "mission unresolved" (briefing - rescued -
+    observed dead) for the mission goals. State both and why they differ.
+  - Remaining privileged channel to state as a limitation: the rescue side tests reachability to every live
+    victim (detected or not) when it releases a blocked firefighter, which can reach the searchers only
+    indirectly, through firefighter availability and the fire. Assumptions A3 (true fire) and A7 (true
+    victim cell after dispatch) are unchanged.
+  - F2 is a defect the switch removes: the search drifted west under every wind but one, with no release.
+  - The non-coverage-branch livelock (section 5) is a defect of the searcher chain; until it is fixed, a
+    searcher with nothing left to find can oscillate between two cells. It does not affect detection time.
+  - The screen's outcome comparison is a development check and is NOT reported as a result. It does tell
+    the measurement round to expect detection times of the baseline that are close to those recorded so far.
+  - Information map corrections: lanes are live in B, C, D (CUR-26 says inert); the rescue-side reads above;
+    the communication planner read (inert).
+
+13. HOUSEKEEPING
+  - Quarantine: every recursive search excluded outputs/_firemech_rewound_20260914 (the review agents report
+    no contact). No .venv junction; no worktree; the parent .venv (mesa 1.2.1).
+  - Run tags: "ut" prefix, unused before this round (checked: no file or tracked path); queue files
+    outputs/_ut_q_{id,arms,rb,all}.jsonl.
+  - Switch rule: SEARCHER_UNTUNED ships OFF and enables only on an exact 1 (tested: 1, "1", 1.0, True on;
+    0, 2, "1.0", 0.5, None, "on" off).
+  - Review agents: 3 of 3 used (Part 2). No further review agent.
+  - Wave checks every 20-30 minutes on outputs/_ut_pool_all.log (164/164, 0 FAIL).
+  - Untracked files from earlier rounds are left untouched. Branch untune is local, not pushed, NOT merged.
+
+STOP BEFORE MERGING. Awaiting the ruling on section 11.
