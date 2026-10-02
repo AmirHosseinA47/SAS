@@ -331,6 +331,9 @@ def _model(monkeypatch, *, untuned, targeting=0, seed=9613):
     rng = random.Random(seed)
     for mod in (cfv, wf):
         monkeypatch.setattr(mod, "SYSTEM_RANDOM", rng, raising=False)
+        # scenario A's team, pinned: other tests call apply_scenario_config (e.g. NUM_VICTIMS=3) and leave it set
+        for name, value in (("NUM_AGENTS", 3), ("NUM_VICTIMS", 5), ("NUM_FIREFIGHTERS", 3)):
+            monkeypatch.setattr(mod, name, value, raising=False)
     monkeypatch.setattr(agents, "random", rng, raising=False)
     monkeypatch.setattr(cfv, "SEARCHER_TARGETING", targeting, raising=False)
     monkeypatch.setattr(cfv, "VICTIM_SPAWN_MODE", 0, raising=False)
