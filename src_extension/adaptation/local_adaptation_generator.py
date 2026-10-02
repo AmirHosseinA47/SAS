@@ -262,8 +262,9 @@ def _corridor_target_x_cap(
     return max(_coverage_safe_x_min(x_min), min(CORRIDOR_WEST_TARGET_X_MAX, safe_x_hi))
 
 
-# ---- untune round (outputs/untune_part1.txt): the untuned current search, behind SEARCHER_UNTUNED. Every
-# helper below is reached only when agents.searcher_untuned() is True; at the shipped 0 none is called.
+# ---- untune round (outputs/untune_part1.txt): the untuned current search, behind SEARCHER_UNTUNED (shipped 1
+# since the untune merge). Every helper below is reached only when agents.searcher_untuned() is True; at 0 (the
+# identity control) none is called.
 
 
 def _searcher_untuned() -> bool:

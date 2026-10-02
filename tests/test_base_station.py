@@ -159,6 +159,14 @@ def test_shipped_defaults() -> None:
     assert cfv.BASE_STATION_SPAWN_SPLIT == 2
     assert cfv.BASE_STATION_CORNER == 0
     assert cfv.BASE_STATION_SPAWN_FIREFIGHTERS == 1
+    # Untune merge (2026-10-02, maintainer ruling): the UNTUNED CURRENT SEARCH ships as the default - no absolute
+    # coordinate or compass-side setting in the searcher chain, honest victim counts, the searcher recall when
+    # nothing is left to find, the firefighter release reading only detected victims. Every later round is built
+    # and screened on it. SEARCHER_UNTUNED=0 reproduces the pre-untune program exactly (the identity control,
+    # outputs/untune_merge_notes.txt); the two ruling switches ship 1 and act only with SEARCHER_UNTUNED on.
+    assert cfv.SEARCHER_UNTUNED == 1
+    assert cfv.SEARCHER_END_RECALL == 1
+    assert cfv.FF_RELEASE_DETECTED_ONLY == 1
 
 
 # --- depot geometry -----------------------------------------------------------

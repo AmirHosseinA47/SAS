@@ -15,6 +15,9 @@ RE-SCREEN (untune_part1.txt 13.5; recall and the channel fix ship 1 and act with
   arms2  ut2r/ut2r2/ut2u/ut2u2 (SEARCHER_UNTUNED=1); ut3* (+ FF_RELEASE_DETECTED_ONLY=0);
          ut2bf (SEARCHER_UNTUNED=1, SEARCHER_TARGETING=3, ring set 1; reported only)
   all2   id2 + spot + rb2 + arms2, in that order
+MERGE (SEARCHER_UNTUNED ships 1 from the untune merge):
+  merge  utidm / utidum: SEARCHER_UNTUNED=0 explicitly, CRN off - THE IDENTITY CONTROL vs fb3idg / fb3vs0;
+         utdfr / utdfu: the NEW DEFAULTS (no untune --set at all), CRN, 4 cells each -> vs ut2r / ut2u
 """
 from __future__ import annotations
 
@@ -97,6 +100,13 @@ def main() -> int:
                     lines += [probe_line("%s%s2" % (arm, place), *c, sets=sets, crn=True) for c in set2]
             lines += [probe_line("ut2bf", *c, sets=["VICTIM_SPAWN_MODE=0", "SEARCHER_UNTUNED=1",
                                                     "SEARCHER_TARGETING=3"], crn=True) for c in set1]
+    elif wave == "merge":
+        spot_keys = ("A_E", "B_N", "C_S", "D_W")
+        lines += [probe_line("utidm", *c, sets=["SEARCHER_UNTUNED=0"]) for c in set1]
+        lines += [probe_line("utidum", *c, sets=["VICTIM_SPAWN_MODE=1", "SEARCHER_UNTUNED=0"]) for c in set1]
+        for spawn, place in ((0, "r"), (1, "u")):
+            lines += [probe_line("utdf%s" % place, *c, sets=["VICTIM_SPAWN_MODE=%d" % spawn], crn=True)
+                      for c in set1 if c[0] in spot_keys]
     else:
         raise SystemExit("unknown wave %r" % wave)
     path = os.path.join(HERE, "_ut_q_%s.jsonl" % wave)

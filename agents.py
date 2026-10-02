@@ -2228,8 +2228,9 @@ def victim_spawn_mode() -> int:
 
 
 def searcher_untuned() -> bool:
-    """SEARCHER_UNTUNED - the untuned current search (outputs/untune_part1.txt). Ships 0; on ONLY when
-    _exact_integer(raw) == 1. Read at call time, never cached."""
+    """SEARCHER_UNTUNED - the untuned current search (outputs/untune_part1.txt). SHIPS 1 since the untune
+    merge; on ONLY when _exact_integer(raw) == 1 - any other value, 0 included, is the pre-untune program (the
+    identity control). Read at call time, never cached."""
     return _exact_integer(getattr(cfv, "SEARCHER_UNTUNED", 0)) == 1
 
 

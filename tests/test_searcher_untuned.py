@@ -36,8 +36,13 @@ def _ws(**overrides):
 
 
 # ============================================================================ the switch
-def test_the_switch_ships_off():
-    assert cfv.SEARCHER_UNTUNED == 0
+def test_the_switch_ships_on():
+    """SEARCHER_UNTUNED SHIPS 1 since the untune merge (maintainer ruling, 2026-10-02): the untuned system is final
+    and every later round is built and screened on it. 0 still reproduces the pre-untune program exactly - the
+    identity control (outputs/untune_merge_notes.txt); the switch-effect tests below set 0 / 1 explicitly."""
+    assert cfv.SEARCHER_UNTUNED == 1
+    assert agents.searcher_untuned() is True
+    assert agents.searcher_end_recall() is True and agents.ff_release_detected_only() is True
 
 
 @pytest.mark.parametrize("raw, on", [
