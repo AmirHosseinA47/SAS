@@ -506,3 +506,84 @@ PROCEEDING to Part 2 and Part 3 as pre-registered, with 11.3 / 11.9 / 11.10.
      - T15-T19 are not attributed separately; item 1 is attributed as a whole, item 2 by cases (A) / (B).
 12.6 Review agents: 3 of 3 used. Any later fix is verified by tests and the identity wave, not by a further
      review agent.
+
+================================================================================
+13. RULINGS ON REPORT SECTION 11 (maintainer, 2026-10-02) AND THE RE-SCREEN - GOVERNS WHERE IT DIFFERS
+================================================================================
+13.1 OPTION (B): RECALL WHEN NOTHING IS LEFT TO FIND - switch SEARCHER_END_RECALL.
+     - When the searcher's honest count (briefing - detected, _count_known_undetected_victims) is 0, a
+       victim SEARCHER ends its search and returns to base through the EXISTING return path: the battery
+       trigger is bypassed (the trip starts at once, no searcher return delay), the leg is steered and
+       docked by free-cell docking exactly as a battery return, and a docked searcher is NOT released by the
+       recharge rule while the count is 0. It stays docked unless the count rises again (the count is
+       monotone in this simulator - detections are never undone - so in practice a recalled searcher stays
+       docked to the horizon). A recall trip's rtb_log entry carries "recall": True.
+     - EVERY STRATEGY: the recall sits in UAV._apply_return_to_base, the first statement of UAV.advance and
+       the last writer of the direction, so it overrides the current chain, every SEARCHER_TARGETING arm
+       (1 LO, 2 BD, 3 BF, 4 RW) and the Bayes arms' post-detection least-observed continuation (R-1); the
+       targeting post-pass already skips a searcher on a return leg or docked.
+     - THIS CHANGES THE BAYESIAN ARMS' POST-DETECTION BEHAVIOUR after the re-screen of fix3b and before any
+       measurement run: once every victim is detected they no longer continue with the least-observed rule;
+       they return and dock. Why: so every arm ends its search the same way and the post-detection measures
+       (exposure, oscillation) are not confounded by different end-of-search behaviour.
+     - SHIPS 1, ACTS ONLY WITH SEARCHER_UNTUNED = 1 (the honest count belongs to the untuned system), for
+       every SEARCHER_TARGETING value; off only on an exact 0. With SEARCHER_UNTUNED = 0 the shipped
+       program is unchanged. Consequence for the measurement round: all arms must run with
+       SEARCHER_UNTUNED = 1 to share the end of search (they must already, for the hand-back, section 10).
+     - Needs a base station (BASE_STATION_MODE >= 2, shipped 3).
+     - Victims that died unseen keep the count above 0: the searcher keeps searching. Reported: how many
+       runs and steps search with no LIVE undetected victim left (a truth-side instrument count).
+13.2 (A) NOT TAKEN: the non-coverage livelock is not fixed here. Recorded on the cleanup list as a latent
+     defect of the shipped chain with its trigger: the searcher chain's non-coverage branch (wind-aware search
+     with the unresolved count 0) alternates 'victim_search_wind_aware_retarget_to_interior' <->
+     'victim_search_wind_aware_sweep' (or 'victim_search_escape_bfs' <-> sweep) on one cell pair; triggered
+     whenever the count read by the chain is 0 while the searcher is still flying - in the shipped system when
+     only victims that died unseen remain, or after every victim is resolved. (C) NOT TAKEN.
+13.3 INDIRECT CHANNEL CLOSED - switch FF_RELEASE_DETECTED_ONLY. Ships 1, acts only with SEARCHER_UNTUNED = 1;
+     off only on an exact 0. The firefighter release reads only DETECTED victims (confirmed flag union
+     runtime-record ids - a firefighter can only be dispatched to a detected victim). Exactly these reads
+     change (wildfire_model.py):
+       R1 _revalidate_route_blocked_firefighters, the live victim_cells loop: undetected victims' marker
+          status, managed state and TRUE position are no longer read; only detected victims needing rescue
+          give a cell.
+       R2 the same function's stale clear gate `stale and not _any_victim_needs_rescue()` -> no DETECTED
+          victim needs rescue.
+       R3 _release_other_claimants' release relabel `work_left = _any_victim_needs_rescue()` -> detected only.
+     Effect: a route_blocked unit whose only remaining work would be undetected victims is cleared as when
+     no victim is left (the 70e1b33 / 808 stale-clear path), instead of being held by a path test to a
+     victim the team does not know about.
+     CAUTION (latch history 70e1b33, the 808 latch, 4795708): the re-screen reports route_blocked flags set
+     and cleared, units latched route_blocked at the end of each run, and the route_blocked gate, with this
+     switch ON and OFF. ANY NEW LATCH IS A FAILURE.
+13.4 TIE-BREAK ORDERS (12.4) unchanged; recorded; nothing for the paper. The pinned team in the tests stays.
+13.5 THE RE-SCREEN (same screen, same gates; 360 steps, 4 x 4, ring + uniform, sets 1 + 2, CRN)
+     IDENTITY  utid2 (ring) vs fb3idg, utidu2 (uniform) vs fb3vs0: every switch at default (the two new ones
+               ship 1 but act only with SEARCHER_UNTUNED = 1), CRN off; 16/16 each, else STOP.
+     SHIPPED ARM: ut0r/ut0r2/ut0u/ut0u2 from the first screen are REUSED after two checks at the new head:
+               the identity above, and a CRN spot check - 8 cells re-run (4 ring set 1, 4 uniform set 1,
+               tags ut0rS / ut0uS) value-identical to ut0r / ut0u. Else the shipped arm is re-run.
+     ARMS (CRN): ut2r/ut2r2/ut2u/ut2u2 = SEARCHER_UNTUNED 1 (recall and channel fix at their default 1);
+               ut3r/ut3r2/ut3u/ut3u2 = SEARCHER_UNTUNED 1, FF_RELEASE_DETECTED_ONLY 0 (the channel fix OFF,
+               recall on) - the "switch on and off" contrast for route_blocked and the fix's isolation;
+               ut2bf = SEARCHER_UNTUNED 1, SEARCHER_TARGETING 3, ring set 1 (reported only: the Bayes arm's
+               post-detection recall).
+     ROUTE_BLOCKED GATE: the four fx3gS shards + SEARCHER_UNTUNED 1, channel fix ON (utRa..) and OFF
+               (utQa..), 240 steps, vs fx3gS.
+     GATES (ut2 vs ut0, per placement x seed set): G-N must not rise; G-O (every kind) must not rise -
+               reported SPLIT before / after the last detection; LATCH: no run of ut2 or ut3 may end with a
+               route_blocked unit that the shipped run on the same seed does not have, and the gate shards
+               end with 0 latched. Target 0 for each.
+     REPORTED: what changes and where (as before); recall events (searchers recalled, recall step relative
+               to the last detection, docked at the end, recall legs boxed); route_blocked set / cleared per
+               arm; runs and steps searching with only unseen-dead victims left; exposure after the last
+               detection; the isolation contrasts ut2 vs ut3 (channel fix) and ut3 vs ut1 (recall; across
+               heads, reported only).
+     PREDICTIONS: with recall, a searcher stops flying once the honest count is 0, so the post-detection
+               G-O episodes of the untuned arm (29 pooled) should disappear, except in runs where an unseen
+               death keeps the count above 0: those searchers keep searching in COVERAGE mode (count > 0),
+               the mode the shipped arm leaves in its case B; coverage stops growing at the last
+               detection; searcher exposure after the last detection falls; detection times are unchanged
+               (recall acts only after the last detection). The channel fix can change firefighter dispatch
+               timing when a route_blocked unit's only work is an undetected victim; rescued / dead may move
+               on those seeds; latches must not rise.
+     Then the full suite (expected {T5}), report, STOP before merging.
