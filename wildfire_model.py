@@ -61,6 +61,7 @@ from src_extension.adaptation.local_adaptation_generator import (
     _count_known_mission_unresolved,
     _count_known_undetected_victims,
     _count_unresolved_victims,
+    _detected_victim_ids,
     _wind_search_state,
     resolve_victim_searcher_uav_ids,
 )
@@ -3113,7 +3114,12 @@ class WildFireModel(mesa.Model):
         # occupied at dispatch, which goes stale as the victim moves or is
         # carried, so reachability is re-tested against where victims are now.
         victim_cells: list[tuple[int, int]] = []
+        # untune 13.3 R1 (FF_RELEASE_DETECTED_ONLY): only DETECTED victims give a cell - an undetected victim's
+        # status, state and true position are not read (a firefighter can only be dispatched to a detected one).
+        detected = _detected_victim_ids(self) if agents.ff_release_detected_only() else None
         for vid, victim_marker in victim_markers.items():
+            if detected is not None and str(vid) not in detected:
+                continue
             if not self._victim_needs_rescue(str(vid), victim_marker):
                 continue
             pos = getattr(victim_marker, "pos", None)
@@ -3167,7 +3173,7 @@ class WildFireModel(mesa.Model):
             # No dispatch kick either, unlike the tail at :2669:
             # _any_victim_needs_rescue() is False, so there is nothing to
             # dispatch to. Nothing here draws from any RNG stream.
-            if stale and not self._any_victim_needs_rescue():
+            if stale and not self._any_victim_needs_rescue(detected_only=detected is not None):
                 self._clear_stale_route_blocks(stale, stale_mode)
             return
 
@@ -4186,7 +4192,10 @@ class WildFireModel(mesa.Model):
                     # unless the unit is fire-enclosed - the trigger's own
                     # "nowhere to step" condition, kept by the pass as well.
                     if work_left is None:
-                        work_left = self._any_victim_needs_rescue()
+                        # untune 13.3 R3: detected victims only when FF_RELEASE_DETECTED_ONLY applies
+                        work_left = self._any_victim_needs_rescue(
+                            detected_only=agents.ff_release_detected_only()
+                        )
                     if not work_left and not self._firefighter_fire_enclosed(ff_marker):
                         ff_marker.status = "available"
                         self._sync_firefighter_operational_knowledge([ff_id_s])
@@ -4212,12 +4221,16 @@ class WildFireModel(mesa.Model):
             by_reason[key] = int(by_reason.get(key, 0) or 0) + len(released)
         return released
 
-    def _any_victim_needs_rescue(self) -> bool:
-        """True while at least one victim is neither dead, rescued nor unreachable."""
+    def _any_victim_needs_rescue(self, detected_only: bool = False) -> bool:
+        """True while at least one victim is neither dead, rescued nor unreachable. detected_only (untune 13.3
+        R2 / R3): only DETECTED victims count, and nothing about an undetected victim is read."""
         markers = getattr(self, "victim_marker_agents", None)
         if not isinstance(markers, dict):
             return False
+        detected = _detected_victim_ids(self) if detected_only else None
         for vid, marker in markers.items():
+            if detected is not None and str(vid) not in detected:
+                continue
             if self._victim_needs_rescue(str(vid), marker):
                 return True
         return False

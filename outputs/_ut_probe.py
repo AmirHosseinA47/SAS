@@ -12,8 +12,12 @@ write into the model (outputs/untune_part1.txt 7.3 / 11.10, the attribution coun
   sweep     per searcher, the untuned x-sweep first-strip latch at the end (None at switch 0 or along-wind)
   corridor  calls / firings of the escape x bounds: untuned floor fired, untuned cap below safe_x_max, shipped
             cap below safe_x_max
-  switch    {"raw": cfv.SEARCHER_UNTUNED, "on": agents.searcher_untuned()}
+  switch    {"raw": cfv.SEARCHER_UNTUNED, "on": agents.searcher_untuned()} + the two ruling switches (v2)
   errors    the first 20 observer exceptions (an observer never stops a run)
+v2 (untune_part1.txt 13.5) appends to every row: [alive undetected victims (truth: not detected, not dead /
+  rescued / unreachable), firefighters route_blocked, victim searchers airborne (not docked)], and adds
+  rb      route_blocked transitions per firefighter: sets, clears, and the units still route_blocked at the end
+  recall  per searcher, its recall trips (rtb_log entries with "recall": trigger / arrival step, boxed steps)
 """
 from __future__ import annotations
 
@@ -45,7 +49,7 @@ def main() -> int:
     import src_extension.adaptation.local_adaptation_generator as gen  # noqa: E402
     from src_extension.knowledge.mission_goal_model import MissionGoalModel  # noqa: E402
 
-    rec = {"rows": [], "errors": [], "model": None,
+    rec = {"rows": [], "errors": [], "model": None, "ff_prev": {}, "rb_sets": {}, "rb_clears": {},
            "corridor": {"bounds_calls": 0, "floor_fired": 0, "untuned_cap_fired": 0, "cap_calls": 0,
                         "shipped_cap_fired": 0}}
 
@@ -115,9 +119,29 @@ def main() -> int:
                     fire_severity=float(dm.get("fire_severity_estimate", 0.0) or 0.0))
 
             code = {p: i for i, p in enumerate(PHASES)}
+            detected = gen._detected_victim_ids(self)
+            alive_undetected = sum(
+                1 for vid, mk in (getattr(self, "victim_marker_agents", None) or {}).items()
+                if str(vid) not in detected
+                and str(getattr(mk, "status", "") or "").strip().lower() not in ("dead", "rescued", "unreachable"))
+            n_rb = 0
+            for fid, fm in (getattr(self, "firefighter_marker_agents", None) or {}).items():
+                st = str(getattr(fm, "status", "") or "").strip().lower()
+                prev = rec["ff_prev"].get(fid)
+                if st == "route_blocked":
+                    n_rb += 1
+                    if prev != "route_blocked":
+                        rec["rb_sets"][fid] = rec["rb_sets"].get(fid, 0) + 1
+                elif prev == "route_blocked":
+                    rec["rb_clears"][fid] = rec["rb_clears"].get(fid, 0) + 1
+                rec["ff_prev"][fid] = st
+            airborne = sum(1 for a in self.schedule.agents
+                           if type(a) is am.UAV and str(a.current_role or "") == "victim_searcher"
+                           and a.pos is not None and not bool(getattr(a, "rtb_docked", False)))
             rec["rows"].append([int(getattr(self, "evaluation_timesteps_counter", 0) or 0), pf, kf, pm, km,
                                 code.get(phase(pm), -1), code.get(phase(km), -1),
-                                code.get(str(getattr(goals, "mission_phase", "") or ""), -1)])
+                                code.get(str(getattr(goals, "mission_phase", "") or ""), -1),
+                                alive_undetected, n_rb, airborne])
         except Exception as exc:
             err(exc)
         return r
@@ -138,9 +162,23 @@ def main() -> int:
             for uid in gen.resolve_victim_searcher_uav_ids(m):
                 latch = (getattr(m, "_wind_search_target_state", {}) or {}).get(uid, {}).get("untuned_x_sweep_first")
                 sweep[uid] = list(latch) if isinstance(latch, (list, tuple)) else latch
-        d["ut"] = {"probe": "ut_probe v1", "phases": list(PHASES), "rows": rec["rows"], "sweep": sweep,
+        recall = {}
+        if m is not None:
+            for a in m.schedule.agents:
+                if type(a) is am.UAV and str(a.current_role or "") == "victim_searcher":
+                    recall[str(a.unique_id)] = [
+                        {k: e.get(k) for k in ("trigger_step", "arrival_step", "boxed_steps", "trigger_level")}
+                        for e in (getattr(a, "rtb_log", None) or []) if e.get("recall")]
+        latched = sorted(fid for fid, st in rec["ff_prev"].items() if st == "route_blocked")
+        d["ut"] = {"probe": "ut_probe v2", "phases": list(PHASES), "rows": rec["rows"], "sweep": sweep,
                    "corridor": rec["corridor"], "errors": rec["errors"],
-                   "switch": {"raw": getattr(cfv, "SEARCHER_UNTUNED", None), "on": am.searcher_untuned()}}
+                   "rb": {"sets": rec["rb_sets"], "clears": rec["rb_clears"], "latched_end": latched},
+                   "recall": recall,
+                   "switch": {"raw": getattr(cfv, "SEARCHER_UNTUNED", None), "on": am.searcher_untuned(),
+                              "recall_raw": getattr(cfv, "SEARCHER_END_RECALL", None),
+                              "recall_on": am.searcher_end_recall(),
+                              "ffrel_raw": getattr(cfv, "FF_RELEASE_DETECTED_ONLY", None),
+                              "ffrel_on": am.ff_release_detected_only()}}
         tmp = out_path + ".uttmp"
         with open(tmp, "w", encoding="utf-8", newline="\n") as fh:
             json.dump(d, fh, separators=(",", ":"))

@@ -648,6 +648,18 @@ class UAV(mesa.Agent):
         self.rtb_recovery_cell = None if best is None else best[1]
         return self.rtb_recovery_cell
 
+    def _searcher_recall_active(self) -> bool:
+        """untune 13.1 (SEARCHER_END_RECALL): True iff the recall applies and this UAV is a victim searcher with
+        nothing left to find - the honest count (briefing - detected) is 0. Every searcher strategy: this is
+        read in _apply_return_to_base, the last writer of the direction. False, with no read, when off."""
+        if not searcher_end_recall():
+            return False
+        if str(self.current_role or "") != "victim_searcher":
+            return False
+        from src_extension.adaptation.local_adaptation_generator import _count_known_undetected_victims
+
+        return _count_known_undetected_victims(self.model) <= 0
+
     def _apply_return_to_base(self) -> None:
         """Run before move(): trigger, steer, dock and re-launch.
 
@@ -665,13 +677,15 @@ class UAV(mesa.Agent):
             return
         if self.rtb_berth is None or self.pos is None:
             return
+        # untune 13.1: a searcher with nothing left to find returns now and stays docked (False when off).
+        recall = self._searcher_recall_active()
         # fix3a A2: free-cell docking owns every step of a UAV that is not docked; a docked UAV's
         # release (below) is shared. Needs the depot footprints; without them (a stand-in model) the
         # berth code runs, which is also exactly the FREE_CELL_DOCKING = 0 path.
         if free_cell_docking() and not self.rtb_docked:
             depots = self._free_cell_depots()
             if depots:
-                self._apply_return_to_base_free_cell(depots)
+                self._apply_return_to_base_free_cell(depots, recall=recall)
                 return
         # While a trip is active the target is the LATCHED one; otherwise the
         # trigger is tested against the nearest berth from where the UAV is now.
@@ -683,7 +697,8 @@ class UAV(mesa.Agent):
         step = int(getattr(self.model, "evaluation_timesteps_counter", 0))
 
         if self.rtb_docked:
-            if mode >= 3 and self.battery_level >= base_station_recharge_release_level():
+            # untune 13.1: a recalled searcher is not released while nothing is left to find.
+            if mode >= 3 and self.battery_level >= base_station_recharge_release_level() and not recall:
                 self.rtb_docked = False
                 self.rtb_active = False
                 self.rtb_last_pos = None
@@ -703,11 +718,12 @@ class UAV(mesa.Agent):
         here = (int(self.pos[0]), int(self.pos[1]))
         if not self.rtb_active:
             level = self._rtb_trigger_level(berth)
-            if self.battery_level > level:
+            if self.battery_level > level and not recall:
                 return
             # fix3a B3: a searcher's return may wait while the other searcher is away (never past
             # the floor). A no-op returning False, with no side effect, when the switch is off.
-            if self._return_delay_applies(berth, level, step):
+            # A recall (untune 13.1) never waits.
+            if not recall and self._return_delay_applies(berth, level, step):
                 return
             self.rtb_active = True
             self.rtb_trips += 1
@@ -740,6 +756,8 @@ class UAV(mesa.Agent):
                 "released_step": None,
                 "released_level": None,
             })
+            if recall:
+                self.rtb_log[-1]["recall"] = True
 
         # Dock at the assigned berth, or - if some OTHER UAV happens to be
         # standing on it - on whatever depot cell this UAV has already reached.
@@ -915,9 +933,10 @@ class UAV(mesa.Agent):
         best = min(found, key=lambda c: (abs(c[0] - here[0]) + abs(c[1] - here[1]), c[0], c[1]))
         return (best, first[best], level)
 
-    def _apply_return_to_base_free_cell(self, depots) -> None:
+    def _apply_return_to_base_free_cell(self, depots, recall: bool = False) -> None:
         """fix3a A2 (FREE_CELL_DOCKING): trigger, steer and dock for a UAV that is NOT docked; the release
-        of a docked UAV stays in _apply_return_to_base. See agents.free_cell_docking."""
+        of a docked UAV stays in _apply_return_to_base. See agents.free_cell_docking. `recall` (untune 13.1):
+        the trip starts whatever the battery, with no return delay."""
         step = int(getattr(self.model, "evaluation_timesteps_counter", 0))
         here = (int(self.pos[0]), int(self.pos[1]))
         occupied = self._other_uav_cells()
@@ -927,9 +946,9 @@ class UAV(mesa.Agent):
                 return
             cell, depot = pick
             level = self._rtb_trigger_level(cell)
-            if self.battery_level > level:
+            if self.battery_level > level and not recall:
                 return
-            if self._return_delay_applies(cell, level, step):
+            if not recall and self._return_delay_applies(cell, level, step):
                 return
             self.rtb_active = True
             self.rtb_trips += 1
@@ -955,6 +974,8 @@ class UAV(mesa.Agent):
                 "repicks": 0,
                 "boxed_steps": 0,
             })
+            if recall:
+                self.rtb_log[-1]["recall"] = True
         # The stall witness is kept for reporting (the path steer does not need it).
         if self.rtb_last_pos is not None and self.rtb_last_pos == here:
             self.rtb_stall_steps += 1
@@ -2210,6 +2231,18 @@ def searcher_untuned() -> bool:
     """SEARCHER_UNTUNED - the untuned current search (outputs/untune_part1.txt). Ships 0; on ONLY when
     _exact_integer(raw) == 1. Read at call time, never cached."""
     return _exact_integer(getattr(cfv, "SEARCHER_UNTUNED", 0)) == 1
+
+
+def searcher_end_recall() -> bool:
+    """SEARCHER_END_RECALL (untune_part1.txt 13.1). Ships 1, ACTS ONLY with SEARCHER_UNTUNED on; off only on an
+    exact 0. On: a victim searcher with nothing left to find (briefing - detected = 0) returns and docks."""
+    return searcher_untuned() and _fix2_switch("SEARCHER_END_RECALL")
+
+
+def ff_release_detected_only() -> bool:
+    """FF_RELEASE_DETECTED_ONLY (untune_part1.txt 13.3). Ships 1, ACTS ONLY with SEARCHER_UNTUNED on; off only on
+    an exact 0. On: the firefighter release reads only detected victims (never an undetected victim's cell)."""
+    return searcher_untuned() and _fix2_switch("FF_RELEASE_DETECTED_ONLY")
 
 
 def fix3b_param(name: str, default: float) -> float:

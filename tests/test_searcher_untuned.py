@@ -661,3 +661,185 @@ def test_the_communication_planner_reads_no_undetected_victim(monkeypatch):
     assert call() is True
     _on(monkeypatch, 1)
     assert call() is False
+
+
+# ============================================================================ rulings on report section 11
+# 13.1 SEARCHER_END_RECALL - a searcher with nothing left to find returns and docks, every strategy.
+# 13.3 FF_RELEASE_DETECTED_ONLY - the firefighter release reads only detected victims.
+@pytest.mark.parametrize("name", ["SEARCHER_END_RECALL", "FF_RELEASE_DETECTED_ONLY"])
+def test_the_ruling_switches_ship_on_but_act_only_with_the_untuned_search(monkeypatch, name):
+    acc = agents.searcher_end_recall if name == "SEARCHER_END_RECALL" else agents.ff_release_detected_only
+    assert getattr(cfv, name) == 1
+    for untuned, raw, on in ((0, 1, False), (1, 1, True), (1, 0, False), (1, "0", False), (1, 2, True),
+                             (1, "junk", True), (1, 0.0, False), (0, 0, False)):
+        _on(monkeypatch, untuned)
+        monkeypatch.setattr(cfv, name, raw, raising=False)
+        assert acc() is on, (untuned, raw)
+
+
+def _uav(model, role):
+    for a in model.schedule.agents:
+        if type(a) is agents.UAV and str(a.current_role or "") == role:
+            return a
+    raise AssertionError("no %s" % role)
+
+
+def _detect_all(model, except_=()):
+    for vid in model.managed_victims:
+        if vid not in except_:
+            _detect(model, vid)
+
+
+@pytest.mark.parametrize("targeting", [0, 1, 2, 3, 4])
+def test_recall_applies_to_every_strategy_and_only_to_searchers(monkeypatch, targeting):
+    model = _model(monkeypatch, untuned=1, targeting=targeting)
+    searcher, tracker = _uav(model, "victim_searcher"), _uav(model, "fire_tracker")
+    assert not searcher._searcher_recall_active()          # victims still to find
+    _detect_all(model)
+    assert searcher._searcher_recall_active() and not tracker._searcher_recall_active()
+    monkeypatch.setattr(cfv, "SEARCHER_END_RECALL", 0)
+    assert not searcher._searcher_recall_active()          # its own kill switch
+    monkeypatch.setattr(cfv, "SEARCHER_END_RECALL", 1)
+    _on(monkeypatch, 0)
+    assert not searcher._searcher_recall_active()          # the shipped program: no recall
+
+
+def test_an_unseen_death_keeps_the_searcher_searching(monkeypatch):
+    model = _model(monkeypatch, untuned=1)
+    v = sorted(model.managed_victims)
+    _kill(model, v[0])                                     # dies before anyone sees it
+    _detect_all(model, except_=(v[0],))
+    assert not _uav(model, "victim_searcher")._searcher_recall_active()
+
+
+def _away_from_depot(model, uav):
+    """Move the UAV to a cell with no other UAV, outside every depot footprint (full battery)."""
+    for x in range(20, 30):
+        for y in range(20, 30):
+            occupied = any(type(a) is agents.UAV for a in model.grid.get_cell_list_contents([(x, y)]))
+            if not model.base_station_contains((x, y)) and not occupied:
+                model.grid.move_agent(uav, (x, y))
+                uav.battery_level = 100.0
+                return (x, y)
+    raise AssertionError("no free cell")
+
+
+def test_recall_starts_a_return_whatever_the_battery_and_marks_the_trip(monkeypatch):
+    for value, expect in ((1, True), (0, False)):
+        model = _model(monkeypatch, untuned=value)
+        searcher = _uav(model, "victim_searcher")
+        _away_from_depot(model, searcher)
+        _detect_all(model)
+        trips = len(searcher.rtb_log)
+        searcher._apply_return_to_base()
+        assert bool(searcher.rtb_active) is expect
+        if expect:
+            assert len(searcher.rtb_log) == trips + 1 and searcher.rtb_log[-1].get("recall") is True
+            assert searcher.execution_action == "rtb_return"
+        else:
+            assert len(searcher.rtb_log) == trips
+
+
+def test_a_recalled_searcher_stays_docked_while_nothing_is_left_to_find(monkeypatch):
+    for value, released in ((1, False), (0, True)):
+        model = _model(monkeypatch, untuned=value)
+        searcher = _uav(model, "victim_searcher")
+        _detect_all(model)
+        searcher.rtb_docked, searcher.rtb_active, searcher.battery_level = True, True, 100.0
+        searcher._apply_return_to_base()
+        assert (not searcher.rtb_docked) is released
+
+
+def test_a_battery_return_without_recall_is_unchanged(monkeypatch):
+    """Victims still to find: the untuned searcher's return is the battery rule exactly (no trip at full charge)."""
+    model = _model(monkeypatch, untuned=1)
+    searcher = _uav(model, "victim_searcher")
+    _away_from_depot(model, searcher)
+    searcher._apply_return_to_base()
+    assert not searcher.rtb_active and not searcher.rtb_log
+
+
+@pytest.mark.parametrize("targeting", [0, 3])
+def test_stepping_after_the_last_detection_recalls_the_searchers(monkeypatch, targeting):
+    """Every victim detected before the first step: with the switch on every searcher is on a recall trip or
+    docked after two steps, at the current chain AND a Bayes arm; off, none is recalled."""
+    for value in (1, 0):
+        model = _model(monkeypatch, untuned=value, targeting=targeting)
+        _detect_all(model)
+        for _ in range(2):
+            model.step()
+        searchers = [a for a in model.schedule.agents
+                     if type(a) is agents.UAV and str(a.current_role or "") == "victim_searcher"]
+        recalled = [s for s in searchers if any(e.get("recall") for e in s.rtb_log)]
+        if value:
+            assert searchers and len(recalled) == len(searchers)
+            assert all(s.rtb_active or s.rtb_docked for s in searchers)
+        else:
+            assert recalled == []
+
+
+class _MarkerRecorder:
+    """A victim marker that records attribute reads (and still answers them)."""
+
+    def __init__(self, inner, log, vid):
+        object.__setattr__(self, "_inner", inner)
+        object.__setattr__(self, "_log", log)
+        object.__setattr__(self, "_vid", vid)
+
+    def __getattr__(self, name):
+        self._log.append((self._vid, name))
+        return getattr(self._inner, name)
+
+
+def test_the_release_check_reads_no_undetected_victim(monkeypatch):
+    model = _model(monkeypatch, untuned=1)
+    v = sorted(model.managed_victims)
+    _detect(model, v[0])
+    log = []
+    for vid in v[1:]:
+        model.victim_marker_agents[vid] = _MarkerRecorder(model.victim_marker_agents[vid], log, vid)
+    assert model._any_victim_needs_rescue(detected_only=True) is True     # v[0]: detected, alive
+    _kill(model, v[0])
+    log.clear()
+    assert model._any_victim_needs_rescue(detected_only=True) is False    # alive undetected ones do not count
+    assert log == []
+    assert model._any_victim_needs_rescue() is True                       # the shipped rule counts them
+    assert log                                                            # ... by reading them
+
+
+def _blocked_unit(model):
+    ff = next(iter(model.firefighter_marker_agents.values()))
+    ff.status, ff.assigned, ff.exiting, ff.rescue_completed = "route_blocked", False, False, False
+    return ff
+
+
+@pytest.mark.parametrize("value", [1, 0])
+def test_a_route_blocked_unit_is_not_held_by_an_undetected_victim(monkeypatch, value):
+    """Only undetected live victims remain. Fix on (13.3 R1 / R2): no undetected victim is queried and the stale
+    clear runs; fix off (the shipped rule): their cells are path-tested and no stale clear runs."""
+    model = _model(monkeypatch, untuned=1)
+    monkeypatch.setattr(cfv, "FF_RELEASE_DETECTED_ONLY", value)
+    v = sorted(model.managed_victims)
+    _detect(model, v[0])
+    _kill(model, v[0])                       # the one detected victim is dead: only undetected ones are alive
+    _blocked_unit(model)
+    queried, cleared = [], []
+    real_needs = model._victim_needs_rescue
+    monkeypatch.setattr(model, "_victim_needs_rescue", lambda vid, m: queried.append(vid) or real_needs(vid, m))
+    monkeypatch.setattr(model, "_clear_stale_route_blocks", lambda stale, mode: cleared.append(len(stale)))
+    model._revalidate_route_blocked_firefighters()
+    if value:
+        assert not (set(queried) & set(v[1:])) and cleared == [1]
+    else:
+        assert set(v[1:]) <= set(queried) and cleared == []
+
+
+def test_the_release_relabel_passes_the_detected_only_rule():
+    """13.3 R3: both _any_victim_needs_rescue call sites on the release path carry the switch."""
+    import wildfire_model as wf
+
+    src = pathlib.Path(wf.__file__).read_text(encoding="utf-8")
+    tree = ast.parse(src)
+    calls = [n for n in ast.walk(tree) if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+             and n.func.attr == "_any_victim_needs_rescue"]
+    assert len(calls) == 2 and all(any(k.arg == "detected_only" for k in c.keywords) for c in calls)

@@ -234,6 +234,15 @@ VICTIM_SPAWN_MODE = 0
 # edge blocks 4 cells (T9); (item 2) no privileged victim count - the searcher's count is the briefing total
 # minus victims DETECTED, the mission-goal count is the briefing total minus rescued minus observed dead.
 SEARCHER_UNTUNED = 0
+# Rulings on the untune report section 11 (outputs/untune_part1.txt section 13). Both SHIP 1 and act ONLY with
+# SEARCHER_UNTUNED = 1 (so the shipped program is unchanged); each turns off only on an exact 0.
+#   SEARCHER_END_RECALL - a victim searcher whose honest count (briefing - detected) is 0 ends its search and
+#     returns to base through the existing return path (free-cell docking), and stays docked while the count
+#     is 0. Every searcher strategy (the current chain and every SEARCHER_TARGETING arm). agents.searcher_end_recall.
+#   FF_RELEASE_DETECTED_ONLY - the firefighter release (route_blocked revalidation, its stale clear and the
+#     release relabel) reads only DETECTED victims. agents.ff_release_detected_only.
+SEARCHER_END_RECALL = 1
+FF_RELEASE_DETECTED_ONLY = 1
 # The ONE battery threshold pair (fix1 item 2), read at call time through
 # agents.battery_low_threshold() / battery_critical_threshold() by every reader: the UAV
 # labels, both analyzers, the resource model, the global monitor, the dashboard alert and
