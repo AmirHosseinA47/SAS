@@ -100,9 +100,10 @@ def main() -> int:
                     lines += [probe_line("%s%s2" % (arm, place), *c, sets=sets, crn=True) for c in set2]
             lines += [probe_line("ut2bf", *c, sets=["VICTIM_SPAWN_MODE=0", "SEARCHER_UNTUNED=1",
                                                     "SEARCHER_TARGETING=3"], crn=True) for c in set1]
-    elif wave in ("merge", "merge2"):
-        # merge2: the same checks again on the final source (after the empty-registry guard), new tags
-        sfx = "" if wave == "merge" else "2"
+    elif wave in ("merge", "merge2", "merge3"):
+        # merge2 / merge3: the same checks again on the final source (after the empty-registry guard / the recall's
+        # registry guard), new tags
+        sfx = {"merge": "", "merge2": "2", "merge3": "3"}[wave]
         spot_keys = ("A_E", "B_N", "C_S", "D_W")
         lines += [probe_line("utidm" + sfx, *c, sets=["SEARCHER_UNTUNED=0"]) for c in set1]
         lines += [probe_line("utidum" + sfx, *c, sets=["VICTIM_SPAWN_MODE=1", "SEARCHER_UNTUNED=0"]) for c in set1]

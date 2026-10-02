@@ -656,8 +656,15 @@ class UAV(mesa.Agent):
             return False
         if str(self.current_role or "") != "victim_searcher":
             return False
-        from src_extension.adaptation.local_adaptation_generator import _count_known_undetected_victims
+        from src_extension.adaptation.local_adaptation_generator import (
+            _count_known_undetected_victims,
+            _has_victim_registry,
+        )
 
+        # "every briefed victim found" needs a briefing: a model that registers no victims (a stand-in) has none,
+        # so it never recalls (its count is 0 - no coverage hunting - but the search has not been completed).
+        if not _has_victim_registry(self.model):
+            return False
         return _count_known_undetected_victims(self.model) <= 0
 
     def _apply_return_to_base(self) -> None:
