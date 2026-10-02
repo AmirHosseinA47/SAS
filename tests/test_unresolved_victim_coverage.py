@@ -15,6 +15,7 @@ import common_fixed_variables as cfv
 import wildfire_model as wf
 from common_fixed_variables import wind_vector_from_direction
 from src_extension.adaptation.local_adaptation_generator import (
+    _count_known_undetected_victims,
     COVERAGE_INTERIOR_X_MIN,
     LocalAdaptationSpaceGenerator,
     _apply_unresolved_coverage_mode,
@@ -294,9 +295,16 @@ def test_remaining_victim_coverage_after_two_rescues() -> None:
             if agent is not None and int(agent.pos[0]) < 35:
                 west_after_40 = True
         if step == 100:
+            # The count the searcher chain reads is the one the active configuration defines: since the untune
+            # merge the shipped default is the honest "still to find" count (briefing - detected); the pre-untune
+            # program (SEARCHER_UNTUNED=0, the identity control) reads the managed unresolved count.
             unresolved = int(wind_state.get("unresolved_victim_count", 0) or 0)
-            managed_unresolved = _count_unresolved_victims(model)
-            assert unresolved == managed_unresolved
+            expected = (
+                _count_known_undetected_victims(model)
+                if agents.searcher_untuned()
+                else _count_unresolved_victims(model)
+            )
+            assert unresolved == expected
     assert west_after_40
 
 

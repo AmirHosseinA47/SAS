@@ -100,12 +100,14 @@ def main() -> int:
                     lines += [probe_line("%s%s2" % (arm, place), *c, sets=sets, crn=True) for c in set2]
             lines += [probe_line("ut2bf", *c, sets=["VICTIM_SPAWN_MODE=0", "SEARCHER_UNTUNED=1",
                                                     "SEARCHER_TARGETING=3"], crn=True) for c in set1]
-    elif wave == "merge":
+    elif wave in ("merge", "merge2"):
+        # merge2: the same checks again on the final source (after the empty-registry guard), new tags
+        sfx = "" if wave == "merge" else "2"
         spot_keys = ("A_E", "B_N", "C_S", "D_W")
-        lines += [probe_line("utidm", *c, sets=["SEARCHER_UNTUNED=0"]) for c in set1]
-        lines += [probe_line("utidum", *c, sets=["VICTIM_SPAWN_MODE=1", "SEARCHER_UNTUNED=0"]) for c in set1]
+        lines += [probe_line("utidm" + sfx, *c, sets=["SEARCHER_UNTUNED=0"]) for c in set1]
+        lines += [probe_line("utidum" + sfx, *c, sets=["VICTIM_SPAWN_MODE=1", "SEARCHER_UNTUNED=0"]) for c in set1]
         for spawn, place in ((0, "r"), (1, "u")):
-            lines += [probe_line("utdf%s" % place, *c, sets=["VICTIM_SPAWN_MODE=%d" % spawn], crn=True)
+            lines += [probe_line("utdf%s%s" % (sfx, place), *c, sets=["VICTIM_SPAWN_MODE=%d" % spawn], crn=True)
                       for c in set1 if c[0] in spot_keys]
     else:
         raise SystemExit("unknown wave %r" % wave)

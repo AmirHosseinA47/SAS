@@ -1092,13 +1092,21 @@ def _detected_victim_ids(simulation: Any | None) -> set[str]:
     return detected
 
 
+def _has_victim_registry(simulation: Any | None) -> bool:
+    """True iff the model registers victims (a non-empty managed_victims dict). A real WildFireModel always does
+    (one entry per briefed victim); a stand-in with none has nothing to find - 0, exactly as the shipped count."""
+    managed = getattr(simulation, "managed_victims", None) if simulation is not None else None
+    return isinstance(managed, dict) and bool(managed)
+
+
 def _count_known_undetected_victims(simulation: Any | None) -> int:
     """The SEARCHER's count (ruling D-3): "is any victim still to be FOUND?" = N_brief - victims detected.
 
     A detected victim - alive, awaiting rescue, unreachable or dead - needs no more searching. A victim that
     died unseen stays counted, as it would for a real team. Replaces _count_unresolved_victims on the
-    searcher path when SEARCHER_UNTUNED is on. No simulation -> 0, as the shipped count."""
-    if simulation is None:
+    searcher path when SEARCHER_UNTUNED is on. No simulation, or no victim registered -> 0, as the shipped
+    count."""
+    if not _has_victim_registry(simulation):
         return 0
     return max(0, _victim_briefing_count(simulation) - len(_detected_victim_ids(simulation)))
 
@@ -1109,8 +1117,9 @@ def _count_known_mission_unresolved(simulation: Any | None) -> int:
     rescued: the managed rescued flag / status, set only by a completed rescue. observed dead: dead AND
     detected before it died (ruling D-2). Nothing about an undetected victim is read but its detection flag
     (a rescue needs a detection, so restricting both terms to detected victims changes no value). Unreachable
-    victims stay counted. Replaces the mission goals' alive_victims_remaining when SEARCHER_UNTUNED is on."""
-    if simulation is None:
+    victims stay counted. Replaces the mission goals' alive_victims_remaining when SEARCHER_UNTUNED is on. No
+    victim registered -> 0, as the shipped count."""
+    if not _has_victim_registry(simulation):
         return 0
     detected = _detected_victim_ids(simulation)
     resolved = 0

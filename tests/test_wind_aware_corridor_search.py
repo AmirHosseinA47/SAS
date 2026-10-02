@@ -324,6 +324,13 @@ def test_no_fire_or_smoke_target_selected() -> None:
 
 
 def test_east_wind_80_step_run_visits_multiple_cells_not_one_corner_camp() -> None:
+    """PINNED TO THE PRE-UNTUNE PROGRAM (SEARCHER_UNTUNED=0, the identity control). The test empties the victim
+    registry to watch the searcher chain move with no victim interaction. Under the shipped default since the
+    untune merge an empty registry means nothing is left to find, so the searcher is recalled to base at once
+    (SEARCHER_END_RECALL) - intended behaviour, covered by tests/test_searcher_untuned.py - and the movement this
+    test measures exists only in the pre-untune program."""
+    original_untuned = cfv.SEARCHER_UNTUNED
+    cfv.SEARCHER_UNTUNED = 0
     rng = random.Random(42)
     cfv.SYSTEM_RANDOM = rng
     wf.SYSTEM_RANDOM = rng
@@ -372,3 +379,4 @@ def test_east_wind_80_step_run_visits_multiple_cells_not_one_corner_camp() -> No
         assert max_x_streak <= 40
     finally:
         cfv.BATCH_SIZE = original_batch
+        cfv.SEARCHER_UNTUNED = original_untuned

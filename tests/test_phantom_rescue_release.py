@@ -17,6 +17,7 @@ import os
 os.environ.setdefault("MPLBACKEND", "Agg")
 
 import agents
+import common_fixed_variables as cfv
 from src_extension.planning.rescue_planner import select_rescue_assignment
 from wildfire_model import PhysicalRescueCommand, WildFireModel
 
@@ -247,8 +248,13 @@ def test_release_relabels_the_knowledge_model_as_available() -> None:
         assert (getattr(unit, "target_victim", None) or None) is None
 
 
-def test_route_blocked_claimant_is_released_and_recovered_by_revalidation() -> None:
-    """The 70e1b33 shape: a blocked second claimant must not be left latched."""
+def test_route_blocked_claimant_is_released_and_recovered_by_revalidation(monkeypatch) -> None:
+    """The 70e1b33 shape: a blocked second claimant must not be left latched.
+    PINNED TO THE PRE-UNTUNE PROGRAM (SEARCHER_UNTUNED=0, the identity control): the model's other victims are
+    all UNDETECTED, and the pre-untune release rule counts them as work left, so the blocked unit keeps its flag
+    for the revalidation pass. Since the untune merge the shipped release reads only DETECTED victims
+    (FF_RELEASE_DETECTED_ONLY): with none waiting the unit is released at once - see the *_default tests below."""
+    monkeypatch.setattr(cfv, "SEARCHER_UNTUNED", 0, raising=False)
     model = _fresh_model()
     marker, ff_a, ff_b = _double_claim(model)
     # the repeat-block state the incident handler leaves behind: still bound, flagged
@@ -333,8 +339,13 @@ def test_completion_for_an_already_rescued_victim_releases_a_straggler() -> None
     assert len(finalizes) == 1
 
 
-def test_victim_dead_releases_every_claimant_including_route_blocked() -> None:
-    """D1: one helper, one behaviour - the recall no longer skips route_blocked units."""
+def test_victim_dead_releases_every_claimant_including_route_blocked(monkeypatch) -> None:
+    """D1: one helper, one behaviour - the recall no longer skips route_blocked units.
+    PINNED TO THE PRE-UNTUNE PROGRAM (SEARCHER_UNTUNED=0, the identity control): the model's other victims are
+    all UNDETECTED, and the pre-untune release rule counts them as work left, so the blocked unit keeps its flag
+    for the revalidation pass. Since the untune merge the shipped release reads only DETECTED victims
+    (FF_RELEASE_DETECTED_ONLY): with none waiting the unit is released at once - see the *_default tests below."""
+    monkeypatch.setattr(cfv, "SEARCHER_UNTUNED", 0, raising=False)
     model = _fresh_model()
     marker, ff_a, ff_b = _double_claim(model)
     ff_b.status = "route_blocked"
@@ -648,3 +659,43 @@ def test_same_step_co_completer_is_recycled_without_an_absence() -> None:
     assert ff_b.exiting is False and ff_b.rescue_completed is False and ff_b.rescued_victim is None
     assert model._firefighter_available_for_dispatch(ff_b) is True
     assert model.pending_removal_failures_last_step == 0
+
+
+# --- untune merge: the same two shapes under the SHIPPED default (FF_RELEASE_DETECTED_ONLY) -------------------
+def test_route_blocked_claimant_is_released_and_recovered_by_revalidation_default() -> None:
+    """The 70e1b33 shape under the shipped default. With a DETECTED victim waiting, the blocked claimant keeps its
+    flag for the revalidation pass, which recovers it and re-dispatches it to that victim - not latched."""
+    assert agents.ff_release_detected_only()
+    model = _fresh_model()
+    marker, ff_a, ff_b = _double_claim(model)
+    ff_b.status = "route_blocked"
+    other = _confirm_victim(model, V1, OTHER_CELL)          # detected and waiting before the release
+    _complete_as_carrier(model, ff_a, V0)
+    assert ff_b.assigned is False and ff_b.rescued_victim is None and ff_b.target_pos is None
+    assert ff_b.status == "route_blocked"                    # work left: a detected victim
+    model._revalidate_route_blocked_firefighters()
+    assert ff_b.status != "route_blocked"
+    assert ff_b.assigned is True and ff_b.rescued_victim is other
+
+
+def test_blocked_claimant_with_only_undetected_victims_left_is_released_default() -> None:
+    """Under the shipped default a blocked claimant whose victim is resolved, with only UNDETECTED victims left,
+    is released at once ("no victim left to reach") - a firefighter can only be dispatched to a detected victim,
+    so nothing holds the flag and nothing latches."""
+    assert agents.ff_release_detected_only()
+    model = _fresh_model()
+    marker, ff_a, ff_b = _double_claim(model)
+    ff_b.status = "route_blocked"
+    state = model.managed_victims[V0]
+    marker.status = "dead"
+    state.status = "dead"
+    state.dead = True
+    state.cancelled = True
+    model._handle_rescue_incident(
+        {"type": "victim_dead", "victim_id": V0, "firefighter_id": None, "reason": "fire_casualty"}
+    )
+    for ff in (ff_a, ff_b):
+        assert ff.assigned is False and ff.rescued_victim is None and ff.target_pos is None
+    assert ff_a.status == "available"
+    assert ff_b.status == "available"
+    assert model._firefighter_available_for_dispatch(ff_b) is True

@@ -1,0 +1,100 @@
+================================================================================
+UNTUNE - MERGE NOTES                                                 outputs/untune_merge_notes.txt
+The untuned current search, shipped as the DEFAULT (maintainer ruling, 2026-10-02).
+Branch untune -> main (fast-forward), tag untuned-search.
+================================================================================
+
+1. WHAT IS MERGED (main ba664332 -> untune, fast-forward)
+  885c4444  Part 1: design + pre-registration; rulings D-1..D-6, two counts (section 11)
+  d1b4b8de  Part 2: SEARCHER_UNTUNED - items 1 and 2, review fixes, tests, screen tooling
+  21d7039e  tests pin scenario A's team
+  e9808418  first screen report (G-O FAIL, the non-coverage livelock)
+  fd676572  Part 1 section 13: rulings on report section 11
+  20f05301  SEARCHER_END_RECALL + FF_RELEASE_DETECTED_ONLY
+  6a53fd02  re-screen report: every gate PASSES
+  6a4c715f  SEARCHER_UNTUNED ships 1 (this merge); test_shipped_defaults; merge verification queue
+  (+ this file and the merge verification outputs)
+  Records: outputs/untune_part1.txt (design, sections 0-13), outputs/untune_report.txt (first screen),
+  outputs/untune_rescreen_report.txt (re-screen), this file.
+
+2. SHIPPED STATE
+  SEARCHER_UNTUNED = 1 (on only on an exact 1)        the untuned current search: no absolute coordinate and no
+                                                       compass-side setting in the searcher chain; searcher count =
+                                                       briefing - detected; mission-goal count = briefing - rescued -
+                                                       observed dead
+  SEARCHER_END_RECALL = 1 (off only on an exact 0)    with nothing left to find a searcher returns and stays docked;
+                                                       every searcher strategy
+  FF_RELEASE_DETECTED_ONLY = 1 (off only on an exact 0) the firefighter release reads only detected victims
+  The two ruling switches act ONLY with SEARCHER_UNTUNED = 1.
+  IDENTITY CONTROL: SEARCHER_UNTUNED = 0 reproduces the pre-untune program exactly (section 3). Every later round
+  (dispatch, Bayesian preparation, measurement) is built and screened on the new defaults; a run that must reproduce
+  the pre-untune program passes SEARCHER_UNTUNED=0 explicitly.
+  Rulings: 1 recall approved as built; 2 release fix approved as built; 3 untuned is the default; 4 victims that died
+  unseen keep searchers searching - correct, recorded.
+
+3. VERIFICATION ON THE FINAL SOURCE (see 3.1 for the numbers)
+  - IDENTITY CONTROL: utidm (ring, SEARCHER_UNTUNED=0, CRN off) vs fb3idg; utidum (uniform spawn, SEARCHER_UNTUNED=0)
+    vs fb3vs0 - value identity on the fx3m fields + every mf2 section.
+  - NEW DEFAULTS: utdfr / utdfu (no untune --set at all, CRN, 4 cells each) vs the re-screen's recall + release-fix
+    arm ut2r / ut2u.
+  - FULL SUITE on the final source: expected exactly {T5}.
+3.1 RESULTS: (filled in below)
+
+4. TO BE FIXED BEFORE MEASUREMENT (ruling 5) - TRACKERS BLOCKED BY DOCKED SEARCHERS
+  NOT a permanent limitation. Moves to the BAYESIAN PREPARATION ROUND, before any measurement run, because the
+  paper's alarm and mode figures would otherwise include it.
+  - Evidence (re-screen, untuned + recall vs shipped): DRIFT_TOO_HIGH fail-safe alarms 162 -> 502, 72 -> 800,
+    72 -> 342, 160 -> 428 (ring 1, ring 2, uniform 1, uniform 2; without recall 136 / 74 / 76 / 120);
+    SEARCH_MODE_REQUIRED +7 to +11%; mission steps in degraded_operation +12%, +26%, +4%, +1%.
+  - Mechanism: a recalled searcher stays docked in a depot to the horizon; the move rule (UAV.not_UAV_adjacent)
+    refuses a move into any cell adjacent to another UAV, docked ones included; fire trackers working near a depot are
+    refused repeatedly, and a refused move on >= 2 of 5 steps is DRIFT_TOO_HIGH (agents.py DRIFT_WINDOW_STEPS). Ring
+    set 2: B_N tracker stalls within 2 cells of a docked searcher 133 vs 0 shipped; C_W 122 vs 13.
+  - Effect in the re-screen: no rescue lost on any seed (R-5).
+  - Records: outputs/untune_rescreen_report.txt section 6, outputs/_ut_analysis2.txt (INVARIANTS, R-5).
+
+5. CLEANUP LIST (found, not fixed)
+  - RETURN LEGS DO NOT AVOID FIRE (ruling 6): the return path (battery return AND recall; free-cell docking's
+    _dock_path) avoids other UAVs, not fire. In the re-screen every post-detection searcher fire / smoke step of the
+    untuned arm but 3 fell on recall legs (legs 27-30 steps per set on average).
+  - THE NON-COVERAGE LIVELOCK (ruling 7) - a latent defect of the pre-untune system: the searcher chain's non-coverage
+    branch alternates 'victim_search_wind_aware_retarget_to_interior' <-> 'victim_search_wind_aware_sweep' (or
+    'victim_search_escape_bfs' <-> sweep) on one cell pair. TRIGGER: the unresolved count the chain reads is 0 while
+    the searcher is still flying (pre-untune: when only victims that died unseen remain, or after every victim is
+    resolved). The shipped untuned system does not reach it at the end of search (recall).
+  - Fixed compass tie-break orders (ruling 4: unchanged, nothing for the paper): the route step's E, S, W, N; the
+    direction choosers; lattice parity / scan order; the lawnmower's +x progression.
+  - Carried over: the fix3b cleanup items (fix3b_merge_notes.txt section 6); the information-map corrections (lanes
+    live in B, C, D; the rescue-side reads now closed by FF_RELEASE_DETECTED_ONLY; the communication planner read).
+
+6. FOR THE MEASUREMENT ROUND'S PRE-REGISTRATION (ruling 6)
+  Report drone time in fire and in smoke SEPARATELY for SEARCH steps and for RETURN legs (battery returns and recall
+  legs). In this screen the untuned arm's post-detection exposure sat almost entirely on recall legs.
+
+7. THE RUN THAT STILL NEVER FINISHES (ruling 8) - for the dispatch round to check
+  - Identity: re-screen uniform set 2, cell D_W = scenario D, wind WEST, seed 9636, VICTIM_SPAWN_MODE 1 (tags ut0u2_D_W
+    shipped and ut2u2_D_W untuned + recall; it never finishes in both). NOTE: it is in UNIFORM set 2, not ring set 2 -
+    ring set 2 had no such run (0 -> 0).
+  - What happens (identical trajectories in both arms): victim_3 spawns ON THE DOWNWIND (WEST) EDGE at (0, 25), the
+    boundary of the two searchers' cross-wind y-lanes (0..24 / 25..49), and flees south along the edge into the lower
+    lane, reaching the SW corner (0, 4) at step 189 and staying there alive to step 360. It is never detected, so the
+    mission never completes (rescued 3, dead 0).
+  - Why it is never detected: the closest any UAV comes is 9.2 cells (searcher 2502 at (8, 16), step 57; the
+    radius is 8). Searcher 2502 aims at the SW twice - target (7, 7) at steps 100-109 (closest 13.3) and (15, 3) at
+    steps 144-166 (closest 16.3) - and both times the A1-R fire-field route waits / retreats ('..._fire_wait',
+    '..._fire_retreat') and the target is dropped; from step ~198 to ~320 it sits behind the fire in the SE corner
+    with no admissible path. Searcher 2503 never leaves the upper lane (closest 21.6). The fire trackers' closest is
+    17.5.
+  - So the cause is DETECTION (search routing near the downwind edge, under the lane split and the fire-field route),
+    not dispatch: with no detection there is nothing to dispatch to. The dispatch round should not expect to resolve
+    it unless it changes searcher routing; it can use this seed as a check.
+
+8. VICTIMS THAT DIED UNSEEN (ruling 4, recorded): the honest count stays above 0 and the searchers keep searching - in
+  the re-screen 8, 3, 5 and 5 of 16 runs per set (2126 / 865 / 1333 / 912 searcher-search steps with no live undetected
+  victim left).
+
+9. HOUSEKEEPING
+  - Quarantine excluded on every recursive search. No worktree, no .venv junction.
+  - Review agents: 3 of 3 (Part 2 only).
+  - Branch untune: pushed, fast-forwarded into main, then deleted locally and on origin with the full ref name.
+  - Untracked files from earlier rounds left untouched.
