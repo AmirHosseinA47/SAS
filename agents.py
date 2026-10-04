@@ -2286,6 +2286,13 @@ def mr1_truthiness_fix() -> bool:
     return _fix2_switch("MR1_TRUTHINESS_FIX")
 
 
+def numpy_scalar_flags() -> bool:
+    """NUMPY_SCALAR_FLAGS (isTrue round F-2). SHIPS 1; off only on an exact 0, which is the pre-fix readers. On:
+    utility_evaluation.plain_scalar gives the utility layer's flag parsers and safe_float a numpy bool / integer /
+    floating scalar as its Python twin. Read at call time, and only for a numpy value."""
+    return _fix2_switch("NUMPY_SCALAR_FLAGS")
+
+
 def searcher_targeting_coordination() -> bool:
     """SEARCHER_TARGETING_COORDINATION - joint allocation. Ships 1; only an exact 0 turns it off."""
     return _fix2_switch("SEARCHER_TARGETING_COORDINATION")

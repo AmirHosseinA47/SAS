@@ -9,6 +9,7 @@ from .utility_evaluation import (
     ScoredOption,
     UtilityEvaluation,
     build_utility_dashboard_summary,
+    plain_scalar,
     safe_float,
 )
 
@@ -66,7 +67,7 @@ def _is_maintain_option(option: object) -> bool:
         return True
     params = option_parameters(option)
     for key in _MAINTAIN_TYPE_MARKERS:
-        value = params.get(key)
+        value = plain_scalar(params.get(key))  # isTrue round F-2 (NUMPY_SCALAR_FLAGS)
         if value is True:
             return True
         if isinstance(value, (int, float)) and value != 0.0:

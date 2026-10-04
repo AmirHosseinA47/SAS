@@ -29,7 +29,7 @@ from .planner_selection import (
     option_parameters,
 )
 from .mission_goal_integration import resolve_utility_mode as _resolve_utility_mode_from_goals
-from .utility_evaluation import ScoredOption, UtilityEvaluation
+from .utility_evaluation import ScoredOption, UtilityEvaluation, plain_scalar
 
 _NON_LOCAL_SCOPES = frozenset({"rescue", "global", "system"})
 _NON_LOCAL_TYPE_MARKERS = (
@@ -638,6 +638,7 @@ def _uncertainty_context(
 
 
 def _is_truthy(value: object) -> bool:
+    value = plain_scalar(value)  # isTrue round F-2 (NUMPY_SCALAR_FLAGS)
     if value is True:
         return True
     if isinstance(value, (int, float)) and value != 0.0:

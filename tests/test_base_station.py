@@ -175,6 +175,8 @@ def test_shipped_defaults() -> None:
     # isTrue round (outputs/isTrue_part1.txt, rulings section 10): F-1 ships ON (off only on an exact 0, the inherited
     # identity test): the MR1 input counts burning cells by truthiness.
     assert cfv.MR1_TRUTHINESS_FIX == 1
+    # F-2 ships ON (off only on an exact 0, the pre-fix readers): numpy scalars in the utility layer read as Python.
+    assert cfv.NUMPY_SCALAR_FLAGS == 1
 
 
 # --- depot geometry -----------------------------------------------------------

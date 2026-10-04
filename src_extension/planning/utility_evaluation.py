@@ -11,6 +11,8 @@ from collections.abc import Iterable
 from dataclasses import asdict, dataclass, is_dataclass
 from typing import Any
 
+import numpy
+
 
 @dataclass
 class UtilityTerm:
@@ -334,7 +336,7 @@ class UtilityEvaluation:
             for key in keys:
                 if key not in params:
                     continue
-                v = params.get(key)
+                v = plain_scalar(params.get(key))
                 if v is True:
                     return True
                 if isinstance(v, (int, float)) and v != 0.0:
@@ -525,7 +527,7 @@ class UtilityEvaluation:
             for key in keys:
                 if key not in params:
                     continue
-                v = params.get(key)
+                v = plain_scalar(params.get(key))
                 if v is True:
                     return True
                 if isinstance(v, (int, float)) and v != 0.0:
@@ -803,7 +805,7 @@ class UtilityEvaluation:
             for key in keys:
                 if key not in params:
                     continue
-                v = params.get(key)
+                v = plain_scalar(params.get(key))
                 if v is True:
                     return True
                 if isinstance(v, (int, float)) and v != 0.0:
@@ -1032,7 +1034,7 @@ class UtilityEvaluation:
             for key in keys:
                 if key not in params:
                     continue
-                v = params.get(key)
+                v = plain_scalar(params.get(key))
                 if v is True:
                     return True
                 if isinstance(v, (int, float)) and v != 0.0:
@@ -1197,7 +1199,7 @@ class UtilityEvaluation:
             for key in keys:
                 if key not in params:
                     continue
-                v = params.get(key)
+                v = plain_scalar(params.get(key))
                 if v is True:
                     return True
                 if isinstance(v, (int, float)) and v != 0.0:
@@ -1371,7 +1373,7 @@ class UtilityEvaluation:
             for key in keys:
                 if key not in params:
                     continue
-                v = params.get(key)
+                v = plain_scalar(params.get(key))
                 if v is True:
                     return True
                 if isinstance(v, (int, float)) and v != 0.0:
@@ -1589,7 +1591,37 @@ def clamp01(value: float) -> float:
     return v
 
 
+_NUMPY_SCALAR_TYPES = (numpy.bool_, numpy.integer, numpy.floating)
+
+
+def plain_scalar(value: object) -> object:
+    """isTrue round F-2 (NUMPY_SCALAR_FLAGS): a numpy bool / integer / floating scalar as its Python twin (bool /
+    int / float); every other value unchanged.
+
+    A numpy bool is never `is True` and is not an int; numpy integers and numpy.float32 are not int / float
+    subclasses. So the flag parsers (the planners' _is_truthy, planner_selection's maintain test, ptruth / ptruth_s /
+    ptruth_p) and safe_float read all three as False / the default. A numpy.float64 is a float subclass and was read
+    correctly; its twin is the same float. numpy.timedelta64 (a numpy.integer subclass) is left unchanged, and so is
+    any value whose conversion raises: the readers never raise where they did not before. At NUMPY_SCALAR_FLAGS 0
+    every value is returned unchanged (the pre-fix readers). The accessor is read only for a numpy value.
+    """
+    if isinstance(value, _NUMPY_SCALAR_TYPES) and not isinstance(value, numpy.timedelta64):
+        import agents as _agents  # lazy: agents is a root module (as in _check_utility_feasibility)
+
+        if _agents.numpy_scalar_flags():
+            try:
+                if isinstance(value, numpy.bool_):
+                    return bool(value)
+                if isinstance(value, numpy.integer):
+                    return int(value)
+                return float(value)
+            except (TypeError, ValueError, OverflowError):
+                return value
+    return value
+
+
 def safe_float(value: object, default: float = 0.0) -> float:
+    value = plain_scalar(value)
     if value is None:
         return default
     if isinstance(value, bool):
