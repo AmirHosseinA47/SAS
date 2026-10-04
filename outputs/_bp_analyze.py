@@ -75,6 +75,18 @@ FOLLOW-UP (maintainer rulings on outputs/bayesprep_report.txt section 10, 2026-1
           analyzer's reconstruction from rows_uav (row t-2 = the pre-move positions of step t; step 1 from the
           instrument's launch cells) against the probe; time to first detection per victim ('[Victim Detection]').
           --write also writes outputs/_bp_metrics.jsonl (one row per run).
+          MR1 FINDING (2026-10-04, while the follow-up ran): UAV.surrounding_states counts a cell only when
+          Fire.is_burning() IS True, and from the fire's first spread tick Fire.burning holds a numpy bool, so the
+          model's MR1 is identically 0 from then on. M_R1 is therefore reported twice: as the model computes it, and
+          CORRECTED (truthiness, the same Moore radius-8 neighbourhood, the same normalisation and accumulation order).
+          The corrected value comes from the probe's mr1_steps (head3 on) or, for older instrumented runs, from the
+          analyzer's offline reconstruction (the instrument's burning set of index t-1, the UAV cells of row t-2 / the
+          launch), cross-checked against the probe on every step and UAV in the mr1v validation runs.
+  mr1v    (FOLLOW (4)) the MR1 record's validation at --head3 (default git HEAD): bp7cr / bp7fr / bp7er = the bp2cr /
+          bp5fr / bper_A_E lines; each must equal its follow-up twin on every recorded field (mr on the keys both
+          have), the literal count must reproduce the model's MR1_LIST exactly, the reconstruction the probe's
+          corrected count on every step and UAV; and every run of the follow-up head must carry NO mr1 record (it ran
+          the committed 8122b463 probe).
 """
 from __future__ import annotations
 
@@ -97,7 +109,8 @@ SECTION_ORDER = ("PROV", "ID", "INSTR", "GATES", "RECALL", "RB", "INVAR", "ITEM5
 
 
 def _parse_args(argv):
-    o = {"sections": [], "head": None, "head2": None, "write": False, "selftest": False, "samples": []}
+    o = {"sections": [], "head": None, "head2": None, "head3": None, "write": False, "selftest": False,
+         "samples": []}
     i = 0
     while i < len(argv):
         a = argv[i]
@@ -110,12 +123,12 @@ def _parse_args(argv):
             o["samples"].append(argv[i + 1])
             i += 2
             continue
-        if a in ("--section", "--head", "--head2"):
+        if a in ("--section", "--head", "--head2", "--head3"):
             if i + 1 >= len(argv):
                 raise SystemExit("%s needs a value" % a)
             v = argv[i + 1]
             i += 2
-        elif a.startswith("--section=") or a.startswith("--head=") or a.startswith("--head2="):
+        elif a.startswith(("--section=", "--head=", "--head2=", "--head3=")):
             a, v = a.split("=", 1)
             i += 1
         elif a in ("--write", "--selftest"):
@@ -216,6 +229,8 @@ def _git(*args):
 
 EXPECTED_HEAD = OPTS["head"] or (_git("rev-parse", "HEAD") or "").strip() or "unknown"
 FOLLOW_HEAD = OPTS["head2"] or (_git("rev-parse", "HEAD") or "").strip() or "unknown"   # the follow-up runs' head
+MR1V_HEAD = OPTS["head3"] or (_git("rev-parse", "HEAD") or "").strip() or "unknown"     # the mr1v validation runs' head
+MR1_RECON = {"on": False}                   # the offline MR1 reconstruction runs only for the METRICS section
 PROBE_E, RB_E = Q.entries()
 
 
@@ -398,7 +413,7 @@ def prov_check(d, e, path):
     if not _same_path(d.get("repo"), WT):
         why.append("repo %s" % d.get("repo"))
     h = str(d.get("head") or "")
-    want_head = FOLLOW_HEAD if e.get("follow") else EXPECTED_HEAD
+    want_head = MR1V_HEAD if e["group"] == "mr1v" else FOLLOW_HEAD if e.get("follow") else EXPECTED_HEAD
     if not (want_head != "unknown" and h.startswith(want_head)):
         why.append("head %s != %s" % (h[:10], want_head[:10]))
     ex, sd = expected_extra(e)
@@ -875,7 +890,81 @@ def mr_digest(d):
                  recon_match=sum(1 for s in steps if s[0] in recon and recon[s[0]] == list(s[2:6])),
                  recon_first_diff=next(([s[0], recon[s[0]], list(s[2:6])] for s in steps
                                         if s[0] in recon and recon[s[0]] != list(s[2:6])), None))
+    g.update(mr1_digest(d, mr, rows, launch))
     return g
+
+
+def _mr1_acc(n, counts, nobs):
+    """The model's MR1 accumulation (wildfire_model.MR1): reward = normalize(c, N_OBSERVATIONS, 1, 0), summed per UAV
+    in step order - so equal counts give bit-equal floats."""
+    acc = [0.0] * n
+    for cs in counts:
+        reward = [((float(c) / nobs) * 1) - 0 for c in cs]
+        acc = [a + b for a, b in zip(acc, reward)]
+    return acc
+
+
+def mr1_digest(d, mr, rows, launch):
+    """MR1 as the model computes it (mr1_list), the literal copy's check, the CORRECTED count (probe) and the offline
+    reconstruction (instrumented runs, METRICS only)."""
+    g = {"mr1_probe": bool(mr and mr.get("mr1_steps")), "mr1_ids_present": bool(mr and "mr1_ids" in mr)}
+    nobs = float((mr or {}).get("n_observations") or 289)
+    model = (mr or {}).get("mr1_list")
+    if g["mr1_probe"]:
+        ms = mr["mr1_steps"]
+        g["mr1_steps_n"] = len(ms)
+        lit = _mr1_acc(len(model or []), [x[1] for x in ms], nobs)
+        g["mr1_literal_ok"] = model is not None and lit == list(model)
+        cor = _mr1_acc(len(ms[0][2]) if ms else 0, [x[2] for x in ms], nobs)
+        g["m_r1_corr"] = statistics.mean(cor) if cor else None
+        g["mr1_corr_list"] = cor
+        g["mr1_lit_steps_nonzero"] = sum(1 for x in ms if any(x[1]))
+        g["mr1_cor_steps_nonzero"] = sum(1 for x in ms if any(x[2]))
+    if MR1_RECON["on"] and launch and isinstance((d.get("fb3") or {}).get("inst"), dict):
+        g.update(_mr1_recon(d, rows, launch, nobs, mr))
+    return g
+
+
+def _mr1_recon(d, rows, launch, nobs, mr):
+    """Offline: at the START of step t the model counts burning cells in each UAV's Moore radius-8 box (clipped to the
+    grid) - the instrument's burning set of index t-1 (0 = launch) and the UAV cells of row t-2 (step 1: the launch)."""
+    import numpy as np
+    mod = inst()
+    if mod is None:
+        return {"mr1_recon_err": "MODULE MISSING"}
+    try:
+        dec = mod.decode(d)
+    except Exception as exc:
+        return {"mr1_recon_err": "decode raised %s" % type(exc).__name__}
+    H, W = (d.get("grid") or [50, 50])[:2]
+    rad = 8
+    burn = dec["burning"]
+    n = len(rows)
+    if len(burn) < n or not dec.get("contiguous", True):
+        return {"mr1_recon_err": "burning sets %d for %d steps (contiguous %s)" % (len(burn), n, dec.get("contiguous"))}
+    per_step = []
+    for t in range(1, n + 1):
+        grid = np.zeros((H + 1, W + 1), dtype=np.int64)
+        for (bx, by) in burn[t - 1]:
+            grid[bx + 1, by + 1] += 1
+        S = grid.cumsum(0).cumsum(1)
+        cells = [(str(u), x, y) for u, x, y in launch] if t == 1 else [(u[0], u[1], u[2]) for u in rows[t - 2]]
+        cs = {}
+        for uid, x, y in cells:
+            x1, x2, y1, y2 = max(0, x - rad), min(H - 1, x + rad), max(0, y - rad), min(W - 1, y + rad)
+            cs[uid] = int(S[x2 + 1, y2 + 1] - S[x1, y2 + 1] - S[x2 + 1, y1] + S[x1, y1])
+        per_step.append((t, cs))
+    order = (mr or {}).get("mr1_ids") or [u[0] for u in (rows[0] if rows else [])]
+    counts = [[cs.get(uid, 0) for uid in order] for _t, cs in per_step]
+    acc = _mr1_acc(len(order), counts, nobs)
+    out_ = {"m_r1_recon": statistics.mean(acc) if acc else None, "mr1_recon_list": acc, "mr1_recon_steps": len(counts)}
+    if mr and mr.get("mr1_steps"):
+        probe = {x[0]: x[2] for x in mr["mr1_steps"]}
+        cmp_ = [(t, c, probe.get(t)) for (t, _cs), c in zip(per_step, counts) if t in probe]
+        out_["mr1_recon_cmp"] = len(cmp_)
+        out_["mr1_recon_match"] = sum(1 for _t, c, p in cmp_ if c == p)
+        out_["mr1_recon_first_diff"] = next(([t, c, p] for t, c, p in cmp_ if c != p), None)
+    return out_
 
 
 def digest(d, tag, key, need_inst=False, need_vf=False):
@@ -945,6 +1034,7 @@ def build(sections):
     BUILT["done"] = True
     need_inst = "INSTR" in sections
     need_vf = "FP" in sections
+    MR1_RECON["on"] = "METRICS" in sections
     for (tag, key), e in PROBE_E.items():
         p = run_path(tag, key)
         if not os.path.exists(p):
@@ -955,10 +1045,11 @@ def build(sections):
             CRASHED.append((tag, key))
         why, kinds = prov_check(d, e, p)
         INSTH[(tag, key)] = inst_health(d)
-        if e["group"] in ("screen", "follow"):
+        if e["group"] in ("screen", "follow", "mr1v"):
             arm = e["arm"]
+            follow_inst = "FOLLOW" in sections and e["group"] != "screen"     # FOLLOW (2) reads V2 / V3 itself
             try:
-                DIG[(tag, key)] = digest(d, tag, key, need_inst=need_inst and e["instrument"],
+                DIG[(tag, key)] = digest(d, tag, key, need_inst=(need_inst or follow_inst) and e["instrument"],
                                          need_vf=need_vf and arm in ("bpf", "bpp"))
             except Exception as exc:          # a broken record is REFUSED and listed, never skipped silently
                 why = why + ["DIGEST ERROR %s: %s" % (type(exc).__name__, str(exc)[:160])]
@@ -1146,9 +1237,11 @@ def first_path(x, y, path=""):
 def full_diff(a, b):
     """Every recorded field but provenance: [field, ...] in the order FIELDS, other top-level, mf2, fx3, fb3, ut."""
     secs = {s for s, _ in SEC_SKIP}
-    top = [k for k in R.FIELDS] + sorted((set(a) | set(b)) - TOP_SKIP - secs - set(R.FIELDS)
-                                         - ({"mr"} if not ("mr" in a and "mr" in b) else set()))
+    top = [k for k in R.FIELDS] + sorted((set(a) | set(b)) - TOP_SKIP - secs - set(R.FIELDS) - {"mr"})
     diffs = [k for k in top if a.get(k) != b.get(k)]
+    ma, mb = a.get("mr"), b.get("mr")
+    if isinstance(ma, dict) and isinstance(mb, dict):      # the record-only mr: compared on the keys both runs have
+        diffs += ["mr.%s" % k for k in sorted(set(ma) & set(mb) - {"probe"}) if ma[k] != mb[k]]
     for sec, skip in SEC_SKIP:
         sa, sb = a.get(sec), b.get(sec)
         if sec == "ut" and not (isinstance(sa, dict) and isinstance(sb, dict)):
@@ -1164,7 +1257,7 @@ def full_diff(a, b):
 
 
 def _field_get(d, f):
-    if "." in f and f.split(".")[0] in {s for s, _ in SEC_SKIP}:
+    if "." in f and f.split(".")[0] in {s for s, _ in SEC_SKIP} | {"mr"}:
         s, k = f.split(".", 1)
         return (d.get(s) or {}).get(k)
     return d.get(f.split(" ")[0])
@@ -2108,22 +2201,58 @@ def sec_follow():
     for tag in ("bpeu2", "bplu2", "bpcu2"):
         g = runs(tag).get("D_W")
         out(_dw_line(tag, g) if g else "  %-9s %s" % (tag, status_str(tag)))
-    out("  -- INVARIANTS of every follow-up tag")
-    for tag in ["bper", "bpeu", "bpeu2"] + [t[0] for t in Q.FOLLOW_TWINS]:
+    _mr1v_section()
+    out("  -- INVARIANTS of every follow-up and mr1v tag")
+    for tag in ["bper", "bpeu", "bpeu2"] + [t[0] for t in Q.FOLLOW_TWINS] + [t[0] for t in Q.MR1V_TWINS]:
         _invar_tag(tag, section="FOLLOW")
 
 
+def _mr1v_section():
+    """FOLLOW (4): the MR1 record's validation runs (group mr1v, --head3)."""
+    out("  (4) THE MR1 RECORD (probe hook on the model's MR1 call; added after the follow-up runs had started, so"
+        " validated on its own head %s): bp7* vs their follow-up twins on every recorded field (mr on the keys both"
+        " have); the literal count reproduces the model's MR1_LIST exactly; the offline reconstruction = the probe's"
+        " corrected count on every step and UAV; and no run of the follow-up head carries an mr1 record" % MR1V_HEAD[:12])
+    for tag, arm, place, key, instrument, ref in Q.MR1V_TWINS:
+        ok, ln = compare_pair(tag, key, ref, key, full_diff)
+        v = "PASS" if ok else ("MISSING" if ok is None else "FAIL")
+        out("    %s  => %s" % (ln, v))
+        verdict("FOLLOW", "MR1V ID %s_%s vs %s_%s" % (tag, key, ref, key), v)
+    stale = sorted("%s_%s" % (t, k) for (t, k), e in PROBE_E.items()
+                   if e.get("follow") and (t, k) in DIG and DIG[(t, k)]["mr"].get("mr1_ids_present"))
+    n_f = sum(1 for (t, k), e in PROBE_E.items() if e.get("follow") and (t, k) in DIG)
+    v = "PASS" if not stale and n_f == sum(1 for e in PROBE_E.values() if e.get("follow")) else (
+        "FAIL %s" % stale[:6] if stale else "INCOMPLETE %d" % n_f)
+    out("    follow-up runs (head %s) carrying an mr1 record: %d of %d  => %s" % (FOLLOW_HEAD[:12], len(stale), n_f, v))
+    verdict("FOLLOW", "follow-up runs ran the committed probe (no mr1 record)", v)
+
+
+def _mr1v_check(g):
+    """The MR1 record check of one mr1v run: (ok, line)."""
+    m = g["mr"]
+    ok = (m.get("mr1_probe") and m.get("mr1_steps_n") == HMAX and m.get("mr1_literal_ok") is True
+          and m.get("mr1_recon_cmp") == HMAX and m.get("mr1_recon_match") == HMAX)
+    return bool(ok), ("steps %s | literal copy == model MR1_LIST %s | recon == probe %s/%s (first diff %s) | steps with a"
+                      " literal count > 0: %s, with a corrected count > 0: %s | M_R1 model %s, corrected %s, recon %s" % (
+                          m.get("mr1_steps_n"), m.get("mr1_literal_ok"), m.get("mr1_recon_match"),
+                          m.get("mr1_recon_cmp"), m.get("mr1_recon_first_diff"), m.get("mr1_lit_steps_nonzero"),
+                          m.get("mr1_cor_steps_nonzero"), fmt(m.get("m_r1"), "%.4f"), fmt(m.get("m_r1_corr"), "%.4f"),
+                          fmt(m.get("m_r1_recon"), "%.4f")))
+
+
 def sec_metrics():
-    head("METRICS - record-only (rulings 2026-10-04): M_R1 = mean over UAVs of the model's MR1_LIST per run; M_R2 = the"
-         " model's MR2_VALUE; M_R2 AIRBORNE = pairs under SECURITY_DISTANCE with neither UAV docked (rtb_docked), with"
-         " the pairs with one / both docked; T_first = first '[Victim Detection]' step per victim (None = never). mr ="
-         " the probe's record (runs from the follow-up head on); recon = the analyzer's reconstruction from rows_uav")
+    head("METRICS - record-only (rulings 2026-10-04): M_R1 = mean over UAVs of the model's MR1_LIST per run, as the model"
+         " computes it AND corrected (the model's MR1 counts only `is_burning() is True`, identically 0 once Fire.burning"
+         " holds numpy bools - see the usage note); M_R2 = the model's MR2_VALUE; M_R2 AIRBORNE = pairs under"
+         " SECURITY_DISTANCE with neither UAV docked (rtb_docked), with the pairs with one / both docked; T_first = first"
+         " '[Victim Detection]' step per victim (None = never). mr = the probe's record (follow-up head on); recon = the"
+         " analyzer's reconstruction (MR2 from rows_uav; corrected MR1 from the instrument's burning sets)")
     del METRIC_ROWS[:]
     tags = []
     for (t, _k) in PROBE_E:
         if t not in tags:
             tags.append(t)
-    follow_tags = {e["tag"] for e in PROBE_E.values() if e.get("follow")}
+    follow_tags = {e["tag"] for e in PROBE_E.values() if e.get("follow") or e["group"] == "mr1v"}
     chk = collections.Counter()
     for tag in tags:
         gs = runs(tag)
@@ -2131,13 +2260,16 @@ def sec_metrics():
             continue
         rec = {k: g for k, g in gs.items() if g["mr"]["recorded"]}
         m1 = [g["mr"]["m_r1"] for g in rec.values() if g["mr"].get("m_r1") is not None]
+        m1c = [g["mr"].get("m_r1_corr", g["mr"].get("m_r1_recon")) for g in gs.values()]
+        m1c = [x for x in m1c if x is not None]
         m2 = [g["mr"]["m_r2"] for g in rec.values()]
         rc = [g["mr"]["recon"] for g in gs.values()]
         nv = sum(len(g["det"]) for g in gs.values())
         nn = sum(1 for g in gs.values() for t in g["det"].values() if t is None)
-        out("  %-7s runs %2d | mr recorded %2d | M_R1 mean %s | M_R2 mean: model %s, airborne %s, one docked %s, both"
-            " docked %s | recon (all runs) all %s airborne %s | T_first recorded for %d victims, %d never detected%s" % (
-                tag, len(gs), len(rec), fmt(statistics.mean(m1) if m1 else None, "%.3f"),
+        out("  %-7s runs %2d | mr %2d | M_R1 mean: model %s, CORRECTED %s (n %d) | M_R2 mean: model %s, AIRBORNE %s, one"
+            " docked %s, both docked %s | recon M_R2 all %s airborne %s | T_first for %d victims, %d never%s" % (
+                tag, len(gs), len(rec), fmt(statistics.mean(m1) if m1 else None, "%.4f"),
+                fmt(statistics.mean(m1c) if m1c else None, "%.3f"), len(m1c),
                 fmt(statistics.mean(x[0] for x in m2) if m2 else None),
                 fmt(statistics.mean(x[1] for x in m2) if m2 else None),
                 fmt(statistics.mean(x[2] for x in m2) if m2 else None),
@@ -2145,13 +2277,17 @@ def sec_metrics():
                 fmt(statistics.mean(x[0] for x in rc)), fmt(statistics.mean(x[1] for x in rc)), nv, nn, inc(tag)))
         for k, g in sorted(gs.items()):
             m = g["mr"]
+            m2r = m.get("m_r2") or [None] * 4
             row = {"tag": tag, "key": k, "follow": tag in follow_tags, "mr_recorded": m["recorded"],
-                   "M_R1": m.get("m_r1"), "MR1_LIST": m.get("mr1_list"), "M_R2_model": m.get("m_r2_model"),
-                   "M_R2_all": (m.get("m_r2") or [None])[0], "M_R2_airborne": (m.get("m_r2") or [None, None])[1],
-                   "M_R2_one_docked": (m.get("m_r2") or [None] * 3)[2],
-                   "M_R2_both_docked": (m.get("m_r2") or [None] * 4)[3],
-                   "recon_all": m["recon"][0], "recon_airborne": m["recon"][1], "recon_step1": m["recon_step1"],
-                   "T_first": dict(g["det"])}
+                   "M_R1_model": m.get("m_r1"), "MR1_LIST_model": m.get("mr1_list"),
+                   "M_R1_corrected": m.get("m_r1_corr", m.get("m_r1_recon")),
+                   "M_R1_corrected_source": ("probe" if m.get("m_r1_corr") is not None else
+                                             "recon" if m.get("m_r1_recon") is not None else None),
+                   "MR1_corrected_list": m.get("mr1_corr_list", m.get("mr1_recon_list")),
+                   "M_R2_model": m.get("m_r2_model"), "M_R2_all": m2r[0], "M_R2_airborne": m2r[1],
+                   "M_R2_one_docked": m2r[2], "M_R2_both_docked": m2r[3],
+                   "recon_M_R2_all": m["recon"][0], "recon_M_R2_airborne": m["recon"][1],
+                   "recon_step1": m["recon_step1"], "T_first": dict(g["det"])}
             METRIC_ROWS.append(row)
             if tag in follow_tags:
                 chk["runs"] += 1
@@ -2159,24 +2295,44 @@ def sec_metrics():
                       and m.get("inc_sum") == m.get("m_r2_model")
                       and m.get("recon_cmp") == m["recon_steps"] == (HMAX if m["recon_step1"] else HMAX - 1)
                       and m.get("recon_match") == m.get("recon_cmp") and m.get("mr1_list") is not None
-                      and len(m["mr1_list"]) == m.get("n_uav") and len(g["det"]) > 0)
+                      and len(m["mr1_list"]) == m.get("n_uav") and len(g["det"]) > 0
+                      and (row["M_R1_corrected"] is not None or not g["has_inst"]))
                 chk["ok"] += ok
                 if not ok:
                     out("      RECORD CHECK FAILED %s_%s: recorded %s errors %s steps %s rule_ok %s inc_sum %s model %s"
-                        " recon %s/%s first diff %s mr1 %s n_uav %s victims %d" % (
+                        " recon %s/%s first diff %s mr1 %s n_uav %s victims %d corrected M_R1 %s" % (
                             tag, k, m["recorded"], m.get("errors"), m.get("n_steps"), m.get("rule_ok"), m.get("inc_sum"),
                             m.get("m_r2_model"), m.get("recon_match"), m.get("recon_cmp"), m.get("recon_first_diff"),
-                            m.get("mr1_list"), m.get("n_uav"), len(g["det"])))
-    n_follow = sum(1 for e in PROBE_E.values() if e.get("follow"))
+                            m.get("mr1_list"), m.get("n_uav"), len(g["det"]), row["M_R1_corrected"]))
+    n_follow = sum(1 for e in PROBE_E.values() if e.get("follow") or e["group"] == "mr1v")
     v = ("PASS" if chk["runs"] == chk["ok"] == n_follow else
          "FAIL %d of %d" % (chk["runs"] - chk["ok"], chk["runs"]) if chk["ok"] < chk["runs"] else
          "INCOMPLETE %d / %d" % (chk["runs"], n_follow))
-    out("  RECORD CHECK, every follow-up run: the mr record present with 0 observer errors, 360 steps, the rule copy ="
-        " the model's own MR2 increment on every step, the increments sum to MR2_VALUE, the analyzer's rows_uav"
-        " reconstruction = the probe on every step (step 1 from the launch cells; not reconstructable without"
-        " --instrument), MR1_LIST one entry per UAV, T_first"
-        " for every victim: %d / %d runs  => %s" % (chk["ok"], chk["runs"], v))
+    out("  RECORD CHECK, every follow-up and mr1v run: the mr record present with 0 observer errors, 360 steps, the MR2"
+        " rule copy = the model's own MR2 increment on every step, the increments sum to MR2_VALUE, the analyzer's"
+        " rows_uav reconstruction = the probe on every step (step 1 from the launch cells; not reconstructable without"
+        " --instrument), MR1_LIST one entry per UAV, a corrected M_R1 for every instrumented run, T_first for every"
+        " victim: %d / %d runs  => %s" % (chk["ok"], chk["runs"], v))
     verdict("METRICS", "recorded in every follow-up run", v)
+    c2 = collections.Counter()
+    for tag, arm, place, key, instrument, ref in Q.MR1V_TWINS:
+        g = runs(tag).get(key)
+        if g is None:
+            out("  MR1 CHECK %s_%s %s" % (tag, key, status_str(tag)))
+            continue
+        ok, ln = _mr1v_check(g)
+        c2["n"] += 1
+        c2["ok"] += ok
+        out("  MR1 CHECK %s_%s: %s  => %s" % (tag, key, ln, "PASS" if ok else "FAIL"))
+    v2 = ("PASS" if c2["ok"] == c2["n"] == len(Q.MR1V_TWINS) else
+          "FAIL %d of %d" % (c2["n"] - c2["ok"], c2["n"]) if c2["ok"] < c2["n"] else "INCOMPLETE %d" % c2["n"])
+    verdict("METRICS", "MR1 record (literal = model, recon = probe)", v2)
+    lit0 = [g["mr"].get("mr1_lit_steps_nonzero") for t in tags for g in runs(t).values()
+            if g["mr"].get("mr1_probe")]
+    out("  THE MODEL'S MR1 DEFECT: literal (`is True`) counts > 0 on %s steps per mr1-recorded run; the model's own M_R1"
+        " over every run with the mr record: %s" % (
+            lit0 or "n/a", sorted({round(g["mr"]["m_r1"], 6) for t in tags for g in runs(t).values()
+                                   if g["mr"].get("m_r1") is not None})[:8]))
 
 
 # ================================================================================================ selftest

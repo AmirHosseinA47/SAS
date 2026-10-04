@@ -48,6 +48,8 @@ FOLLOW-UP (maintainer rulings on outputs/bayesprep_report.txt section 10, 2026-1
          the screen run of the same line on every recorded field but the instrument / timing / the new mr record.
   lo2    ruling R-4's re-screen: bpe = SEARCHER_TARGETING=1 (LO with the edge geometry) in r, u (32) + the u2 cell D_W.
   follow r5 + lo2.
+  mr1v   the MR1 record's validation (3 lines, its own later head - the probe's MR1 hook was added after the follow-up
+         runs had started): bp7cr / bp7fr / bp7er = the bp2cr / bp5fr / bper_A_E lines; group "mr1v".
 """
 from __future__ import annotations
 
@@ -89,6 +91,9 @@ FOLLOW_TWINS = (("bp2cr", "bpc", "r", "A_E", True, "bpcr"), ("bp2cu", "bpc", "u"
                 ("bp5fr", "bpf", "r", "B_S", True, "bpfr"), ("bp5nfr", "bpf", "r", "B_S", False, "bp5fr"),
                 ("bp5dr", "bpd", "r", "C_S", True, "bpdr"), ("bp5pr", "bpp", "r", "D_S", True, "bppr"),
                 ("bp5xr", "bpx", "r", "D_S", True, "bpxr"))
+# the MR1 record's validation at its own head (tag, arm, placement, cell, instrument, reference = the follow-up twin)
+MR1V_TWINS = (("bp7cr", "bpc", "r", "A_E", True, "bp2cr"), ("bp7fr", "bpf", "r", "B_S", True, "bp5fr"),
+              ("bp7er", "bpe", "r", "A_E", True, "bper"))
 # placement -> (VICTIM_SPAWN_MODE, reference seed set, cells kept or None = all 16)
 PLACES = (("r", 0, "fx3mS", None), ("u", 1, "fx3mS", None), ("u2", 1, "fx3mS2", ("D_W",)))
 U2_SEED = "9636"
@@ -250,6 +255,17 @@ def follow_entries(sets=None):
     return r5, lo2
 
 
+def mr1v_entries(sets=None):
+    sets = sets or _cells()
+    ref_set = {p[0]: p[2] for p in PLACES}
+    res = []
+    for tag, arm, place, key, instrument, ref in MR1V_TWINS:
+        cell = [c for c in sets[ref_set[place]] if c[0] == key][0]
+        res.append(dict(screen_entry(arm, place, cell, tag=tag, instrument=instrument, group="mr1v"), ref=ref,
+                        ref_key=key))
+    return res
+
+
 def waves():
     sets = _cells()
     v1b = v1b_entries(sets)
@@ -260,13 +276,13 @@ def waves():
     v1bx = [e for e in v1b if e["tag"] in V1B_ADDED]
     r5, lo2 = follow_entries(sets)
     return {"first": first, "arms": arms, "rb": rb, "all": first + rb + arms + v1bx, "twins": twins, "v1bx": v1bx,
-            "r5": r5, "lo2": lo2, "follow": r5 + lo2}
+            "r5": r5, "lo2": lo2, "follow": r5 + lo2, "mr1v": mr1v_entries(sets)}
 
 
 def entries():
     """Every expected run of the screen: {(tag, key): entry} for the probe runs, {tag: entry} for the rb shards."""
     w = waves()
-    probe = {(e["tag"], e["key"]): e for e in w["all"] + w["follow"] if e["group"] != "rb"}
+    probe = {(e["tag"], e["key"]): e for e in w["all"] + w["follow"] + w["mr1v"] if e["group"] != "rb"}
     rb = {e["tag"]: e for e in w["rb"]}
     return probe, rb
 
@@ -296,7 +312,7 @@ def validate(e):
         bad.append("--instrument presence is not as intended")
     if ("--crn" in own) != e["crn"]:
         bad.append("--crn presence is not as intended")
-    if e["group"] in ("screen", "follow"):
+    if e["group"] in ("screen", "follow", "mr1v"):
         if sd[sd.index("--steps") + 1] != "360" or "BATCH_SIZE=360" not in sd:
             bad.append("not 360 steps / BATCH_SIZE=360")
     if not _same_path(sd[sd.index("--out") + 1], ln["out"]):
@@ -333,7 +349,7 @@ def tag_check(es, resume=False):
 def totals(es):
     c = collections.Counter()
     for e in es:
-        if e["group"] in ("screen", "follow"):
+        if e["group"] in ("screen", "follow", "mr1v"):
             c["%s %s" % (e["tag"] if e["tag"] != e["arm"] + e["place"] else e["arm"], e["place"])] += 1
         else:
             c[e["group"]] += 1
@@ -351,7 +367,7 @@ def main() -> int:
     wave = args[0]
     w = waves()
     if wave not in w:
-        raise SystemExit("unknown wave %r (first / arms / rb / all / twins / v1bx / r5 / lo2 / follow)" % wave)
+        raise SystemExit("unknown wave %r (first / arms / rb / all / twins / v1bx / r5 / lo2 / follow / mr1v)" % wave)
     es = w[wave]
     names = [e["line"]["name"] for e in es]
     if len(set(names)) != len(names):

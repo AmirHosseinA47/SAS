@@ -37,6 +37,9 @@ Adds d["mr"] (record-only, every run; rulings on the bayesprep report 2026-10-04
   WildFireModel.MR2 records per step [t, the model's own MR2 increment, the same rule recomputed (pairs under
   SECURITY_DISTANCE), AIRBORNE pairs (neither UAV rtb_docked), pairs with one docked, pairs with both docked]; at the
   end mr1_list (the model's MR1_LIST, one entry per UAV), mr2_value, security_distance; errors (observer only).
+  A pass-through hook on WildFireModel.MR1 adds mr1_ids (the model's UAV order) and mr1_steps [t, [literal count per
+  UAV (the model's `is_burning() is True`)], [corrected count per UAV (truthiness)]] and n_observations: the model's MR1
+  is identically 0 once Fire.burning holds numpy bools (from the first spread tick).
 """
 from __future__ import annotations
 
@@ -653,7 +656,7 @@ def main() -> int:
     # RECORD-ONLY (maintainer rulings on the bayesprep report, 2026-10-04): the model's own MR2 call, observed at the
     # moment it counts (pre-move positions, the same step), plus the same rule restricted to AIRBORNE pairs. A pass-
     # through: the original runs once with its arguments; this reads positions / rtb_docked and writes nothing.
-    mr = {"probe": "fb3 mr v1", "steps": [], "errors": []}
+    mr = {"probe": "fb3 mr v2", "steps": [], "errors": []}
     o_mr2 = wf.WildFireModel.MR2
 
     def mr2(self, *a, **kw):
@@ -683,6 +686,42 @@ def main() -> int:
         return r
 
     wf.WildFireModel.MR2 = mr2
+
+    # RECORD-ONLY, same rulings: the model's own MR1 call (effective monitoring). UAV.surrounding_states counts a cell
+    # only when Fire.is_burning() IS True; after the fire's first spread tick Fire.burning holds a numpy bool (the
+    # comparison generated < cell_prob), so the model's MR1 counts nothing from then on. Recorded per step and UAV (the
+    # model's own order): the LITERAL count (the model's rule, `is True`) and the CORRECTED count (truthiness) over the
+    # same neighbourhood. A pass-through: the original runs once with its arguments; this reads the grid only.
+    mr.update(mr1_ids=None, mr1_steps=[], n_observations=_jsafe(getattr(wf, "N_OBSERVATIONS", None)))
+    o_mr1 = wf.WildFireModel.MR1
+    obs_radius = getattr(am, "UAV_OBSERVATION_RADIUS", 8)
+
+    def mr1(self, *a, **kw):
+        r = o_mr1(self, *a, **kw)
+        try:
+            ids, lit, cor = [], [], []
+            for u in self.schedule.agents:
+                if type(u) is not am.UAV:
+                    continue
+                n_lit = n_cor = 0
+                for cell in self.grid.get_neighborhood(u.pos, moore=u.moore, include_center=True, radius=obs_radius):
+                    for f in self.grid.get_cell_list_contents([cell]):
+                        if type(f) is am.Fire:
+                            b = f.is_burning()
+                            n_lit += int(b is True)
+                            n_cor += int(bool(b))
+                ids.append(str(u.unique_id))
+                lit.append(n_lit)
+                cor.append(n_cor)
+            if mr["mr1_ids"] is None:
+                mr["mr1_ids"] = ids
+            mr["mr1_steps"].append([int(self.evaluation_timesteps_counter), lit, cor])
+        except Exception as exc:  # an observer never stops the run
+            if len(mr["errors"]) < 20:
+                mr["errors"].append(repr(exc)[:200])
+        return r
+
+    wf.WildFireModel.MR1 = mr1
     inst = None
     if "--instrument" in own:          # bayesprep item 3; nothing of it exists without the flag
         inst = _Instrument(wf, am, cfv)
