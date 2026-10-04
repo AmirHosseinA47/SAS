@@ -944,6 +944,7 @@ class GlobalAnalyzer:
             )
 
         positions = self._collect_uav_positions(by_uav, global_snapshot)
+        positions = self._airborne_positions(positions, urm)
         if self._positions_reliable_for_collision(positions):
             uids = sorted(positions.keys())
             for i, a in enumerate(uids):
@@ -1037,6 +1038,19 @@ class GlobalAnalyzer:
                 return None
             return tuple(out)
         return None
+
+    @staticmethod
+    def _airborne_positions(positions: dict[str, tuple[float, ...]], urm: Any) -> dict[str, tuple[float, ...]]:
+        """bayesprep item 5 guard (d) (UAV_DOCKED_NOT_OBSTACLE): a UAV docked in a depot is on the ground, so the
+        collision check counts only AIRBORNE UAVs - as session 2's local collision alarm does. Switch off: unchanged."""
+        import agents as agents_module  # lazy: agents is a root module
+
+        if not agents_module.uav_docked_not_obstacle():
+            return positions
+        is_docked = getattr(urm, "is_docked", None)
+        if not callable(is_docked):
+            return positions
+        return {uid: p for uid, p in positions.items() if not is_docked(uid)}
 
     def _collect_uav_positions(
         self,

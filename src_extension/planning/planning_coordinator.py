@@ -84,7 +84,7 @@ class PlanningCoordinator:
                 context=analysis_snapshot,
                 timestamp=resolved_timestamp,
             )
-        # fix3b: the joint searcher-target allocation post-pass (SEARCHER_TARGETING 1-3); returns the same
+        # fix3b: the joint searcher-target allocation post-pass (SEARCHER_TARGETING 1-3, 5); returns the same
         # dict untouched at the shipped 0 (outputs/fix3b_part1.txt sections 4 and 5).
         path_decisions = apply_searcher_targeting(path_decisions, runtime_models)
 

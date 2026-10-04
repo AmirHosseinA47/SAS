@@ -1,6 +1,6 @@
 """Managing system: victim-search belief (fix3b, session 3b; outputs/fix3b_part1.txt sections 2 and 15).
 
-Knowledge for the searcher-targeting strategies (SEARCHER_TARGETING 1-3). It holds:
+Knowledge for the searcher-targeting strategies (SEARCHER_TARGETING 1, 2, 3, 5). It holds:
 
   p        the posterior over the cell of ONE unfound victim, alive (a sub-probability; the rest is DEAD).
            Under the i.i.d. uniform prior every unfound victim has this same posterior, so the expected
@@ -26,7 +26,7 @@ from typing import Any, Iterable
 
 import numpy as np
 
-# Direction order of the executor (_MOVE_X / _MOVE_Y): 0 (+y), 1 (+x), 2 (-y), 3 (-x) is NOT assumed here;
+# Direction order of the executor (_MOVE_X / _MOVE_Y): 0 (+x), 1 (-y), 2 (-x), 3 (+y) is NOT assumed here;
 # the belief's motion is direction-agnostic, so it uses its own (dx, dy) list.
 _NEIGHBOURS = ((1, 0), (-1, 0), (0, 1), (0, -1))
 
@@ -103,6 +103,10 @@ class MotionParams:
     beta: float = 1.5                # flee: softmax weight on the fire-distance gain
     q_calm: float = 0.02             # flee: an unalarmed victim's move probability
     burnover: float = 0.1            # alive mass on a burning cell -> DEAD with this probability (R-3)
+    # bayesprep F1-a (SEARCHER_TARGETING_FIX): the lazy walk REFLECTS - q / 4 per direction and a move off the grid
+    # or into a burning cell stays (design 2.4). False = the fix3b rule, q / k per AVAILABLE neighbour, whose
+    # stationary density is proportional to k (edge rows and corners drain; mass is pushed off burning cells).
+    reflect: bool = False
 
 
 @dataclass
@@ -157,7 +161,10 @@ class VictimSearchBelief:
         k = sum(a.astype(np.float64) for a in avail)            # number of available neighbours
         # Move weights per neighbour (w_n) and stay weight (w_stay), per source cell.
         if motion.mode == "diffusion":
-            share = np.where(k > 0, float(motion.q) / np.maximum(k, 1.0), 0.0)
+            if motion.reflect:
+                share = np.full((h, w), float(motion.q) / 4.0)
+            else:
+                share = np.where(k > 0, float(motion.q) / np.maximum(k, 1.0), 0.0)
             w_n = [np.where(a, share, 0.0) for a in avail]
             w_stay = 1.0 - sum(w_n)
         else:                                                   # "flee"
@@ -167,7 +174,10 @@ class VictimSearchBelief:
                 d = np.full((h, w), 1e6)
             else:
                 alarm = 1.0 / (1.0 + np.exp(-(float(motion.d50) - d) / max(float(motion.s), 1e-9)))
-            calm_share = np.where(k > 0, float(motion.q_calm) / np.maximum(k, 1.0), 0.0)
+            if motion.reflect:
+                calm_share = np.full((h, w), float(motion.q_calm) / 4.0)
+            else:
+                calm_share = np.where(k > 0, float(motion.q_calm) / np.maximum(k, 1.0), 0.0)
             # softmax over {stay} + available neighbours, utility beta * (d(n) - d(c)); stay utility 0.
             beta = float(motion.beta)
             exps = []

@@ -1529,6 +1529,9 @@ class WildFireModel(mesa.Model):
             assigned = tc.get("assigned_task")
             role_s = None if role is None else (role if isinstance(role, str) else str(role))
             task_s = None if assigned is None else (assigned if isinstance(assigned, str) else str(assigned))
+            if agents.uav_docked_not_obstacle():
+                # bayesprep item 5 guard (d): the global collision check reads who is on the ground.
+                self.uav_resource_model.set_docked(uav_id, bool(tc.get("docked")))
             if tc.get("docked") and agents.failsafe_real_alarms():
                 # fix2 item 1: a docked UAV's window restarts, so refusals on its approach to the
                 # berth no longer name it (and set the fleet mode) for up to 4 steps after docking
@@ -2727,14 +2730,17 @@ class WildFireModel(mesa.Model):
             pd_smoke=agents.fix3b_param("SEARCHER_BELIEF_PD_SMOKE", 1.0))
 
     def _fix3b_motion_params(self) -> MotionParams:
-        mode = {2: "diffusion", 3: "flee"}.get(agents.searcher_targeting(), "diffusion")
+        # bayesprep: 5 (front priority) holds the flee belief of 3 - the urgency weight is in the plan only.
+        mode = {2: "diffusion", 3: "flee", 5: "flee"}.get(agents.searcher_targeting(), "diffusion")
         if not agents.searcher_belief_motion():
             mode = "off"
         f = agents.fix3b_param
         return MotionParams(mode=mode, q=f("SEARCHER_BELIEF_DIFFUSION_Q", 0.1), d50=f("SEARCHER_BELIEF_FLEE_D50", 5.0),
                             s=f("SEARCHER_BELIEF_FLEE_S", 1.5), p_go=f("SEARCHER_BELIEF_FLEE_P_GO", 0.8),
                             beta=f("SEARCHER_BELIEF_FLEE_BETA", 1.5), q_calm=f("SEARCHER_BELIEF_FLEE_Q_CALM", 0.02),
-                            burnover=f("SEARCHER_BELIEF_BURNOVER", 0.1))
+                            burnover=f("SEARCHER_BELIEF_BURNOVER", 0.1),
+                            # bayesprep F1-a: the lazy walk reflects (SEARCHER_TARGETING_FIX)
+                            reflect=agents.searcher_targeting_fix())
 
     def _update_victim_search_belief(self, buffer: MonitoringBuffer, current_time: float) -> None:
         """Post-move (2.6): PREDICT -> MEASURE (every UAV's disc at its post-move cell) -> BURN-OVER ->
@@ -2751,7 +2757,7 @@ class WildFireModel(mesa.Model):
         burning, smoke = self._fix3b_true_fire()
         motion = self._fix3b_motion_params()
         # The least-observed baseline reads only the last-cover map; it needs no motion or burn-over.
-        if agents.searcher_targeting() in (2, 3):
+        if agents.searcher_targeting() in agents.SEARCHER_TARGETING_BAYES:
             belief.predict(burning, motion)
         cells: dict = {}
         observations = getattr(buffer, "local_observations", {}) or {}
@@ -2765,7 +2771,7 @@ class WildFireModel(mesa.Model):
         belief.measure(list(cells.values()), smoke, step,
                        pd=agents.fix3b_param("SEARCHER_BELIEF_PD", 1.0),
                        pd_smoke=agents.fix3b_param("SEARCHER_BELIEF_PD_SMOKE", 1.0))
-        if agents.searcher_targeting() in (2, 3):
+        if agents.searcher_targeting() in agents.SEARCHER_TARGETING_BAYES:
             belief.burn_over(burning, motion.burnover)
         for vid, state in (getattr(self, "managed_victims", {}) or {}).items():
             if getattr(state, "confirmed", False):

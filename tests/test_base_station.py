@@ -167,6 +167,11 @@ def test_shipped_defaults() -> None:
     assert cfv.SEARCHER_UNTUNED == 1
     assert cfv.SEARCHER_END_RECALL == 1
     assert cfv.FF_RELEASE_DETECTED_ONLY == 1
+    # Bayesian preparation round (outputs/bayesprep_part1.txt, rulings section 10): both ship ON (off only on an exact
+    # 0); front priority (SEARCHER_TARGETING 5) ships OFF with every other strategy (SEARCHER_TARGETING 0).
+    assert cfv.SEARCHER_TARGETING_FIX == 1
+    assert cfv.UAV_DOCKED_NOT_OBSTACLE == 1
+    assert cfv.SEARCHER_TARGETING == 0
 
 
 # --- depot geometry -----------------------------------------------------------

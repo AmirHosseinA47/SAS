@@ -386,14 +386,20 @@ def test_docking_restarts_the_drift_window(switch, docked, level, status) -> Non
     assert st.drift_level == pytest.approx(level) and st.local_risk_status == status
 
 
-def test_the_monitor_reports_the_dock_state_only_when_on(switch) -> None:
+def test_the_monitor_reports_the_dock_state_only_when_on(switch, monkeypatch) -> None:
+    """bayesprep item 5 (review R2-F1): the dock state is also reported whenever UAV_DOCKED_NOT_OBSTACLE acts (its
+    global collision guard reads it); with both switches off it is not reported, as in fix2."""
     model = WildFireModel()
     uav = next(a for a in model.schedule.agents if type(a) is agents.UAV)
     uav.rtb_docked = True
     switch(1)
     assert uav.local_monitor.collect_observation(uav, 1.0).task_context.get("docked") is True
     switch(0)
+    monkeypatch.setattr(cfv, "UAV_DOCKED_NOT_OBSTACLE", 0, raising=False)
     assert "docked" not in uav.local_monitor.collect_observation(uav, 2.0).task_context
+    monkeypatch.setattr(cfv, "UAV_DOCKED_NOT_OBSTACLE", 1, raising=False)
+    monkeypatch.setattr(cfv, "FREE_CELL_DOCKING", 1, raising=False)
+    assert uav.local_monitor.collect_observation(uav, 3.0).task_context.get("docked") is True
 
 
 @pytest.mark.parametrize("value", [1, 0])

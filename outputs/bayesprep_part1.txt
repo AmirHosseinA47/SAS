@@ -1,0 +1,600 @@
+================================================================================
+BAYESIAN PREPARATION ROUND - PART 1: DESIGN + PRE-REGISTERED CHECKS       outputs/bayesprep_part1.txt
+No source edits. STOP for confirmation at the end (section 9).
+================================================================================
+STATE. main = 25421865 = tag untuned-search: the untune round IS merged (fast-forward, merge notes in
+25421865). Branch bayesprep, cut at 25421865, lives in the worktree E:/Projects/SAS_wt/bayesprep. The tree
+is clean and no python process is running. The worktree's .venv is a junction to the parent .venv (mesa
+1.2.1). The dispatch round's session works in E:/Projects/SAS_wt/dispatch. This round does not touch
+dispatch, the main checkout or that worktree.
+
+HOW THIS WAS ESTABLISHED.
+  - One read-only mapping workflow: 5 readers (move rule, edge band, end state, fire model, tooling).
+    Each fact below carries file:line from their reports and was re-read by me where the design rests on
+    it.
+  - Reports are kept in the session scratchpad. They are mapping, not review: review agents 0 of 3 used.
+  - Literature for item 2 was checked on the web (section 2.3).
+
+================================================================================
+1. ITEM 1 - THE BELIEF-GAP (BAYESIAN) SEARCH MUST WORK AS DESIGNED
+================================================================================
+1.1 THE EDGE BAND - VERDICT
+  (a) COUNTED CORRECTLY by the footprint arithmetic. Verified:
+      - disc_mask clips and disc_convolve / dilate zero-pad at the edge (victim_search_belief.py:41-78);
+        brute-force checks give 0 mismatches.
+      - The measure update treats every covered cell alike (:198-213), for every UAV's post-move cell
+        (wildfire_model.py:2756-2767).
+      - The prior covers the band: 688 of 2450 support cells (28.1%).
+      Belief mass in the band is therefore not under-weighted by how it is SENSED.
+  (b) UNDER-WEIGHTED or UNDER-OBSERVED by four DEFECTS. Each is a departure from the design text and is
+      fixed (1.5):
+      F1-a THE MOTION MODEL IS NOT REFLECTING.
+           - Diffusion, and the flee model's calm component, move q/k to each available neighbour, where k
+             counts the in-bounds, non-burning neighbours (victim_search_belief.py:159-162, :170).
+           - The stationary density is therefore proportional to k. Starting uniform, with no fire and no
+             measurement, after 360 steps:
+               edge row 0.79 x uniform, corners 0.55 (diffusion); 0.83 / 0.61 (flee, calm).
+           - Mass drains from the outermost row and the corners. The same rule pushes "fire-agnostic"
+             diffusion mass away from burning cells.
+           - Design 2.4 says "the grid edge reflects" and that diffusion "is fire-agnostic in direction".
+      F1-b THE SCORE CREDITS A FOOTPRINT THAT IS NEVER FLOWN.
+           - G and the pre-rank S credit the whole disc AT the target t (searcher_targeting.py:288, :309-311;
+             the coordination claims :262-263, :365 likewise).
+           - The leg ends at the route cell, the nearest cell of the Manhattan-2 diamond around t
+             (uav_executor.py:2447-2469). drop_reached fires there (searcher_targeting.py:247), so the
+             searcher never stands on t.
+           - Every target is over-credited by this, by about 32 cells at an interior target. At a
+             band-boundary target almost all over-credited cells ARE band cells:
+               t = (4,y)  released at (6,y):  the edge column x=0 is seen in 11 of 13 cells;
+               t = (44,y) released at (42,y): the edge column x=49 is seen in 7 of 13 cells.
+           - The credited band rim is never swept, so its mass stays, and the planner returns to it.
+           - Recorded signature: outer-ring targets are 0.41-0.50 of issues in the fix3b screen and 0.42 in
+             ut2bf, against 18% of the lattice. Outer targets are reached at 0.48-0.60 and corners at
+             0.12-0.44, against 0.68-0.78 for interior targets.
+           - Band-spawned victims (uniform set 1): median detection 25 (current search) vs 43 / 34 (Bayes-
+             flee screen / re-screen). Non-band victims: 24.5 vs 24 / 23.5.
+      F1-c THE SWEPT RULE COUNTS THE HOLDER'S OWN APPROACH.
+           - Design 3.5(d): a held target is dropped when "another UAV or the fire took its mass".
+           - The code compares the target disc's mass with the mass at issue (searcher_targeting.py:253),
+             including mass the holder itself has just observed on the way in.
+           - On a fresh disc the holder's own approach drops the uncovered share below 0.25 at a remaining
+             distance of 2 (edge targets) or 4-5 (corner targets). That would cut every fixed (F1-b) edge leg
+             short again.
+      F1-d THE TARGET POOL IS COMPASS-ASYMMETRIC.
+           - pool x, y in {4, 6, ..., 44} (searcher_targeting.py:195-196). The edge distance is 4 on the
+             W / S sides and 5 on the E / N sides. The NE corner cell (49,49) lies inside no release disc.
+           - Recorded: x = 44 / y = 44 targets are chosen 2-4 x as often as x = 4 / y = 4.
+           - This is the same class of compass-side preference the untune round removed from the current
+             search.
+  (c) NOT A DEFECT, RECORDED:
+      - The admissible BFS never enters band cells at penetration >= 2 (the shipped A1-D rule). The discs
+        still reach them from edge distance 4.
+      - CORRECTION for the record: fix3b's "78.7% of the flagged victims' high-DEAD steps within 4 cells of
+        the edge" counted edge distance <= 4 (outputs/_fb3_r3wf/a2/a2_main.py:218-222). That includes the
+        pool's own ring at distance 4. The band is distance < 4; that figure was never computed.
+  PAPER:
+      - The sensing model is exact at the edge.
+      - The fixed defects are part of the method's design history, stated as found before any measurement
+        run: a drifting motion model, a gain credited to an unflown footprint, a self-triggered swept rule,
+        an asymmetric candidate lattice.
+      - Band victims' detection time is reported separately in the measurement round (18.8 b, with the
+        < 4 definition).
+
+1.2 RECALL - DO THE BAYESIAN ARMS BEHAVE LIKE EVERY OTHER ARM ONCE NOTHING IS LEFT TO FIND?
+  MOVEMENT: YES, at the shipped defaults.
+    - The recall writes the direction last (agents.py:1140, :1044).
+    - A docked UAV never moves (:1106-1109), and a recalled searcher is never released (:707).
+    - Recorded: in ut2bf all 13 recalls fell at last detection + 1, as in ut2r.
+  MANAGEMENT STATE: NO, by construction.
+    - The belief learns of the last detection in the post-move cycle of step t. The planner at t + 1 runs
+      before UAV.advance at t + 1, where the recall fires.
+    - So on EVERY recall step a Bayes arm (and the least-observed arm) runs one step of ruling R-1's
+      least-observed continuation:
+        - a tile is selected and logged; delivered_steps, lo_continuation_steps and selections each + 1;
+        - the hook steers ('victim_search_targeting'), the hazard gate is skipped, and the current
+          chain's state sync is skipped;
+        - then the recall overrides the direction.
+    - Recorded: ut2bf lo_continuation_steps 13 = 13 recalls.
+    - One cross-UAV read differs: a higher-id yielder reads the searcher's committed direction. It moves a
+      UAV only under GLOBAL_PLANNER_MODE 1.
+    - CORRECTION TO THE PREMISE: this is not the n_unfound lag. The lag gives the mirror case (a Bayes
+      target on the recall step), which is reachable only at step 1.
+  FIX F1-f (1.5): no targeting strategy steers a searcher for which the recall holds this step. The post-
+    pass reads the agent's own predicate (UAV._searcher_recall_active, agents.py:651-669) and treats such a
+    searcher exactly as one on a return leg: no target, no delivery, counter drop_recall. The current chain
+    then runs on that step exactly as in every other arm, and the recall overrides it as in every arm.
+    - R-1's continuation survives only where no recall can act (recall off, BASE_STATION_MODE < 2, no
+      berth).
+    - The random walk's hook (SEARCHER_TARGETING 4) also skips return-leg, docked and recalled searchers
+      (uav_executor.py:2497-2505 has no such check today). Its draw is still consumed every step.
+  LEFT AS IS, REPORTED: a docked searcher's executor still runs the current chain every step. Its direction
+    is ignored, but its inputs (wind_state history) differ by arm, so the executor labels and the local
+    path-context records of docked searchers differ by arm. No fleet fail-safe reason reads them.
+  PRE-REGISTERED CHECK (screen, every targeting arm), all must hold:
+    - 0 deliveries and 0 hook steers at or after a searcher's recall step;
+    - lo_continuation_steps = 0;
+    - every recall at last detection + 1;
+    - 0 post-detection oscillation episodes.
+  PAPER: "every strategy ends its search the same way" (untune) becomes exact in management state as well
+    as in movement. The R-1 continuation is a design residue that the recall made obsolete; it is removed
+    where the recall acts. 17.3's wording is corrected in item 4.
+
+1.3 THE UNIFORM SET 2 D_W CASE (scenario D, west, seed 9636)
+  - victim_3 spawns at (0,25), at the downwind edge on the lane boundary. She runs south along x 0-1, sits
+    at (0,4) from step 189 to 360, and is never detected.
+  - Closest approach: searcher 2502 at 9.22 cells, step 57.
+  - NO BAYES ARM HAS EVER RUN ON UNIFORM SET 2. fb3vs* are set 1; fb3bd2 / bf2 / bdr2 / bfr2 are ring
+    spawn and not CRN.
+  - Geometry: (0,4) is 4.0 from pool cell (4,4), so a Bayes corner target could cover her if the fire allows
+    the leg.
+  - The screen runs this cell in every arm (section 7) and reports, per arm: detected or not, when, and
+    the closest approach.
+  PAPER: one named case of the edge-band failure mode; the arms' answer to it is reported, not tuned for.
+
+1.4 EVERYTHING ELSE FOUND THAT MAKES THE METHOD BEHAVE OTHER THAN DESIGNED
+  F1-g P_d IN THE PLANNER.
+       - Under SEARCHER_BELIEF_PD / _PD_SMOKE < 1 the belief's measure uses P_d, but G and the coordination
+         mask still assume P_d = 1 (searcher_targeting.py:310, :326).
+       - This affects only the pre-registered PD_SMOKE = 0.5 sensitivity point, where the operator would
+         credit looks it believes are uncertain. FIXED.
+       - Design D-7: the objective is sum_c lambda(c) * (1 - prod(1 - P_d)).
+       - Identical at the shipped P_d = 1.
+  F1-h THE "BOXED BY UAVs" EXEMPTION IS LOOSER THAN STATED.
+       - any_candidate counts a distance-0 route (a pool cell within Manhattan 2) as a reachable candidate
+         (searcher_targeting.py:341-347), but candidates must be more than 2 away (:291).
+       - So a searcher boxed in at launch on 3 of 25 depot cells gets the 10-step fallback hold instead of
+         retrying next step. FIXED: the test uses the candidate filter's own Manhattan > 2 rule.
+  CLEANUP (no behaviour; removed or recorded):
+    - searcher_targeting.py:188 S = disc_convolve(lambda) is computed and never used. Removed (no switch
+      needed, identity proves it).
+    - The victim_search_belief.py:29 comment states the wrong direction order. Comment fixed.
+  RECORDED, NOT CHANGED (intentional, or their own round):
+    - battery b - 0.3(L + 2) (review LOW-2, a 0.6 margin);
+    - swept on p, not lambda (review LOW-3: a detection elsewhere never sweeps a target);
+    - the cooldown comment's off-by-one;
+    - the BFS edge rule mirrors A1-D (one owner);
+    - bare int() casts in the post-pass (the bare-int audit is its own round);
+    - fix3b 2.4 / 15.2 name fire_runtime_model as the fire input, but the code reads the Fire agents.
+      That is A3 either way.
+
+1.5 THE SWITCH AND THE CHANGES (ships ON; off only on an exact 0; acts only in the strategy arms)
+  SEARCHER_TARGETING_FIX = 1 (agents.searcher_targeting_fix()). It acts in modes 2, 3 and 5 (F1-a..e, g,
+  h), plus F1-f in modes 1-5. At 0 every strategy arm is byte-identical to today (verified against ut2bf).
+    F1-a  The lazy walk reflects: q / 4 per direction (calm: q_calm / 4). A move toward an out-of-grid or
+          burning neighbour stays. The alarmed flee softmax is unchanged: it is a choice among feasible
+          moves.
+    F1-b  Bayes targets: the leg ends ON t when t is admissible. The goal is t itself, L = the BFS distance
+          to t, and the target is reached on t.
+          - Only when t is not admissible does the Manhattan-2 diamond stay the goal; then G credits the
+            route cell's disc.
+          - G, the coordination claims and MIN_DIST all use the cell the leg actually ends at.
+          - The planner marks the target exact in the uncertainty_context and the hook follows the same
+            _targeting_route (one owner).
+          - Least-observed anchors and the R-1 tiles keep the diamond.
+    F1-c  Swept = sum over (D_t minus O) of p_now < rho * sum over (D_t minus O) of p_at_issue.
+          - O = the cells the holder's own discs covered since issue; p_at_issue is stored with the target.
+          - If D_t minus O is empty, the target is dropped as reached-by-cover.
+    F1-d  The pool is mirror-symmetric per axis: {4, 6, ..., 24} plus {25, 27, ..., 45}. That is stride 2
+          with the edge distance 4 on every side; 22 x 22 = 484 cells.
+    F1-e  (no change; the band definition < 4 is recorded in item 4)
+    F1-f  No targeting steer, and no random-walk steer, for a returning, docked or recalled searcher.
+    F1-g  G and the coordination mask use the belief's own P_d per cell.
+    F1-h  The boxed test uses the candidate filter.
+
+================================================================================
+2. ITEM 2 - FRONT-PRIORITY (URGENCY-WEIGHTED) BAYESIAN SEARCH: SEARCHER_TARGETING = 5 (default 0)
+================================================================================
+2.1 WHAT IT IS
+  - FP is the flee-aware arm (mode 3, with item 1's fixes) plus ONE change: in target preference only,
+    each cell's expected unfound-alive mass is weighted by how soon the fire is expected to reach it:
+        lambda_w(c) = lambda(c) * w(c),    w(c) = 1 + kappa * exp(-T(c) / tau).
+  - lambda_w replaces lambda in exactly three places: the pre-rank S, the exact gain G, and the
+    coordination's fictitious non-detection (claims zero lambda_w consistently).
+  UNCHANGED, BY CONSTRUCTION:
+    - the belief (prior, predict = the flee model, measure, burn-over 0.1);
+    - reachability (the admissible BFS, clearance 6) and the battery filter;
+    - coordination's procedure;
+    - THE ONE-OWNER RULE: held targets are dropped only by reached / unreachable / battery / swept. The
+      swept rule keeps reading the UNWEIGHTED p, so a moving front can never drop a held target through the
+      weight;
+    - MIN_DIST, the fallback, R-1 and the recall.
+2.2 THE ESTIMATE OF T(c), THE FIRE ARRIVAL TIME (operator-side; NOT the simulator's rule)
+    T(c) = min over believed-burning cells b of ( |v| - e * (v . u) ) / ( R_H * (1 - e) ),   v = c - b.
+  - This is |v| / R(theta) with R(theta) = R_H (1 - e) / (1 - e cos theta): the elliptical fire with the
+    ignition at the rear focus.
+  - The minimum over the front is the Huygens envelope of elliptical wavelets for homogeneous conditions.
+  - u = the downwind unit vector of the known constant wind (A4; the wind the managing system already
+    reads through EnvironmentBridge / UAVExecutor._get_wind_direction; 'west' = fire travels to -x,
+    cfv:35, :47-58).
+  - The burning set = the planner's pre-move fire snapshot (_fix3b_true_fire, A3: what the belief already
+    sees).
+  - w = 1 on burning cells (their mass is ~0). No fire: w = 1, and FP equals BF exactly.
+  - Cost: O(cells x burning cells) per step, about the flee model's distance pass (2-5 ms).
+  WHY THIS IS NOT THE SIMULATOR'S RULE (agents.py:53-125, 239-266). The simulator:
+    - is stochastic, per cell, over 28 Euclidean-3 offsets with weight d^-2;
+    - boosts only the 3 sources DIRECTLY upwind on the same row or column (a line, not an ellipse) and cuts
+      every other source to 10%;
+    - ticks every 3 steps, capped at 0.75 per tick and at most 1 cell per step;
+    - does not latch a burn (a scorched cell can re-ignite).
+  The estimate is deterministic and elliptical, with a literature rate. It reads no simulator constant
+  (FIRE_SPREAD_*, MU, fuel are never read; MU is not reachable from src_extension).
+2.3 PARAMETERS. Each is cited (FORM from the literature; VALUE a pre-registered operator assumption where no
+    value maps to cells / steps - the 15.3 rule).
+  - U10 = 20 km/h: the assumed 10-m open wind. The simulator has no wind speed (MU is dimensionless, cfv:67).
+    20 km/h is the lower bound of a "moderate breeze", Beaufort 4 (WMO). Sensitivity {10, 40}.
+  - R_H = 0.1 x U10 = 2.0 km/h = 0.556 m/s, the head rate. "10% wind speed rule of thumb", Cruz & Alexander
+    2019, Annals of Forest Science 76:44 (forests and shrublands, dry fuels).
+  - Cells per step: 1 cell / step is the victims' movement quantum (A6). The fire is expressed relative to
+    the person who flees, at a free walking speed of 1.34 m/s (Weidmann 1993, Transporttechnik der
+    Fussgaenger, ETH Zurich IVT 90).
+      -> R_H = 0.556 / 1.34 = 0.415 cells / step.
+  - Shape: length-to-width z = 1 + 0.25 U_mf, with U_mf the effective midflame wind in mi/h, capped at 8
+    (Andrews 2018, The Rothermel surface fire spread model..., USDA FS RMRS-GTR-371, following Anderson
+    1983, INT-305). Eccentricity e = sqrt(z^2 - 1) / z.
+      - U_mf = WAF x U_20ft, with WAF = 0.4 for unsheltered surface fuels (Albini & Baughman 1979, INT-221;
+        Andrews 2012, RMRS-GTR-266).
+      - U_20ft = U10 / 1.15 (Turner & Lawson 1978, BC-X-177).
+      -> U_mf = 4.32 mi/h, z = 2.08, e = 0.877. Head : back = 15.3. Flank (theta = 90 deg) = 0.051
+         cells / step; back = 0.027.
+  - The polar ellipse from the rear focus: Van Wagner 1969 (Forestry Chronicle 45:103-104); Catchpole, de
+    Mestre & Gill 1982 (Australian Forest Research 12:47-54). The Huygens envelope: Anderson, Catchpole,
+    de Mestre & Parkes 1982 (J. Austral. Math. Soc. B 23:451-466); Richards 1990.
+  - Using fire travel time to prioritise space: the evacuation TRIGGER BUFFER (Cova, Dennison, Kim & Moritz
+    2005, Transactions in GIS 9(4):603-617; Dennison, Cova & Moritz 2007, Natural Hazards 41:181-199).
+  - tau = 16 steps = 2 r / v_UAV: the time a searcher needs to cross one detection footprint (sensor radius
+    8, UAV 1 cell / step; K5 and the simulator's quantum). No new free value.
+    - For the head direction only R_H x tau matters, so the U10 sensitivity also covers tau.
+  - kappa = 1: a person the fire is about to reach counts up to twice a person not under threat. This is a
+    VALUE JUDGEMENT of the operator, with no literature value. Stated as such. Sensitivity kappa = 3.
+  WHAT THE CITED SHAPE IMPLIES (stated plainly, not tuned away). At U10 20:
+    - the head weights a cell 4 / 8 / 16 cells ahead at w = 1.55 / 1.30 / 1.09;
+    - the flanks spread at about 0.05 cells / step at every U10 in {10, 20, 40}, so only cells 1-2 cells off
+      a flank gain (w 1.29 / 1.09).
+    FP therefore prioritises mainly the area AHEAD OF THE HEAD, downwind - where the flee belief also
+    carries mass (and where the D_W victim fled). The flanks count more only close in.
+2.4 SWITCHES AND PARAMETERS (cfv, read at call time). Mode 5 also builds the flee belief.
+    SEARCHER_TARGETING value 5; SEARCHER_FP_U10_KMH 20; SEARCHER_FP_ROS_WIND_FRACTION 0.1;
+    SEARCHER_FP_WALK_SPEED_MS 1.34; SEARCHER_FP_WAF 0.4; SEARCHER_FP_10M_TO_20FT 1.15;
+    SEARCHER_FP_LW_PER_MPH 0.25; SEARCHER_FP_LW_MAX 8; SEARCHER_FP_KAPPA 1.0; SEARCHER_FP_TAU 16.
+    Every value-keyed site gets 5:
+      - agents.py:2185 and :2198-2200;
+      - wildfire_model.py:2730 (5 -> "flee"), :2754, :2768;
+      - searcher_targeting.py:121, 185-187, 251-253, 325, 381;
+      - the test that asserts 5 parses to 0 (tests/test_searcher_targeting.py:259);
+      - the probe, queue and analyzer registries.
+2.5 KNOWN RISK - EVERY OSCILLATION IN THIS PROJECT HAPPENED NEAR FIRE.
+  What keeps FP from steering into fire:
+    - The weight only re-orders candidates that already pass the admissible BFS, which stays 6 cells from
+      burning cells and is re-checked every step.
+    - No score-based switching.
+    - The swept rule ignores the weight.
+    - w is smooth in T (no buffer edge to chatter on).
+  The screen measures it (section 7): FP vs BF on searcher steps in fire, in smoke, and within 3 / 6 cells
+  of burning; FIRE-class oscillation episodes; give-ups by reason. G-O is a gate.
+  PAPER:
+    - FP is a one-term extension, an urgency weight in the plan only, with a cited estimate. The estimate
+      is deliberately not the simulator's rule (an operator model; inverse crime avoided).
+    - The instrument records T at each victim's true cell, so the paper can report the estimate's error
+      against the actual arrival.
+
+================================================================================
+3. ITEM 3 - THE CALIBRATION INSTRUMENT (fix3b_part1.txt 18.3-18.4), BUILT AND VALIDATED HERE
+================================================================================
+3.1 WHERE: outputs/_fb3_probe.py, behind a new flag --instrument.
+  - Off = the probe exactly as today.
+  - Record-only: no RNG draw, no model write. Truth stays in the probe; nothing reaches src_extension.
+  Hook points, all exact:
+    (a) wrap WildFireModel._apply_monitoring_to_knowledge. Its last statement is the belief update
+        (wildfire_model.py:2475-2484), so after it returns the probe reads the identical inputs in every
+        arm, with or without a belief: _fix3b_true_fire() and the post-move UAV cells from local
+        observations;
+    (b) the step-0 launch inputs (UAV cells and the prior's excluded set) at first-step entry;
+    (c) class-level wraps of VictimSearchBelief.measure / burn_over, filtered to the run's own belief, for
+        r_k and the burn-over mass;
+    (d) the module-level _bump in searcher_targeting, for drop_swept events.
+3.2 RECORDED (section fb3.inst; full-precision floats; burning / smoke as flat-index deltas on change steps).
+  PER STEP:
+    - own belief: alive, dead, n_unfound, r_k, burn-over moved, a hash of p;
+    - SHADOW beliefs fed the same stream:
+        - BF at p_bo 0.1 in EVERY arm (gives POS(t), 18.6);
+        - in the Bayes arms also BD, motion-off, and BF at p_bo 0, 0.2 and 0.5;
+    - for every victim truly alive and undetected (truth from the probe), per belief: a_v. u_v and r_v are
+      derived offline;
+    - the FP estimate T at each such victim's true cell (every arm, record-only). The actual arrival comes
+      from the burning sets.
+  PER drop_swept: the held target's mass loss split into coverage / motion / burn-over.
+3.3 VALIDATION - must pass before the measurement round starts (run in this round's screen):
+    V1 VALUE IDENTITY. The instrumented probe reproduces recorded runs on every recorded field: rows_*, eval,
+       stdout, mf2, fx3, fb3 (all except timing, wall_s and provenance). One seed (A_E) each:
+         - fb3bdr, fb3bfr, fb3bdr2, fb3bfr2, fb3vs3r: non-CRN as recorded, with SEARCHER_UNTUNED=0 and the
+           new switches at 0;
+         - ut2bf: CRN, current defaults, the new switches at 0.
+       NOTE: no recorded wave has verified strategies 2/3 at SEARCHER_UNTUNED = 0. A mismatch STOPs the round
+       for diagnosis.
+       The 32-run identity arm (7.1) also runs with --instrument, which proves record-only in arms without
+       a belief.
+    V2 OFFLINE REPLAY of every Bayes-arm screen run from the recorded inputs reproduces the run's own
+       per-step scalars exactly (repr equality).
+    V3 SELF-CHECK: in modes 3 / 5 the shadow BF at p_bo 0.1, and in mode 2 the shadow BD, equals the run's
+       own belief every step (same p hash, same dead).
+  PAPER: the calibration claims (M1-M4) rest on a validated, record-only instrument. Its validation is
+    reported.
+
+================================================================================
+4. ITEM 4 - AMENDMENT OF THE MEASUREMENT ROUND'S PRE-REGISTRATION (becomes fix3b_part1.txt section 19,
+   committed in Part 2, BEFORE any measurement run; it governs where it differs from sections 10, 15-18)
+================================================================================
+4.1 ENVIRONMENTS - SUPERVISORS' DECISION.
+  - Uniform spawn (VICTIM_SPAWN_MODE 1) and the fixed ring (0), with EQUAL WEIGHT.
+  - n = 10 per scenario x wind cell in EACH, with the same frozen seeds in both: 30001 + 16k + c, k = 0..9.
+  - CRN on every arm. Replaces 10.1's primary / secondary split.
+4.2 BASELINE. CUR = SEARCHER_TARGETING 0 at the shipped defaults: the untuned current search (SEARCHER_UNTUNED
+  1, recall, release fix). The tuned search (SEARCHER_UNTUNED 0) is NOT an arm. Items 1 and 5 run at their
+  shipped values (ON).
+4.3 ARMS, in EACH placement:
+  - CUR, LO, BD, BF (the designated method arm, unchanged), FP (NEW), RW;
+  - GP (GLOBAL_PLANNER_MODE 1 + BF);
+  - BF-coord, BF-batt, BF-motion, BF-reach.
+  That is 11 arms.
+4.4 DISPATCH: LEFT OPEN.
+  - The measurement round starts only after the dispatch round has merged.
+  - It runs at the dispatch configuration main then ships, recorded (commit, switch values) and never chosen
+    after seeing measurement data.
+  - If dispatch changes behaviour, the screen's references are re-measured at that commit before the round
+    (the "baseline moved" rule).
+4.5 STATISTICS (amends 10.6).
+  FAMILY A, Holm, K = 7, on E1 unless stated:
+    BF-CUR, BD-CUR, LO-CUR, FP-CUR, BF-LO, BF-BD, and FP-BF on E1-T.
+    - E1-T = E1 over THREATENED eligible victims: in the comparison's reference-arm run, the victim comes
+      within Manhattan 3 of a burning cell while alive and undetected. Observer-side truth; the simulator's
+      own flee distance.
+    - Equal weight: each test pools the 320 CRN pairs (160 per placement). Equal n gives equal weight. It
+      uses Wilcoxon signed-rank (Pratt) and HL with a BCa CI.
+    - Per placement, an HL + CI is reported for every comparison (exploratory).
+    - van Elteren stratified by placement x scenario is the sensitivity check.
+  FAMILY B (ablations, K = 4) and C (GP vs BF) as 10.6, pooled the same way.
+  FP SECONDARIES (exploratory, no test): E1 overall; detection time of each run's nearest-fire victim;
+    rescued; dead; searcher steps in fire / smoke / within 3 and 6 cells of burning; FIRE-class episodes;
+    the T-estimate error at victims.
+4.6 NEW REPORTING RULES.
+  (a) DRONE TIME IN FIRE AND SMOKE, SEPARATELY for:
+      - searcher SEARCH steps (airborne, no return leg);
+      - searcher RETURN legs, split into battery returns and recall legs;
+      - tracker tracking steps;
+      - tracker return legs.
+      Per arm and per placement.
+  (b) EDGE-BAND victims (18.8 b): edge distance < 4 (the band). The earlier <= 4 count is corrected (1.1 c).
+  (c) 17.3 CORRECTED: with SEARCHER_UNTUNED 1 the hand-back steps read the honest count, not a privileged
+      one. Owned-step shares classify return-leg and docked steps as their own class, not as chain steps.
+  (d) Item 5's measures (DRIFT alarms, degraded-operation steps) are reported per arm.
+4.7 SENSITIVITY (10.7 + 18.5 + FP).
+  - 11 points as pre-registered, plus FP U10 {10, 40} and FP kappa 3: 14 points.
+  - n = 3 per cell = 48 CRN runs per point per placement.
+4.8 RUN COUNT AND TIME.
+  - Throughput measured on this box: 46-57 runs/h at 12-13 processes (untune pool logs, 360-step
+    equivalents). Planned at 50 runs/h.
+  - Instrument cost: about 1.5% of run time (to be measured in the screen).
+    OPTION A (the supervisors' decision applied literally):
+      main 11 arms x 16 cells x 10 x 2 placements = 3 520
+      sensitivity 14 points x 48 x 2 placements   = 1 344
+      TOTAL 4 864 runs, about 97 h (about 4 days of machine time).
+    OPTION B (if time forces; stated as such):
+      - CUR / LO / BD / BF / FP in both placements: 1 600;
+      - RW, GP and the 4 ablations on uniform only: 960;
+      - sensitivity on uniform only: 672;
+      TOTAL 3 232 runs, about 65 h.
+    (Was: about 2 450 runs, about 41 h, ring secondary at n = 5.)
+  PAPER: both placements carry equal weight. CUR is the untuned search (no home-ground tuning). FP is the
+    one new arm, tested on the victims it is meant for (E1-T). Exposure is attributable to search vs
+    return legs.
+
+================================================================================
+5. ITEM 5 - TRACKERS BLOCKED BY DOCKED DRONES
+================================================================================
+5.1 WHAT THE RULE ACTUALLY IS (correction).
+  - UAV.not_UAV_adjacent(pos) tests only whether the DESTINATION CELL holds a UAV (agents.py:402-408). It is
+    an OCCUPANCY test, not an adjacency test.
+  - The untune records' wording "a cell adjacent to another UAV" (untune_rescreen_report.txt:108, :113,
+    :135; untune_merge_notes.txt:83-84) is wrong. This round records the correction and does not edit the
+    merged records.
+  - Recorded, untuned + recall: 167 / 309 / 115 / 124 refused tracker moves aimed INTO a docked UAV's cell
+    (ring 1, ring 2, uniform 1, uniform 2), against 2 / 3 / 2 / 12 as shipped before recall.
+  - Tracker direction choosers have no UAV block (uav_executor.py:4252+, :3559+), so they retry the same
+    move and >= 2 refusals in 5 steps is DRIFT_TOO_HIGH.
+5.2 THE CHANGE - switch UAV_DOCKED_NOT_OBSTACLE = 1 (ships ON; off only on an exact 0; agents accessor via
+    _fix2_switch). "Docked" = rtb_docked, the same predicate as session 2's collision alarm
+    (wildfire_model.py:1866-1869).
+  (a) MOVE RULE: in UAV.move (agents.py:1131), a docked UAV does not block the destination cell for a mover
+      that is NOT on a return leg. Return legs keep today's rule, so the docking paths are unchanged by
+      construction.
+      - not_UAV_adjacent itself, _rtb_cell_free and the test helpers are unchanged.
+      - Planners' UAV-free BFS sets (A1-R, the targeting BFS, the pocket escape) are unchanged; this item is
+        the move rule.
+  Making (a) safe needs three guards, all under the same switch. Without them the change would create the
+  states below.
+  (b) NO TWO UAVs DOCKED ON ONE CELL. Free-cell docking docks on ANY footprint cell (agents.py:993), with no
+      occupancy test, because "the move rule never puts two UAVs on one cell" - which (a) makes false.
+      - A UAV standing over a docked UAV that starts its return there would dock on top of it.
+      - Guard: dock only where no other DOCKED UAV stands. _nearest_free_dock_cell then no longer keeps its
+        own cell as free when a docked UAV is on it.
+      - The berth path (FREE_CELL_DOCKING 0) gets the same guard.
+  (c) NO TWO AIRBORNE UAVs ON ONE CELL. A docked UAV is not released while another UAV stands on its cell. It
+      relaunches the step after that UAV leaves. Without this, a release whose first move is refused would
+      leave two airborne UAVs on one cell.
+  (d) THE GLOBAL COLLISION CHECK COUNTS ONLY AIRBORNE UAVs, like session 2's local collision alarm.
+      - global_analyzer.py:946-970 pairs every UAV, docked included, at distance < 1, as a CRITICAL
+        COLLISION_RISK leading to the fail-safe.
+      - Without (d), (a) would trade DRIFT alarms for a worse alarm that has never fired in any recorded run.
+      - Docked status comes from the UAV's own monitor record (task_context "docked",
+        local_uav_monitor.py:339-341).
+  Unchanged:
+    - firefighters (not UAVs; never blocked);
+    - MR2 (counts UAV pairs under SECURITY_DISTANCE, docked included; reported);
+    - the dispatcher's yield rule (already airborne-only).
+5.3 SCREEN MEASURES, switch ON (bpc) vs OFF (bpi), same seeds, both placements:
+    - DRIFT_TOO_HIGH (local and global);
+    - tracker refusals: all, into a docked cell, within 2 cells of a depot;
+    - degraded_operation steps (ut.rows phase 3);
+    - docking: trips, arrival steps, boxed steps, repicks, dock cells, deferred relaunches;
+    - co-location by kind: airborne over docked (expected > 0), airborne + airborne (must be 0), docked +
+      docked (must be 0);
+    - global COLLISION_RISK (must stay 0);
+    - rescued / dead.
+  PREDICTION, fixed now: DRIFT alarms fall toward the pre-recall level (136 / 74 / 76 / 120). No rescue
+    direction is predicted.
+  PAPER: the untune limitation "docked searchers make the depot surroundings harder for other UAVs to cross"
+    is removed. Grounded UAVs are not obstacles to airborne ones, as for the collision alarm. The paper's
+    alarm and mode figures are then free of this artefact.
+
+================================================================================
+6. PART 2 - IMPLEMENTATION AND TESTS (after confirmation)
+================================================================================
+  Source:
+    - item 1: searcher_targeting.py, victim_search_belief.py, uav_executor.py (route / hook flag, RW skip);
+    - item 2: a new pure module src_extension/planning/fire_arrival_estimate.py, plus the mode-5 sites;
+    - item 5: agents.py (move, dock, release) and global_analyzer.py;
+    - switches and parameters: common_fixed_variables.py, agents.py accessors.
+  Tooling:
+    - _fb3_probe.py --instrument;
+    - an offline replay tool;
+    - queue and analyzer: _bp_queue.py, _bp_analyze.py.
+      - Every probe line passes --repo E:\Projects\SAS_wt\bayesprep: the probes default to the main
+        checkout.
+      - The rb shards get worktree paths.
+      - The analyzer REFUSES any run whose recorded repo, head or extra_params are not its arm's.
+      - Source hashes are compared after LF normalisation, because one file differs only by CRLF.
+  Tests: one per change, each red with that change removed (run red once in Part 2):
+    - item 1: F1-a reflecting stationarity (uniform stays uniform); F1-b leg ends on t and G = what is flown;
+      F1-c own approach never sweeps but another UAV's disc does; F1-d mirror-symmetric pool; F1-f no
+      delivery on the recall step (stepped model) and the RW skip; F1-g P_d-weighted gain; F1-h boxed
+      exemption;
+    - item 2: T formula, the closed-form ellipse values and the downwind / upwind / no-fire cases; w only in
+      preference (the belief is byte-identical between FP and BF on the same inputs); swept reads p; 5 parses
+      and builds the flee belief;
+    - item 5: a tracker enters a docked cell; a returning UAV does not; no co-dock; release deferred; global
+      collision ignores docked; the stand-ins without rtb_docked stay obstacles;
+    - switches: exact-integer rules; test_shipped_defaults extended.
+  Review: at most 3 review agents for the round. Planned: 2 on the Part 2 diff (Bayes / FP; move rule /
+    instrument), 1 in reserve.
+
+================================================================================
+7. PART 3 - PRE-REGISTERED SCREEN (a development check, not the measurement; nothing reported as a result)
+================================================================================
+7.1 SETUP
+  - CRN on (_ut_probe -> _fb3_probe --crn --hazard --instrument), 360 steps, GLOBAL_PLANNER_MODE 0,
+    BATCH_SIZE 360, all 4 scenarios x 4 winds.
+  - RING set 1 (mode 0, seeds 9601-9616) and UNIFORM set 1 (mode 1, 9601-9616); plus the single cell
+    uniform set 2 D_W (seed 9636).
+  - --repo is the worktree. One 12-13-process wave; wave checks every 20-30 minutes.
+  ARMS (32 runs each, 16 ring + 16 uniform):
+    bpi   IDENTITY: every new switch at 0 (UAV_DOCKED_NOT_OBSTACLE 0; SEARCHER_TARGETING 0). It must be
+          value-identical to ut2r / ut2u (FIELDS + mf2) 16 / 16 each. It is also item 5's OFF arm.
+    bpc   CUR at the new defaults (item 5 ON) = the gate reference for every arm below.
+    bplo  LO (1);  bpd BD (2);  bpf BF (3);  bpp FP (5)   - item 1 ON.
+    bpx   BF with SEARCHER_TARGETING_FIX 0 (item 5 ON): item 1's effect.
+  D_W 9636 (uniform, set 2): bpi (must equal ut2u2_D_W), bpc, bplo, bpd, bpf, bpx, bpp = 7 runs.
+  INSTRUMENT V1: 6 runs (3.3).
+  ROUTE_BLOCKED: the 4 shards (18 seeds, 240 steps) at the new defaults vs utR (58 rescued).
+  TOTAL: 224 + 7 + 6 probe runs + 4 rb processes, about 5 h; then the full suite on an idle machine
+    (about 1.8 h).
+  ORDER: bpi and V1 first; nothing else is read until both pass.
+7.2 GATES (every arm vs bpc on the same seeds, per placement; bpc vs bpi for item 5; any fail = FAIL):
+    ID      bpi 32 / 32 + D_W 1 / 1 value-identical.
+    INSTR   V1 6 / 6; V2 and V3 on every Bayes-arm run.
+    G-N     runs that never finish: must not rise; target 0.
+    G-O     searcher oscillation episodes of EVERY kind (broad, pocket near, pocket anywhere) AND
+            firefighter oscillation episodes: must not rise; target 0. The mechanism class of each episode
+            is reported.
+    RECALL  1.2's check, in every targeting arm.
+    ROUTE_BLOCKED  no new loss vs utR; 0 latched.
+    INVARIANTS     0 crashes / inline violations / warnings; 0 airborne + airborne and 0 docked + docked
+                   co-located UAV-steps; 0 global COLLISION_RISK.
+    SUITE   exactly {T5} + the new tests green.
+7.3 REPORTED (both directions; per placement):
+    - BELIEF-GAP arms (bpd, bpf; bpf vs bpx):
+        - detection time of edge-band victims (< 4 on at least half the undetected steps; and by spawn cell);
+        - band vs non-band first cover;
+        - the outer-ring share of issued targets; reach rate by target class; drop reasons.
+    - D_W 9636: per arm, victim_3 detected or not, when, the closest approach.
+    - FP vs BF:
+        - searcher steps in fire, in smoke, within 3 / 6 cells of burning (search steps vs return legs);
+        - detection time for threatened victims and for each run's nearest-fire victim;
+        - rescued, dead, give-ups, FIRE-class episodes;
+        - the T error at victims.
+    - Item 5 measures (5.3).
+    - The 4.6 (a) exposure split, for every arm (a dry run of the measurement's table).
+    - Compute: belief / plan / FP ms; instrument overhead.
+    - The pilot paired SD of FP vs CUR and BF vs CUR (for 4.8; n stays 10 as ruled).
+7.4 PREDICTIONS (fixed now; attribution checks, not success criteria):
+    - item 1 raises band coverage and lowers the outer-ring revisit share;
+    - FP moves issued targets downwind of the head;
+    - item 5 lowers DRIFT alarms.
+    No direction is predicted for rescued / dead.
+
+================================================================================
+8. HOUSEKEEPING
+================================================================================
+  - Quarantine:
+      - outputs/_firemech_rewound_20260914 does not exist in this worktree (it is untracked in the main
+        checkout only).
+      - Every recursive search carried --exclude-dir / -prune or was rooted at src_extension/, tests/,
+        docs/ or outputs/. No agent reported contact.
+      - The main checkout was not read.
+  - .venv junction rule: the worktree's .venv is a junction. Before the worktree is removed at merge,
+    `cmd /c rmdir .venv` comes first, and the parent .venv is verified intact.
+  - Switch rules:
+      - SEARCHER_TARGETING_FIX and UAV_DOCKED_NOT_OBSTACLE ship ON and turn off only on an exact 0.
+      - SEARCHER_TARGETING's new value 5 enables only on an exact 5. SEARCHER_TARGETING itself ships 0.
+  - Run tags: prefix "bp" (bpi, bpc, bplo, bpd, bpf, bpx, bpp, bpv, bprb). No _sd_ / _ffr_ / rblatch tag
+    starts with "bp". The "bp" substring exists in _mf1_bp_* files, so each exact tag is re-checked (0
+    files _sd_<tag>_* / _ffr_<tag>_*, none tracked) before the first wave.
+  - Review agents: 0 of 3 used (5 mapping readers).
+  - Wave checks every 20-30 minutes.
+
+================================================================================
+9. DECISIONS FOR CONFIRMATION (recommendation first) - STOP
+================================================================================
+  D-1 ITEM 1. Fix F1-a, b, c, d, f, g, h as defects under SEARCHER_TARGETING_FIX (ships ON); remove the dead S.
+      Alternative for F1-b: credit only what is flown and keep the 2-short release. Not recommended: the
+      band rim would then stay unobserved for good.
+  D-2 ITEM 2. FP as in section 2: U10 20 km/h, kappa 1, tau 16; sensitivity U10 {10, 40} and kappa 3.
+  D-3 ITEM 5. All four parts (a)-(d) under UAV_DOCKED_NOT_OBSTACLE, with return legs keeping today's rule.
+      (Without (b)-(d) the switch creates co-docking and CRITICAL collision alarms.)
+  D-4 MEASUREMENT SCOPE. Option A (4 864 runs, about 97 h) as the literal reading of "equal weight".
+      Option B (3 232, about 65 h) only if time forces, stated as such.
+  D-5 FAMILY A. K = 7, pooled over placements (equal n = equal weight), with FP-BF tested on E1-T.
+  D-6 THE SCREEN as in 7. LO is included. RW, GP and the ablations are not screened: items 1 and 2 do not
+      touch them, and item 5 acts on them as on CUR. Each would cost 32 runs if wanted.
+STOP - waiting for confirmation of D-1 .. D-6 before Part 2.
+
+================================================================================
+10. RULINGS (maintainer, 2026-10-04) - GOVERN WHERE THEY DIFFER FROM SECTIONS 0-9
+================================================================================
+  D-1 ACCEPTED. Every item-1 defect (F1-a, b, c, d, f, g, h) is fixed under SEARCHER_TARGETING_FIX (ships ON),
+      including removing the leftover target hand-out on recall steps (F1-f).
+  D-2 ACCEPTED. Front priority with U10 20 km/h, kappa 1, tau 16; sensitivity U10 {10, 40} and kappa 3.
+      THE SHAPE IS NOT TUNED to give the flanks more weight.
+      RECORDED FOR THE PAPER: the cited fire shape spreads the flanks slowly (about 0.05 cells / step at
+      every U10 in {10, 20, 40}). The weight therefore falls mostly AHEAD OF THE FIRE HEAD, and the flanks
+      count more only within a cell or two.
+  D-3 ACCEPTED. Item 5 with all four parts: (a) the move rule plus the three guards (b) no co-docking, (c) no
+      release under another UAV, (d) the global collision check counts only airborne UAVs. Return legs keep
+      today's rule.
+  D-4 FULL SCOPE (Option A): 4 864 runs, both placements with equal weight. The expected wall time is
+      reported with the screen's measured throughput.
+  D-5 ACCEPTED as designed (family A K = 7, pooled over placements, FP-BF on E1-T).
+  D-6 THE SCREEN as pre-registered (7.1), PLUS the random walk (bprw, SEARCHER_TARGETING 4) and the global
+      planner arm (bpgp, GLOBAL_PLANNER_MODE 1 + BF), 32 runs each, so that no main arm meets the measurement
+      round untested. Both are gated like every other arm (RW is exempt from searcher G-O by construction, as
+      in 9 / fix3b; its episodes are reported). They also run on the D_W 9636 cell. The ablation arms are not
+      screened.
+  ITEM 3 RISK RULE: if V1's reproduction of the older fix3b runs at SEARCHER_UNTUNED = 0 fails, it is
+      REPORTED, and the instrument is validated against FRESH recordings instead: the same arm and seed run
+      with and without --instrument must be value-identical. The instrument is NEVER adjusted to make an old
+      run match.
+  REPORT MUST RECORD FOR THE PAPER:
+      - every citation used for front priority, with what each supports;
+      - the item-1 edge defects, as fixed before measurement;
+      - item 5's guards.
+  Screen total with D-6: 9 arms x 32 = 288, plus D_W 9 cells, plus V1 6, plus 4 rb shard processes. About 301
+  probe runs, about 6 h at the measured throughput. Then the full suite.

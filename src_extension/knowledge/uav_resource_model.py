@@ -54,6 +54,10 @@ class UAVResourceModel:
     _last_battery_update: dict[str, tuple[float, float]] = field(default_factory=dict)
     # fix2 item 1: per UAV, (timestamp, deviated) of its last DRIFT_WINDOW_STEPS drift readings.
     _drift_windows: dict[str, list[tuple[float, float]]] = field(default_factory=dict, repr=False)
+    # bayesprep item 5 (UAV_DOCKED_NOT_OBSTACLE): the UAVs whose own monitor reported them DOCKED at the last
+    # post-move update (task_context['docked']); written only with the switch on, read only by the global
+    # collision check (airborne UAVs only). Not part of any snapshot.
+    _docked_ids: set = field(default_factory=set, repr=False)
 
     def update(self, step_index: int) -> None:
         """TODO: Refresh per-UAV state from observations; update stability timers."""
@@ -202,6 +206,16 @@ class UAVResourceModel:
         state.provenance.timestamp = ts
         state.provenance.source = src
         state.provenance.confidence = conf
+
+    def set_docked(self, uav_id: str, docked: bool) -> None:
+        """bayesprep item 5: record whether this UAV reported itself docked (on the ground)."""
+        if docked:
+            self._docked_ids.add(str(uav_id))
+        else:
+            self._docked_ids.discard(str(uav_id))
+
+    def is_docked(self, uav_id: str) -> bool:
+        return str(uav_id) in self._docked_ids
 
     def reset_drift_window(self, uav_id: str) -> None:
         """fix2 item 1: forget a UAV's drift readings (it has docked - a UAV holding its berth is

@@ -667,6 +667,14 @@ class UAV(mesa.Agent):
             return False
         return _count_known_undetected_victims(self.model) <= 0
 
+    def _searcher_recall_will_act(self) -> bool:
+        """bayesprep F1-f (review R1-2): the ONE predicate the strategies read - the recall holds AND
+        _apply_return_to_base can act on it this step (BASE_STATION_MODE >= 2, a berth, a position). Where the recall
+        cannot act, a strategy keeps steering (R-1's continuation survives there, bayesprep_part1.txt 1.2)."""
+        if base_station_mode() < 2 or getattr(self, "rtb_berth", None) is None or getattr(self, "pos", None) is None:
+            return False
+        return self._searcher_recall_active()
+
     def _apply_return_to_base(self) -> None:
         """Run before move(): trigger, steer, dock and re-launch.
 
@@ -705,7 +713,16 @@ class UAV(mesa.Agent):
 
         if self.rtb_docked:
             # untune 13.1: a recalled searcher is not released while nothing is left to find.
-            if mode >= 3 and self.battery_level >= base_station_recharge_release_level() and not recall:
+            release = mode >= 3 and self.battery_level >= base_station_recharge_release_level() and not recall
+            # bayesprep item 5 guard (c): with docked UAVs not an obstacle, another UAV may stand over this one;
+            # it is not released then (a refused first move would leave two airborne UAVs on one cell) - it
+            # relaunches once that UAV has left. Counted on the trip, in deferred STEPS.
+            if (release and uav_docked_not_obstacle() and self.pos is not None
+                    and self._other_uav_on(self.pos)):
+                if self.rtb_log:
+                    self.rtb_log[-1]["release_deferred"] = int(self.rtb_log[-1].get("release_deferred", 0)) + 1
+                return
+            if release:
                 self.rtb_docked = False
                 self.rtb_active = False
                 self.rtb_last_pos = None
@@ -891,10 +908,14 @@ class UAV(mesa.Agent):
         of position and occupancy. None only if every footprint cell is taken (impossible at <= 25 UAVs
         per depot)."""
         here = (int(self.pos[0]), int(self.pos[1]))
+        # bayesprep item 5 guard (b): this UAV's own cell is NOT free when another UAV is docked on it.
+        own_taken = uav_docked_not_obstacle() and self._docked_other_on(here)
         best = None
         for i, depot in enumerate(depots):
             for cell in sorted(depot["cells"]):
                 if cell != here and cell in occupied:
+                    continue
+                if cell == here and own_taken:
                     continue
                 blocked = 0
                 if cell != here:
@@ -989,8 +1010,11 @@ class UAV(mesa.Agent):
         else:
             self.rtb_stall_steps = 0
         # DOCKED MEANS INSIDE A FOOTPRINT: any footprint cell docks - it is free by construction, the
-        # move rule never puts two UAVs on one cell.
-        if self.model.base_station_contains(here):
+        # move rule never puts two UAVs on one cell. bayesprep item 5 guard (b): with docked UAVs not an obstacle
+        # it can hold a DOCKED UAV (this one stood over it when its return started); then it does not dock here
+        # and the leg below steers to a free cell (occupied holds this cell, so it is not in `free`).
+        if self.model.base_station_contains(here) and not (
+                uav_docked_not_obstacle() and self._docked_other_on(here)):
             self.rtb_docked = True
             self.rtb_stall_steps = 0
             self.rtb_recovery_cell = None
@@ -1128,11 +1152,39 @@ class UAV(mesa.Agent):
         pos_to_move = (self.pos[0] + move_x[self.selected_dir], self.pos[1] + move_y[self.selected_dir])
         # checks if the position to move is inside the grid bounds, and that the UAV doesn't have other UAV nearby. If
         # so, the UAV moves
-        if not self.model.grid.out_of_bounds(pos_to_move) and self.not_UAV_adjacent(pos_to_move):
+        if not self.model.grid.out_of_bounds(pos_to_move) and self._move_target_free(pos_to_move):
             self.model.grid.move_agent(self, tuple(pos_to_move))
             moved = True
 
         return moved
+
+    def _move_target_free(self, pos) -> bool:
+        """The move rule's occupancy test. Switch off (or a mover on a return leg): exactly not_UAV_adjacent - the
+        DESTINATION cell holds no UAV. bayesprep item 5 (UAV_DOCKED_NOT_OBSTACLE): a DOCKED UAV is on the ground and
+        does not block a mover that is not returning; an airborne UAV still does. Return legs keep today's rule, so
+        no returning UAV ever steps onto a docked one (docking unchanged by construction)."""
+        if not uav_docked_not_obstacle() or bool(getattr(self, "rtb_active", False)):
+            return self.not_UAV_adjacent(pos)
+        for agent in self.model.grid.get_cell_list_contents([pos]):
+            if type(agent) is UAV and not bool(getattr(agent, "rtb_docked", False)):
+                return False
+        return True
+
+    def _docked_other_on(self, cell) -> bool:
+        """bayesprep item 5 guard (b): another UAV is DOCKED on `cell`."""
+        try:
+            occupants = self.model.grid.get_cell_list_contents([tuple(cell)])
+        except Exception:
+            return False
+        return any(type(o) is UAV and o is not self and bool(getattr(o, "rtb_docked", False)) for o in occupants)
+
+    def _other_uav_on(self, cell) -> bool:
+        """bayesprep item 5 guard (c): another UAV (any state) stands on `cell`."""
+        try:
+            occupants = self.model.grid.get_cell_list_contents([tuple(cell)])
+        except Exception:
+            return False
+        return any(type(o) is UAV and o is not self for o in occupants)
 
     # Mesa framework native method, which is overwritten, necessary for executing changes made in step() method
     # (as it can be seen, in this case UAVs don't need to update anything in step() method, so it isn't overwritten).
@@ -2182,13 +2234,16 @@ def battery_scenario() -> bool:
 
 # --- fix3b (session 3b): searcher targeting strategies (outputs/fix3b_part1.txt) ----------------------
 
-SEARCHER_TARGETING_VALUES = (0, 1, 2, 3, 4)
+SEARCHER_TARGETING_VALUES = (0, 1, 2, 3, 4, 5)
+# The Bayes strategies: a belief with motion and burn-over, scored targets (bayesprep: 5 = front priority).
+SEARCHER_TARGETING_BAYES = (2, 3, 5)
 
 
 def searcher_targeting() -> int:
     """SEARCHER_TARGETING - the victim searcher's targeting strategy. Shipped 0 (the current searcher).
 
-      0 current | 1 least-observed tile | 2 Bayes-diffusion | 3 Bayes-flee | 4 random walk
+      0 current | 1 least-observed tile | 2 Bayes-diffusion | 3 Bayes-flee | 4 random walk |
+      5 front priority (Bayes-flee + the urgency weight; bayesprep round)
 
     The value iff _exact_integer(raw) is one of these integers, else 0 (junk and off are one value)."""
     value = _exact_integer(getattr(cfv, "SEARCHER_TARGETING", 0))
@@ -2197,7 +2252,22 @@ def searcher_targeting() -> int:
 
 def searcher_targeting_uses_belief() -> bool:
     """The strategies that read the victim-search belief (1 reads its last-cover map)."""
-    return searcher_targeting() in (1, 2, 3)
+    return searcher_targeting() in (1,) + SEARCHER_TARGETING_BAYES
+
+
+def searcher_targeting_fix() -> bool:
+    """SEARCHER_TARGETING_FIX (bayesprep item 1). SHIPS 1; off only on an exact 0, which reproduces the fix3b
+    strategies exactly. Inert at SEARCHER_TARGETING 0 (every reader is a strategy path). Read at call time."""
+    return _fix2_switch("SEARCHER_TARGETING_FIX")
+
+
+def uav_docked_not_obstacle() -> bool:
+    """UAV_DOCKED_NOT_OBSTACLE (bayesprep item 5). SHIPS 1; off only on an exact 0. On: a DOCKED UAV does not block
+    the destination cell of a mover that is not on a return leg, with three guards - no co-docking, no release
+    under another UAV, the global collision check counts only airborne UAVs. ACTS ONLY WITH FREE_CELL_DOCKING (the
+    shipped docking): the berth path's stall-limit dock-in-place cannot coexist with "never dock on a docked UAV"
+    (review R2-F2), so at FREE_CELL_DOCKING 0 the switch is inert. Read at call time."""
+    return _fix2_switch("UAV_DOCKED_NOT_OBSTACLE") and free_cell_docking()
 
 
 def searcher_targeting_coordination() -> bool:
