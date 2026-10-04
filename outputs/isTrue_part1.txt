@@ -471,3 +471,69 @@ I-4 SHAPE D (10 dead reader lines).
     (b) Delete them now. That means rewriting the 7 unit-test sites that write the keys (3.4), for no behaviour.
 I-5 THE INCIDENTALS (4.3 pfloat empty dict, 4.4 information_recovery read as a flag): record only; route them to
     the owners of those terms. RECOMMENDED: no change in this round.
+
+================================================================================
+10. RULINGS (maintainer, 2026-10-05) - GOVERN WHERE THEY DIFFER FROM SECTIONS 0-9
+================================================================================
+  I-1 ACCEPTED. F-1 MR1_TRUTHINESS_FIX is implemented, SHIPPING ON (5.1).
+  I-2 ACCEPTED. outputs/fix3b_part1.txt 19.10 (d) is amended for F-1 BEFORE any measurement run is read, as a
+      committed amendment.
+  I-3 ACCEPTED. F-2 NUMPY_SCALAR_FLAGS is implemented, SHIPPING ON (5.2).
+  I-4 NO. The 10 dead reader lines (3.4) stay; they are listed for a cleanup round.
+  I-5 RECORD ONLY.
+      RECORDED FOR THE PAPER: the local-path utility's G_belief term is ALWAYS 0 (4.3), so the paper must not
+      describe it as contributing.
+      CORRECTION OF THE PREMISE (Part 2, 2026-10-05; the maintainer is asked to confirm the wording below):
+        - The round's summary to the maintainer said "always 0" and dropped the one exception that 4.3 states.
+        - The explore-unknown-region option (local_adaptation_generator.py:2830) sets belief_gain to the CONSTANT
+          0.55. The census scores it once per victim searcher per step: 720 times per run with two searchers, 1 080
+          in the 5-UAV scenario C (e.g. outputs/_ist_A_east_104_census.json belief_gain: float:T 720, dict:F 6 573).
+        - So G_belief is 0 on every other local path option and a fixed 0.55 on that one: it never carries belief
+          information.
+        - Proposed paper wording: "G_belief never reflects the belief. It is 0 on every local path option except the
+          explore-unknown-region option, where it is a fixed constant 0.55; the paper must not describe it as
+          contributing belief information."
+  Part 1 is committed on istrue first. Then Part 2 and Part 3 as in section 5:
+    - each fix with a test that fails without it;
+    - identity runs showing every output unchanged except MR1 (F-1) and byte-identical (F-2);
+    - the full suite (expected {T5}).
+  THE PART 3 IDENTITY RUNS MUST ALSO COVER SEARCHER_TARGETING 1, 2, 3, 4 and 5, GLOBAL_PLANNER_MODE 1, and all four
+  winds including north: every configuration the measurement round will use.
+  Report, then merge on the maintainer's word:
+    - push istrue; fast-forward main (--ff-only; STOP if not); push; tag istrue-fix;
+    - unlink the worktree's .venv junction with cmd /c rmdir before removing it, and confirm the real .venv is
+      intact.
+
+  PART 2 AS BUILT (recorded 2026-10-05; every item is behaviour-equivalent to section 5 or stricter):
+    - F-2's helper is plain_scalar((numpy.bool_, numpy.integer, numpy.floating) -> bool / int / float), not 5.2's
+      numpy.generic + .item():
+        - .item() leaves numpy.longdouble a numpy type (still misread) and retypes datetime64 / str_ / complex for no
+          reason; the explicit casts do neither;
+        - numpy.timedelta64 is a numpy.integer subclass whose int() raises for most units: it is left unchanged, and
+          any conversion that raises returns the value unchanged, so no reader raises where it did not (review F2-1).
+    - _indicator / sig are NOT edited: they reach safe_float for every non-bool value, and safe_float converts first.
+      A dedicated call there would be redundant and untestable (no test could tell it apart). test_f2_h pins the
+      behaviour through safe_float.
+    - The tests are the two files 5.1 / 5.2 name: tests/test_mr1_truthiness.py (F-1) and
+      tests/test_numpy_scalar_flags.py (F-2). The leak-order check ran test_dashboard_panel.py first (87 passed).
+      One commit per fix (section 7).
+    - Review before commit (workflow, 21 agents): four lenses (F-1, F-2, records, Part 3 plan), two refuters per
+      medium / high finding, and a mutation test. 18 of 18 single-site mutants killed (every patched site, the helper
+      body, both accessors, the int / float casts). No F-1 or F-2 code defect at medium or high; four record / plan
+      findings confirmed and fixed (19.11 (b), (d), (e) wording; Part 3 provenance and sensitivity-value checks).
+  FOR THE CLEANUP ROUND (recorded, not changed here):
+    - the 10 dead reader lines of 3.4 (ruling I-4);
+    - two numpy-blind NUMERIC readers outside F-2's ruled scope:
+        - local_uav_path_planner.py:597 _coords_tuple (isinstance(value[0], (int, float)) on target_position /
+          waypoints; the producers cast with float() / int());
+        - constraint_filter.py:103-119 required_battery / battery_required (no producer writes either key);
+      each needs its own identity check if hardened;
+    - README.md's switch list, last updated 2026-09-21: it lists no switch added since, these two included.
+  INSTRUMENTS THAT ASSUME THE LITERAL RULE (valid only at MR1_TRUTHINESS_FIX 0, i.e. before the merge or at the kill
+  switch):
+    - outputs/_ist_probe.py's literal == model check, and outputs/_ist_analyze.py, which STOPs on it;
+    - outputs/_bp_analyze.py:932 mr1_literal_ok (19.11 (b)).
+    - outputs/_fb3_probe.py's docstring / comment call the literal count "the model's". It is a run-loaded file of the
+      measurement round, so it is left byte-identical; its data (both counts) are unaffected.
+  F-2's lazy `import agents` inside plain_scalar (as in _check_utility_feasibility) means a numpy input needs the
+  root module importable. Every runner and test has it on sys.path; no import cycle (review F2-2).
