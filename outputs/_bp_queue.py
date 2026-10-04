@@ -39,6 +39,15 @@ files exactly as _ut_queue.py does: set 1 = cells("fx3mS") (seeds 9601-9616), se
 TAG CHECK (fail loudly, before writing): for every tag of the wave, 0 files outputs/_sd_<tag>_*,
 outputs/_ffr_<tag>_*, outputs/_rblatch_camp2_<tag>_* exist and none is tracked (git ls-files).
 The analyzer (outputs/_bp_analyze.py) imports spec() / entries() from here: one owner of every expected argv.
+
+FOLLOW-UP (maintainer rulings on outputs/bayesprep_report.txt section 10, 2026-10-04) - run at the FOLLOW-UP head
+(R-4 source + the record-only probe additions), group "follow", never part of 'all':
+  r5     identity at the follow-up head + ruling R-5's validation (7 lines): bp2cr / bp2cu = bpc A_E (r / u); bp5fr =
+         bpf r B_S, bp5nfr = the same WITHOUT --instrument (V1b), bp5dr = bpd r C_S, bp5pr = bpp r D_S, bp5xr = bpx r
+         D_S (the cells with the most drop_swept events of their arm in the screen). Each instrumented one must equal
+         the screen run of the same line on every recorded field but the instrument / timing / the new mr record.
+  lo2    ruling R-4's re-screen: bpe = SEARCHER_TARGETING=1 (LO with the edge geometry) in r, u (32) + the u2 cell D_W.
+  follow r5 + lo2.
 """
 from __future__ import annotations
 
@@ -71,7 +80,15 @@ ARMS = (
     ("bpg", ("SEARCHER_TARGETING=3",), 1, "GP (GPM 1 + BF)"),
 )
 ARM_NAMES = tuple(a[0] for a in ARMS)
-LABEL = {a[0]: a[3] for a in ARMS}
+# follow-up (rulings 2026-10-04): the same LO line as bpl, run at the follow-up head (R-4 edge geometry)
+FOLLOW_ARMS = (("bpe", ("SEARCHER_TARGETING=1",), 0, "LO + R-4 edge geometry"),)
+LABEL = {a[0]: a[3] for a in ARMS + FOLLOW_ARMS}
+# (tag, arm, placement, cell, instrument, reference tag): the reference is the screen run of the same line (b505d036),
+# for bp5nfr its instrumented twin bp5fr
+FOLLOW_TWINS = (("bp2cr", "bpc", "r", "A_E", True, "bpcr"), ("bp2cu", "bpc", "u", "A_E", True, "bpcu"),
+                ("bp5fr", "bpf", "r", "B_S", True, "bpfr"), ("bp5nfr", "bpf", "r", "B_S", False, "bp5fr"),
+                ("bp5dr", "bpd", "r", "C_S", True, "bpdr"), ("bp5pr", "bpp", "r", "D_S", True, "bppr"),
+                ("bp5xr", "bpx", "r", "D_S", True, "bpxr"))
 # placement -> (VICTIM_SPAWN_MODE, reference seed set, cells kept or None = all 16)
 PLACES = (("r", 0, "fx3mS", None), ("u", 1, "fx3mS", None), ("u2", 1, "fx3mS2", ("D_W",)))
 U2_SEED = "9636"
@@ -114,20 +131,21 @@ def _entry(group, tag, key, argv, out, crn, instrument, **extra):
     return e
 
 
-def screen_entry(arm, place, cell):
-    """One screen probe line: arm x placement x cell."""
-    sets, gp = {a[0]: (a[1], a[2]) for a in ARMS}[arm]
+def screen_entry(arm, place, cell, tag=None, instrument=True, group="screen"):
+    """One screen probe line: arm x placement x cell (tag = arm + placement unless given)."""
+    sets, gp = {a[0]: (a[1], a[2]) for a in ARMS + FOLLOW_ARMS}[arm]
     spawn = {p[0]: p[1] for p in PLACES}[place]
     key, scen, wind, seed = cell
-    tag = arm + place
+    tag = tag or arm + place
     out = os.path.join(OUT, "_sd_%s_%s.json" % (tag, key))
     sd = ["--repo", WT, "--scenario", scen, "--wind", wind, "--seed", seed,
           "--set", "GLOBAL_PLANNER_MODE=%d" % gp, "--set", "VICTIM_SPAWN_MODE=%d" % spawn]
     for s in sets:
         sd += ["--set", s]
     sd += ["--steps", "360", "--set", "BATCH_SIZE=360", "--out", out, "--tag", "%s_%s" % (tag, key)]
-    argv = [PROBE, "--crn", "--hazard", "--instrument", "--"] + sd
-    return _entry("screen", tag, key, argv, out, True, True, arm=arm, place=place, layer="ut")
+    argv = [PROBE, "--crn", "--hazard"] + (["--instrument"] if instrument else []) + ["--"] + sd
+    return _entry(group, tag, key, argv, out, True, instrument, arm=arm, place=place, layer="ut",
+                  follow=group == "follow")
 
 
 def screen_entries(arms, sets=None):
@@ -214,6 +232,24 @@ def rb_entries():
     return res
 
 
+def follow_entries(sets=None):
+    """The follow-up lines (rulings 2026-10-04): (r5, lo2)."""
+    sets = sets or _cells()
+    ref_set = {p[0]: p[2] for p in PLACES}
+    r5 = []
+    for tag, arm, place, key, instrument, ref in FOLLOW_TWINS:
+        cell = [c for c in sets[ref_set[place]] if c[0] == key][0]
+        r5.append(dict(screen_entry(arm, place, cell, tag=tag, instrument=instrument, group="follow"), ref=ref,
+                       ref_key=key))
+    lo2 = []
+    for arm, _sets, _gp, _label in FOLLOW_ARMS:
+        for place, _spawn, ref, keep in PLACES:
+            for c in sets[ref]:
+                if keep is None or c[0] in keep:
+                    lo2.append(screen_entry(arm, place, c, group="follow"))
+    return r5, lo2
+
+
 def waves():
     sets = _cells()
     v1b = v1b_entries(sets)
@@ -222,13 +258,15 @@ def waves():
     arms = screen_entries(tuple(a for a in ARM_NAMES if a != "bpi"), sets)
     twins = [e for e in arms if (e["arm"], e["place"], e["key"]) in {(a, p, V1B_KEY) for _t, a, p in V1B}]
     v1bx = [e for e in v1b if e["tag"] in V1B_ADDED]
-    return {"first": first, "arms": arms, "rb": rb, "all": first + rb + arms + v1bx, "twins": twins, "v1bx": v1bx}
+    r5, lo2 = follow_entries(sets)
+    return {"first": first, "arms": arms, "rb": rb, "all": first + rb + arms + v1bx, "twins": twins, "v1bx": v1bx,
+            "r5": r5, "lo2": lo2, "follow": r5 + lo2}
 
 
 def entries():
     """Every expected run of the screen: {(tag, key): entry} for the probe runs, {tag: entry} for the rb shards."""
     w = waves()
-    probe = {(e["tag"], e["key"]): e for e in w["all"] if e["group"] != "rb"}
+    probe = {(e["tag"], e["key"]): e for e in w["all"] + w["follow"] if e["group"] != "rb"}
     rb = {e["tag"]: e for e in w["rb"]}
     return probe, rb
 
@@ -258,7 +296,7 @@ def validate(e):
         bad.append("--instrument presence is not as intended")
     if ("--crn" in own) != e["crn"]:
         bad.append("--crn presence is not as intended")
-    if e["group"] == "screen":
+    if e["group"] in ("screen", "follow"):
         if sd[sd.index("--steps") + 1] != "360" or "BATCH_SIZE=360" not in sd:
             bad.append("not 360 steps / BATCH_SIZE=360")
     if not _same_path(sd[sd.index("--out") + 1], ln["out"]):
@@ -295,8 +333,8 @@ def tag_check(es, resume=False):
 def totals(es):
     c = collections.Counter()
     for e in es:
-        if e["group"] == "screen":
-            c["%s %s" % (e["arm"], e["place"])] += 1
+        if e["group"] in ("screen", "follow"):
+            c["%s %s" % (e["tag"] if e["tag"] != e["arm"] + e["place"] else e["arm"], e["place"])] += 1
         else:
             c[e["group"]] += 1
     return c
@@ -313,7 +351,7 @@ def main() -> int:
     wave = args[0]
     w = waves()
     if wave not in w:
-        raise SystemExit("unknown wave %r (first / arms / rb / all / twins)" % wave)
+        raise SystemExit("unknown wave %r (first / arms / rb / all / twins / v1bx / r5 / lo2 / follow)" % wave)
     es = w[wave]
     names = [e["line"]["name"] for e in es]
     if len(set(names)) != len(names):

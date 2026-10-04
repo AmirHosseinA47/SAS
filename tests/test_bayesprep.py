@@ -3,7 +3,8 @@ FAILS with that change removed (verified red in Part 2). Every test sets its own
 
   item 1  SEARCHER_TARGETING_FIX (ships 1): F1-a reflecting walk, F1-b the leg ends on its target and the gain is
           what is flown, F1-c the holder never sweeps its own target, F1-d mirror-symmetric pool, F1-f no steer for a
-          recalled / returning / docked searcher, F1-g the gain uses the belief's P_d, F1-h the boxed test
+          recalled / returning / docked searcher, F1-g the gain uses the belief's P_d, F1-h the boxed test;
+          ruling R-4 (report section 10): the least-observed baseline gets the same edge geometry
   item 2  SEARCHER_TARGETING 5 (front priority): the arrival-time estimate, the weight, preference only
   item 5  UAV_DOCKED_NOT_OBSTACLE (ships 1): the move rule, no co-docking, no release under another UAV, the global
           collision check counts airborne UAVs only
@@ -211,6 +212,56 @@ def test_the_planner_uses_the_symmetric_pool_with_the_fix(_shipped, monkeypatch,
     t = _target(_plan(model, dec), 2502)
     assert t is not None
     assert (max(t) == 45) is bool(fix), t
+
+
+# ============================================================================ R-4 least-observed edge geometry
+def test_the_outer_tile_anchors_sit_at_the_pool_edge_so_no_corner_is_blind():
+    """R-4: with edge anchors the outer tiles' anchors are at edge distance 4 on every side (as the Bayes pool,
+    F1-d) and every grid cell is within the detection radius 8 of some anchor. The fix3b centre anchors (7 and 42)
+    leave the four corners 9.9 from every anchor (the uniform A_W blind spot, report section 3)."""
+    r2 = 8.0 ** 2
+    for edge, axis in ((True, [4, 14, 21, 28, 35, 45]), (False, [7, 14, 21, 28, 35, 42])):
+        tiles = stg.tile_layout(H, W, 4, 7, edge_anchor=edge)
+        anchors = {t["anchor"] for t in tiles}
+        assert sorted({a[0] for a in anchors}) == axis and sorted({a[1] for a in anchors}) == axis
+        assert [(t["x"], t["y"]) for t in tiles] == [(t["x"], t["y"]) for t in stg.tile_layout(H, W, 4, 7)]
+        blind = [(x, y) for x in range(H) for y in range(W)
+                 if min((x - a[0]) ** 2 + (y - a[1]) ** 2 for a in anchors) > r2]
+        if edge:
+            assert blind == []
+        else:
+            assert {(0, 0), (0, 49), (49, 0), (49, 49)} <= set(blind)
+
+
+@pytest.mark.parametrize("fix", [1, 0])
+def test_a_least_observed_leg_ends_on_its_edge_anchor_with_the_fix(_shipped, monkeypatch, fix):
+    """R-4 at the planner: only the NE corner tile is stale. With the fix the issued anchor is (45, 45) and the leg
+    ends ON it (the exact flag is delivered, the hook routes to the anchor itself). fix3b (0): the centre anchor
+    (42, 42) and a leg that stops 2 short (no exact flag)."""
+    monkeypatch.setattr(cfv, "SEARCHER_TARGETING_FIX", fix, raising=False)
+    model, (u,), dec = _world([(2502, (25, 25), 100.0)], {(1, 1): 1.0}, mode=1, monkeypatch=monkeypatch)
+    b = model.victim_search_belief
+    b.last_cover[:, :] = STEP
+    corner = [t for t in stg.tile_layout(H, W, 4, 7) if t["x"] == (39, 49) and t["y"] == (39, 49)][0]
+    (xa, xb), (ya, yb) = corner["x"], corner["y"]
+    b.last_cover[xa:xb + 1, ya:yb + 1] = 15
+    out = _plan(model, dec)
+    t = _target(out, 2502)
+    ex = UAVExecutor("2502", model, u)
+    bfs = ex._targeting_bfs(u, model)
+    if fix:
+        assert t == (45, 45) and out["2502"].uncertainty_context.get("searcher_targeting_exact") is True
+        assert model._searcher_targeting_issued[-1][3] == 40                         # L measured to the anchor
+        assert UAVExecutor._targeting_route(bfs, t, exact=True)[0] == t
+    else:
+        assert t == (42, 42) and "searcher_targeting_exact" not in out["2502"].uncertainty_context
+        assert model._searcher_targeting_issued[-1][3] == 32                         # to its radius-2 ball
+    # the held target is re-checked on the same rule: the anchor stays held, not 'reached', 2 cells short of it
+    u.pos = (43, 45) if fix else (40, 42)
+    model.evaluation_timesteps_counter += 1
+    out = _plan(model, dec)
+    stats = model._searcher_targeting_stats["2502"]
+    assert (_target(out, 2502) == (45, 45) and not stats.get("drop_reached")) if fix else stats.get("drop_reached") == 1
 
 
 # ============================================================================ F1-f recall / return legs

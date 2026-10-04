@@ -28,6 +28,8 @@ BAYESIAN PREPARATION ROUND (outputs/bayesprep_part1.txt; SEARCHER_TARGETING_FIX 
   F1-d the Bayes target pool is mirror-symmetric (edge distance 4 on every side);
   F1-f no strategy steers a searcher whose recall holds this step (it is treated as on a return leg);
   F1-g under P_d < 1 the gain and the claims use the belief's own P_d; F1-h the boxed test uses the candidate filter.
+  Ruling R-4 (bayesprep report section 10): the least-observed baseline gets the same edge geometry - the outer tiles'
+  anchors at edge distance 4 (the Bayes pool's edge) and the leg ending ON the anchor (tile_layout edge_anchor).
   SEARCHER_TARGETING 5 (front priority): Bayes-flee with lambda weighted, in target preference ONLY, by the urgency
   weight of planning/fire_arrival_estimate.py; the swept rule keeps the unweighted p.
 """
@@ -81,9 +83,12 @@ def draw_random_walk(model: Any) -> None:
 
 
 # ---- least-observed tiles (baseline, fix3b_part1.txt 6.1) -----------------------------------------------
-def tile_layout(height: int, width: int, band: int, tile: int) -> list[dict]:
+def tile_layout(height: int, width: int, band: int, tile: int, edge_anchor: bool = False) -> list[dict]:
     """The fixed partition: the interior span [band, N-1-band] per axis split into k = max(1, round(span /
-    tile)) equal tiles; the outer tiles extend to the grid edge. Anchor = the centre of the interior part."""
+    tile)) equal tiles; the outer tiles extend to the grid edge. Anchor = the centre of the interior part.
+    edge_anchor (bayesprep R-4, with SEARCHER_TARGETING_FIX): an outer tile's anchor is at edge distance `band`, the
+    Bayes pool's edge. The centre anchors leave every grid corner outside the detection disc (50 / 4 / 7: anchors 7
+    and 42, the corner (49, 49) is 9.9 from (42, 42)); at 4 / 45 the corner is 5.7 away."""
     def axis(n: int) -> list[tuple[int, int, int]]:
         lo, hi = band, n - 1 - band
         span = hi - lo + 1
@@ -93,6 +98,8 @@ def tile_layout(height: int, width: int, band: int, tile: int) -> list[dict]:
         for i in range(k):
             a, b = edges[i], edges[i + 1] - 1
             anchor = (a + b) // 2
+            if edge_anchor and k > 1 and i in (0, k - 1):
+                anchor = lo if i == 0 else hi
             full_a = 0 if i == 0 else a
             full_b = n - 1 if i == k - 1 else b
             out.append((full_a, full_b, anchor))
@@ -271,7 +278,7 @@ def apply_searcher_targeting(path_decisions: dict, runtime_models: Any) -> dict:
     # The swept rule compares the held target's disc mass of p (one victim's posterior), so a detection
     # elsewhere (N_unf falls) does not 'sweep' it (review LOW-3).
     Sp = disc_convolve(belief.p, offsets) if lam is not None else None
-    tiles = tile_layout(H, W, band, tile_size) if eff == 1 else []
+    tiles = tile_layout(H, W, band, tile_size, edge_anchor=fix) if eff == 1 else []       # R-4: edge anchors
     ages = _tile_ages(belief, tiles, burning, smoke, step) if eff == 1 else {}
 
     if fix and mode in bayes:                                        # F1-d: mirror-symmetric
@@ -384,7 +391,7 @@ def apply_searcher_targeting(path_decisions: dict, runtime_models: Any) -> dict:
                 a = t["anchor"]
                 if abs(a[0] - here[0]) + abs(a[1] - here[1]) <= 2 or cooled(e, a):
                     continue
-                L, cell = length(e, a)
+                L, cell = length(e, a, exact=fix)                    # R-4: the leg ends ON the anchor
                 if L is None or L == 0 or not battery_ok(e, a, L):
                     continue
                 key = (int(ages[t["index"]] // age_bucket), -L, -t["index"])
@@ -477,8 +484,8 @@ def apply_searcher_targeting(path_decisions: dict, runtime_models: Any) -> dict:
             e["st"]["exact"] = True
             e["st"]["p_issue"] = belief.p.copy()
             e["st"]["own"] = disc_mask(H, W, [e["here"]], offsets)
-        elif fix:
-            e["st"]["exact"], e["st"]["p_issue"], e["st"]["own"] = False, None, None
+        elif fix:     # a least-observed anchor (eff 1): R-4, its leg ends ON the anchor as a Bayes leg does
+            e["st"]["exact"], e["st"]["p_issue"], e["st"]["own"] = True, None, None
         e["route_cell"] = pick["cell"]
         _bump(model, uid, "selections")
         reachable_at_issue = UAVExecutor._targeting_route(e["bfs"], tuple(pick["target"])) is not None

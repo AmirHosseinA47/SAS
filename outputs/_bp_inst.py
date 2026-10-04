@@ -30,6 +30,9 @@ THE RECORD d["fb3"]["inst"] (version "bp_inst v1"; floats are full precision, Py
   swept        [[step, uid, target, {kind, cov, mot, bo, since, n, disc_issue, disc_now}]] at every drop_swept /
                drop_covered: the held target's DISC mass change of p accumulated per stage since issue (predict =
                mot, measure incl. renormalisation = cov, burn_over = bo); disc = the target's full disc D_t
+               v2 (ruling R-5) adds disc_n = |D_t| and F1-c's REMAINDER R = D_t minus the holder's own footprint since
+               issue (the set the fix-on swept rule compares): rem_n = |R|, rem_issue = p_issue[R].sum(), rem_now =
+               p[R].sum() (rem_* None with the fix off, where the rule reads the full disc)
   self_check   V3: {mode, shadow, compared_steps, mismatch_steps, first_mismatch, launch_match, inputs {compared,
                mismatch, first}, order {steps, mismatch}}; shadow = the one whose (mode, burnover) is the own
                belief's (modes 3 / 5 -> BF, 2 -> BD; MOTION 0 -> OFF; a p_bo sensitivity point -> BF0 / BF02 / BF05)
@@ -73,7 +76,8 @@ import sys
 
 import numpy as np
 
-VERSION = "bp_inst v1"
+VERSION = "bp_inst v2"
+VERSIONS_READ = ("bp_inst v1", VERSION)                     # v2 (ruling R-5) only ADDS swept fields; v1 reads as before
 BAYES_MODES = (2, 3, 5)
 OWN_MODE = {2: "diffusion", 3: "flee", 5: "flee"}          # wildfire_model._fix3b_motion_params
 # name -> (motion mode, burn-over). BF at the primary 0.1 in EVERY arm (POS under one model); the rest in Bayes arms.
@@ -501,7 +505,7 @@ def validate(d: dict, repo: str | None = None, do_replay: bool = True) -> dict:
         inst = _inst(d)
     except ValueError as exc:
         return {"ok": False, "why": [str(exc)]}
-    if inst.get("version") != VERSION:
+    if inst.get("version") not in VERSIONS_READ:
         why.append("version %r" % inst.get("version"))
     if inst.get("error_count"):
         why.append("instrument errors %d: %s" % (inst["error_count"], (inst.get("errors") or [""])[0]))

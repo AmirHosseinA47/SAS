@@ -33,6 +33,10 @@ Adds d["fb3"] to the probe JSON (read-only observers; no RNG draw, no simulation
   timing     per-step ms of the belief update and the planner post-pass: {name: {n, median, p95, max, raw}}
   switches   the fix3b switch values the run saw
   inst, bp_switches   only with --instrument (above)
+Adds d["mr"] (record-only, every run; rulings on the bayesprep report 2026-10-04): a pass-through hook on
+  WildFireModel.MR2 records per step [t, the model's own MR2 increment, the same rule recomputed (pairs under
+  SECURITY_DISTANCE), AIRBORNE pairs (neither UAV rtb_docked), pairs with one docked, pairs with both docked]; at the
+  end mr1_list (the model's MR1_LIST, one entry per UAV), mr2_value, security_distance; errors (observer only).
 """
 from __future__ import annotations
 
@@ -346,7 +350,7 @@ class _Instrument:
         st = (getattr(m, "_searcher_targeting_state", None) or {}).get(uid)
         tgt = st.get("target") if isinstance(st, dict) else None
         rec = {"kind": key, "cov": None, "mot": None, "bo": None, "since": None, "n": 0, "disc_issue": None,
-               "disc_now": None}
+               "disc_now": None, "disc_n": None, "rem_n": None, "rem_issue": None, "rem_now": None}
         if tgt is not None:
             tgt = (int(tgt[0]), int(tgt[1]))
             a = self.acc.get(uid)
@@ -355,7 +359,17 @@ class _Instrument:
                            disc_issue=a["disc_issue"])
             b = getattr(m, "victim_search_belief", None)
             if b is not None:
-                rec["disc_now"] = float(b.p[self._disc(tgt)].sum())
+                disc = self._disc(tgt)
+                rec["disc_now"] = float(b.p[disc].sum())
+                rec["disc_n"] = int(disc.sum())
+                # ruling R-5 (bp_inst v2): F1-c's REMAINDER - the target disc minus the holder's own footprint since
+                # issue, the set the swept rule actually compares - its size and its posterior mass at issue and now
+                # (read from the planner's state before the drop clears it; None with the fix off)
+                own, p_issue = st.get("own"), st.get("p_issue")
+                if own is not None and p_issue is not None:
+                    rem = disc & ~own
+                    rec.update(rem_n=int(rem.sum()), rem_issue=float(p_issue[rem].sum()),
+                               rem_now=float(b.p[rem].sum()))
         self.swept.append([int(getattr(m, "evaluation_timesteps_counter", 0) or 0), uid,
                            list(tgt) if tgt is not None else None, rec])
 
@@ -635,6 +649,40 @@ def main() -> int:
         return r
 
     wf.WildFireModel.step = step
+
+    # RECORD-ONLY (maintainer rulings on the bayesprep report, 2026-10-04): the model's own MR2 call, observed at the
+    # moment it counts (pre-move positions, the same step), plus the same rule restricted to AIRBORNE pairs. A pass-
+    # through: the original runs once with its arguments; this reads positions / rtb_docked and writes nothing.
+    mr = {"probe": "fb3 mr v1", "steps": [], "errors": []}
+    o_mr2 = wf.WildFireModel.MR2
+
+    def mr2(self, *a, **kw):
+        before = getattr(self, "MR2_VALUE", None)
+        r = o_mr2(self, *a, **kw)
+        try:
+            uavs = [u for u in self.schedule.agents if type(u) is am.UAV]
+            n_all = n_air = n_one = n_both = 0
+            for i in range(len(uavs)):
+                for j in range(i + 1, len(uavs)):
+                    p, q = uavs[i].pos, uavs[j].pos
+                    if wf.euclidean_distance(p[0], p[1], q[0], q[1]) < wf.SECURITY_DISTANCE:
+                        n_all += 1
+                        docked = int(bool(getattr(uavs[i], "rtb_docked", False))) + int(
+                            bool(getattr(uavs[j], "rtb_docked", False)))
+                        if docked == 0:
+                            n_air += 1
+                        elif docked == 1:
+                            n_one += 1
+                        else:
+                            n_both += 1
+            mr["steps"].append([int(self.evaluation_timesteps_counter), int(self.MR2_VALUE) - int(before or 0), n_all,
+                                n_air, n_one, n_both])
+        except Exception as exc:  # an observer never stops the run
+            if len(mr["errors"]) < 20:
+                mr["errors"].append(repr(exc)[:200])
+        return r
+
+    wf.WildFireModel.MR2 = mr2
     inst = None
     if "--instrument" in own:          # bayesprep item 3; nothing of it exists without the flag
         inst = _Instrument(wf, am, cfv)
@@ -669,6 +717,11 @@ def main() -> int:
         if inst is not None:
             d["fb3"]["inst"] = inst.result()
             d["fb3"]["bp_switches"] = _bp_switches(am, cfv)
+        mr1 = getattr(m, "MR1_LIST", None)
+        mr.update(security_distance=_jsafe(getattr(wf, "SECURITY_DISTANCE", None)),
+                  mr1_list=[float(v) for v in mr1] if isinstance(mr1, (list, tuple)) else None,
+                  mr2_value=_jsafe(getattr(m, "MR2_VALUE", None)))
+        d["mr"] = mr
         tmp = out_path + ".fb3tmp"
         with open(tmp, "w", encoding="utf-8", newline="\n") as fh:
             json.dump(d, fh, separators=(",", ":"))

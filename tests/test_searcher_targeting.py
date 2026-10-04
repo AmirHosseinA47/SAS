@@ -108,9 +108,12 @@ def test_bayes_target_is_the_reachable_one_not_the_richer_one_behind_the_fire(_s
     assert nxt in ex._targeting_bfs(u, model)["dist"]
 
 
-def test_least_observed_tile_is_the_reachable_stale_one(_shipped, monkeypatch):
+@pytest.mark.parametrize("fix,anchor", [(1, (45, 14)), (0, (42, 14))])
+def test_least_observed_tile_is_the_reachable_stale_one(_shipped, monkeypatch, fix, anchor):
     """The never-covered tiles lie behind the wall; one reachable tile is stale (covered at step 15), every
-    other reachable tile was just covered. The issued anchor is the reachable stale tile's."""
+    other reachable tile was just covered. The issued anchor is the reachable stale tile's. bayesprep R-4: with
+    SEARCHER_TARGETING_FIX (shipped 1) that outer tile's anchor is at edge distance 4 (45), at 0 the centre (42)."""
+    monkeypatch.setattr(cfv, "SEARCHER_TARGETING_FIX", fix, raising=False)
     model, (u,), dec = _world([(2502, (25, 10), 100.0)], {(1, 1): 1.0}, fire=WALL, mode=1,
                               monkeypatch=monkeypatch)
     b = model.victim_search_belief
@@ -121,7 +124,7 @@ def test_least_observed_tile_is_the_reachable_stale_one(_shipped, monkeypatch):
     (xa, xb), (ya, yb) = stale[0]["x"], stale[0]["y"]
     b.last_cover[xa:xb + 1, ya:yb + 1] = 15
     out = _plan(model, dec)
-    assert _target(out, 2502) == (42, 14)
+    assert _target(out, 2502) == anchor
 
 
 # ============================================================================ T-B battery
@@ -423,9 +426,12 @@ def test_a_real_model_builds_and_updates_the_belief(monkeypatch):
 
 
 # ============================================================================ rulings R-1 / R-3 (after the screen)
-def test_a_bayes_arm_continues_with_the_least_observed_rule_once_every_victim_is_detected(_shipped, monkeypatch):
+@pytest.mark.parametrize("fix,anchor", [(1, (45, 14)), (0, (42, 14))])
+def test_a_bayes_arm_continues_with_the_least_observed_rule_once_every_victim_is_detected(_shipped, monkeypatch, fix,
+                                                                                            anchor):
     """R-1 one owner to the end: N_unf = 0 -> the mode-1 rule (a tile anchor), not a hand-back to the current
-    chain (no fallback hold, a delivered target)."""
+    chain (no fallback hold, a delivered target). The anchor follows the mode-1 rule's geometry (bayesprep R-4)."""
+    monkeypatch.setattr(cfv, "SEARCHER_TARGETING_FIX", fix, raising=False)
     model, (u,), dec = _world([(2502, (25, 10), 100.0)], {(25, 18): 1.0}, fire=WALL, mode=3, monkeypatch=monkeypatch)
     b = model.victim_search_belief
     b.detected_ids.add("victim_0")                    # n_brief 1 -> every victim detected
@@ -435,7 +441,7 @@ def test_a_bayes_arm_continues_with_the_least_observed_rule_once_every_victim_is
     (xa, xb), (ya, yb) = stale["x"], stale["y"]
     b.last_cover[xa:xb + 1, ya:yb + 1] = 15
     out = _plan(model, dec)
-    assert _target(out, 2502) == (42, 14)
+    assert _target(out, 2502) == anchor
     assert model._searcher_targeting_state["2502"]["fallback_until"] == -1
     assert model._searcher_targeting_stats["2502"].get("lo_continuation_steps") == 1
 
