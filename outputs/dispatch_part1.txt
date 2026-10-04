@@ -1,0 +1,2082 @@
+================================================================================
+DISPATCH ROUND - PART 1: DESIGN, PRE-REGISTERED CHECKS, DECISION RULE  (STOP)
+Fix two limits of firefighter assignment, in one design:
+  LIMIT 2  joint, route-aware assignment of detected victims to firefighters
+  LIMIT 3  reassignment of a stalled or worse-placed firefighter, with hysteresis
+Branch dispatch, worktree E:/Projects/SAS_wt/dispatch, cut from main 25421865
+(= tag untuned-search). Written 2026-10-04. DESIGN ONLY: no source file, test or
+default is modified by this document. Building (Part 2) starts only after the
+Bayesian preparation round has merged AND section 16's re-check has been done.
+================================================================================
+
+Every line number below is at 25421865 unless marked otherwise. Abbreviations:
+WM = wildfire_model.py, AG = agents.py, RP = src_extension/planning/
+rescue_planner.py, RE = src_extension/execution/rescue_executor.py, AM =
+src_extension/adaptation_manager.py, CFV = common_fixed_variables.py, SD =
+serve_dashboard.py. "PAPER:" lines say what each finding or decision means for
+the paper.
+
+================================================================================
+0. ROUND START AND HOUSEKEEPING
+================================================================================
+0.1 BRANCH AND HEAD.  main = 25421865871deb61d8f0f238d69b0293fc499bf5 = tag
+    untuned-search (git rev-parse untuned-search^{commit}).  The untune round IS
+    merged, so the round proceeds.
+    - Branch `dispatch` already existed: created from main at 25421865 on
+      2026-10-02 19:08 (reflog "branch: Created from main"), checked out in the
+      worktree E:/Projects/SAS_wt/dispatch, ZERO commits of its own, clean tree
+      (git status --short empty).  It is the branch the Bayesian session's notes
+      reserve for this round, so it is used as the freshly cut branch rather than
+      cutting a second one.
+    - .venv in the worktree is a JUNCTION to E:\Projects\SAS\.venv
+      (dir /AL shows <JUNCTION>).  Rule kept: never remove this worktree before
+      `cmd /c rmdir` of the junction.
+    - The Bayesian preparation round runs in E:/Projects/SAS_wt/bayesprep
+      (branch bayesprep).  Not touched.  The only contact is READ-ONLY git object
+      reads run from this worktree to prepare section 16: git diff --stat
+      25421865 bayesprep; git diff 25421865 bayesprep -- wildfire_model.py
+      agents.py (hunk headers and the wildfire_model.py hunks); git show
+      bayesprep:src_extension/planning/fire_arrival_estimate.py (its header);
+      git log 25421865..bayesprep.  No file in its worktree was opened.  Its
+      session's memory note (not its worktree) lists items it hands to this
+      round; they are in section 16 (C8, C11).
+0.2 NOTHING RUNNING OF THIS ROUND.  Every python.exe on the machine at round
+    start belonged to the Bayesian pool (outputs\_mf2_pool.py ... _bp_q_all.jsonl,
+    pid 12456, its _ut_probe children with --repo E:\Projects\SAS_wt\bayesprep) or
+    its analyzer (_bp_analyze.py).  None was touched.  This round ran NO
+    simulation, probe, pool or test: Part 1 is reading only.
+0.3 QUARANTINE.  outputs/_firemech_rewound_20260914 exists only in the main
+    checkout (untracked); the dispatch worktree is a fresh checkout and cannot
+    contain it.  Every recursive search of this round carried
+    --exclude-dir=_firemech_rewound_20260914 or was scoped to src_extension/,
+    tests/ or named files; outputs/ was only listed non-recursively
+    (ls outputs/ | grep).  Per-agent contact: A.3 and A.4 (no quarantine contact
+    by any agent; one reviewer's disclosed scope breach is recorded there).
+0.4 RUN TAGS RESERVED FOR PART 3 (checked unused in BOTH checkouts, tracked and
+    untracked, top-level listing + git ls-files):  dpR (reference at the merged
+    base), dp0 (switches off), dp1 (both on), dpE (evidence cases, tag form
+    dpE<case><0|1><c|n> = arm, CRN on/off), dpGR / dpG0 / dpG1 (route_blocked
+    gate shards).  No _sd_dp*, _ffr_dp*, _rblatch_camp2_dp*, _dp_* or
+    _ffr_logs/dp* file exists.  Before each wave the check is repeated and
+    extended to _ffr_rb_dp* and to the base worktree's outputs/ (harness-tag
+    collision rule; _ffr_rbgate.sh SKIPS a shard whose output already exists).
+0.5 SWITCH CONVENTION.  Both new switches ship 0 and are ON only when
+    agents._exact_integer(raw) == 1 - that is 1, True, 1.0, "1" or " 1 " (the
+    project's convention, AG:1430-1455); everything else is OFF: missing, 0, 2,
+    0.5, "2.0", "on", "", None, junk.  (A switch shipping ON would turn off only
+    on an exact 0; none here.)
+0.6 REVIEW AGENTS.  At most 3 review agents are used on this document (A.4).
+0.7 WAVE CHECKS.  Part 3 waves are checked every 20-30 minutes (section 14.9).
+
+================================================================================
+1. HOW DISPATCH WORKS TODAY - EVERY POINT OF THE BRIEF RE-VERIFIED
+================================================================================
+Seven read-only code readers mapped the dispatch path at 25421865 (A.4); every
+claim below was re-checked against the code by this session at the cited lines.
+
+1.1 BRIEF: "select_rescue_assignment sends the NEAREST AVAILABLE firefighter by
+    straight-line Manhattan distance, ties to the lower id, with no path test."
+    VERDICT: CONFIRMED, one wording correction.
+    - RP:689-695 is the whole scoring rule:
+        dist = _manhattan_distance(victim_pos, ff_pos)
+        if best_dist is None or dist < best_dist or (dist == best_dist and ff_s < str(best_ff))
+      _manhattan_distance (RP:421-425) is plain grid L1.  It is NOT straight-line
+      (Euclidean) distance; it ignores fire, smoke and obstacles.  No path test
+      anywhere in the planner, the executor or the assign handler (WM:4891-5009).
+    - Ties go to the lexicographically smaller id STRING.  At the shipped team
+      sizes (at most 3 units, ff_unit_0..2) that equals numeric order; past 10
+      units "ff_unit_10" < "ff_unit_2".
+    - "Available" = RP:625-641 (not dead, not assigned, not route_blocked,
+      snapshot "available", on grid) over WM:3578-3590 (not dead, status not in
+      {dead, route_blocked}, not assigned, not exiting, not rescue_completed,
+      pos not None).
+    - The victim position used is the TRUE live marker cell (WM:3623-3626).
+    PAPER: describe the baseline as "greedy nearest-unit dispatch on grid (L1)
+    distance, blind to fire".  Never call it straight-line distance.
+
+1.2 BRIEF: "Victims are handled ONE AT A TIME, in the order they are detected."
+    VERDICT: ONE AT A TIME - CONFIRMED.  DETECTION ORDER - ONLY PARTLY.
+    - Every production call passes a single victim_id (WM:3977, :5586), so the
+      planner's needy list has at most one entry; each decision binds one pair
+      against a fresh snapshot (sequential greedy).
+    - The FIRST dispatch of a victim follows detection: victim_confirmed is
+      enqueued once per victim at first detection (WM:1447-1498) and the queue
+      drains FIFO (WM:4018-4025).  Within one detection pass the order is UAV
+      schedule order x victim index (WM:1423-1426), not "first seen".
+    - A victim whose first dispatch was a "delay" (no free unit) has NO pending
+      record: delay is a no-op (RE:346-347) and victim_confirmed never repeats.
+      It is retried only by _try_dispatch_unresolved_confirmed_victims
+      (WM:3039-3059), which walks managed_victims in VICTIM-INDEX order
+      (victim_0 first), not detection order, and only when kicked by a unit's
+      recycle / off-grid return (WM:3360-3361) or a route_blocked recovery
+      (WM:3210-3211).
+    - So when a unit frees up, the LOWEST-INDEX waiting victim gets it.  Evidence
+      cases 2 (step 51) and 3 (step 63) are exactly this (section 3).
+    - Called WITHOUT a victim id the planner would also pick the lowest id
+      (RP:613, :623) - no production call does that.
+    PAPER: the baseline serves waiting victims in victim-index order.  Under ring
+    placement the index fixes the spawn cell (WM:953-955; in D victim_0 (40,25),
+    victim_1 (25,48), victim_2 (10,25), victim_3 (25,3)), so the baseline's
+    re-dispatch priority is a hidden function of geometry in every ring result
+    reported so far.
+
+1.3 BRIEF: "An assignment is NEVER reconsidered: a firefighter stays bound to its
+    victim even when stalled, and a free, closer firefighter is never used."
+    VERDICT: CONFIRMED for stalls and for better-placed units; bindings do end
+    on six other events.
+    - Nothing releases or rebinds a unit for lack of progress or because a free
+      unit is closer: _try_dispatch skips a victim with an active unit
+      (WM:3057-3058), the planner skips it (RP:603-605), the executor refuses
+      "already_assigned" (RE:384-386), the assign handler refuses to rebind a
+      unit bound to another victim (WM:4913-4918).  No firefighter stall or
+      oscillation detector exists (only the idle-retreat latch, AG:3185-3290).
+    - Bindings DO end on: (a) the FIRST route_blocked raise on an (ff, victim)
+      pair - unassign + immediate replacement (WM:3954-3985); (b) firefighter
+      death (WM:5751-5797); (c) victim death and (d) rescue completion -
+      _release_other_claimants (WM:3880-3951); (e) the 30-step escape sweep -
+      unassign then mark unreachable (WM:5536-5576); (f) the stale-clear mode 2
+      (WM:4350-4369, not the shipped mode 1).
+    - A REPEATED route_blocked raise on the same pair returns early (WM:3961-3963;
+      _blocked_replacement_attempted is never cleared, WM:425).  The unit stays
+      bound but is hidden from _find_active_firefighter_for_victim
+      (WM:4039-4041), so a later kick can bind a SECOND unit - double claims are
+      permitted by design (dd0a1b9; the model-level assign accepts two live
+      claimants, tests/test_phantom_rescue_release.py:138-142).  A latched unit
+      does not stay latched: the tail of its own _move_toward relabels it
+      "assigned" on the first move that finds a fire-free path (AG:3692-3695), so
+      such a double claim becomes TWO ACTIVE binders - recorded in case 2
+      (victim_3, steps 238-256, [RescueInvariant] "assigned but firefighters=
+      ['ff_unit_0', 'ff_unit_1']" in its pool log).
+    PAPER: "assignments are never reconsidered for progress or placement" is the
+    accurate statement; "never reconsidered" alone is false (route_blocked,
+    casualty and terminal releases exist).
+
+1.4 BRIEF: "Dispatch is event-driven, triggered at the Monitor stage; a
+    route-blocked replacement is paired inside the firefighter's own move."
+    VERDICT: EVENT-DRIVEN - CONFIRMED ("Nothing in this model periodically looks
+    for idle units: dispatch is incident-driven", WM:3207-3209).  MONITOR STAGE -
+    ONLY FOR DETECTIONS.  ROUTE-BLOCKED PAIRING INSIDE THE MOVE - CONFIRMED.
+    Pairing points in one step (WM:6255-6312; AM:96-191):
+      P1 pre-move  detection drain (AM:101-102)          victim_confirmed
+      P2 MID-ADVANCE, inside Firefighter._move_toward -> _mark_route_blocked
+         (AG:3498-3503) -> WM:5595-5628 -> WM:3954-3985    route_blocked
+      P3 post-move cleanup: recycle / off-grid return kick (AM:144; WM:3360-3361)
+      P4 post-move detection drain (AM:171-172)          victim_confirmed
+      P5 casualty sweep (AM:182; WM:5830)                firefighter_casualty
+      P6 route_blocked revalidation recovery kick (AM:184; WM:3210-3211)
+    P2 runs on a half-stepped world: lower-index units have moved this step,
+    higher-index units have not, and the blocked unit still takes one more step
+    toward its old target after being unassigned (AG:3647-3696).
+    PAPER: the baseline's decision points are six, not one; any description of
+    "dispatch at the Monitor stage" covers detections only.
+
+1.5 FACTS THE BRIEF DID NOT STATE, FOUND WHILE RE-VERIFYING
+    (a) MISSING KICKS.  A unit freed by a victim's death (_release_other_claimants
+        never triggers a dispatch, WM:3880-3893), by the escape sweep
+        (WM:5537-5551) or by a stale clear is not offered any ALREADY-WAITING
+        victim until the next recycle, return or route recovery anywhere in the
+        team (only those kick _try_dispatch).  It can still take a newly
+        detected victim or another victim's replacement (each incident runs the
+        planner over the whole pool, WM:3976-3985).  A delayed victim can
+        therefore wait while a free unit idles.  Not measured.
+    (b) THE POOL REACHES 3, NOT 2.  Teams (SD:37-49): A 3 UAV / 5 victims / 3
+        firefighters; B 4/4/3; C 5/3/3; D 4/4/2.  All units launch from the NW
+        depot within Manhattan 1-3 of each other (BASE_STATION_MODE 3, firefighter
+        spawn on depot 0), so the first dispatches are near-ties.  The
+        dispatch-reachability round's "the pool never exceeds 2"
+        (outputs/dispatchreach_report.txt section 3.2) was scenario D only.
+    (c) THE CASUALTY WRITE-OFF.  A casualty replacement that finds no free unit
+        and no unit off-grid returns mark_unreachable - a PERMANENT write-off
+        (RP:649-666; tests/test_rescue_planner_authority.py:191-206), even when a
+        busy unit will free up later.
+    (d) A NEW REASON STRING IS DANGEROUS.  On an empty pool with no unit
+        off-grid, every reason that is neither "initial"-like nor "blocked"-like
+        writes the victim off (RP:649-666); every reason not containing
+        "replacement" together with "blocked" or "casualty" is logged as
+        dispatch_initial (WM:4438-4450, substring rules at :4446-4449).
+    (e) THE BINDING INVARIANT IS CHECKED BUT INVISIBLE.  AM:224-339 checks every
+        post-move step that each assigned victim has exactly one active
+        (non-route_blocked) claimant - and prints to STDERR only.  The probes
+        capture stdout, so no past gate saw it; the pool logs hold 56
+        "assigned but firefighters=[]" lines in 7 of the 64 ut2* runs.
+    PAPER: (a) and (c) are baseline behaviours the paper must describe as such
+    (the fix removes them, so part of any measured effect is theirs); (b) means
+    the earlier "reachability is inert" result does not transfer to scenarios
+    A-C; (d) is an implementation hazard only (section 5.10 avoids it), no paper
+    claim; (e) means earlier rounds' binding-invariant statements did not include
+    this checker.
+
+================================================================================
+2. OTHER FACTS THE DESIGN RESTS ON
+================================================================================
+2.1 FIREFIGHTER MOVEMENT IS A MEMORYLESS GREEDY MOVER (AG:3594-3696).  Each step
+    it scores the 4 in-grid, non-burning neighbours in tiers: T1 improving and
+    clean; T2 "maintaining" - ALWAYS EMPTY, an orthogonal step changes L1 by
+    exactly +-1; T3 any clean cell - therefore always a step AWAY; T4 least risk
+    (fire 1e6, fire-adjacent 100, smoke 10, AG:3091-3099).  At a barrier across
+    the line to the target it falls into a two-step loop (T3 back, T1 forward)
+    with a fire-free path still existing, so no route_blocked is raised.  An
+    assigned unit that lands fire-adjacent does a survival retreat instead
+    (AG:2867-2906).  A PICKUP happens only on a clean victim cell (the survival
+    check runs before the pickup test, AG:2867 vs :2913).  Speed is 0 or 1 cell
+    per step.  Units stack freely (MultiGrid, no occupancy test; docked UAVs are
+    not obstacles to firefighters).
+    PAPER: dispatch cannot fix the mover's livelock; this round does not change
+    movement (out of scope), so the residual stall cost is a movement-layer
+    limitation the paper must state.
+2.2 PATH SEARCH.  _path_exists_avoiding_fire (AG:3461-3496): 4-connected BFS,
+    ONLY actively burning cells impassable (burnt, smoky, fire-adjacent cells
+    passable), destination counted even if burning, source never tested, returns
+    a BOOL.  The mover calls it every approach step and raises route_blocked
+    when it fails (AG:3612-3616, :3647-3650).  NO function returns a firefighter
+    path LENGTH (_safe_path_reachable_cells WM:5265-5291 returns a set;
+    exit_leg_first_step AG:2341-2366 returns a first cell).
+    Against a fixed burning set AND a stationary victim, steps taken >= BFS
+    length over non-burning cells (every mover refuses burning cells, moves <= 1
+    cell/step): BFS length is an ADMISSIBLE (never over-estimating) travel time
+    - but only a lower bound, and the greedy mover can exceed it without limit
+    (2.1).  A victim fleeing toward the unit (<= 1 cell/step, within its 6-cell
+    leash) can shorten it by at most its displacement.
+    PAPER: a route-aware cost had to be built (none existed); the paper calls it
+    "a lower bound on travel time to the victim's current cell", not an
+    estimate of arrival time.
+2.3 FIRE KNOWLEDGE TODAY.  Firefighters read the TRUE current burning set
+    (_fire_cells scans the schedule's Fire agents, AG:3043-3053) and true
+    per-cell smoke (AG:3055-3082), with no delay; the route_blocked
+    revalidation (WM:3185-3195) and the escape sweep (WM:5249-5291) use the same
+    truth.  Ignition and burn-out happen only on the global tick every
+    FIRE_SPREAD_SPEED = 3 steps (AG:97-125); an idle unit's extinguish (shipped
+    ON, AG:142-156) can end burning on ANY step; smoke on burnt cells changes
+    every step.  This is covered
+    only implicitly by paper assumption A3 ("fire perimeter known in near real
+    time (today = truth)", outputs/fix3b_part1.txt:661), which was written for
+    the search side; docs/04_clean_separation_table.md:101 even describes fire
+    as beliefs.
+    PAPER: the paper must state, as an assumption, that the firefighter team and
+    its dispatcher see the current fire perimeter in real time (A3 extended to
+    firefighters); the docs' belief wording is inconsistent with the code.
+2.4 VICTIMS.  A victim dies only when its own cell is burning at the post-move
+    casualty sweep (WM:5647-5737) - no smoke, timer or health.  It flees one cell
+    per step when within Manhattan 3 of fire (VICTIM_FLEE_TRIGGER_DISTANCE = 3),
+    within a leash of 6 cells (VICTIM_FLEE_MAX_DISPLACEMENT = 6, CFV:324-325),
+    never while in custody (AG:2456-2457, :2643-2675).  The flee step maximises
+    distance to fire, so it is often SIDEWAYS relative to an approaching unit.  Dispatch uses the
+    detected victim's TRUE live cell and the bound unit re-targets to it every
+    step (AG:2811-2850) - paper assumption A7.
+2.5 BINDING STATE.  The authoritative binding is on the firefighter marker:
+    assigned, rescued_victim, target_pos, exiting, exit_target,
+    rescue_completed.  The victim side (rescue_assigned, status "assigned",
+    firefighter_id) are mirrors; firefighter_id is never cleared (stale after
+    any unassign).  Every BIND goes through the executor
+    (RE:execute_physical_command -> WM:apply_physical_rescue_command); a
+    completer's binding is also cleared directly by recycle (WM:2622-2628) and
+    absence removal (WM:2827-2833).  The model-level assign accepts a second
+    live claimant on a victim (pinned, tests/test_phantom_rescue_release.py
+    :138-142); only the executor's apply_physical_pairing_decision refuses
+    "already_assigned" (RE:384-386).  assign
+    refuses a unit bound to a different victim (WM:4913-4918); unassign clears
+    the marker binding but NOT its status (WM:5011-5080) - a released unit left
+    "en_route" reads as busy (the 70e1b33 latch shape) unless relabelled, as
+    _release_other_claimants does (WM:4180-4183).  reset_victim_pending relabels
+    the victim "confirmed" and is meant only for a live victim (WM:5045-5073).
+    PAPER: none beyond "every binding change goes through one audited command
+    path"; the stale back-pointer is an implementation detail J overwrites.
+2.6 _release_other_claimants (WM:4049-4222) CANNOT DO WHAT THE BRIEF ASKS OF IT
+    AS WRITTEN.  It releases EVERY bound, non-dead, non-completer unit of a
+    victim (keep_ff_id spares one unit only while it is exiting with no
+    completer present, WM:4140-4146), assumes the victim is TERMINAL (metadata
+    {} - no reset_victim_pending, docstring WM:4085-4086), and triggers no
+    dispatch.  Applied to a live victim it would leave it "assigned" with no
+    claimant.  Its three call sites are victim death (WM:3891) and rescue
+    completion (WM:3914, :3948).  The single-unit primitive that exists is the
+    executor unassign used by the route_blocked branch (WM:3965-3974) plus the
+    relabel; an unused helper _unassign_firefighter (WM:5208-5223) also exists.
+    Section 7 resolves this (decision D-3).
+    PAPER: the brief's "freed through the existing release path" needs a
+    one-keyword extension of that path; the paper can say releases reuse the
+    audited path.
+2.7 INFORMATION AT THE DECISION LEVEL IS DETECTED-ONLY; AT THE READ LEVEL IT IS
+    NOT.  The planner filters "confirmed" first (RP:593), and the release path
+    reads only detected victims under FF_RELEASE_DETECTED_ONLY = 1 (WM:3117-3127,
+    :3176, :4194-4198).  But get_rescue_operational_snapshot reads EVERY marker's
+    true cell and status (WM:3611-3660), _try_dispatch calls _victim_needs_rescue
+    before its confirmed test (WM:3047 vs :3049-3056), and the escape sweep reads
+    every victim's true cell (WM:5442-5501).  All value-inert at the shipped
+    defaults; no metamorphic test guards select_rescue_assignment.
+    PAPER: "dispatch uses only detected victims" is true of every decision today
+    and will be true of every READ in the new path (section 9).
+2.8 NO TIME-TO-FIRE ESTIMATOR EXISTS AT 25421865.  FireRuntimeModel
+    .predicted_fire_front_map is declared, never written.  The Bayesian round
+    adds src_extension/planning/fire_arrival_estimate.py (operator-side
+    elliptical Huygens arrival time over the BELIEVED burning cells and the
+    constant wind; literature parameters; no random draws) - available only
+    after it merges.  Section 11 uses it.  That session records its estimate as
+    LATE by a median of about 50 steps in its screen (its memory note).
+    PAPER: at the base commit the system has no notion of when the fire will
+    reach a victim; any urgency claim needs the merged estimator and its
+    measured bias.
+2.9 INSTRUMENTS.  The probe chain (_ut_probe -> _fb3_probe -> _fx3_probe ->
+    _mf2_probe -> _sd_probe) records per-step rows_ff / rows_vic and stdout
+    detections, but NO step-stamped pairing event, no per-decision timing and
+    no binding-invariant capture.  Firefighter oscillation (the broad measure)
+    was REPORT-ONLY in fix3b and untune; the _sd_analyze I2 (stuck / livelock /
+    no-progress, approach and carry) and I5 (double binding) classes were not
+    run in either round.  No analyzer computes detection-to-rescue time,
+    idle-while-waiting or reassignment counts.  CRN = the probe flag --crn
+    (_fb3_probe.py:95-113; --set FM2P_CRN is refused there), pinning only the
+    fire's draw.  {T5} = tests/test_uav_sector_assignment.py::
+    test_fire_tracker_uavs_receive_different_target_sets (1 failed / 1592 passed
+    on 28645402; no source or test change since).
+    PAPER: the fix3b and untune "nothing regresses" statements did not cover
+    firefighter oscillation, double binding or the assignment invariant; this
+    round gates them for the first time (D-9).
+
+================================================================================
+3. THE EVIDENCE CASES, RE-READ FROM THEIR RUN FILES
+================================================================================
+Seed sets: set 1 = seeds 9601-9616, set 2 = 9621-9636, cells A_N..D_W in that
+order (frozen as the argv of fx3mS / fx3mS2; _fb3_queue.cells).  Placements:
+ring (VICTIM_SPAWN_MODE 0; D victims at (40,25), (25,48), (10,25), (25,3)) and
+uniform (1, a salted private stream - same victims for a seed in every arm).
+
+CASE 1 - fix3a, D / south / seed 505, roles half, ring, CRN OFF (a fix2
+  canonical tuple, not in set 1 or 2).  CONFIRMED, with one sharpening.
+  - victim_1 detected at 21 in the shipped run vs 16 in the reference
+    (_ffr_fx3hS/_ffr_fx3hR_D_south_half_505.stdout.txt).  At step 16 only
+    victim_3 waited, so ff_unit_1 went 50 cells to it on the fire side instead
+    of 41 to victim_1 (fix3a_final_record.txt:91-93).
+  - victim_3's route closed ~74; at 75 ff_unit_1 was re-dispatched to victim_0
+    from (17,8) and took 180 steps (75 -> 254) over only 74 distinct cells (106
+    revisits, a 12-step two-cell episode 139-150).  Rescue at 266; the reference
+    finished at 115.
+  - ff_unit_0 was "available" on all 168 steps 99-266 and never reassigned.
+    SHARPENING: by Manhattan it was only marginally closer (39 vs 40 at step 99,
+    28 vs 37 at 120) and later drifted west (39 vs 23 at 200).  The cost was the
+    180-step LIVELOCKED approach, not a bad pairing at commitment - a stall rule
+    is what reaches it; a margin rule alone would not.
+CASE 2 - fix3b re-screen, set 2 D_W = seed 9636, ring, CRN OFF, arms BD-R / BF-R
+  (SEARCHER_TARGETING 2/3, pre-untune).  CONFIRMED.
+  - victim_2 detected 46/47 vs 50, victim_0 50 vs 52.  In BD-R (ST=2) the
+    step-46 order matters: ff_unit_0 first raised route_blocked on victim_3
+    MID-ADVANCE, today's inline replacement sent ff_unit_1 to victim_3 (M46),
+    and only then, in the post-move cycle of the same step, victim_2 was
+    detected (M37 from ff_unit_1).  At step 51 (rows; the report says 53)
+    ff_unit_0's route reopened and it took victim_0 (dist 42) while victim_2,
+    detected EARLIER and CLOSER (M19), waited - victim-index order (1.2).  It
+    came back for victim_2 at 121 (dist 65), stalled ~70 steps in x 35-39 /
+    y 21-26 (two-cell episode 168-180, route_blocked 184-200) and victim_2 died
+    at 201 with ff_unit_0 still bound.  Both units were stalled at once (no idle
+    unit).  ff_unit_1 rescued victim_3 at 257 after a block at 216 and a re-bind
+    at 237; ff_unit_0 held a second claim on victim_3 238-256 (1.3).  Arm 3
+    rescued / 1 dead, terminal 257; reference 4/0, 189.
+CASE 3 - untune re-screen, ring set 2 D_N = seed 9633, CRN ON.  PARTLY: the
+  dispatch-order flip is confirmed; "two firefighters lost" is true only of the
+  PRE-UNTUNE arm.
+  - victim_0 detected at 62 in ut0r2 (SEARCHER_UNTUNED=0 - the shipped program
+    at the time, today's identity control) and 63 in ut1r2/ut2r2 (today's
+    default family).  At 63 ff_unit_1 returned from a hand-over: ut0r2 sent it to
+    victim_0 (dist 41); ut2r2 to victim_1 (dist 55), waiting since 16.
+  - ut0r2: ff_unit_0 died en route at 156; ff_unit_1 needed 273 steps for a
+    41-cell leg (four two-cell episodes), handed over at 336, returned at 339
+    and died at 348.  3 rescued / 1 dead / 2 firefighter deaths.
+  - ut2r2 (today's default): 0 firefighter deaths, BUT ff_unit_0 was "available"
+    131-155 and not used while ff_unit_1 looped between (34,38) and (35,38) from
+    150 to 155 toward victim_1; at 156 it raised route_blocked, was unassigned
+    and stood still until 161; the replacement (ff_unit_0) was blocked at 157
+    and victim_1 died at 162.
+CASE 4 - bayesprep screen, Bayes-diffusion ring D_N: victim detected at 58,
+  assigned, never rescued, run never finished (current search: detected 14,
+  rescued).  Recorded PER BRIEF only - it lives in the other session's
+  worktree.  That session's memory note places a "ring D_N 9613 rescue failure
+  near the SE depot" in its strategy arms (ring set 1 D_N = seed 9613) and hands
+  this round two more items: "firefighter (O) rises" and "uniform B_N lost
+  rescue across arms".  All three are re-read from the merged report (C8, C11).
+ALSO FOUND (not in the brief):
+  - The never-finishing run uniform set 2 D_W (9636, spawn mode 1) is a
+    detection failure, as recorded - but both its arms also have 1 firefighter
+    death (ff_unit_1, 147 steps en route for 54 cells, route_blocked 225, dies
+    231) while ff_unit_0 idled 213-224.
+  - fix3b re-screen set 2 D_N (9633, CRN off): an earlier detection reordered
+    dispatch and ff_unit_0 was killed at step 39 on a fresh assignment.
+COMMON SIGNATURE: a 1-5 step detection shift flips a pairing; the chosen leg
+  takes many times its Manhattan length (180 for ~40, 273 for 41, ~70 stalled,
+  147 for 54); status stays en_route through two-cell episodes of 6-13 steps
+  (10-13 in cases 1, 2 and ut0r2; 6 in ut2r2, ended by route_blocked);
+  route_blocked comes late (case 2: 184, death 201; case 3: 156, death 162);
+  an idle unit is available in three of the cases.
+PAPER: cases 1 and 2 are pre-untune, CRN-off runs, so their per-seed signs are
+  noise (the fire's single stream); they show a MECHANISM, not an effect size.
+  Case 3 must be cited as dispatch-order sensitivity, not as firefighter deaths
+  at the default.  Only a screen can say how often the mechanism costs rescues.
+
+================================================================================
+4. THE DESIGN IN ONE PAGE
+================================================================================
+One pure, deterministic dispatcher J (new module src_extension/planning/
+joint_dispatch.py: no model, grid or RNG access) decides every binding while
+Limit 2 is on.  The model builds J's input - a detected-only view, route-aware
+travel times, the current bindings and their progress state - and applies J's
+output through the existing executor.  J runs at two fixed points per step,
+both inside EXISTING stage methods (no stage is added; both pinned stage orders
+stay untouched), never during agent advance:
+  J-pre   end of WildFireModel._run_execution (WM:2355), the last pre-move
+          binding opportunity before schedule.step().            FILL only.
+  J-post  end of WildFireModel._sync_firefighter_marker_status (WM:5833-5836),
+          after both post-move incident drains, the casualty sweep and the
+          route_blocked revalidation.     PROGRESS -> FILL -> REPLACE -> FILL.
+LIMIT 2 (FILL).  Free units are matched to unserved detected victims at once:
+  maximise the number served, then use the fewest re-used pairs, then minimise
+  the total route-aware travel time, then the longest one, then integer ids.
+  Travel time = BFS distance over non-burning cells - exactly the unit's own
+  route test, so J never binds a pair that test would reject on the same fire.
+  Every legacy binder is closed under the switch; releases stay where they are.
+LIMIT 3 (REPLACE).  A free unit with a CLEAN approach to the victim may replace
+  an incumbent that is STALLED (no progress of its own for S = 10 counted steps,
+  with fire changes and victim motion factored out) or that it beats by a
+  MARGIN of M = 5 steps held over P = 3 consecutive evaluations.  Carriers and
+  finishers are never touched.  The new unit is bound before the old one is
+  released, in one frame, through _release_other_claimants (extended with a
+  single-unit keyword), so a victim is never left without a unit.
+NO FLIP-FLOP, BY CONSTRUCTION.  A per-run LEDGER counts binds per (unit,
+  victim) pair.  A REPLACE may use only a pair never bound before; a fill binds
+  only a victim that has no active unit.  Theorem (6.9): no unit can return to
+  a victim, nor a victim to a unit, except after an outside fire event (a
+  route_blocked raise or a death) removed or latched the unit in between; binds
+  per victim are bounded; replacements per victim are at most N_ff - 1.
+SWITCHES.  DISPATCH_JOINT (Limit 2) and DISPATCH_REASSIGN (Limit 3) ship 0 and
+  turn on only on an exact 1; DISPATCH_REASSIGN acts only when DISPATCH_JOINT is
+  on.  DISPATCH_JOINT = 0 alone restores the base commit's dispatch exactly.
+NOT CHANGED: firefighter movement, the fire, victims, UAVs and searchers, the
+  route_blocked raise and its handler's unassign, the latch fixes, the absence,
+  the carrying leg, the escape sweep, select_rescue_assignment itself.
+PAPER: one dispatcher, two switches, two fixed decision points per step, and a
+proved no-reversal property - the four sentences the paper needs.
+
+================================================================================
+5. LIMIT 2 - JOINT, ROUTE-AWARE ASSIGNMENT
+================================================================================
+5.1 SCOPE.  The brief says "match all DETECTED, unrescued victims not in custody
+    to all available firefighters".  Read literally, a victim already being
+    approached is "unrescued and not in custody"; matching it again would be a
+    reassignment with no hysteresis, contradicting Limit 3.  Available units are
+    by definition unbound (WM:3578-3590).  So Limit 2 matches FREE units to
+    UNSERVED victims; changing an existing binding is Limit 3's job alone
+    (decision D-13).
+    PAPER: Limit 2 is "joint assignment of idle units to waiting victims";
+    reconsidering an assignment is a separate mechanism with its own guarantee.
+
+5.2 THE SETS (built by the model at each J point; reads in section 9).
+    F_free  units passing _firefighter_available_for_dispatch (WM:3578-3590):
+            alive, status not dead/route_blocked, not assigned, not exiting,
+            not rescue_completed, on grid.
+    W       UNSERVED victims: id in _detected_victim_ids (confirmed union the
+            runtime-record ids, local_adaptation_generator.py:1076-1092); not
+            rescued, dead, cancelled or unreachable (state flags AND marker
+            status - the planner's needy semantics, RP:593-602, which
+            _victim_needs_rescue alone does not give, WM:3592-3609); and NO
+            LIVING unit (not dead by flag or status) has rescued_victim == v
+            (the _bound scan of WM:4106-4112 restricted to living units).
+    W_L     LATCHED-HELD victims: detected and needy, whose only living binders
+            are route_blocked units (the repeated-raise state, WM:3961-3963).
+            Under Limit 2 alone they are treated as unserved and get a second
+            claimant (today's dd0a1b9 design, made prompt); under Limit 3 a
+            LATCH-FILL replaces the latched binder (6.6).
+    Custody: a victim whose binder is exiting or co-located (agents
+            Victim._in_firefighter_custody, AG:2643-2675) or rescue_completed is
+            never in W or W_L.
+
+5.3 ROUTE-AWARE TRAVEL TIME d(f, v).
+    - One single-source BFS from each victim of interest (W, W_L and the
+      victims of contestable bindings), 4-connected, bounds by
+      grid.out_of_bounds, over cells NOT in the current burning set B (the same
+      truth _fire_cells reads, AG:3043-3053).  Burnt, smoky and fire-adjacent
+      cells are passable.  The victim's own cell is the source and is never
+      tested (it may burn - the destination exemption of
+      _path_exists_avoiding_fire, AG:3477-3491).  d(f, v) = the BFS distance at
+      the unit's cell (0 if it stands on v).  Living units stand on non-burning
+      cells at both J points (a unit on a burning cell dies at the post-move
+      sweep, AG fire commits only inside schedule.step), so the reversed search
+      equals the unit-source search of the route test.  One BFS per victim
+      gives d to every unit.  No random draw.
+    - EQUIVALENCE: d(f, v) < infinity  <=>  _path_exists_avoiding_fire(f, v, B).
+      So J never binds a pair that the unit's own per-step route test would
+      reject against the fire J saw.  (The fire may tick, or a unit may
+      extinguish, between J and the next advance, exactly as today.)
+    - ADMISSIBLE for a fixed burning set and a stationary victim: every mover
+      refuses burning cells and moves at most one cell per step, so realised
+      steps to pickup >= d + 1 (the pickup step).  A victim fleeing toward the
+      unit shortens this by at most its displacement (<= 6, its leash).  It is
+      a LOWER bound only: burn-out and extinguishing shorten routes, ignitions
+      lengthen them (d is recomputed at every J point), and the greedy mover can
+      exceed it without limit (2.1).  Limit 3's stall rule is the design's
+      answer to that failure; the instrument records d at binding against
+      realised steps to pickup, with its sign.
+    - REJECTED: a "clean-cell" passable set (no fire-adjacent, no smoke cells -
+      the mover's tiers T1-T3 and the MODE-2 carry) as the TRAVEL TIME.  It
+      over-estimates where the mover takes a T4 shortcut (not admissible), and
+      it would call victims unreachable that route_blocked and the escape
+      sweep's geo_reachable (WM:5265-5291) call reachable - such a victim would
+      wait unbound while its isolation streak keeps resetting.  (Clean cells ARE
+      used, separately, to judge whether a stall can be helped - 6.3, 6.4.)
+    PAPER: "route-aware travel time = shortest fire-free path length on the
+    current fire, a lower bound on travel time to the victim's current cell;
+    the same reachability notion the units, the route_blocked signal and the
+    isolation write-off use".
+
+5.4 THE OBJECTIVE.  Over allowed pairs (finite d, ledger rule 5.6), choose the
+    matching M of F_free to W (plus W_L, 5.2) that is lexicographically best by:
+      L1  maximise |M|                               (serve as many as possible)
+      L2  minimise the number of RE-USED pairs (b(f, v) >= 1, 5.6)
+      L3  minimise sum of d(f, v) over M             (total time to reach)
+      L4  minimise max of d(f, v) over M             (worst case, tie-break)
+      L5  smallest sorted list of (victim index, unit index), parsed as
+          INTEGERS (removes the "ff_unit_10" < "ff_unit_2" string order, RP:693)
+    WHY:
+    - L1 first: no reachable victim waits while a free unit could reach it.
+      This closes the missing-kick gap (1.5a) by construction.  Because L1
+      precedes L2, a re-used pair can be chosen when every MAXIMUM matching
+      needs one, even if some other victim has a fresh pair (free A, B; waiting
+      v, w; (A,v), (A,w) fresh, (B,v) re-used, B cannot reach w: the maximum
+      matching {A->w, B->v} is chosen).  That is intended: coverage first.
+    - L3: the PRIMARY measure is detection-to-rescue time.  For a victim served
+      now, its past wait is fixed and its pickup step and carry leg depend on
+      the victim, not on which unit comes (MODE 2 carries to the nearest
+      boundary from the pickup cell); the only unit-dependent part is the time
+      to reach.  Minimising the total is therefore the myopic choice that
+      minimises the mean - the shortest-processing-time argument for a sum of
+      completion times.  With every waiting victim served (|W| <= |F_free|) L3 is
+      pure pairing; on the route metric (a shortest-path metric, so the triangle
+      inequality holds) it never chooses a crossed pairing that an uncrossed one
+      beats.
+    - L4 only breaks ties: as a primary key min-max has large plateaus (many
+      matchings share the worst pair) and needs a second key anyway, and with
+      more victims than units it would still pick the nearest victims.
+    - The brief's two examples are L3 and L4; L3 is the one aligned with the
+      primary measure (decision D-2).
+    WHEN VICTIMS OUTNUMBER FREE UNITS (|W| > |F_free|) L1 fills every unit and
+    L3 then serves the victims nearest BY ROUTE: easy rescues first, a far
+    victim (often one on the fire side, often the critical one) waits for the
+    next freed unit.  Time already waited counts for nothing.  This replaces
+    today's victim-INDEX order (1.2), which is neither first-come nor nearest.
+    This is a real policy choice - decision D-1:
+      L3 (recommended): aligned with the primary measure; robust to 1-step
+        detection jitter (the choice depends on positions, not on which victim
+        was seen one step earlier - the evidence's common signature, section 3);
+        shorter legs mean less exposure (the evidence's long legs were 147-273
+        steps).
+      FCFS (alternative): neutral between easy and critical rescues, so it does
+        not pre-empt the supervisor's question (section 11); it keeps today's
+        default's pairing in case 3, where L3 reproduces the pre-untune pairing
+        that ended with two firefighter deaths (3, 14.8, K3).  FCFS KEY: L1, L2,
+        then the lexicographically smallest sorted list of DETECTION STEPS of
+        the served victims (same-step detections tie), then L3, L4, L5.  The
+        detection step is recorded by the model when victim_confirmed is
+        enqueued (WM:1447-1498) as a new per-victim field that the builder
+        reads for detected ids only.
+    PAPER: under L3 the system DOES treat easy and hard rescues differently when
+    units are scarce - it serves the nearest-by-route first.  The paper must say
+    so; "nothing distinguishes them" would be false after this round.
+
+5.5 THE SOLVER.  Exhaustive enumeration of injective partial maps F_free -> W:
+    at the shipped sizes at most sum_k C(3,k) P(5,k) = 1 + 15 + 60 + 60 = 136
+    configurations, scored by the L1-L5 key.  Exact, deterministic, no RNG,
+    under 1 ms.  The function refuses (raises ValueError, no silent fallback) if
+    the configuration count exceeds 100 000 - a team size this project does not
+    ship; a Hungarian encoding of L1-L5 is the documented path if teams grow.
+    PAPER: "exact joint assignment by enumeration (at most 136 candidates at the
+    team sizes studied)".
+
+5.6 THE LEDGER AND ALLOWED PAIRS.  The model keeps b(f, v) = the number of
+    successful binds of the pair (f, v) in this run.  It is incremented at the
+    SINGLE SINK - the successful assign branch of apply_physical_rescue_command -
+    whenever DISPATCH_JOINT is effective, so every bind is counted whoever
+    issues it.  A pair is ALLOWED for:
+      a REPLACE (Limit 3, stall or margin)  only if b(f, v) = 0     (fresh)
+      a FILL of an unserved victim (W)      for any b; L2 prefers fresh pairs
+      a LATCH-FILL of a W_L victim          only if b(f, v) <= 1 before it
+    WHY THE FILL IS NOT CAPPED: a REPLACE uses a pair's first bind without any
+    raise, so a later first route_blocked raise on that pair falls on a SECOND
+    bind and unbinds; a hard cap of two binds per pair could then leave a
+    reachable victim with no allowed unit while a living unit keeps it
+    geo_reachable (its isolation streak resets, the escape sweep never writes
+    it off) - a run that never finishes.  The no-reversal theorem does not need
+    the cap (6.9); finiteness comes from the permanent
+    _blocked_replacement_attempted (WM:425, :3961-3963), which lets each pair be
+    UNBOUND by a raise at most once.
+    WHY THE LATCH-FILL IS CAPPED: without it two units whose routes keep
+    closing could alternate on a latched victim for as long as the fire keeps
+    blocking them (each change driven by a repeated raise).  With it every pair
+    enters a latched victim at most twice.
+    WHY ALLOW RE-USE AT ALL: in case 2 victim_3 was finally rescued by a pair
+    whose route had been blocked once (ff_unit_1: block 216, re-bound 237,
+    rescued 257).  A one-bind rule would have lost that rescue.
+    PAPER: the ledger is the anti-reversal device; its price is that a latched
+    victim can wait for its latched unit when every other unit has used its two
+    latch-fills - measured as ledger-blocked victim-steps (14.7 M4).
+
+5.7 SOLVE POINTS AND WHAT REPLACES LEGACY PAIRING (DISPATCH_JOINT = 1 only).
+    - The generic pairing tail of _handle_rescue_incident (WM:3976-3985) is
+      skipped for every incident type that reaches it (victim_confirmed,
+      route_blocked, firefighter_casualty): the handler records the victim's
+      pending cause (initial / blocked / casualty) for the reason string and
+      returns.  Every state change BEFORE that tail is kept: the route_blocked
+      first-raise unassign with reset_victim_pending (WM:3965-3974) and its
+      repeated-pair early return (WM:3961-3963); the victim_dead and
+      rescue_complete releases (WM:3880-3951) are separate branches, unchanged.
+    - _try_dispatch_unresolved_confirmed_victims (WM:3039-3059) returns at once;
+      both its callers (WM:3211, :3361) run earlier in the same post-move cycle
+      as J-post.
+    - _dispatch_firefighter_to_victim (WM:5578-5593) returns without binding,
+      which also closes the dormant _sync_victim_agent_status fallback
+      (WM:6036-6047, off by _allow_sync_victim_dispatch_fallback = False, WM:441)
+      and the test-only helpers - so J is the only binder even if that flag is
+      ever set.  (RescueExecutor.execute_physical_dispatch has no caller; the
+      sink-counted ledger would still count it.)
+    - So no pairing happens mid-advance any more (P2 in 1.4): the route_blocked
+      unassign stays inline in the blocked unit's own move (the 808 mechanism -
+      the unassign in the raise's call stack - is untouched), and the
+      replacement is chosen at J-post of the same step - AFTER that step's
+      post-move detections (case 2's step 46, 14.8).
+    - TIMING versus today: identical for post-move detection, casualty
+      replacement, recycle/return and revalidation recovery (all paired in the
+      same post-move cycle, with no movement in between); a unit freed by the
+      escape sweep (WM:6304, after the post-move cycle) is paired at the next
+      J-pre, before any movement - today it is offered a waiting victim only at
+      the next kick; ONE STEP LATER only for a route_blocked replacement whose
+      unit index is higher than the blocked unit's (it could have moved in the
+      same advance pass today).  Launch detections at step 1 are paired at J-pre
+      of step 1, as today.
+    PAPER: dispatch decisions move out of the agents' move phase into two fixed
+    points; the only timing cost is one step for some route_blocked
+    replacements.
+
+5.8 EVENTS (the brief's list, made exact).  J-pre and J-post do not trust an
+    event list for completeness: each evaluates the precondition
+      PRE = (F_free non-empty AND W union W_L non-empty)
+            OR (Limit 3 on AND a contestable binding exists, 6.2)
+    and solves whenever PRE holds (cost O(units + victims) when it does not).
+    The events that make PRE true, with where they occur, are:
+      E1 new detection - victim_confirmed (AM:101 at step 1; AM:171 after).
+      E2 unit freed - off-grid return or recycle (AM:144, WM:2951-3037);
+         release on victim death (_release_other_claimants, WM:3891, inside the
+         casualty sweep AM:182); release of a second claimant on rescue
+         completion (WM:3914, :3948); revalidation recovery (WM:3199, AM:184);
+         escape-sweep unassign (WM:5537-5551, after the cycle -> next J-pre);
+         D6 relabel / stale clear (WM:4184-4205, :4299-4385); a Limit 3 release.
+      E3 victim loses its unit - first route_blocked raise of its unit,
+         including the HOLD-0 carrier drop (mid-advance; J-post same step); its
+         unit killed (AM:182); a repeated raise turns it latched-held (W_L).
+      E4 route change - the burning set changes on a fire tick (every 3 steps)
+         or by an extinguish on any step.  For a BOUND unit "a route closing" is
+         already the unit's own route test failing in its move = E3; no new
+         detector is added.  For free units E4 can make a waiting victim
+         reachable; PRE is re-evaluated every step, so it is caught at the next
+         J point.
+      E5 (Limit 3) incumbent progress state - a stall count reaching S, a margin
+         persisting P evaluations, a latched incumbent (section 6).
+      "Rescue completed" removes the victim from W (and frees its second
+      claimant, E2); the completer frees later on its return (E2).  "Firefighter
+      killed" frees nothing - the event is that its victim needs a unit (E3).
+    PAPER: dispatch becomes "evaluated at two fixed points per step, acting
+    whenever an idle unit and a reachable waiting victim coexist" - not
+    "triggered by detections at the Monitor stage".
+
+5.9 UNMATCHED VICTIMS WAIT; DISPATCH WRITES NO VICTIM OFF.  A victim in W with no
+    allowed pair stays waiting (today's "delay", but now re-evaluated at every J
+    point).  J issues only assign and unassign commands - never
+    mark_unreachable, and it never calls select_rescue_assignment, so no reason
+    string can reach the planner's empty-pool write-off (RP:665-666).
+    CONSEQUENCE (decision D-6): today's casualty-replacement write-off - a
+    victim whose unit died, with no free and no off-grid unit, is marked
+    unreachable at once (RP:649-666) even though a busy unit will free up - does
+    not happen under Limit 2; the victim waits.  The escape sweep is unchanged:
+    a victim no living non-carrier unit can reach still accumulates its 30-step
+    isolation streak and is written off "no_firefighter_available" or
+    "geographically_isolated" (RP:468-563), so a team that is all dead or cut
+    off still terminates.  The instrument counts each would-have-been write-off
+    so the report can attribute its effect.
+    Also changed by Limit 2 (structural, predicted): an assignment into a closed
+    route (the rb campaign's assign_into_blocked_route) cannot happen at the
+    moment of assignment; today the planner sends the Manhattan-nearest unit,
+    which raises route_blocked on its next move.
+    PAPER: under Limit 2 dispatch never gives a victim up; only the isolation
+    sweep does, and only for a victim no living unit can reach; "unreachable"
+    counts then mean isolation write-offs only.
+
+5.10 REASONS AND EVENT TYPES.  Fill binds carry joint_initial,
+    joint_replacement_after_blocked or joint_replacement_after_casualty (from
+    the victim's last pending cause); these map through the existing substring
+    rules (WM:4446-4449) to the existing event types, so dispatch counts stay
+    comparable.  LATCH-FILLs carry joint_replace_latched, REPLACEs carry
+    reassign_stall or reassign_margin; all three map to ONE new event type,
+    dispatch_reassignment (one new branch at WM:4438; without it they would count
+    as dispatch_initial, 1.5d), which is added to _RESCUE_EVENT_CONSOLE_TYPES
+    (WM:4415-4426, so it prints a [RescueEvent] line like the other dispatch
+    types) and to the dashboard maps (alert_manager.py:118,
+    explanation_engine.py:411, :725, timeline_builder.py:13).  Nothing produces
+    it while the switches are off.
+    PAPER: dispatch-count tables gain one row, "reassignment"; the existing
+    rows keep their meaning.
+
+================================================================================
+6. LIMIT 3 - REASSIGNMENT, HYSTERESIS, AND THE NO-FLIP-FLOP PROOF
+================================================================================
+6.1 SCOPE.  An incumbent unit A bound to victim v may be replaced by a FREE unit
+    B (one in F_free left after the fill at J-post - a "spare", which by L1 can
+    reach no waiting victim).  Not in this round (decision D-14):
+    - CROSS-SWAPS (two bound units exchanging victims in one decision): outside
+      the brief's two triggers and no evidence case needs one.
+    - PRE-EMPTION (taking a unit off one victim to serve another): it leaves a
+      victim uncovered; case 1's step-16 flip would need it and therefore stays
+      unfixed.
+    - pulling a unit that a waiting victim needs: impossible, spares are by
+      construction units no waiting victim can use.
+    A CARRIER IS NEVER REASSIGNED: exiting, rescue_completed, off-grid and dead
+    units are never incumbents, challengers or donors (an unassign of a carrier
+    clears exiting and drops the victim, WM:5021-5025 - the HOLD-0 drop shape).
+    PAPER: "reassignment = an idle unit takes over from a stalled or clearly
+    worse-placed one; no two bound units exchange victims in one decision (over
+    several decisions an idle unit can take over a victim another unit was
+    freed from); a carried victim is never touched".
+
+6.2 CONTESTABLE BINDING.  (A, v) is contestable at J-post iff v is detected and
+    needy, A is v's only living binder, A is alive, on grid, not exiting, not
+    rescue_completed, NOT on v's cell (d(A, v) > 0: a co-located binder is
+    custody, pickup on its next advance), and A's status is en_route/assigned
+    (an ACTIVE incumbent).  A route_blocked binder is a LATCHED incumbent and is
+    handled by the fill (6.6), not here.
+
+6.3 PROGRESS AND STALL STATE (new model state per binding, reset at every bind).
+    The rule must credit the unit only for its OWN movement: a fire change
+    (either sign, on a tick or by an extinguish) and a victim move (in any
+    direction - the flee step is often sideways) must neither count as progress
+    nor as stalling.  At each J-post, for each contestable (A, v):
+      D_t   = the BFS distances from v's CURRENT cell over the CURRENT burning
+              set (the same BFS 5.3 runs - no extra search);
+      d_t   = D_t(A_t)           (A's current cell)
+      x_t   = D_t(A_{t-1})       (A's PREVIOUS cell, same fire, same victim cell)
+      e_t   = x_t - d_{t-1}      the change NOT caused by A: fire and victim
+                                 motion measured at A's old cell
+      best  <- best + e_t        shift the reference by the exogenous change
+      if d_t < best : PROGRESS   best <- d_t ; k <- 0
+      else          :            k <- k + 1  (unless FROZEN, below)
+      d_t = 0 resets k (A reached the cell; 6.2 excludes it next frame).
+      If d_t or x_t is infinite (A's route is closed on this fire), the state is
+      frozen and the binding is not evaluated this frame; the unit's own route
+      test raises route_blocked at its next move (E3).
+    A two-cell loop alternates d, d+1 with e = 0 and never beats best: k grows by
+    1 per step.  A loop beside a front that adds +4 every tick: e = +4 on the
+    tick, best shifts with it, k still grows.  A victim drifting sideways: x_t
+    absorbs the drift, k still grows.  Burn-out shortening the route: e < 0,
+    best falls with it, no false progress.  (The model's existing "approaching"
+    flag, WM:5470-5484, reads a loop as approaching every other step and is not
+    used.)
+    FROZEN: k does not advance on a step at which NO unit (incumbent or spare)
+    has a CLEAN APPROACH to v.  CLEAN(c) = not burning, not smoky and not
+    4-adjacent to a burning cell - the negation of the assigned-unit survival
+    trigger (AG:3110-3132; pickup happens only after that check passes, AG:2867
+    vs :2913).  CLEAN APPROACH(u, v) = v's cell is CLEAN and a 4-connected path
+    over CLEAN cells leads from u's cell (exempt as the source) to v.  One extra
+    BFS per contestable victim, from v over CLEAN cells, decides it for every
+    unit at once.  When no unit has a clean approach (v's cell unclean, every
+    neighbour unclean, or an unclean band separating v from every unit) no unit
+    could pick v up, so replacing A cannot help and A is not blamed.  When some
+    spare has a clean approach but A does not, k counts: A's position is the
+    problem.
+
+6.4 STALL RULE.  A is STALLED when k >= S, S = DISPATCH_STALL_STEPS = 10.
+    A stalled A is replaced by a spare B iff ALL hold:
+        (B, v) is fresh (b = 0);
+        B has a CLEAN APPROACH to v (6.3) - this also screens out a challenger
+          that would livelock at the same barrier;
+        d(B, v) < d(A, v) + k.
+    The stalled unit is charged the time it has demonstrably lost: its true
+    remaining time is at least its route distance plus an unknown non-negative
+    extra, and k counted steps without progress are evidence of at least k.  A
+    spare farther than that is not expected to arrive sooner and is not sent.
+    A stall with no qualifying spare releases nothing: the unit keeps the
+    victim (a victim never loses its unit to nobody).
+    WHY S = 10.
+    - LOWER BOUND: with fire changes and victim motion factored out (6.3) and
+      unhelpable steps frozen, the no-progress spans that normal movement still
+      produces are one T3-then-T1 out-and-back (2 steps), one survival
+      out-and-back (2) and the pickup step (1) - at most about 5 in a row.
+      S = 10 leaves a factor of two.
+    - UPPER BOUND: the approach-leg two-cell episodes in the evidence lasted
+      10-13 steps in cases 1, 2 and the ut0r2 arm of case 3 (139-150, 168-180,
+      182-191), and route_blocked came late (case 2: 184, death 201).  S = 10
+      acts at the end of the first such episode.  In ut2r2 the loop lasted 6
+      steps (150-155) and ended in route_blocked, so S = 10 would NOT have acted
+      there; route_blocked did.
+    - S = 10 equals the project's firefighter-oscillation window (10 steps).
+    These numbers come from the diagnosed mechanisms and the recorded
+    trajectories, NOT from any screen outcome; S is never tuned on Part 3.
+    PAPER: "a stall = 10 steps in which the unit's own moves bring it no closer,
+    with fire and victim motion factored out, while some unit could approach the
+    victim cleanly".
+
+6.5 MARGIN RULE.  A non-stalled contestable A is replaced by a spare B iff, at
+    each of the last P = 3 consecutive J-post evaluations,
+        d(B, v) + M <= d(A, v),   M = DISPATCH_MARGIN_STEPS = 5,
+    with (B, v) fresh.  The persistence counter is kept per (v, B); it resets
+    whenever v's binder changes and whenever B is not a spare at an evaluation,
+    so a binding younger than P steps can never be margin-replaced (the
+    COMMITMENT period).
+    WHY M = 5: in one step motion alone can move the gap d(A,v) - d(B,v) against
+    the challenger by at most 4 (the victim moves one cell: +-1 on each
+    distance; A advances one: -1; B is pushed back one: +1).  A replacement
+    decided at J-post of step t first acts at the advance of t+1, so M = 4 + 1
+    keeps it strictly better after one step of worst-case adverse motion.
+    WHY P = 3 = FIRE_SPREAD_SPEED: the advantage must survive one full fire
+    period of unit and victim motion.  A route lengthened BY FIRE persists (fire
+    does not un-burn within 3 steps), so it will trigger a replacement once it
+    has lasted P evaluations - intended: A's route really got longer.
+    CONSISTENCY CHECK (not tuning): the evidence's near-ties do not qualify
+    (case 1 step 99: Manhattan 39 vs 40; case 3 step 131: 29 vs 31); case 1's
+    gap at step 120 (28 vs 37, about 9) would qualify if route distances track
+    Manhattan and it persists 3 steps.
+    PAPER: "a reassignment needs the newcomer to be at least 5 steps closer by
+    route for 3 consecutive steps, or the incumbent to be stalled".
+
+6.6 LATCHED INCUMBENT (route_blocked but still bound, the repeated-raise state).
+    It found no fire-free path at its most recent move; its status clears itself
+    on the first move that finds one (AG:3692-3695), and it is invisible to
+    _find_active_firefighter_for_victim (WM:4039-4041).  Its victim is in W_L.
+    Under Limit 3 the FILL may give a W_L victim a free unit B with
+    b(B, v) <= 1 before the bind - a LATCH-FILL - executed as an atomic
+    replacement (7.1, reason joint_replace_latched) so the victim ends with ONE
+    binder.  The released latched unit becomes an UNASSIGNED route_blocked unit -
+    exactly the population 70e1b33's revalidation clears (WM:3101-3109) - so no
+    new latch shape is created.  With no allowed free unit the latched unit is
+    kept, and may recover by itself.  Under Limit 2 alone W_L victims get a
+    second claimant instead (today's dd0a1b9 hedge, made prompt), and a
+    recovering latched unit then makes TWO ACTIVE binders, as today (1.3) -
+    decision D-7.
+    PAPER: in the full design no victim has both a latched and an active unit;
+    that double claim is a property of the baseline (and of Limit 2 alone).
+
+6.7 ORDER INSIDE J-POST AND PER-FRAME LIMITS.
+    1 PROGRESS: update (best, k, d_prev, A_prev, persistence) for every
+      contestable binding; compute CLEAN APPROACH where needed.
+    2 FILL: F_free x (W union W_L), objective 5.4; under Limit 3 a W_L bind is a
+      LATCH-FILL, under Limit 2 alone a second claim.
+    3 REPLACE: spares left after step 2 against stalled incumbents first (largest
+      k, then largest d(A,v) - d(B,v), then integer ids), then margin
+      incumbents (largest gain, then integer ids).  At most one replacement per
+      victim and per spare in a frame.
+    4 SECOND FILL: units released in step 3 x victims still in W (a released unit
+      may reach a victim nobody else could), with the ledger rules.
+    Every unit is bound at most once per frame and every victim changes binder
+    at most once per frame.  J-pre runs step 2 only.
+
+6.8 HYSTERESIS / COMMITMENT, IN ONE LIST.
+    (a) the incumbent is protected by M = 5 steps AND P = 3 evaluations
+        (margin), or by S = 10 steps without own progress plus the lost-time
+        charge and the clean-approach test (stall);
+    (b) a binding younger than P steps cannot be margin-replaced;
+    (c) a REPLACE may only use a pair NEVER bound before (ledger b = 0);
+    (d) a FILL binds only a victim with no living binder (W); a LATCH-FILL only a
+        victim whose living binders are all latched, with b <= 1 before it;
+    (e) at most one change per victim per frame;
+    (f) Limit 2 alone never unbinds anyone; with Limit 3 the only J unbinds are
+        REPLACEs and LATCH-FILLs.
+    The anti-reversal guarantee rests on (c), (d) and (f), not on the size of M
+    or S.  M, S and P decide how OFTEN replacements happen, never whether they
+    can reverse.
+
+6.9 PROOF THAT NO ASSIGNMENT CAN FLIP BACK AND FORTH.
+    Setting: DISPATCH_JOINT = 1, so J is the only binder (5.7) and every bind is
+    counted (5.6).  A victim's BINDER SEQUENCE lists the units bound to it in
+    order; a unit's VICTIM SEQUENCE likewise.  THREE BIND KINDS: FILL (v in W),
+    LATCH-FILL (v in W_L; the latched binder is released in the same frame),
+    REPLACE (stall or margin; the active binder is released in the same frame).
+    OUTSIDE EVENTS - the ones the dispatcher does not choose: (o1) a binder's
+    FIRST route_blocked raise on that pair (the handler's unassign); (o2) its
+    REPEATED raise (it stays bound, status route_blocked = latched); (o3) its
+    death; (o4) the victim turning terminal (rescued, dead, unreachable - which
+    ends the victim's sequence).  Firefighting writes and fire ticks only cause
+    these through the units' own route tests.
+    INVARIANT L: every bind of (f, v) increments b(f, v); b never decreases.
+    LEMMA 1 (REPLACEs bounded).  REPLACEs on a victim v number at most N_ff - 1:
+      each uses a pair (B, v) with b = 0 and raises it to 1; v's first bind
+      already used one such pair; there are N_ff pairs (., v).
+    LEMMA 2 (binds bounded).  v becomes unbound only by (o1) - at most once per
+      pair, because _blocked_replacement_attempted is permanent (WM:425,
+      :3961-3963), so at most N_ff times - or (o3), at most N_ff times; a REPLACE
+      never unbinds v (Lemma 3).  So FILLs of v number at most 1 + 2 N_ff.
+      LATCH-FILLs of v number at most 2 N_ff (each raises some b(B, v) from 0 or
+      1).  So binds of v <= 1 + 2 N_ff + (N_ff - 1) + 2 N_ff = 5 N_ff (15 in
+      A-C, 10 in D) and a run is finite in binds.
+    LEMMA 3 (coverage).  A REPLACE or LATCH-FILL binds the new unit before it
+      releases the old one, in one frame (7.1), so it never leaves v without a
+      binder; a FILL binds only a victim with no living binder.
+    THEOREM (no reversal by a cost decision).  Suppose v's binder sequence
+    contains A, then later another unit, then A again (A ... X ... A), and let X
+    be the binder immediately before A's return.
+    (i) A's return has b(A, v) >= 1 before it, so it is not a REPLACE; it is a
+        FILL or a LATCH-FILL.
+    (ii) A FILL needed v in W: by Lemma 3 no J decision removed X, so X was
+        removed by an outside event (o1) or (o3).  A LATCH-FILL needed v in W_L:
+        X had latched by its own repeated raise (o2).
+    (iii) Hence every return of a unit to a victim is preceded by an outside
+        fire event that removed or latched the intermediate binder.  No
+        comparison of costs can ever send a unit back.
+    The same argument holds for a unit's victim sequence f: v ... w ... v, since
+    a unit changes victim only through a release followed by a FILL or
+    LATCH-FILL of another victim, and returning to v requires v to be in W or
+    W_L again - i.e. v's binder at that time was removed or latched by an
+    outside event.
+    REVERSALS THAT REMAIN POSSIBLE (bounded by Lemma 2, none chosen on cost):
+      R1 A -> (A raises, o1) -> B -> (B raises or dies) -> A again by FILL once
+         A's route has reopened (revalidation cleared it).
+      R2 A -> (replaced by B, Limit 3) -> (B raises or dies) -> A by FILL.
+      R3 A latched (o2) -> LATCH-FILL B -> (B raises or latches) -> A by FILL or
+         LATCH-FILL.
+      R4 a unit v1 -> v2 -> v1 through outside losses and fills.
+    IMPOSSIBLE: REPLACE A->B followed by REPLACE B->A; any return whose
+    intermediate binder was removed only by J; a FILL onto a victim that has an
+    active binder; a LATCH-FILL bringing in a pair for the third time.
+    Under DISPATCH_JOINT = 0 none of this applies and today's dispatch runs
+    unchanged (today's reversals through route_blocked recovery and the
+    _try_dispatch kick remain possible exactly as now).
+    PAPER: the anti-ping-pong property is a theorem about the dispatcher, not a
+    tuning outcome; the paper can state it with its proof and its exact
+    exceptions (returns forced by fire events, finitely many per victim).
+
+6.10 WHAT LIMIT 3 CANNOT FIX.
+    - A challenger uses the same greedy mover and can still livelock (the
+      clean-approach test only removes the obvious cases); the ledger forbids a
+      third REPLACE on the same pair.  Cured only by a movement change (out of
+      scope).
+    - Pre-emption: a unit bound to a far victim when a nearer victim is detected
+      a few steps later (case 1, steps 16/21) keeps its victim (D-14).
+    - When every unit is stalled at once there is no spare (case 2, 121-200).
+    PAPER: the reachable gain is bounded by the mover and by team size; the
+    paper must not present the dispatch fix as a cure for movement livelock.
+
+================================================================================
+7. RELEASE AND REBIND MECHANICS; BINDING INVARIANTS
+================================================================================
+7.1 ATOMIC REPLACEMENT (A -> B on v; REPLACE or LATCH-FILL), one call frame, no
+    movement in between:
+    1 PRE-CHECK every executor condition: B passes the free predicate, is not
+      route_blocked and is unbound; v is detected and needy; A is v's binder and
+      not exiting / rescue_completed / dead; (B, v) allowed by the ledger.
+    2 ASSIGN B -> v FIRST, through RescueExecutor.execute_physical_command
+      (action assign, the reason of 5.10).  The model's assign checks only the
+      unit's own binding (WM:4908-4918) and accepts a second live claimant on a
+      victim (pinned, tests/test_phantom_rescue_release.py:138-142), so it
+      succeeds while A is still bound; it overwrites every victim-side field,
+      including firefighter_id = B (fixing the stale back-pointer, 2.5).  The
+      planner-level already_assigned guard of apply_physical_pairing_decision
+      (RE:384-386) is deliberately not used here: J has validated the pair.  If
+      the assign is refused, NOTHING has changed and the replacement aborts
+      (failure-atomic; logged, counted).
+    3 RELEASE A through _release_other_claimants(vid, victim_marker, keep_ff_id
+      = "", reason = <the same reason>, only_ff_id = A) - the EXISTING release
+      path, extended with one keyword (decision D-3).  With only_ff_id set its
+      loop considers only that unit; everything else is today's body: the
+      executor unassign with metadata {} (correct here: v now belongs to B, and
+      reset_victim_pending would relabel it "confirmed" over B's binding,
+      WM:5045-5072), the en_route/assigned -> "available" relabel and knowledge
+      sync (WM:4180-4183; without it A reads busy - the 70e1b33 latch shape),
+      the D6 branch for a route_blocked A (work_left is True because v is live
+      and detected, so the flag is left for the revalidation, WM:4184-4205), and
+      the release counters (WM:4211-4221).  Its default (only_ff_id = "")
+      reproduces today's three call sites exactly.
+    4 STATE: the new binding (B, v) starts with best = d(B, v), k = 0, d_prev =
+      d(B, v), A_prev = B's cell, persistence counters cleared (the same
+      initialisation for every bind, fills included).
+    The transient two-binder state exists only inside this frame; the invariant
+    checker (AM:186) runs after J-post.
+
+7.2 WHY NOT THE ALTERNATIVES.
+    - _release_other_claimants AS WRITTEN releases every non-completer binder and
+      would release B too; it cannot name one unit (2.6).
+    - RELEASE FIRST, THEN ASSIGN (with rollback) leaves v unbound inside the
+      frame and needs reset_victim_pending; assign-first never does.
+    - A brand-new primitive would duplicate the release body; the brief asks for
+      the existing path.
+    PAPER: releases reuse the existing audited path; nothing new to state.
+
+7.3 FILL BINDS go through RescueExecutor.apply_physical_pairing_decision with a
+    RescueDecision(assign) built by J (selected_option_id "joint_pairing").  Its
+    guards (needs-rescue, already_assigned) pass because v has no active binder.
+    Under Limit 2 alone a W_L second claim passes too (the latched binder is
+    invisible to the guard, WM:4039-4041).  Under Limit 3 a W_L bind is a
+    LATCH-FILL (7.1).
+
+7.4 BINDING INVARIANTS (checked at every frame boundary in tests and by the
+    instrument, with BOTH switches on unless stated):
+    I1 at most one ACTIVE (non-route_blocked, alive, assigned) binder per victim.
+       (NOT under Limit 2 alone, nor today: a latched second claimant recovers
+       into an active one, 1.3, 6.6.)
+    I2 every unit is bound to at most one victim (assign refuses a rebind,
+       WM:4913-4918) - in every configuration.
+    I3 NO DISPATCH ABANDONMENT: no J action leaves a victim that had a living
+       binder before the frame without one after it - DISPATCH_JOINT = 1.
+    I4 FULL FILL: at the end of each J call no free unit and unserved victim form
+       an allowed pair with finite d (follows from L1) - DISPATCH_JOINT = 1.
+    I5 LEDGER: every REPLACE (reasons reassign_stall / reassign_margin) bound a
+       pair with b = 0 before it; every LATCH-FILL (joint_replace_latched) a pair
+       with b <= 1 before it.
+    I6 CUSTODY: no exiting / rescue_completed / co-located unit was ever a J donor
+       or target.
+    I7 no victim ends a frame with a latched binder AND an active binder.
+
+7.5 "NO VICTIM BOUND TO TWO UNITS, AND NONE TO NONE" - what the design
+    guarantees and what it does not.
+    - Two units: with BOTH switches on, I1 and I7 hold because J is the only
+      binder, fills only victims with no living binder, and resolves a W_L
+      victim by an atomic replacement.  It does NOT hold today or under Limit 2
+      alone: a latched binder relabels itself "assigned" on its first move with a
+      fire-free path (AG:3692-3695), so a second claimant makes two ACTIVE
+      binders (case 2, victim_3, steps 238-256).
+    - None: I3 - no DISPATCH decision ever strips a victim of its unit.  A victim
+      can still be without a unit because no unit can reach it, all are busy,
+      or every allowed pair is used; those are waits, measured (14.6 G-B f,
+      14.7 M3, M4), not abandonments.
+    PAPER: "no victim is ever left with two active units or stripped of its unit
+    by a dispatch decision" - true of the full design, with the proof above.
+
+7.6 UNCHANGED, DELIBERATELY.  _blocked_replacement_attempted stays permanent
+    (Lemma 2's bound depends on it).  select_rescue_assignment, the route_blocked
+    handler's unassign, the casualty sweep's unassign with reset_victim_pending,
+    and the escape sweep are untouched; apply_physical_rescue_command gains one
+    gated line (the ledger increment, 5.6) and nothing else.
+    VictimState.firefighter_id is not cleared on unassign (every J bind
+    overwrites it).
+
+================================================================================
+8. CONSISTENCY WITH THE EXISTING MACHINERY
+================================================================================
+8.1 ROUTE_BLOCKED.  Both raise conditions in _move_toward (AG:3636-3650) and the
+    handler's first-raise unassign with reset_victim_pending (WM:3965-3974) are
+    unchanged; only the replacement SELECT moves from mid-advance to J-post
+    (5.7).  The repeated-pair early return (WM:3961-3963) is unchanged.
+    "No unit is its own replacement" (70e1b33's ordering claim) now holds BY
+    FEASIBILITY as well as by ordering: a pair that just raised "no path" has
+    d = infinity under the same burning set, and even if the revalidation clears
+    the unit at AM:184 its pair has b >= 1, so J prefers any fresh pair that
+    keeps coverage maximal (L2).  The one exception is a route reopened inside
+    the same advance by another unit's extinguish - positive evidence that the
+    route is open again.
+8.2 LATCH FIXES.  70e1b33 (revalidation of unassigned route_blocked units,
+    WM:3061-3211), 4795708 (the 808 latch: the no-referent branch WM:3128-3178,
+    _clear_stale_route_blocks WM:4299-4385, ROUTE_BLOCK_STALE_CLEAR = 1) and
+    dd0a1b9's D6 relabel (WM:4184-4205) are untouched.  Every unit Limit 3
+    releases is relabelled "available" or, if route_blocked, left as an
+    UNASSIGNED route_blocked unit - the population the revalidation handles.  The
+    bound-and-route_blocked population (which the revalidation never handles,
+    WM:3103-3109) can only SHRINK under Limit 3 (6.6).  No new latch shape.
+    PAPER: the latch fixes keep their exact semantics; the design adds no state
+    they do not already handle.
+8.3 FF_RELEASE_DETECTED_ONLY (= 1, needs SEARCHER_UNTUNED = 1): unchanged.  J's
+    BUILDER is detected-only whatever its value.  The release path J calls
+    (_release_other_claimants' D6 branch, for a route_blocked A) is detected-only
+    only when FF_RELEASE_DETECTED_ONLY applies; at SEARCHER_UNTUNED = 0 (the
+    identity-control evidence runs, 14.8) it reads every marker through
+    _any_victim_needs_rescue, with no effect on values (v itself is needy).  J
+    adds no call to _any_victim_needs_rescue (tests/test_searcher_untuned.py
+    :842-850 asserts exactly two calls in wildfire_model.py).
+8.4 CARRYING LEG MODE 2 AND SERVED.  Carriers (exiting) and their victims are
+    excluded everywhere (5.2, 6.1).  SERVED's "custody counts as served"
+    (WM:5293-5324, RP:452-453) is untouched; MODE 2's BFS carry
+    (AG:3525-3569) is untouched.  A HOLD-0 enclosure raise on a pair's FIRST
+    raise drops the victim (today's handler); J-post then treats the victim as
+    unserved.  On a pair that already raised once it is a REPEATED raise and the
+    carrier keeps the victim - in custody, untouched by J.  A dropped victim on
+    an enclosed cell has d = infinity for every unit and waits until a
+    neighbouring cell stops burning.
+8.5 THE 3-5-STEP POST-RESCUE ABSENCE.  Off-grid and rescue_completed units are
+    never in F_free (pos None).  The return is E2 at AM:144 and is paired at
+    J-post of the same cycle - the same timing as today's P3 kick.  Returning
+    units are not counted as future capacity (no reservation; myopic).  Which
+    unit completes a rescue changes the per-rescue absence draws (a dedicated
+    stream, WM:2783-2805); the fire's stream is untouched.
+8.6 ESCAPE SWEEP (WM:5385-5576, after the post-move cycle): unchanged and
+    consistent - a victim with d = infinity for every living non-carrier unit is
+    exactly a geo-unreachable one.  Because Limit 2 never binds an unreachable
+    victim, such a victim accumulates its 30-step streak where today a futile
+    Manhattan binding could reset it ("served"): expect MORE escape-sweep
+    write-offs and FEWER futile assignments; both are counted (14.6).
+8.7 IDLE FIREFIGHTING.  Ungated firefighting ships ON (FF_FIREFIGHT_EXTINGUISH /
+    FIREBREAK = 1): a free unit may be extinguishing.  Binding it ends that, as
+    today's dispatch does; a spare taken by Limit 3 stops firefighting too.  Its
+    effect on the fire is physical (it changes fuel) - CRN pins the fire's draw,
+    not its trajectory, so per-cell signs stay noisy (14.7).
+8.8 STAGE ORDER AND TEST PINS.  No stage name is added (J-pre inside
+    _run_execution, J-post inside _sync_firefighter_marker_status), so
+    PRE_MOVE_STAGE_ORDER / POST_MOVE_STAGE_ORDER (tests/test_adaptation_manager_
+    cycle.py:18-49, :219) are unchanged.  J-post runs before the invariant
+    checker (AM:186), which therefore sees the result of every frame.
+8.9 THE PLANNER AUTHORITY.  The MAPE RescuePlanner / RescueExecutor.execute path
+    (RP:67-135, RE:94-124) writes no binding (its options carry no victim_id);
+    unchanged.  _assert_no_direct_rescue_mutation (debug only) audits the last
+    50 commands; replacement churn could push an old binding out of that window
+    and print spurious [RescueAuthority] lines in debug runs - noted, harmless.
+PAPER: the dispatch change is confined to WHO is bound to WHOM and WHEN; every
+safety mechanism the earlier rounds shipped keeps its exact semantics.
+
+================================================================================
+9. INFORMATION RULE AND THE FIRE-KNOWLEDGE ASSUMPTION
+================================================================================
+9.1 READ-LEVEL RULE.  J's input builder:
+    - reads EXACTLY ONE attribute of an undetected victim - its detection flag
+      (managed confirmed; the team's own detection record, class S in the fix3b
+      information map) - through _detected_victim_ids(model) (already imported
+      in WM:64), which loops over every managed victim for that flag only
+      (local_adaptation_generator.py:1076-1092); it reads a victim's marker or
+      any other state ONLY for ids in the detected set, in integer order;
+    - never iterates victim_marker_agents, never calls
+      get_rescue_operational_snapshot (which reads every marker's true cell and
+      status, WM:3611-3660), never calls _try_dispatch (whose needs-rescue check
+      precedes its confirmed test, WM:3047), never calls _any_victim_needs_rescue;
+    - reads each detected victim's TRUE live cell - paper assumption A7 ("a
+      detected victim is tracked perfectly for dispatch"), exactly as today
+      (WM:3623-3626; the bound unit re-targets to it every step, AG:2811-2850);
+    - reads all of the team's own units (own state - S class in the fix3b
+      information map);
+    - reads the current burning set (for d) and, for Limit 3's CLEAN-APPROACH
+      test only (6.3, 6.4), true smoke and fire adjacency on cells around a
+      detected victim.
+    So "dispatch reads only detected victims" becomes true at the READ level in
+    J's builder, BFS, solver and progress code (the release path it calls:
+    8.3), not only at the decision level (2.7).  The legacy reads (D1 snapshot,
+    D3 order of checks, D4 escape sweep, D5 casualty incidents) are on paths the
+    new code does not use; they stay value-inert and untouched (closing them
+    would break the 16/16 identity control of SEARCHER_UNTUNED = 0, whose mission
+    count reads every snapshot victim, WM:3724-3732).
+    PAPER: "the dispatcher reads only the detection flag of an undetected
+    victim, and full state only of detected victims".
+9.2 THE FIRE-KNOWLEDGE ASSUMPTION, STATED.  The existing assumption is that the
+    firefighters know the TRUE, instantaneous burning set and the true smoke
+    per cell (AG:3043-3082), and the model's route_blocked revalidation and
+    escape sweep use the same truth.  The dispatcher keeps it: d uses the true
+    burning set only; Limit 3's clean-approach test uses the true burning set and
+    true smoke around a detected victim - the same clean-cell predicate the
+    units' own survival check uses, but read centrally, at cells no unit may be
+    standing on.  This is A3 ("fire perimeter known in near real time (today =
+    truth)") extended to the firefighter team and its central dispatcher (A11),
+    and to SMOKE.
+    PAPER: state explicitly "the firefighter team and its dispatcher know the
+    current fire perimeter and smoke in real time (A3, today = truth; the UAVs'
+    visibility model observes smoke)"; correct docs/04_clean_separation_table
+    .md:101, which describes fire as beliefs.  A belief-based (tracker-only)
+    fire and smoke picture for dispatch is future work, as it is for the search.
+9.3 THE GUARD (Part 2 tests T-INFO, 13.3): a read trap - undetected victims'
+    managed states allow ONLY the attribute confirmed, and their markers allow
+    nothing - while J's builder, BFS, solver and progress code run; plus a
+    metamorphic test that perturbs undetected victims' cells, statuses and fates
+    in variants whose per-step detected-id sequence is identical (asserted
+    first; a variant that changes detections is rejected and re-drawn), and
+    requires identical J decisions and an identical assign/unassign log.
+
+================================================================================
+10. SWITCHES AND PARAMETERS
+================================================================================
+10.1 SWITCHES (common_fixed_variables.py, read at call time from the cfv module
+     by accessors in agents.py using _exact_integer, AG:1430; missing -> 0):
+     DISPATCH_JOINT     ships 0.  Limit 2.  ON only on an exact 1.
+     DISPATCH_REASSIGN  ships 0.  Limit 3.  ON only on an exact 1 AND only while
+                        DISPATCH_JOINT is on: the accessor's first statement is
+                        `if not dispatch_joint(): return False` (the
+                        FF_EXIT_LEG_SERVED precedent: enforced off whenever MODE
+                        is 0, AG:1613-1614) - decision D-4.
+     Both independent of SEARCHER_UNTUNED (the detected-only read is built into
+     J).  Both recorded in the probe's effective-switch block.
+     | JOINT | REASSIGN | behaviour                                             |
+     |   0   |   any    | the base commit's dispatch exactly: J never entered,  |
+     |       |          | no new print, no new state read, no RNG, the ledger   |
+     |       |          | line gated off.  THE KILL SWITCH.                     |
+     |   1   |    0     | Limit 2: J-pre/J-post fill, every legacy binder        |
+     |       |          | closed, no dispatch write-off, latched-held victims    |
+     |       |          | get a second claimant (I1 not guaranteed).             |
+     |   1   |    1     | Limits 2 + 3: the full design.  THE ONLY SCREENED      |
+     |       |          | COMBINATION.                                           |
+     "Exact 1" is the project's _exact_integer convention (AG:1430): ON for
+     whatever denotes the integer 1 - 1, True, 1.0, the literal "1" or " 1 ";
+     OFF for everything else - missing, 0, 2, 0.5, "2.0", "on", "", None.
+10.2 PARAMETERS (constants, read only while DISPATCH_REASSIGN is effective; an
+     exact positive integer, otherwise the default):
+     DISPATCH_STALL_STEPS   S = 10   (6.4)
+     DISPATCH_MARGIN_STEPS  M = 5    (6.5)
+     DISPATCH_MARGIN_PERSIST P = 3   (6.5; = FIRE_SPREAD_SPEED)
+     FIXED NOW, before any measurement, from the mechanisms in 6.4-6.5.  Never
+     tuned on Part 3 data (decision D-8); any later change is validated on a
+     fresh, frozen third seed set.
+PAPER: the three numbers are derived design constants with stated reasons, not
+fitted parameters; the paper reports them as such.  Reassignment is described
+only as an extension of joint assignment (D-4).
+
+================================================================================
+11. DESIGN QUESTION ONLY - CRITICAL VICTIMS (NOT IN THE DESIGN)
+================================================================================
+11.1 TODAY: nothing distinguishes an easy rescue from a critical one; dispatch
+     is nearest-unit for whichever victim's incident is handled, and waiting
+     victims go in index order.  UNDER THIS DESIGN (L3, decision D-1) the
+     system serves the nearest-by-route victim first when units are scarce: it
+     favours EASY rescues.  Any urgency term would act on exactly that choice.
+11.2 THE ESTIMATE.  Urgency(v) = T_fire(v), the estimated time until the fire
+     reaches the victim's cell.  The Bayesian round's fire_arrival_estimate T(c)
+     (operator-side elliptical Huygens envelope over the BELIEVED burning cells
+     and the constant wind; literature parameters; no random draws; never reads
+     a simulator fire constant) is the natural source; it exists only after that
+     round merges.  A cheaper proxy is the Manhattan distance to the nearest
+     burning cell (Victim._min_fire_distance, AG:2691).
+11.3 HOW IT COULD ENTER THE OBJECTIVE (forms, least to most invasive):
+     U1 ON-TIME COUNT: a level between L1 and L3 - maximise the number of matched
+        victims with d(f, v) + 1 < T_fire(v) (reachable before the fire, by the
+        estimate).  Changes which victims are served first when scarce;
+        pairing otherwise unchanged.
+     U2 WEIGHTED TIME: replace L3 by sum of w(v) x d(f, v), w(v) = 1 + kappa x
+        exp(-T_fire(v) / tau) (the front-priority weight form, with the
+        Bayesian round's fixed kappa, tau).  Changes pairing too.
+     U3 EARLIEST DEADLINE FIRST: when scarce, serve victims in increasing slack
+        T_fire(v) - min_f d(f, v).
+     U4 TRIAGE: deprioritise (never write off) victims with negative slack for
+        every unit.
+11.4 COST.  Computation: T at most 5 detected cells per J call - about a
+     millisecond, or free if the search module already holds the envelope that
+     step.  Matching size unchanged.  Methodological cost: a new arm and its own
+     decision rule; its parameters are the Bayesian round's, validated for a
+     search weight, NOT for a per-victim deadline.
+11.5 RISKS.
+     - Model mismatch: this fire ticks every 3 steps (AG:97-125), biases only
+       exactly-in-line upwind sources (MU 0.9, CFV:67; AG:250-266), spreads with
+       distance^-2 weights within Moore radius 3 (AG:29, :53-86) and can jump up
+       to 3 cells per tick downwind; an elliptical envelope with literature
+       parameters will mis-rank victims - the Bayesian round already measures
+       its estimate as late by a median of about 50 steps.
+     - Victims flee within Manhattan 3 of fire (leash 6), so T at the current
+       cell understates survival time and keeps moving.
+     - A fire-adjacent or smoky victim cannot be picked up (2.1): urgency sends
+       units to wait beside the front.  Critical victims sit where units die:
+       firefighter deaths in the evidence came en route on long legs, on a fresh
+       assignment, and after a return (section 3).
+     - Triage (U4) is ethically loaded and is a new give-up path; the paper would
+       have to state the triage policy.
+     - Instability: urgency moves every fire tick; it must NEVER enter Limit 3's
+       rules, or it becomes a new reason to reverse assignments.
+     - The primary measure can worsen while deaths fall (a critical victim's
+       rescue takes longer): rescued, dead and firefighter deaths would have to
+       be primary for that arm.
+11.6 RECOMMENDATION.  Not in this round.  If D-11 approves, Part 3 classifies,
+     POST HOC and without any behaviour change, each death of a detected victim
+     by the TRUE arrival - the death step itself: FEASIBLE-CRITICAL if at
+     detection some living unit had d + 1 <= (death step - detection step), else
+     FUTILE.  The estimator's T_fire at detection is recorded alongside (on a
+     copy, never through the search module's cache) only to report its bias.  If
+     feasible-critical deaths are at least 25% of detected-victim deaths on BOTH
+     seed sets, propose an urgency round using U1 in the fill only, never in
+     Limit 3, no triage, its own switch and arm, firefighter deaths as a primary
+     guard.
+PAPER: until ruled, the paper states that the dispatcher has no urgency notion
+and, under L3, favours the nearest rescue when units are scarce; the record-only
+classification gives the supervisor's question a measured answer.
+
+================================================================================
+12. COST
+================================================================================
+12.1 SWITCHES OFF: one accessor check at each J point.  Nothing else.
+12.2 SWITCHES ON, PER J POINT where PRE holds: one burning-set scan (about
+     0.2 ms measured, outputs/dispatchreach_part1.txt 3.1); one BFS over the
+     2 500-cell grid from each victim of interest (W, W_L, contestable victims -
+     at most 5) and, with Limit 3, one CLEAN BFS per contestable victim (at most
+     3); each 1.0-1.8 ms (measured at c4d5a25, worst case full flood 1.8 ms);
+     and at most 136 configurations to score (< 1 ms).  Worst case about 15 ms
+     at J-post and 10 ms at J-pre, i.e. at most about 25 ms per step against
+     about 1 590 ms per probe step (ut2r A_E: 571 s for 360 steps) - 1.6% worst
+     case; typical steps with 2-3 en-route incumbents cost 4-6 searches (6-11
+     ms, under 1%).  With Limit 3 on, PRE holds on every step with an en-route
+     incumbent (the progress update needs its BFS).
+12.3 MEASURED IN PART 3, not assumed: the instrument times J (perf_counter around
+     the builder, the BFS, the solver and the apply) per J point; the gate is in
+     section 15.
+PAPER: report dispatch cost as measured milliseconds per step and as a share of
+step time.
+
+================================================================================
+13. PART 2 (PRE-REGISTERED): IMPLEMENTATION SHAPE AND TESTS
+================================================================================
+13.1 ORDER.
+     (0) This Part 1, with the maintainer's rulings appended, is COMMITTED on the
+         branch dispatch before any Part 2 code; every section-16 amendment is
+         committed before building.  The Part 2 notes and _dp_analyze's report
+         print that commit hash, and the analyzer refuses to run if section 15's
+         text differs from it (no edit of a pre-registered rule after data).
+     (1) The Bayesian round merges into main (call the merge commit B).
+     (2) Section 16's re-check; if it changes any pre-registered item, an
+         amendment is written and the round STOPS again.
+     (3) The dispatch branch is brought up to B.
+     (4) Build.
+     (5) At most 3 review agents (R1 Limit 2 and the information rule, R2 Limit
+         3 and the proof, R3 tooling and identity).
+     (6) Commit, then Part 3.
+13.2 FILES AND FUNCTIONS (nothing else changes):
+     src_extension/planning/joint_dispatch.py (NEW, pure: no model, grid or
+       RNG access, inputs are plain dicts/tuples) - solve_fill (5.4-5.6),
+       plan_replacements (6.4-6.7), progress_step (6.3), the ledger rules.
+     wildfire_model.py -
+       _joint_dispatch_point(phase) (NEW): builds the detected-only view (9.1),
+         the BFS maps (5.3, 6.3), calls J, applies the result (7.1, 7.3);
+       _victim_route_distances(...) / _victim_clean_approach(...) (NEW): the two
+         searches of 5.3 and 6.3;
+       _run_execution (WM:2355): one call at its end, J-pre;
+       _sync_firefighter_marker_status (WM:5833-5836): one call after the
+         revalidation, J-post;
+       _handle_rescue_incident generic tail (WM:3976-3985): skipped under
+         DISPATCH_JOINT, recording the pending cause;
+       _try_dispatch_unresolved_confirmed_victims (WM:3039) and
+         _dispatch_firefighter_to_victim (WM:5578): early return under
+         DISPATCH_JOINT;
+       apply_physical_rescue_command, assign branch: one line incrementing the
+         ledger, gated on DISPATCH_JOINT (5.6);
+       _release_other_claimants (WM:4049): keyword-only only_ff_id = "" (default
+         = today's behaviour exactly);
+       _physical_rescue_event_type_from_reason (WM:4438): one branch -> the type
+         dispatch_reassignment; _RESCUE_EVENT_CONSOLE_TYPES (WM:4415-4426) gains
+         it.
+     agents.py - accessors dispatch_joint(), dispatch_reassign() (enforced
+       dependency), dispatch_stall_steps(), dispatch_margin_steps(),
+       dispatch_margin_persist().
+     common_fixed_variables.py - DISPATCH_JOINT = 0, DISPATCH_REASSIGN = 0,
+       DISPATCH_STALL_STEPS = 10, DISPATCH_MARGIN_STEPS = 5,
+       DISPATCH_MARGIN_PERSIST = 3, with their documentation.
+     dashboard maps - the new event type (5.10).
+     NOT TOUCHED: Firefighter movement and every other agent class, the fire,
+       rescue_planner.select_rescue_assignment, rescue_executor,
+       adaptation_manager, the route_blocked raise and its handler's unassign,
+       the revalidation, the stale clear, the casualty sweep, the escape sweep,
+       the absence, the carrying leg.
+13.3 TESTS (new files tests/test_dispatch_joint.py, tests/test_dispatch_reassign.py,
+     tests/test_dispatch_information.py).  EVERY test is MUTATION-CHECKED against
+     the NAMED MUTANT listed with it and must fail there (recorded per test in
+     the Part 2 notes); the mutant is the smallest source change that removes
+     what the test guards.  Real-model tests pin the team (A 3/5/3 on cfv AND wf,
+     SYSTEM_RANDOM, agents.random) and stay short (about 9 s per real step).
+     LIMIT 2:
+       T-J1  crossing: two free units, two victims; per-victim greedy gives the
+             crossed pairing, J the uncrossed one.  MUTANT: J replaced by
+             per-victim greedy in victim-index order.
+       T-J2  route-aware: the Manhattan-nearer unit is behind a burning wall
+             (route 40), the other unit's route is 15; J picks the second.
+             MUTANT: d replaced by Manhattan distance.
+       T-J3  scarcity: one free unit, two waiting victims - J serves the nearer
+             by ROUTE (or the earlier-detected, if D-1 rules FCFS).  MUTANT:
+             victim-index order.
+       T-J4  batching: shuffling incident order and marker insertion order
+             leaves J's matching unchanged.  MUTANT: J iterates victims in
+             insertion order with a greedy first-fit.
+       T-J5  closed route: an enclosed victim is never bound, is not marked
+             unreachable, and no route_blocked follows at the next advance.
+             MUTANT: infinite d mapped to a large finite cost.
+       T-J6  missing kick: a unit freed by a victim_dead release is bound at
+             the same step's J-post; one freed by the escape sweep at the next
+             J-pre.  MUTANT: J-post skipped when no victim_confirmed incident
+             was drained this step.
+       T-J7  no mid-advance pairing: no assign command is issued during
+             schedule.step() (phase spy); a route_blocked replacement is bound
+             at J-post of the same step, after a same-step detection.  MUTANT:
+             the generic tail not skipped for route_blocked.
+       T-J8  casualty with an empty pool: the victim waits (per D-6), not
+             unreachable; the counterfactual counter increments.  MUTANT: J
+             calls select_rescue_assignment for casualty victims.
+       T-J9  integer tie-break: ff_unit_10 vs ff_unit_2 ordered numerically.
+             MUTANT: string comparison.
+       T-J10 latched-held victim under Limit 2 alone: bound to a second claimant
+             at J-post of the repeated-raise step, in a scenario with NO
+             recycle, return or recovery kick.  MUTANT: W_L excluded from the
+             fill.
+       T-J11 coverage before re-use: the A/B/v/w case of 5.4 - J picks
+             {A->w, B->v} with the re-used (B, v); and with a fresh alternative
+             of equal coverage J picks the fresh pair.  MUTANT: L2 removed.
+       T-J12 reasons/types: joint_* map to the existing event types;
+             reassign_* and joint_replace_latched to dispatch_reassignment;
+             every existing reason maps as today.  MUTANT: the new branch
+             removed.
+       T-J13 single sink: a bind issued outside J (a test helper) is counted in
+             the ledger.  MUTANT: the ledger counted inside J only.
+     LIMIT 3:
+       T-R1  stall: forced two-cell loop with a spare that has a clean approach
+             - replaced at k = S, not at k = S - 1; the same with a front adding
+             +4 every 3 steps and with a victim drifting sideways.  MUTANT: the
+             6.3 update without the exogenous shift e_t.
+       T-R2  no false stall: a unit chasing a fleeing victim, a unit on a
+             fire-made detour, and a burn-out shortening the route never reach
+             k = S; the same mutant must reach it in at least one case.
+       T-R3  stall charge: replaced iff d(B,v) < d(A,v) + k (both sides of the
+             boundary).  MUTANT: the charge removed (d(B,v) < d(A,v)).
+       T-R4  margin: gap 5 for 3 evaluations replaces; gap 4 does not; 5, 5, 4
+             does not; a binding younger than P does not; a spare that was not
+             free at one evaluation restarts its count.  MUTANT: P = 1.
+       T-R5  a carrier (exiting) is never touched even with a spare adjacent
+             to its victim; rescue_completed, co-located and off-grid units
+             likewise.  MUTANT: the exiting / rescue_completed / co-located /
+             off-grid exclusions removed from the contestable and donor
+             predicates.
+       T-R6  release path: _release_other_claimants is called with only_ff_id =
+             A; A is unbound and "available" (a route_blocked A stays an
+             unassigned route_blocked unit); firefighter_id == B; exactly one
+             active binder; the invariant checker is silent; release counters
+             increment.  MUTANT: only_ff_id ignored (all binders released).
+       T-R7  failure atomicity: a forced refusal of B's assign leaves every field
+             unchanged.  MUTANT: release-then-assign.
+       T-R8  latched incumbent: LATCH-FILLed by a free unit with one binder after;
+             the released unit is later cleared by the revalidation; with no
+             allowed free unit the latched unit is kept.  MUTANT: the latched
+             binder not released (second claim kept under Limit 3).
+       T-R9  no clean approach: (a) a clean victim cell whose neighbours are all
+             unclean, (b) an unclean band 3 cells wide - no replacement, k
+             frozen, ledger untouched; a stall with no qualifying spare releases
+             nothing.  MUTANT: the clean-approach test removed, and release
+             before checking for a qualifying spare.
+     FLIP-FLOP - fails if any assignment flip-flops:
+       T-FLIP-a  property test on the pure J plus a small state simulator: 500
+             seeded random sequences of distance matrices, unit moves, victim
+             flights, stall flags and OUTSIDE events (first raise, repeated
+             raise, death).  Asserts: no REPLACE ever binds a pair with b >= 1;
+             no LATCH-FILL brings in a pair with b >= 2; every RETURN (A..X..A on
+             a victim, v..w..v on a unit) is preceded by an outside event (o1,
+             o2, o3) on the intermediate binder; REPLACEs per victim <= N_ff - 1;
+             binds per victim <= 5 N_ff.  MUTANT: the b = 0 rule for REPLACE
+             removed.
+       T-FLIP-b  scripted model-level: A and B alternate being 20 steps better,
+             each phase 10 consecutive steps (> P + 1), for 200 steps - at most
+             one replacement; then B is forced to raise route_blocked - A may
+             return (a FILL); then A raises - A returns only if no fresh pair
+             covers v.  MUTANT: the b = 0 rule removed - the mutant must show
+             >= 2 replacements in the first phase.
+     INFORMATION - fails if any undetected victim is read:
+       T-INFO-a  read trap: undetected victims' managed states are wrapped in
+             proxies that allow ONLY the attribute confirmed and raise on any
+             other; their markers raise on any access; a J-post with an
+             undetected victim adjacent to a free unit must not raise.  MUTANT:
+             the builder reads one undetected victim's marker cell.
+       T-INFO-b  metamorphic: variants that perturb undetected victims' cells,
+             statuses and fates, with the per-step detected-id sequence asserted
+             identical first, leave J's decisions and the assign/unassign log
+             identical over a short real-model run (style of
+             tests/test_searcher_untuned.py:471-505).  MUTANT: as T-INFO-a.
+       T-INFO-c  source check: joint_dispatch.py and _joint_dispatch_point never
+             iterate victim_marker_agents and never call get_rescue_operational_
+             snapshot or _any_victim_needs_rescue (the existing exactly-2 AST
+             test, tests/test_searcher_untuned.py:842-850, stays green).
+     SWITCHES AND INVARIANTS:
+       T-SW   the exact-1 table (1, True, 1.0, "1" on; 0, 2, 0.5, "2.0", "on",
+             "", None, missing off); read at call time; DISPATCH_REASSIGN off
+             whenever DISPATCH_JOINT is off; shipped 0/0/10/5/3 added to
+             tests/test_base_station.py::test_shipped_defaults; with JOINT = 0 J
+             is never entered (spy), the ledger line does not run, and stdout is
+             unchanged.  MUTANT: the dependency removed / the gate removed.
+       T-INV  invariants I1-I7 (7.4) asserted at every frame boundary of a short
+             pinned real-model run with both switches on.
+     EXISTING TESTS: unchanged except test_shipped_defaults (T-SW), and green at
+     the shipped defaults - including the ones that pin greedy semantics and the
+     double-claim fixture (listed in 15, THE FLIP).  Full suite at the Part 2
+     commit: exactly B's recorded failing set (expected {T5}).
+     PAPER: every behavioural claim of the design has a test that fails without
+     it; the paper can cite the test suite for the properties of 6.9 and 7.4.
+
+================================================================================
+14. PART 3 (PRE-REGISTERED): THE SCREEN
+================================================================================
+14.1 BASE AND FILE LOCATIONS.  Every arm runs at B-derived commits: dpR at B
+     itself, in a detached worktree E:/Projects/SAS_wt/base<B> with a .venv
+     junction (removed only after `cmd /c rmdir` of the junction); dp0 and dp1
+     at the dispatch branch's Part 2 commit.  The reference is RE-MEASURED at the
+     round's own base - the Bayesian merge changes detection timing, and
+     pairings flip on 1-5 step detection shifts, so no earlier corpus (ut2*,
+     bp*) is a valid control.  EVERY probe --out is an absolute path into
+     E:/Projects/SAS_wt/dispatch/outputs, dpR included.  The gate shards dpGR
+     run with cwd = base<B> (the campaign imports and writes beside its own
+     checkout); their _rblatch_camp2_dpGR*_D_*.json and _ffr_rb_dpGR*.log files
+     are copied into dispatch/outputs and their sha256 recorded BEFORE the base
+     worktree is removed.
+14.2 ARMS AND CELLS.  Arms: dpR (reference), dp0 (dispatch, switches at their
+     shipped 0 - nothing passed), dp1 (--set DISPATCH_JOINT=1 --set
+     DISPATCH_REASSIGN=1).  Cells: scenarios A, B, C, D x winds N, S, E, W x
+     seed sets 1 (9601-9616) and 2 (9621-9636) x placements ring
+     (VICTIM_SPAWN_MODE 0) and uniform (1) = 64 per arm, 192 runs.  Seeds come
+     from the fx3mS / fx3mS2 argv files via _fb3_queue.cells and are FROZEN into
+     outputs/_dp_seeds.txt before the first wave; the analyzer reads it and STOPS
+     on any mismatch (seed-selector self-reference rule).  Tags: dpRr, dpRr2,
+     dpRu, dpRu2, dp0r ... dp1u2 (set 1 / set 2 x ring / uniform), files
+     outputs/_sd_<tag>_<S>_<W>.json (+ .argv, .poollog, .stdout.txt).
+14.3 RUN LINE.  The untune/Bayesian probe chain (_ut_probe -> _fb3_probe ->
+     _fx3_probe -> _mf2_probe -> _sd_probe, or its post-merge successor)
+     wrapped by a NEW record-only layer outputs/_dp_probe.py:
+       <py> outputs/_dp_probe.py --crn --hazard -- --repo <checkout> --scenario S
+       --wind W --seed N --set GLOBAL_PLANNER_MODE=0 --set VICTIM_SPAWN_MODE=<0|1>
+       [--set DISPATCH_JOINT=1 --set DISPATCH_REASSIGN=1] --steps 360
+       --set BATCH_SIZE=360 --out <absolute file> --tag <tag>_<S>_<W>
+     --repo on EVERY line (the probes default to the main checkout).  CRN = the
+     --crn flag (never --set FM2P_CRN, which _fb3_probe refuses); a run with 0
+     crn_draws is INVALID.  The same _dp_probe.py file serves all three arms.
+     The route_blocked gate and case 1 use the _ffr harness chain instead
+     (14.6 G-RB, 14.8).
+14.4 THE INSTRUMENT (_dp_probe.py, record-only: wraps, no RNG, no behaviour).
+     d["dp"] holds, step-stamped: every assign/unassign/release command (wrapping
+     WildFireModel.apply_physical_rescue_command, which the executor reaches
+     late-bound, and _release_other_claimants) with reason and cause, and at
+     every assign the instrument's own BFS verdict on the target (route open or
+     closed - for M6 in both arms); every J call (phase, PRE, sets, d matrix,
+     chosen matching, rule, ledger state, ms); progress state per binding (best,
+     k, persistence, clean-approach verdicts); binders per live victim per step
+     (route_blocked included); captured _check_rescue_assignment_invariant output
+     (the AM module global is wrapped - today it goes to stderr, which only the
+     pool log keeps; no probe or analyzer reads it); idle-while-waiting with the
+     instrument's OWN read-only BFS, sampled right after
+     _sync_firefighter_marker_status returns; predicted d at binding vs realised
+     steps to pickup; would-have-been casualty write-offs; per-step dispatch
+     time; and, only if D-11 approves, the M8 record.  It wraps every call site
+     in its own namespace (by-name imports defeat module patches).  It must give
+     dpR and dp0 identical non-dp fields.
+14.5 THE ANALYZER (outputs/_dp_analyze.py).  Refuses any run whose recorded repo
+     or extra_params are not exactly its arm's (worktree rule) and any CRN run
+     with 0 draws - these are TOOLING defects ("invalid") and are re-run.  A dp1
+     crash, or a dp1 run that stops neither terminal nor at step 360, is NOT
+     invalid: it is a gate failure (verdict FAIL).  Reads _dp_seeds.txt and
+     STOPS on mismatch.  Detection steps from the stdout [Victim Detection]
+     lines (never rows_vic, which reads "candidate" after detection).  It
+     imports _sd_analyze.analyze() and calls it on loaded dicts, never
+     _sd_analyze.main() (whose REPO is the main checkout); it reads every file
+     from dispatch/outputs and takes the gate reference tag (dpGR) as a
+     parameter (_fb3_analyze.sec_rbgate hard-codes fx3gS).  It prints the Part 1
+     commit hash (13.1).
+14.6 GATES.  STRUCTURAL ZEROS (exactly 0 in dp1): G-ID mismatches; G-B(b);
+     G-B(c); the ledger-allowed part of G-B(f); G-T(a); G-T(c); dp1 crashes;
+     latched units at the end of the gate shards.  EVERY OTHER ITEM must NOT RISE
+     in dp1 vs dp0, pooled over the 64 cells (also reported per seed set and per
+     placement); target 0.
+     G-ID   dp0 == dpR value identity on 64/64 (_fx3r_analyze.probe_ident FIELDS +
+            every mf2 section + stdout_sha + every dp field that exists without
+            J - binders per victim, invariant capture, idle-while-waiting, BFS
+            verdicts at assigns; the J-only fields - J calls, ledger, progress
+            state - are excluded) and dpG0 == dpGR on the gate shards (harness
+            identity).
+     G-N    runs that never finish (terminal_step None).  Known in dp0: uniform
+            set 2 D_W (a detection failure dispatch cannot fix).
+     G-OS   searcher oscillation of every kind, each gated separately: broad (O)
+            before the last detection, broad (O) after it, pocket near a depot
+            (r 5), pocket anywhere (r 500).
+     G-OF   firefighter oscillation of every kind - PROMOTED FROM REPORT-ONLY,
+            each gated separately: broad positional (10-step window, <= 2
+            cells, >= 4 changes, on-grid; _fb3_analyze); _sd_analyze I2 stuck
+            (approach, carry; one cell >= 20 steps), livelock (approach, carry;
+            30-step window, <= 3 cells, >= 8 changes), no-progress (approach;
+            30-step window).
+     G-L    latched units: no dp1 run ends (at its last recorded step) with a
+            route_blocked unit the dp0 run of the same cell lacks.
+     G-B    binding, sampled right after _sync_firefighter_marker_status returns
+            (after J-post, before the escape sweep): (a) victim-steps with >= 2
+            living binders of any status; (b) victim-steps with >= 2 ACTIVE
+            binders - structural 0 in dp1, dp0 reported (today's latched second
+            claim can recover into two active binders, 1.3); (c) dispatch
+            abandonment I3 - 0 in dp1; (d) captured RescueInvariant lines - must
+            not rise (not structural: a kept latched-only binder prints
+            "assigned but firefighters=[]"); (e) inline_violations; (f)
+            "abandoned waiting": victim-steps where a detected needy victim has
+            no ACTIVE binder while a free unit has a finite d to it - split into
+            ledger-allowed (structural 0 in dp1, I4) and ledger-blocked (must
+            not rise).
+     G-T    reassignment flip-flops: (a) RETURNS (A..X..A on a victim, v..w..v on
+            a unit) whose intermediate binder X (for a unit sequence: v's binder
+            at the time of the return) had NO outside event before the return -
+            outside event = a route_blocked-handler unassign of X, X observed
+            route_blocked while still bound in the per-step binder rows, or X's
+            death - 0 in dp1 (the theorem); (b) all RETURNS of any cause - must
+            not rise; (c) ledger violations - a reassign_stall / reassign_margin
+            bind on a pair with b >= 1, a joint_replace_latched bind on a pair
+            with b >= 2 - 0.
+     G-RB   route_blocked gate (scenario D, 240 steps, shards a/b/c/s: 18 (wind,
+            seed) runs over 13 distinct seeds; outputs/_ffr_rbgate.sh lines run
+            through the pool, _rblatch_campaign2.py from each checkout).  The
+            campaign has NO CRN path: the shards run CRN OFF, so per-seed signs
+            are partly noise once the fire stream diverges.  Rule (decision
+            D-15): RECOMMENDED - pooled rescued over the 18 runs in dpG1 >= dpGR,
+            0 latched, and every per-seed loss diagnosed from the campaign's
+            assigns/fires/recoveries/deaths lists (a loss whose victim saw no
+            dispatch decision differing from dpGR before the fire stream first
+            diverged is reported as noise); ALTERNATIVE - the inherited rule, any
+            NEW per-seed loss fails.
+     G-S    full suite at the final source on an idle machine: exactly B's
+            recorded failing set (expected {T5}; C10).
+     G-INV  T-INV and the unit invariants green.
+     PAPER: firefighter oscillation and binding integrity become reported safety
+     outcomes for the first time (D-9); the route_blocked gate is a CRN-off
+     per-seed regression screen.
+14.7 MEASURES (reported; the decision rule in section 15 uses M1, M1c, M2, M7).
+     M1 PRIMARY - detection-to-rescue time: for each victim rescued in BOTH arms
+        (paired by set, placement, scenario, wind, victim id - same spawn, same
+        CRN fire draws), delta = (rescue - detection) in dp1 minus in dp0.  For
+        each cell c with at least one such victim, m_c = the mean delta over
+        them.  T(set) = the UNWEIGHTED mean of m_c over that set's contributing
+        cells; T(pooled) likewise over both sets.  Cells without a pair are
+        listed and excluded.  Also reported: victim-pooled mean, median,
+        per placement, per scenario, and a Wilcoxon signed-rank test on the m_c
+        (reported, not gated).
+     M1c CENSORED, all detected victims: (rescue step, or 361 if not rescued by
+        360) - detection, paired the same way, aggregated by the same per-cell
+        statistic - the guard against "faster on the easy victims while losing
+        the hard ones".  Victims detected in only one arm are listed and
+        excluded from pairing.
+     M2 rescued, dead, firefighter deaths, never_detected, unreachable by cause.
+     M3 firefighter-idle steps while a detected victim waits, sampled as G-B(f):
+        (a) UNIT-steps free (dispatch predicate) while a detected needy victim
+        without an active binder exists; (b) the same restricted to a finite d;
+        both split ledger-allowed / ledger-blocked.
+     M4 reassignments by cause (stall, margin, latched) per scenario; LATCH-FILLs
+        reported separately from REPLACEs; fills that differ from the
+        counterfactual = the legacy select applied in victim-index order to the
+        same snapshot (instrument-only); re-used-pair binds; ledger-blocked
+        victim-steps.
+     M5 latency decomposition: detection -> assignment -> pickup -> rescue;
+        realised steps to pickup minus d at binding, with its sign.
+     M6 escape-sweep write-offs, would-have-been casualty write-offs,
+        assignments into a closed route (instrument BFS verdict at assign;
+        expected 0 in dp1).
+     M7 per-step dispatch cost: per run R = sum of J ms / (wall_s x 1000); J ms
+        per J point (p50, p99); wall ratio dp1 / dp0.
+     M8 urgency evidence (only if D-11 approves, 11.6): each detected-victim
+        death classified feasible-critical or futile by the true arrival.
+     CRN CAVEAT: --crn pins the fire's draw, not its trajectory - units change
+     fuel by firefighting - so per-cell signs remain partly chaotic after the
+     first divergence; only per-set-replicated effects count.
+     PAPER: the primary is a paired, per-cell, per-set statistic with the cells
+     that carry it listed - the paper reports it with its per-set values.
+14.8 EVIDENCE CASES (dpE, tags dpE<case><0|1><c|n>, about 14 runs, OFF vs ON
+     each, described not gated).  Each case is run (a) in its ORIGINAL
+     configuration as recorded in its argv, with B's identity-control switches
+     (SEARCHER_UNTUNED=0 for the pre-untune runs, and the Bayesian round's
+     identity values from its merge notes), in its original CRN mode; and (b)
+     when the original was CRN off, also CRN on.  The reproduction criterion -
+     the OFF arm reproduces the recorded first detections and first dispatches -
+     applies to (a) only; if it fails, the case is reported "not reproducible at
+     B" and only the screen cell (if any) speaks for it.  The general check: for
+     every case, list each mid-advance replacement of the original run that
+     coincided with a same-step post-move detection (J-post sees both).
+     PRE-REGISTERED EXPECTATIONS:
+     CASE 1 (D/south/505, half roles): a _ffr_harness run, so it is run with
+       _ffr_harness at the original argv (CRN off) and again with --set
+       FM2P_CRN=1 (the harness's own CRN route through _fm2_probe_harness), and
+       read from the harness's assigns / unassigns / reasons; no dp layer.
+       Step 16 unchanged (only victim_3 is known; no pre-emption, D-14).  From
+       step 99 ff_unit_0 is a spare.  EXPECT a MARGIN replacement near step 122
+       if route distances track Manhattan (gap about 9 at 120, persisting 3
+       steps), otherwise a STALL replacement once ff_unit_1's 74-of-180
+       distinct-cell approach reaches k = 10 - either recorded with its cause;
+       terminal step < 266 unless ff_unit_0 also loops; rescued 3 / dead 1
+       likely unchanged at 360.
+     CASE 2 (ring set 2 D_W 9636, pre-untune).  ST=2 (BD-R): victim_2 is detected
+       post-move at 46, the step ff_unit_0 first raises on victim_3; J-post 46
+       has W = {victim_3, victim_2}, F_free = {ff_unit_1 near (24,48)}:
+       Manhattan 46 vs 37, so L3 sends ff_unit_1 to victim_2 unless victim_2's
+       route is >= 9 longer than victim_3's; victim_3 waits.  At J-post 51
+       ff_unit_0 at (13,40) faces victim_3 (M49) and victim_0 (M42).  ST=3
+       (BF-R, victim_2 detected at 47): the step-51 fill serves victim_2 (M19)
+       over victim_0 (M42) - the reference pairing.  EXPECT victim_2 served early
+       in both; victim_3's outcome uncertain under ST=2; the 238-256 double
+       claim on victim_3 cannot occur (6.6).
+     CASE 3 (ring set 2 D_N 9633), one expectation per configuration.  ORIGINAL
+       ut0r2 configuration (SEARCHER_UNTUNED=0, CRN on): at step 63 J sees both
+       victims and L3 picks victim_0 (41 vs 55 by Manhattan if routes track) -
+       ut0r2's OWN pairing: EXPECT no change in that decision; later
+       differences come only from Limit 3 (ff_unit_1's 273-step leg should
+       reach k = 10, but ff_unit_0 is busy, so a replacement needs a spare).
+       DEFAULTS (the screen cell, B's defaults): today's code sends ff_unit_1 to
+       victim_1 (waiting since 16); L3 sends it to victim_0 - EXPECT the
+       jitter dependence gone, victim outcome likely unchanged (victim_1 dies
+       near 162) and firefighter deaths possibly HIGHER in this cell - a known
+       risk (K3), not a hoped-for gain.  (Under FCFS, D-1, the defaults pairing
+       stays victim_1.)
+     CASE 4 (bayesprep Bayes-diffusion ring D_N; per its memory note ring set 1
+       D_N 9613): configuration and expectation written in the section 16
+       amendment after the merge.
+     NEVER-FINISHING (uniform set 2 D_W 9636, screen cell): still never finishes
+       (victim_3 never detected; G-N neutral).  ff_unit_0, idle 213-224 while
+       ff_unit_1 is on a 147-step leg, should replace it (stall, if it has a
+       clean approach) - victim_0 rescued earlier; the firefighter death at 231
+       uncertain.
+     EXTRA (fix3b set 2 D_N 9633, CRN off originally; original configuration
+       ST=2/3 under SEARCHER_UNTUNED=0): EXPECT the first divergence at step 18,
+       where J sees victim_1 (detected 18) - if its route was already closed, J
+       does not bind it and the step-39 firefighter death on that assignment
+       cannot recur; if open, the same pairing is made (it is the only waiting
+       victim) and nothing changes.  Either is recorded.
+     PAPER: the evidence cases are reported as mechanism checks (what each
+     decision became), never as effect sizes.
+14.9 WAVES.  The pool is outputs/_mf2_pool.py (the Bayesian round's, with its
+     validator) for probe lines; the gate shards run as pool lines too (never
+     _ffr_rbgate.sh's bare background `wait`), so every job is inside the
+     13-job accounting.  At most 13 jobs at once (commit charge, not RAM), one
+     wave at a time.  Order: IDENTITY WAVE dpR + dp0 + dpGR + dpG0 (if G-ID fails,
+     STOP before dp1), then dp1, then dpG1, then dpE.  WAVE CHECKS EVERY 20-30
+     MINUTES: completed / running / failed counts, per finished run validity
+     (repo, extra_params, crn_draws > 0, steps_done, crashed), that every
+     expected file exists in dispatch/outputs, disk space; any INVALID run stops
+     the wave (a dp1 crash is recorded as a gate failure, not as invalid).  Tags
+     are re-checked unused (tracked and untracked, including _ffr_rb_dp* and the
+     base worktree's outputs/) immediately before each wave.  Estimated ~270
+     runs at the measured ~45 runs/h of this machine: about 6 hours, then the
+     full suite on an idle machine (~1.8 h).
+14.10 REPORT to outputs/dispatch_report.txt; STOP before merging.
+
+================================================================================
+15. DECISION RULE FOR SHIPPING ON (PRE-REGISTERED)
+================================================================================
+SHIP BOTH ON (DISPATCH_JOINT = 1, DISPATCH_REASSIGN = 1) if and only if ALL hold:
+  S1 IDENTITY: G-ID passes (64/64 and the gate shards).
+  S2 GATES: every gate in 14.6 passes; every structural item is exactly 0; no
+     dp1 crash.
+  S3 PRIMARY: T(set 1) < 0 and T(set 2) < 0 (M1); each stays < 0 after removing
+     that set's most negative m_c; T(pooled) stays < 0 after removing the
+     overall most negative m_c.  If either set has fewer than 24 of its 32 cells
+     contributing, S3 is NOT SHOWN.  (No one-cell result - a canonical-set gain
+     in this project has evaporated three times on a second set.)
+  S4 NO HARD-VICTIM TRADE: the same statistic on M1c is <= 0 pooled and in each
+     seed set.
+  S5 OUTCOME GUARDS: rescued does not fall in either seed set; dead does not
+     rise pooled; firefighter deaths do not rise pooled.
+  S6 COST: median R over the 64 dp1 runs <= 2% and p99 J time <= 50 ms per J
+     point (M7).
+OUTCOMES:
+  - S1 fails: STOP; the identity defect is fixed and the identity wave re-run;
+    nothing else is read.
+  - S2 or S5 fails: verdict FAIL - both switches ship 0, the code is NOT merged
+    (the branch is kept with the report); each failing instance is diagnosed.
+  - S3 or S4 fails (gates and guards pass): verdict NOT SHOWN - the code may merge
+    with both switches 0 as a tested option, if the maintainer wants it.
+  - S6 fails alone: NOT READY - behaviour is acceptable; the dispatcher is
+    optimised (for example by caching the J-pre maps) and only cost is re-measured
+    on 8 cells, with value identity to dp1 required.
+  - ALL pass: verdict PASS - recommend shipping both ON; STOP for the
+    maintainer's confirmation before the flip.
+  - Any scenario whose pooled rescued count falls by 2 or more in dp1: STOP for a
+    ruling even if S1-S6 pass.
+  - S, M, P and the objective are NEVER retuned on these runs.  Any revision is a
+    new pre-registration validated on a fresh, frozen third seed set.
+  - Only (1, 1) can ship: neither switch ships alone from this screen (a
+    JOINT-only arm would be decision D-10).
+THE FLIP (only after a PASS and the maintainer's yes): defaults to 1/1 in cfv;
+test_shipped_defaults updated; every test that pins today's dispatch is pinned to
+DISPATCH_JOINT = 0 explicitly, each with its ON counterpart in 13.3:
+  tests/test_firefighter_dispatch_replacement.py :112 (closest unit), :144
+    (route_blocked replacement - mid-advance pairing), :173 (casualty
+    replacement), :203 (no replacement -> unreachable once - the D-6 write-off),
+    :234 (dead assigned unit replaced), :274 (route_blocked without replacement
+    keeps the victim pending);
+  tests/test_rescue_planner_authority.py :84 (assigns closest), :131 (blocked
+    replacement), :160, :191 (delay / mark_unreachable), :209 (duplicate
+    incident);
+  tests/test_firefighter_rescue_absence.py :191, :292, :335;
+  tests/test_phantom_rescue_release.py :209 (released unit is the planner's pick)
+    and the double-claim fixture :138-142;
+then flip identity (the flipped default == dp1) on 4 + 4 cells and the full suite
+exactly B's recorded failing set.
+PAPER: whatever the verdict, the paper reports the dispatch change with this
+rule and its outcome; a NOT SHOWN is reported as a null, not omitted.
+
+================================================================================
+16. RE-CHECK AGAINST THE MERGED BAYESIAN CODE (BEFORE PART 2)
+================================================================================
+Read-only git object reads (git diff --stat 25421865 bayesprep) show the
+Bayesian branch changes agents.py (+84), common_fixed_variables.py (+32),
+wildfire_model.py (+14: UAV docked state at :1529, belief motion at :2727-2771),
+uav_executor.py, searcher_targeting.py, victim_search_belief.py,
+uav_resource_model.py, local_uav_monitor.py, global_analyzer.py,
+planning_coordinator.py, three test files, and ADDS
+src_extension/planning/fire_arrival_estimate.py.  None of rescue_planner.py,
+rescue_executor.py or adaptation_manager.py is touched, and no hunk falls inside
+a dispatch function.  After the merge, before any code:
+  C1 every line number in this document re-derived at B;
+  C2 the dispatch functions (5.7, 13.2) unchanged at B; _detected_victim_ids
+     semantics unchanged;
+  C3 agents.py accessor region (the Bayesian switches sit near the untune
+     accessors) - no name clash with DISPATCH_*;
+  C4 uav_docked_not_obstacle and the UAV docking changes do not reach the
+     Firefighter class (today it has no occupancy test, 2.1);
+  C5 the probe chain at B (its new --instrument layer and _bp_inst) - _dp_probe
+     composes with it, identity fields unchanged;
+  C6 B's shipped defaults (SEARCHER_TARGETING_FIX = 1 and the rest) recorded as
+     the screen's defaults; B's identity-control values recorded for 14.8;
+  C7 fire_arrival_estimate.T(c) API, inputs (believed burning cells A3, wind A4),
+     cost and its measured bias (late by a median of about 50 steps per that
+     round's note), for M8 if D-11 approves;
+  C8 case 4 read from the merged report (ring set 1 D_N 9613 per its note): its
+     configuration and an expectation added to 14.8;
+  C9 tests/test_base_station.py::test_shipped_defaults as changed by the merge;
+  C10 the full suite at B: its failing set recorded (expected {T5});
+  C11 the Bayesian report's other dispatch hand-offs - "uniform B_N lost rescue
+     across arms" and "firefighter (O) rises" - each added to 14.8 as an evidence
+     case with an expectation, or recorded with the reason it is not dispatch.
+If any check changes a pre-registered item, an amendment is written, committed,
+and the round STOPS for confirmation before building.
+PAPER: the dispatch round is measured on top of the merged Bayesian defaults;
+its numbers are not comparable with any pre-merge run.
+
+================================================================================
+17. RISKS
+================================================================================
+  K1 BFS is optimistic exactly where the mover livelocks; J may mis-rank units
+     where routes bend.  Measured (M5); the stall rule bounds the damage.
+  K2 Easy-first (L3) defers far, often critical, victims; dead or censored time
+     could rise.  Guarded by S4 and S5; D-1 offers FCFS.
+  K3 Case 3 at the defaults moves toward the pre-untune pairing that cost two
+     firefighter deaths; firefighter deaths could rise.  Guarded by S5.
+  K4 Firefighter oscillation is gated for the first time; Limit 2 sends units on
+     different routes and could raise a positional count with no defect - a false
+     FAIL is possible and is accepted (the brief: none may rise).
+  K5 Dropping the casualty write-off (D-6) keeps victims needy longer; a risk for
+     G-N, bounded by the escape sweep.
+  K6 More escape-sweep write-offs (unreachable victims no longer get futile
+     bindings that reset their streak); "unreachable" then counts isolation
+     write-offs only.
+  K7 A latched victim can wait for its latched unit when every other unit has
+     used its two latch-fills (ledger-blocked, M3/M4).
+  K8 A spare taken by Limit 3 stops fighting fire; the fire responds to
+     firefighter writes even under CRN.
+  K9 A higher-index route_blocked replacement acts one step later.
+  K10 Instrument blind spots (by-name imports, stderr) - addressed in 14.4; an
+     unaddressed one would bias G-B.
+  K11 The clean-approach test reads true smoke centrally (9.2); a belief-based
+     smoke picture would make it more conservative.
+  K12 The route_blocked gate runs CRN off; per-seed losses can be noise (D-15).
+PAPER: K2, K3 and K6 change what the paper's headline counts mean and must be
+discussed with the results; the others are engineering risks.
+
+================================================================================
+18. DECISIONS FOR THE MAINTAINER - STOP
+================================================================================
+Each with the recommendation first and what it means for the paper.
+  D-1  VICTIM PRIORITY WHEN VICTIMS OUTNUMBER FREE UNITS: (a) L3, nearest by
+       route (RECOMMENDED: aligned with the primary measure, robust to detection
+       jitter, shorter legs); (b) FCFS by detection step, key in 5.4 (neutral
+       between easy and critical rescues; keeps case 3's current pairing).
+       Either replaces today's victim-index order.
+       PAPER: (a) = "the nearest rescue first when units are scarce"; (b) =
+       "first detected, first served".
+  D-2  OBJECTIVE: max served -> fewest re-used pairs -> total route time ->
+       worst route time -> integer ids (RECOMMENDED), or worst-case time as the
+       primary key.
+       PAPER: "joint assignment minimising total route-aware time to reach".
+  D-3  RELEASE PATH: extend _release_other_claimants with the keyword
+       only_ff_id (default = today exactly), called AFTER the new unit is
+       assigned (assign-first) (RECOMMENDED - it is "the existing release path"
+       the brief names); or a new single-unit primitive beside it.
+       PAPER: none beyond "releases use the existing audited path".
+  D-4  DISPATCH_REASSIGN acts only while DISPATCH_JOINT is on (RECOMMENDED, the
+       SERVED precedent; one kill switch, no unscreened mode), or an
+       independent Limit-3-over-legacy mode.
+       PAPER: reassignment is described only as an extension of joint
+       assignment.
+  D-5  LEDGER: REPLACE only on a never-bound pair; FILL of an unserved victim
+       uncapped with fresh pairs preferred; LATCH-FILL at most twice per pair
+       (RECOMMENDED - proves no cost-driven reversal, cannot strand a reachable
+       unserved victim, keeps case 2's late rescue); or stricter (a hard cap of
+       two binds per pair - can strand a victim, 5.6).
+       PAPER: the theorem of 6.9 with its exceptions.
+  D-6  CASUALTY WRITE-OFF under Limit 2: dropped - the victim waits, the escape
+       sweep remains, would-have-been write-offs counted (RECOMMENDED); or
+       replicated (immediate mark_unreachable when no unit is free or off-grid).
+       PAPER: under the new dispatch only the isolation sweep writes a victim
+       off.
+  D-7  LATCHED CLAIMANT: under Limit 3 replaced atomically by a free unit
+       (LATCH-FILL), one binder (RECOMMENDED); under Limit 2 alone today's second
+       claimant kept.
+       PAPER: in the full design no victim has a latched and an active unit at
+       once; the double claim is a property of the baseline.
+  D-8  S = 10, M = 5, P = 3 fixed now and never tuned on Part 3 (RECOMMENDED).
+       PAPER: derived constants, reported with their derivations.
+  D-9  GATES: firefighter oscillation of every kind promoted to a gate, and the
+       new binding (G-B) and flip-flop (G-T) gates with their structural zeros
+       as defined in 14.6 (RECOMMENDED: as written); alternative: keep
+       firefighter oscillation report-only (the brief asks for it gated).
+       PAPER: firefighter oscillation and binding integrity become reported
+       safety outcomes for the first time; earlier rounds' safety statements
+       did not cover them.
+  D-10 ARMS: the brief's two (today, both on) plus the identity reference and
+       ~14 evidence runs (RECOMMENDED); a JOINT-only attribution arm (+64 runs)
+       not recommended this round.
+       PAPER: the paper reports the combined effect of joint assignment plus
+       reassignment; any split between them is descriptive (decision counts,
+       M4), not causal.
+  D-11 CRITICAL VICTIMS: not in the design (as instructed); RECOMMENDED the
+       post-hoc, true-arrival classification of detected-victim deaths (11.6,
+       M8) and its pre-registered threshold for proposing an urgency round;
+       alternative: no urgency evidence this round.
+       PAPER: the critical-victim question gets a measured answer (how many
+       deaths a unit could have prevented), not a design.
+  D-12 PAPER ASSUMPTION: state A3 for the firefighter team and its dispatcher -
+       fire perimeter AND smoke known in real time, today = truth - and correct
+       the belief wording in docs/04_clean_separation_table.md:101
+       (RECOMMENDED: as written); alternative: restrict the clean-approach test
+       to the units' own neighbourhood (weaker Limit 3, no central smoke read).
+  D-13 LIMIT 2 SCOPE: free units x unserved victims; re-matching of bound,
+       non-carrying victims belongs to Limit 3 (RECOMMENDED); or re-matching
+       inside Limit 2 (reassignment without hysteresis).
+       PAPER: joint assignment covers idle units only.
+  D-14 NO PRE-EMPTION AND NO CROSS-SWAPS this round (RECOMMENDED; case 1's
+       step-16 flip stays unfixed); or pre-emption with its own hysteresis and
+       proof (a new design).
+       PAPER: the case-1 mechanism (a nearer victim detected just after a unit
+       committed to a far one) is out of scope.
+  D-15 ROUTE_BLOCKED GATE ADJUDICATION (CRN off): pooled rescued over the 18
+       runs not lower, 0 latched, every per-seed loss diagnosed (RECOMMENDED);
+       or the inherited rule, any new per-seed loss fails.
+       PAPER: the gate is reported as a per-seed regression screen with each
+       loss explained.
+
+================================================================================
+19. WHAT THIS MEANS FOR THE PAPER - SUMMARY
+================================================================================
+  - The baseline must be described as it is: greedy nearest-unit dispatch on
+    grid (L1) distance, blind to fire, one victim at a time, waiting victims in
+    victim-INDEX order (a hidden function of ring geometry), no reconsideration
+    for progress or placement, six decision points, two gaps (waiting victims
+    not re-offered to some freed units; an immediate casualty write-off), and
+    double claims that can become two active units.  (1.1-1.5)
+  - The earlier dispatch-reachability null (outputs/dispatchreach_report.txt)
+    was scenario D only, binary reachability, at commitment, at c4d5a25, with a
+    pool of at most 2; it does not cover joint pairing or reconsideration and
+    does not transfer to A-C, where the pool is 3.  (1.5b)
+  - The evidence shows a mechanism (pairing flips on 1-5 step detection shifts;
+    livelocked approaches with an idle unit available), not an effect size;
+    cases 1-2 are CRN-off pre-untune runs; case 3's firefighter deaths belong to
+    the pre-untune arm.  Only the screen sizes it.  (3)
+  - Properties the paper can state with proofs and tests: no reassignment can
+    reverse except after a fire event removed or latched the intermediate unit;
+    binds per victim are bounded; no dispatch decision strips a victim of its
+    unit; in the full design no victim has two active units; carried victims are
+    never touched; the dispatcher reads only the detection flag of an
+    undetected victim.  (6.9, 7.4, 9.1)
+  - Under L3 the system favours the nearest rescue when units are scarce; the
+    paper must say so, and the critical-victim question stays open (or is
+    answered by the post-hoc classification).  (5.4, 11)
+  - The fire-knowledge assumption (A3 for firefighters and dispatch, including
+    smoke) must be stated.  (9.2)
+  - The fix is bounded by the greedy mover and by team size; it is not a cure
+    for movement livelock, and pre-emption is out of scope.  (6.10)
+  - Every headline number measured before this round is at the old dispatch;
+    if the switches flip, earlier dispatch-dependent numbers become references
+    only, as at every previous flip.
+
+================================================================================
+APPENDIX A - SOURCES, AGENTS, CONTACT
+================================================================================
+A.1 READ: the source at 25421865 (WM, AG, RP, RE, AM, CFV, SD, tests/; mesa
+    1.2.1's scheduler read-only in the main .venv to confirm step-then-advance
+    order); named outputs files: dispatchreach_part1.txt, dispatchreach_report.txt,
+    fix3b_part1.txt, untune_part1.txt, untune_merge_notes.txt,
+    untune_rescreen_report.txt, untune_report.txt, fix3a_report.txt,
+    fix3a_final_record.txt, fix3a_r2_report.txt, fix3a_part3_prereg.txt,
+    fix3b_rescreen_report.txt, fix3b_report.txt, fix3b_merge_notes.txt,
+    fix3b_information_map.txt, fix3b_crn_audit.txt, phantom_part1.txt,
+    carryleg_part1.txt, exitstall_part1.txt, sysdebug_report.txt, fix1_report.txt,
+    fix2_report.txt, rblatch_report.txt, _fx3m_trace_v0.txt, _fx3m_check.txt,
+    _fb3_rescreen_analysis.txt, _ut_analysis2.txt; the run files of the evidence
+    cases (_ffr_fx3h{S,R}_D_south_half_505.*, _sd_fx3mTs505.json,
+    _sd_{fx3mS2,fb3bdr2,fb3bfr2,fb3bd2,fb3bf2}_D_W.*,
+    _sd_{fx3mS2,fb3bdr2,fb3bfr2}_D_N.*, _sd_{ut0r2,ut1r2,ut2r2,ut3r2}_D_N.*,
+    _sd_{ut0u2,ut2u2}_D_W.*, the 64 _sd_ut2{r,r2,u,u2}_*.json.poollog files,
+    the fx3mS/fx3mS2 argv files, _sd_ut2r_A_E.json) with json/text reads only;
+    the tooling named in 2.9 and 14 (probes, analyzers, queues, pools, rb gate
+    scripts, _cl_replay/fs_rules.py, _ffr_harness.py, _lf_scan.py,
+    _ir_invariant.py); the Bayesian session's memory note (not its worktree).
+A.2 RAN (orchestrator; read-only only): git rev-parse, git log, git reflog
+    dispatch, git branch -a, git worktree list, git tag --points-at, git status
+    --short in the dispatch worktree (which cannot contain the quarantine
+    directory), git status --porcelain on one named file, git ls-files on named
+    patterns, git diff --stat 25421865 bayesprep, git diff 25421865 bayesprep --
+    wildfire_model.py agents.py, git show
+    bayesprep:src_extension/planning/fire_arrival_estimate.py, git show
+    bayesprep:outputs/bayesprep_part1.txt piped to grep (no output), git log
+    25421865..bayesprep; sed / grep scoped to named files, src_extension/ and
+    root *.py; non-recursive ls of outputs/ and outputs/_ffr_logs; tasklist and
+    Get-CimInstance (process list); dir /AL of the worktree root (junction
+    check).  No simulation, probe, pool, analyzer or test.
+A.3 QUARANTINE CONTACT (outputs/_firemech_rewound_20260914): NONE.  The
+    orchestrator's searches were scoped as in A.2; the dispatch worktree cannot
+    contain the directory.  Each of the 7 readers and the 3 design agents
+    disclosed no contact (every recursive grep scoped or carrying --exclude-dir;
+    Grep/Glob tools rooted at src_extension/ or tests/; no find; git status only
+    -uno).
+A.4 AGENTS: 7 read-only code readers (decision core; triggers and step order;
+    movement and hazards; release, latches and invariants; information and
+    urgency; evidence cases; instruments and tests); 3 independent design
+    passes (proof-first, architecture-first, evidence-first) whose proposals
+    were compared and merged into sections 5-15 - all three chose the same L1/L3
+    objective, free-unit-only replacement, a ledger/tabu guarantee and solve
+    points inside existing stage methods; they differed on S (8-12), M (5-12),
+    persistence, the release primitive and the per-pair cap.
+    REVIEW AGENTS - 3 of the allowed 3 (code facts; design adversary;
+    pre-registration and brief compliance), 51 findings (22 major), all
+    addressed in this text.  None found a cost-driven reversal, a dispatch
+    abandonment or two active binders with both switches on; the major findings
+    were the stall rule (now 6.3's exogenous shift and clean-approach test), the
+    per-pair cap (now 5.6), the latched-replacement bind kind (now LATCH-FILL in
+    6.9), invariants that hold only with both switches on (7.4), the read-level
+    information wording (9.1), the evidence of cases 2 and 3 (3, 14.8), and the
+    precision of the gates, the statistic and the tooling (14, 15).
+    Disclosures: no reviewer contacted the quarantine directory or the Bayesian
+    worktree.  ONE reviewer disclosed a scope breach: a single recursive grep
+    (`grep -rn "_allow_sync_victim_dispatch_fallback" --include=*.py .`) run
+    from the dispatch worktree root WITHOUT --exclude-dir, which walked that
+    worktree's outputs/ - the quarantine directory does not exist there, so no
+    quarantined file was traversed.  It is recorded as a process breach.
+
+================================================================================
+20. RULINGS (maintainer, 2026-10-04) - BINDING FOR PARTS 2 AND 3
+================================================================================
+All fifteen decisions of section 18 are ruled AS RECOMMENDED.  Wherever the body
+offers an alternative, the recommended option is now the design; the
+alternatives are void.  Nothing above is edited after this ruling (the
+pre-registration is frozen at the commit that adds this section).
+
+  D-1  (a) NEAREST BY ROUTE when victims outnumber free units (objective L3,
+       5.4).  FCFS is void (T-J3 tests the L3 choice).
+       PAPER, as ruled: state plainly that when units are scarce the NEAREST
+       rescue is served first - the OPPOSITE of critical-first.
+  D-2  as recommended: L1 max served -> L2 fewest re-used pairs -> L3 total
+       route time -> L4 worst route time -> L5 integer ids.
+  D-3  as recommended: _release_other_claimants gains the keyword only_ff_id
+       (default = today exactly), called after the new unit is assigned.
+  D-4  as recommended: DISPATCH_REASSIGN acts only while DISPATCH_JOINT is on.
+  D-5  as recommended: REPLACE only on a never-bound pair; FILL of an unserved
+       victim uncapped with fresh pairs preferred; LATCH-FILL at most twice
+       per pair.
+  D-6  DROP the immediate casualty write-off under Limit 2; COUNT every
+       would-have-been write-off (5.9, T-J8, M6).
+  D-7  as recommended: under Limit 3 a latched claimant is replaced by a
+       LATCH-FILL (one binder); under Limit 2 alone the second claim is kept.
+  D-8  S = 10, M = 5, P = 3 FIXED NOW, NEVER TUNED on Part 3 (10.2).
+  D-9  firefighter oscillation of EVERY kind becomes a GATE (G-OF), with G-B
+       and G-T exactly as in 14.6, structural zeros included.
+  D-10 as recommended: arms dpR / dp0 / dp1, the gate shards and the ~14
+       evidence runs; no JOINT-only arm.
+  D-11 YES: the post-hoc TRUE-ARRIVAL classification of detected-victim deaths
+       (11.6, M8) and its pre-registered threshold - feasible-critical deaths
+       >= 25% of detected-victim deaths on BOTH seed sets -> propose an urgency
+       round.  M8 is therefore ACTIVE in Part 3 and the instrument records it
+       (14.4); the estimator's T_fire is recorded only to report its bias.
+  D-12 YES: the paper states A3 for the firefighter team and its dispatcher -
+       fire perimeter AND smoke known in real time, today = truth (9.2) - and
+       docs/04_clean_separation_table.md:101 is corrected.  The docs edit is a
+       PART 2 item (added to 13.2's file list; re-located at B by C1), not made
+       in this commit.
+  D-13 as recommended: Limit 2 = free units x unserved victims.
+  D-14 as recommended: no pre-emption and no cross-swaps this round; case 1's
+       step-16 flip stays out of scope.
+  D-15 ROUTE_BLOCKED GATE: pooled rescued over the 18 runs in dpG1 not lower
+       than dpGR, 0 latched, every per-seed loss diagnosed (14.6 G-RB).
+
+NEXT, IN THIS ORDER (13.1):
+  - STOP now.  Part 2 starts only after the Bayesian preparation round has
+    merged into main (commit B).
+  - Part 2 begins with section 16's re-check of this design against the merged
+    code (C1-C11, including the Bayesian round's hand-offs: case 4 / ring set 1
+    D_N 9613, uniform B_N lost rescue, firefighter (O) rise).  Any check that
+    changes a pre-registered item -> a committed amendment and a STOP before
+    building.
+  - The commit adding this section is the Part 1 hash that the Part 2 notes and
+    _dp_analyze must print (13.1 step 0).
