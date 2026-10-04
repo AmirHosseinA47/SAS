@@ -335,9 +335,11 @@ class LocalUAVMonitor:
             self._prev_fov_cell_uncertain[cell] = self._is_visibility_uncertain(cell)
 
         task_context = self._task_context()
-        if agents_module.failsafe_real_alarms():
+        if agents_module.failsafe_real_alarms() or agents_module.uav_docked_not_obstacle():
             # fix2 item 1: the dock state, so the resource model restarts a docked UAV's drift
-            # window (a UAV holding its berth is not drifting, whatever it was refused on the way)
+            # window (a UAV holding its berth is not drifting, whatever it was refused on the way).
+            # bayesprep item 5 guard (d) reads it too (the global collision check: airborne UAVs only), so it is
+            # reported whenever that switch is on (review R2-F1); the drift reset stays gated on real alarms.
             task_context["docked"] = bool(getattr(uav, "rtb_docked", False))
 
         conf_meta = float(obs_confidence)

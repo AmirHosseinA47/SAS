@@ -189,7 +189,8 @@ BATTERY_SCENARIO = 0
 # 15). SEARCHER_TARGETING ships 0 = the current searcher, unchanged; any value that is not exactly one of the
 # integers below is 0. agents.searcher_targeting.
 #   0 current | 1 least-observed tile (baseline) | 2 Bayes, diffusion motion | 3 Bayes, fire-aware flee
-#   motion | 4 random walk (exemplar-equivalent baseline)
+#   motion | 4 random walk (exemplar-equivalent baseline) | 5 front priority (Bayes-flee + the urgency weight,
+#   bayesprep round; parameters SEARCHER_FP_* below)
 SEARCHER_TARGETING = 0
 # Ablation switches of the strategies 1-3 (inert at SEARCHER_TARGETING 0). Each ships 1; only an exact 0
 # turns one off. REACHABILITY 0 is for the ablation ONLY and is never shipped (a test pins 1).
@@ -245,6 +246,35 @@ SEARCHER_UNTUNED = 1
 #     release relabel) reads only DETECTED victims. agents.ff_release_detected_only.
 SEARCHER_END_RECALL = 1
 FF_RELEASE_DETECTED_ONLY = 1
+# ---- Bayesian preparation round (outputs/bayesprep_part1.txt, rulings in its section 10) ----------------------
+# Item 1. SEARCHER_TARGETING_FIX - the strategy arms behave as designed (agents.searcher_targeting_fix). SHIPS 1; off
+# only on an exact 0, which reproduces the fix3b strategies exactly. Acts only at SEARCHER_TARGETING != 0:
+#   F1-a the belief's lazy walk REFLECTS (q / 4 per direction; a move off the grid or into a burning cell stays);
+#   F1-b a Bayes leg ends ON its target when the target is admissible, and the gain credits only the discs flown;
+#   F1-c the swept rule ignores what the holder itself observed since issue; F1-d the target pool is mirror-
+#   symmetric (edge distance 4 on every side); F1-f no strategy steers a searcher that is returning, docked or
+#   recalled; F1-g the planner's gain uses the belief's own P_d; F1-h the launch "boxed" test uses the candidate
+#   filter. (F1-a..e, g, h in the Bayes strategies 2, 3, 5; F1-f in 1-5.)
+SEARCHER_TARGETING_FIX = 1
+# Item 2. Front priority (SEARCHER_TARGETING 5): Bayes-flee with each cell's expected unfound-alive mass weighted, in
+# target preference only, by w = 1 + KAPPA * exp(-T / TAU), T = an OPERATOR-SIDE estimate of the fire's arrival time
+# (elliptical spread from the believed front, NOT the simulator's rule). Every value: bayesprep_part1.txt 2.3.
+SEARCHER_FP_U10_KMH = 20.0               # assumed 10-m open wind, km/h (Beaufort 4 lower bound); sens. {10, 40}
+SEARCHER_FP_ROS_WIND_FRACTION = 0.1      # head rate = 0.1 x U10 (Cruz & Alexander 2019, Ann. For. Sci. 76:44)
+SEARCHER_FP_WALK_SPEED_MS = 1.34         # 1 cell / step = a person's free walking speed (Weidmann 1993)
+SEARCHER_FP_WAF = 0.4                    # wind adjustment factor, unsheltered (Albini & Baughman 1979)
+SEARCHER_FP_10M_TO_20FT = 1.15           # U10 = 1.15 x U20ft (Turner & Lawson 1978)
+SEARCHER_FP_LW_PER_MPH = 0.25            # length-to-width z = 1 + 0.25 U_midflame[mi/h] (Andrews 2018, GTR-371)
+SEARCHER_FP_LW_MAX = 8.0                 # the same source's cap on z
+SEARCHER_FP_KAPPA = 1.0                  # operator value judgement: a threatened person counts up to 2x; sens. 3
+SEARCHER_FP_TAU = 16.0                   # steps = 2 x sensor radius / UAV speed (one footprint crossing)
+# Item 5. UAV_DOCKED_NOT_OBSTACLE - a UAV docked in a depot is on the ground: the move rule's occupancy test
+# (UAV.not_UAV_adjacent - it tests the DESTINATION cell only) ignores it for every mover that is not on a return
+# leg (return legs keep today's rule). Guards, same switch: no UAV docks where another UAV is docked; a docked UAV
+# is not released while another UAV stands on its cell; the GLOBAL collision check counts only airborne UAVs, like
+# session 2's local one. SHIPS 1; off only on an exact 0; acts only with FREE_CELL_DOCKING (the shipped docking).
+# agents.uav_docked_not_obstacle.
+UAV_DOCKED_NOT_OBSTACLE = 1
 # The ONE battery threshold pair (fix1 item 2), read at call time through
 # agents.battery_low_threshold() / battery_critical_threshold() by every reader: the UAV
 # labels, both analyzers, the resource model, the global monitor, the dashboard alert and

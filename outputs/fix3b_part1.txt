@@ -986,3 +986,97 @@ NEXT: Part 2 (section 8), one review agent on the diff (the last of 3), then the
          1, cell (40,25): median first approach within 8 at step 87.5 / 93 vs 55). This is expected, and it
          is why uniform spawn is the primary environment (D-1, 15.1).
      (d) The design history in the paper includes 18.1 (a) and (b) as stated.
+
+================================================================================
+19. AMENDMENT (Bayesian preparation round, outputs/bayesprep_part1.txt sections 4 and 10; maintainer rulings
+    2026-10-04) - BINDING FOR THE MEASUREMENT ROUND. Fixed BEFORE any measurement run. Governs where it differs
+    from sections 10 and 15-18.
+================================================================================
+19.1 ENVIRONMENTS - SUPERVISORS' DECISION (final). BOTH victim placements, with EQUAL WEIGHT:
+     - uniform random spawn (VICTIM_SPAWN_MODE 1) and the fixed ring (VICTIM_SPAWN_MODE 0);
+     - n = 10 per scenario x wind cell in EACH placement;
+     - the same frozen seeds in both: seed = 30001 + 16k + c, k = 0..9, c = 0..15 in the order (A,B,C,D) x
+       (N,S,E,W). 10.3's re-check of the seed range and the frozen list rule stand;
+     - FM2P_CRN = 1 on every arm (the CRN-capable probe, --crn). CRN arms compare only with CRN arms.
+     This replaces 10.1's primary / secondary split and the ring's n = 5.
+19.2 BASELINE. CUR = SEARCHER_TARGETING 0 at the SHIPPED defaults: the untuned current search (SEARCHER_UNTUNED 1,
+     SEARCHER_END_RECALL 1, FF_RELEASE_DETECTED_ONLY 1). The tuned search (SEARCHER_UNTUNED 0) is NOT an arm.
+     Every arm runs with the Bayesian preparation round's switches at their shipped values:
+     - SEARCHER_TARGETING_FIX 1 (the method's edge defects fixed);
+     - UAV_DOCKED_NOT_OBSTACLE 1 (docked UAVs are not obstacles to airborne ones).
+19.3 ARMS, in EACH placement (11):
+     - CUR (0);
+     - LO (1);
+     - BD (2);
+     - BF (3), the designated method arm (unchanged);
+     - FP (5), front priority (NEW);
+     - RW (4);
+     - GP (GLOBAL_PLANNER_MODE 1 + BF);
+     - BF-coord, BF-batt, BF-motion, BF-reach.
+     FP's parameters are fixed: U10 20 km/h, kappa 1, tau 16 (bayesprep_part1.txt 2.3, ruling D-2). The shape is
+     NOT tuned.
+19.4 DISPATCH: LEFT OPEN until the dispatch round merges.
+     - The measurement round starts only after that merge.
+     - It runs at the dispatch configuration main then ships. Commit and switch values are recorded. They are
+       never chosen after seeing measurement data.
+     - If dispatch changes behaviour, the screen references are re-measured at that commit before the first
+       measurement run.
+19.5 STATISTICS (amends 10.6; ruling D-5). FAMILY A (confirmatory), Holm, family-wise alpha 0.05, K = 7:
+       BF-CUR, BD-CUR, LO-CUR, FP-CUR, BF-LO, BF-BD on E1; FP-BF on E1-T.
+     - E1-T is E1 restricted to THREATENED eligible victims. A victim is threatened if, in the comparison's
+       reference-arm run (BF for FP-BF), it comes within Manhattan 3 of a burning cell while alive and
+       undetected. This is observer-side truth from the instrument's per-step burning sets, using the
+       simulator's own flee distance. A run with no threatened eligible victim contributes no pair.
+     - EQUAL WEIGHT: each test pools the 320 CRN pairs (160 per placement; equal n gives equal weight).
+       - Test: two-sided Wilcoxon signed-rank, Pratt zero handling.
+       - Estimate: Hodges-Lehmann shift with a 95% BCa bootstrap CI over pairs (10 000 resamples).
+       - Also reported: the matched-pairs rank-biserial r, and the pairs improved / worsened / equal.
+     - Per placement, HL + CI for every comparison (exploratory).
+     - Sensitivity check of each pooled test: van Elteren, stratified by placement x scenario.
+     - FAMILY B (ablations, K = 4) and C (GP vs BF, single test) as in 10.6, pooled the same way.
+     - FP SECONDARIES (exploratory, no test):
+         - E1 overall;
+         - detection time of each run's nearest-fire victim;
+         - rescued, dead;
+         - searcher steps in fire / in smoke / within 3 and 6 cells of burning;
+         - FIRE-class oscillation episodes;
+         - the arrival-time estimate's error at victims (instrument: T_hat vs the actual first burning step of
+           the cell).
+19.6 REPORTING RULES ADDED.
+     (a) DRONE TIME IN FIRE AND IN SMOKE, reported SEPARATELY for:
+         - searcher SEARCH steps (airborne, not on a return leg);
+         - searcher RETURN legs, split into battery returns and recall legs;
+         - fire-tracker tracking steps;
+         - tracker return legs.
+         Per arm and per placement.
+     (b) EDGE-BAND victims (18.8 b) are defined by edge distance < 4, the band itself. The fix3b figure "78.7%
+         within 4 cells" counted <= 4 and is not reused.
+     (c) 17.3 CORRECTED.
+         - With SEARCHER_UNTUNED 1, hand-back steps read the HONEST count (briefing - detected), not a privileged
+           one.
+         - Owned-step shares classify return-leg and docked steps as their own class, never as current-chain
+           steps.
+         - With SEARCHER_TARGETING_FIX 1 no strategy steers a searcher on the recall step, so R-1's
+           least-observed continuation does not occur where the recall acts.
+     (d) Fail-safe DRIFT_TOO_HIGH alarms and degraded_operation steps per arm and placement (R-5 report-only, both
+         directions).
+     (e) The instrument (18.4) runs in EVERY run (--instrument). Its validation is a precondition of the round:
+         - V1: value identity with recorded runs, or, by the item-3 risk rule, with fresh recordings of the same
+           arm and seed without --instrument;
+         - V2: exact offline replay;
+         - V3: the shadow equals the own belief every step.
+19.7 SENSITIVITY (10.7 + 18.5 + FP).
+     - The 11 pre-registered points plus FP U10 10 km/h, FP U10 40 km/h and FP kappa 3: 14 points.
+     - n = 3 per cell = 48 CRN runs per point, in EACH placement (equal weight; ruling D-4).
+19.8 RUN COUNT (ruling D-4, full scope):
+       main         11 arms x 16 cells x 10 seeds x 2 placements = 3 520
+       sensitivity  14 points x 48 runs x 2 placements           = 1 344
+       TOTAL 4 864 runs
+     - Expected wall time is set from the bayesprep screen's measured throughput and reported in
+       outputs/bayesprep_report.txt.
+     - Planning figure: about 97 h at 50 runs / h, which is about 4 days of machine time on this box.
+     - (Was about 2 450 runs, about 41 h.)
+19.9 PAPER: both placements carry equal weight. The baseline is the untuned search (no home-ground tuning). FP is the
+     one new arm and is tested on the victims it is meant for (E1-T). The cited fire shape spreads the flanks slowly,
+     so FP's weight falls mostly ahead of the fire head and the flanks count more only within a cell or two (ruling
+     D-2, recorded plainly). Drone exposure is attributed to search steps vs return legs.

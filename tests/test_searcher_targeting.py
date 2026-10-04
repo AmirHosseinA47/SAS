@@ -258,9 +258,10 @@ def test_shipped_values():
     assert "\nSEARCHER_TARGETING_RW_GATED = 0\n" in src
 
 
-@pytest.mark.parametrize("raw,expected", [(0, 0), (1, 1), (3, 3), (4, 4), (2.0, 2), ("3", 3), (5, 0), (-1, 0),
-                                          (0.5, 0), ("x", 0), (None, 0)])
+@pytest.mark.parametrize("raw,expected", [(0, 0), (1, 1), (3, 3), (4, 4), (2.0, 2), ("3", 3), (5, 5), (6, 0),
+                                          (-1, 0), (0.5, 0), ("x", 0), (None, 0)])
 def test_searcher_targeting_parses_exact_integers(monkeypatch, raw, expected):
+    """bayesprep: 5 (front priority) is a value since the Bayesian preparation round; 6 is junk -> 0."""
     monkeypatch.setattr(cfv, "SEARCHER_TARGETING", raw, raising=False)
     assert agents.searcher_targeting() == expected
 
@@ -450,13 +451,16 @@ def test_a_bayes_point_target_is_dropped_when_the_search_completes(_shipped, mon
 
 def test_no_bayes_target_closer_than_the_minimum_distance(_shipped, monkeypatch):
     """R-1's minimum target distance: every issued Bayes target has an admissible route of >= 5 steps, even
-    when the richest mass sits right next to the searcher."""
+    when the richest mass sits right next to the searcher. bayesprep F1-b: with SEARCHER_TARGETING_FIX (shipped 1)
+    the leg is measured to the target ITSELF (the literal R-1 wording); at 0 to its radius-2 ball (fix3b)."""
     mass = {(25, 13): 0.9, (25, 30): 0.1}
-    model, (u,), dec = _world([(2502, (25, 10), 100.0)], mass, monkeypatch=monkeypatch)
-    t = _target(_plan(model, dec), 2502)
-    ex = UAVExecutor("2502", model, u)
-    route = UAVExecutor._targeting_route(ex._targeting_bfs(u, model), t)
-    assert route is not None and route[1] >= 5
+    for fix in (1, 0):
+        monkeypatch.setattr(cfv, "SEARCHER_TARGETING_FIX", fix, raising=False)
+        model, (u,), dec = _world([(2502, (25, 10), 100.0)], mass, monkeypatch=monkeypatch)
+        t = _target(_plan(model, dec), 2502)
+        ex = UAVExecutor("2502", model, u)
+        route = UAVExecutor._targeting_route(ex._targeting_bfs(u, model), t, exact=bool(fix))
+        assert route is not None and route[1] >= 5, (fix, t, route)
 
 
 def test_burn_over_ships_at_the_ruled_value():

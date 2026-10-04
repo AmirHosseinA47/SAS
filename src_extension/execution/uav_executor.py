@@ -1351,7 +1351,7 @@ class UAVExecutor:
                 uid = str(self.uav_id)
                 pos = getattr(agent, "pos", None)
 
-                # fix3b: the searcher-targeting strategies (SEARCHER_TARGETING 1-4) steer here, before the
+                # fix3b: the searcher-targeting strategies (SEARCHER_TARGETING 1-5) steer here, before the
                 # current chain; None (and always at the shipped 0) leaves the current chain unchanged.
                 targeted = self._searcher_targeting_direction(agent, decision, model)
                 if targeted is not None:
@@ -2445,13 +2445,21 @@ class UAVExecutor:
         return {"start": here, "dist": dist, "first": first, "parent": parent}
 
     @staticmethod
-    def _targeting_route(bfs: dict | None, goal: tuple[int, int]) -> tuple[tuple[int, int], int] | None:
+    def _targeting_route(bfs: dict | None, goal: tuple[int, int],
+                         exact: bool = False) -> tuple[tuple[int, int], int] | None:
         """The route to `goal` in a _targeting_bfs result: the reached cell within Manhattan 2 of the goal
         (the route's goal radius) with the least BFS distance, ties by cell. None: no admissible path.
-        Distance 0: the searcher is already within the goal radius (the target is reached)."""
+        Distance 0: the searcher is already within the goal radius (the target is reached).
+        exact (bayesprep F1-b, a Bayes target with SEARCHER_TARGETING_FIX): the route ends ON the goal whenever the
+        goal itself is admissible (distance 0 = the searcher stands on it); the radius-2 rule is the fallback
+        only when it is not, so a leg never stops 2 cells short of the disc its gain was credited with."""
         if not bfs:
             return None
         gx, gy = int(goal[0]), int(goal[1])
+        if exact:
+            value = bfs["dist"].get((gx, gy))
+            if value is not None:
+                return (gx, gy), value
         best = None
         for dx in range(-2, 3):
             for dy in range(-2, 3):
@@ -2467,6 +2475,12 @@ class UAVExecutor:
         if best is None:
             return None
         return best[1], best[0]
+
+    @staticmethod
+    def _fix3b_recalled(agent: Any) -> bool:
+        """bayesprep F1-f: the agent's one-owner predicate UAV._searcher_recall_will_act (review R1-2)."""
+        fn = getattr(agent, "_searcher_recall_will_act", None)
+        return bool(fn()) if callable(fn) else False
 
     def _targeting_stat(self, model: Any | None, key: str) -> None:
         if model is None:
@@ -2495,6 +2509,12 @@ class UAVExecutor:
             self._last_escape_method = None      # never inherit a stale fix3b label (V1 (d); review MEDIUM-3)
         step = int(getattr(model, "evaluation_timesteps_counter", -1)) if model is not None else -1
         if mode == 4:
+            if agents_module.searcher_targeting_fix() and (
+                    bool(getattr(agent, "rtb_active", False)) or bool(getattr(agent, "rtb_docked", False))
+                    or self._fix3b_recalled(agent)):
+                # bayesprep F1-f: no strategy steers a returning, docked or recalled searcher (its draw is still
+                # consumed every step by draw_random_walk, so the stream stays aligned).
+                return None
             draws = getattr(model, "_searcher_rw_draws", None) if model is not None else None
             if not isinstance(draws, dict) or draws.get("step") != step:
                 return None
@@ -2519,7 +2539,8 @@ class UAVExecutor:
             self._targeting_stat(model, "exec_onhazard_fallback")
             return None
         bfs = self._targeting_bfs(agent, model)
-        route = self._targeting_route(bfs, goal)
+        # bayesprep F1-b: the planner marks an exact-goal target; the hook follows the same route rule (one owner).
+        route = self._targeting_route(bfs, goal, exact=bool(ctx.get("searcher_targeting_exact")))
         if route is None:
             self._targeting_stat(model, "exec_nopath_mismatch")
             return None
