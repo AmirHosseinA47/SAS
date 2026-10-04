@@ -410,6 +410,11 @@ class UAV(mesa.Agent):
     # function for obtaining observed cells for the corresponding UAV
     def surrounding_states(self):
         surrounding_states = []
+        # isTrue round F-1 (MR1_TRUTHINESS_FIX): after the fire's first spread tick every burning cell holds a numpy
+        # True (Fire.burning = generated < cell_prob), which is never `is True`. On, a burning cell counts by
+        # truthiness; off (an exact 0), the inherited identity test, which counts only the seeded cell before the
+        # first spread tick. Read once per call.
+        truthy = mr1_truthiness_fix()
         # obtains adjacent cells s' from a concrete cell s (self.pos)
         adjacent_cells = self.model.grid.get_neighborhood(
             self.pos, moore=self.moore, include_center=True, radius=UAV_OBSERVATION_RADIUS
@@ -419,7 +424,10 @@ class UAV(mesa.Agent):
             agents = self.model.grid.get_cell_list_contents([cell])
             for agent in agents:
                 if type(agent) is Fire:
-                    surrounding_states.append(int(agent.is_burning() is True))
+                    if truthy:
+                        surrounding_states.append(int(bool(agent.is_burning())))
+                    else:
+                        surrounding_states.append(int(agent.is_burning() is True))
         return surrounding_states
 
     # --- Feature 3 (base station): return-to-base, docking and re-launch --------
@@ -2268,6 +2276,14 @@ def uav_docked_not_obstacle() -> bool:
     shipped docking): the berth path's stall-limit dock-in-place cannot coexist with "never dock on a docked UAV"
     (review R2-F2), so at FREE_CELL_DOCKING 0 the switch is inert. Read at call time."""
     return _fix2_switch("UAV_DOCKED_NOT_OBSTACLE") and free_cell_docking()
+
+
+def mr1_truthiness_fix() -> bool:
+    """MR1_TRUTHINESS_FIX (isTrue round F-1). SHIPS 1; off only on an exact 0, which is the inherited
+    `is_burning() is True` count (it counts nothing once every burning cell holds a numpy True, i.e. from the fire's
+    first spread tick). On: UAV.surrounding_states counts a burning cell by truthiness. Only MR1_LIST reads the count.
+    Read at call time."""
+    return _fix2_switch("MR1_TRUTHINESS_FIX")
 
 
 def searcher_targeting_coordination() -> bool:

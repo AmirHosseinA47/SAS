@@ -275,6 +275,13 @@ SEARCHER_FP_TAU = 16.0                   # steps = 2 x sensor radius / UAV speed
 # session 2's local one. SHIPS 1; off only on an exact 0; acts only with FREE_CELL_DOCKING (the shipped docking).
 # agents.uav_docked_not_obstacle.
 UAV_DOCKED_NOT_OBSTACLE = 1
+# ---- isTrue round (outputs/isTrue_part1.txt, rulings in its section 10) -----------------------------------------
+# F-1. MR1_TRUTHINESS_FIX - the MR1 metric counts the burning cells it was written to count (agents.mr1_truthiness_fix).
+# UAV.surrounding_states counted a cell only when Fire.is_burning() IS True; after the fire's first spread tick every
+# burning cell holds a numpy True, which never is, so MR1 counted nothing from step 4 on. On: a cell counts by
+# truthiness. MR1_LIST is read by no decision, gate or evaluation field. SHIPS 1; off only on an exact 0, which is the
+# inherited identity test.
+MR1_TRUTHINESS_FIX = 1
 # The ONE battery threshold pair (fix1 item 2), read at call time through
 # agents.battery_low_threshold() / battery_critical_threshold() by every reader: the UAV
 # labels, both analyzers, the resource model, the global monitor, the dashboard alert and

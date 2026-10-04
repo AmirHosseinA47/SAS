@@ -172,6 +172,9 @@ def test_shipped_defaults() -> None:
     assert cfv.SEARCHER_TARGETING_FIX == 1
     assert cfv.UAV_DOCKED_NOT_OBSTACLE == 1
     assert cfv.SEARCHER_TARGETING == 0
+    # isTrue round (outputs/isTrue_part1.txt, rulings section 10): F-1 ships ON (off only on an exact 0, the inherited
+    # identity test): the MR1 input counts burning cells by truthiness.
+    assert cfv.MR1_TRUTHINESS_FIX == 1
 
 
 # --- depot geometry -----------------------------------------------------------
