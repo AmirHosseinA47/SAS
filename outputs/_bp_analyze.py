@@ -411,6 +411,15 @@ def prov_check(d, e, path):
     if "VICTIM_SPAWN_MODE" in ex and eff.get("victim_spawn_mode") != ex["VICTIM_SPAWN_MODE"]:
         why.append("fb3.eff.victim_spawn_mode %s != %s" % (eff.get("victim_spawn_mode"), ex["VICTIM_SPAWN_MODE"]))
     why += bp_switch_check(fb, ex, e["instrument"])
+    # review 3 MINOR-3: detections are parsed from the .stdout.txt only - it must exist and match stdout_sha
+    so = path[:-len(".json")] + ".stdout.txt" if path.endswith(".json") else None
+    if so is None or not os.path.exists(so):
+        why.append("stdout record missing")
+    else:
+        import hashlib as _hl
+        if d.get("stdout_sha") and _hl.sha256(open(so, "rb").read()).hexdigest()[:len(str(d["stdout_sha"]))] != str(
+                d["stdout_sha"]):
+            why.append("stdout record sha differs from stdout_sha")
     kinds = src_check(d.get("src_sha"))
     if not kinds:
         why.append("no src_sha")
@@ -841,6 +850,7 @@ DIG: dict = {}
 INSTH: dict = {}            # (tag, key) -> None (no fb3.inst) | [instrument health problems]
 PROVR: dict = {}            # (tag, key) -> (reasons, kinds, None)
 MISSING: list = []
+CRASHED: list = []          # review 3 MAJOR-2: (tag, key) of every PRESENT run that crashed, refused or not
 BUILT = {"done": False}
 
 
@@ -865,12 +875,14 @@ def build(sections):
             MISSING.append((tag, key))
             continue
         d = R.load_one(p)
+        if d.get("crashed"):
+            CRASHED.append((tag, key))
         why, kinds = prov_check(d, e, p)
         INSTH[(tag, key)] = inst_health(d)
         if e["group"] == "screen":
             arm = e["arm"]
             try:
-                DIG[(tag, key)] = digest(d, tag, key, need_inst=need_inst and arm in BAYES_ARMS,
+                DIG[(tag, key)] = digest(d, tag, key, need_inst=need_inst and e["instrument"],
                                          need_vf=need_vf and arm in ("bpf", "bpp"))
             except Exception as exc:          # a broken record is REFUSED and listed, never skipped silently
                 why = why + ["DIGEST ERROR %s: %s" % (type(exc).__name__, str(exc)[:160])]
@@ -1005,6 +1017,14 @@ def rb_prov():
         except OSError:
             why.append("no .argv")
         s = json.load(open(p, encoding="utf-8"))
+        try:   # review 3 MINOR-5: the shard JSON has no head / source record - it must postdate the head commit
+            import subprocess as _sp
+            ct = int(_sp.run(["git", "-C", WT, "log", "-1", "--format=%ct", "HEAD"], capture_output=True,
+                             text=True, timeout=30).stdout.strip())
+            if os.path.getmtime(p) < ct:
+                why.append("shard older than the head commit")
+        except Exception as exc:
+            why.append("head time check failed %r" % (exc,))
         if s.get("tag") != tag:
             why.append("tag %s" % s.get("tag"))
         if (s.get("params") or {}).get("SEARCHER_UNTUNED") != 1:
@@ -1171,14 +1191,17 @@ def sec_instr():
         verdict("INSTR", "V2 replay", "NOT EVALUATED - INSTRUMENT MODULE MISSING")
         verdict("INSTR", "V3 self-check", "NOT EVALUATED - INSTRUMENT MODULE MISSING")
         return
-    for name, fld in (("V2 replay", "replay"), ("V3 self-check", "self_check")):
+    for name, fld, arms_ in (("V2 replay", "replay", ARMS), ("V3 self-check", "self_check", BAYES_ARMS)):
         tot = ok = 0
         bad = []
         shadows = collections.Counter()
-        for arm in BAYES_ARMS:
+        expected = sum(len(keys_of(tag_of(a, pl))) for a in arms_ for pl in PLACES)
+        for arm in arms_:
             for place in PLACES:
                 tag = tag_of(arm, place)
                 for key, g in sorted(runs(tag).items()):
+                    if fld == "self_check" and arm not in BAYES_ARMS:
+                        continue
                     r = g.get(fld) or {"err": "not computed (INSTR section not selected at build)"}
                     tot += 1
                     good = r.get("err") is None and r.get("ok") is True and r.get("mismatches") == 0
@@ -1192,9 +1215,10 @@ def sec_instr():
                         bad.append("%s_%s %s" % (tag, key, r.get("err") or "ok=%s steps=%s mismatches=%s first=%s%s" % (
                             r.get("ok"), r.get("steps"), r.get("mismatches"), r.get("first"),
                             (" notes %r" % r.get("notes")) if r.get("notes") else "")))
-        v = "PASS" if tot and ok == tot else "FAIL"
-        out("  %-14s %d / %d runs exact (Bayes arms %s, every placement)%s  => %s" % (
-            name, ok, tot, " ".join(BAYES_ARMS),
+        # review 3 MAJOR-3: every expected run must be there - a missing or refused one is not a pass
+        v = ("FAIL" if ok < tot else ("PASS" if tot == expected and tot else "INCOMPLETE %d/%d" % (tot, expected)))
+        out("  %-14s %d / %d runs exact of %d expected (arms %s, every placement)%s  => %s" % (
+            name, ok, tot, expected, " ".join(arms_),
             (" | self-check shadows %s" % dict(shadows)) if fld == "self_check" else "", v))
         for b in bad[:20]:
             out("      " + b)
@@ -1399,10 +1423,15 @@ def _all_tags():
 def sec_invar():
     head("INVAR - crashes, inline violations, warnings 0; co-location (UAV-steps sharing a cell, rows_uav): airborne+"
          "airborne 0, docked+docked 0, airborne over docked reported; COLLISION_RISK|global 0; observer errors reported")
+    crashed = sorted("%s_%s" % tk for tk in CRASHED)
+    out("  CRASHED present runs (every run on disk, refused or not): %d %s  => %s" % (
+        len(crashed), crashed[:12], "PASS" if not crashed else "FAIL"))
+    verdict("INVAR", "crashed (all present runs)", "PASS" if not crashed else "FAIL %d" % len(crashed))
     for tag in _all_tags():
         gs = runs(tag)
         if not gs:
             out("  %-7s %s" % (tag, status_str(tag)))
+            verdict("INVAR", tag, "MISSING")
             continue
         c = collections.Counter()
         kinds = collections.Counter()
@@ -1808,7 +1837,8 @@ def sec_summary():
     for s, item, v in VERD:
         by[(s, v.split(" ")[0])] += 1
         out("  %-7s %-42s %s" % (s, item, v))
-    fails = [x for x in VERD if not str(x[2]).startswith(("PASS", "REPORTED")) and x[0] != "PROV"]
+    # review 3 MAJOR-1: only an exact "PASS" (or a REPORTED line) passes - "PASS INCOMPLETE ..." does not
+    fails = [x for x in VERD if not (str(x[2]) == "PASS" or str(x[2]).startswith("REPORTED")) and x[0] != "PROV"]
     out("  gates not PASS: %d of %d" % (len(fails), sum(1 for x in VERD if x[0] != "PROV")))
 
 

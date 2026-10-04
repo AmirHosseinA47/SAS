@@ -79,7 +79,11 @@ V1 = (("bpv1bd", "fb3bdr", True), ("bpv1bf", "fb3bfr", True), ("bpv1bd2", "fb3bd
       ("bpv1bf2", "fb3bfr2", True), ("bpv1vs", "fb3vs3r", True), ("bpv1ut", "ut2bf", False))
 V1_KEY = "A_E"
 V1_NEW_OFF = ("SEARCHER_TARGETING_FIX=0", "UAV_DOCKED_NOT_OBSTACLE=0")
-V1B = (("bpnfr", "bpf", "r"), ("bpnpr", "bpp", "r"))          # (tag, arm, placement) of the A_E twin
+V1B = (("bpnfr", "bpf", "r"), ("bpnpr", "bpp", "r"),          # (tag, arm, placement) of the A_E twin
+       # review 3 MINOR-2 (added while the screen ran, before any run was read): a fresh with/without twin for every
+       # belief mode - LO (measure only), BD (mode 2 with the fix), GP - so the item-3 risk rule has a fallback for each
+       ("bpndr", "bpd", "r"), ("bpnlr", "bpl", "r"), ("bpngr", "bpg", "r"))
+V1B_ADDED = ("bpndr", "bpnlr", "bpngr")                           # their own wave 'v1bx' (the pool runs 'all' as committed)
 V1B_KEY = "A_E"
 RB = (("bprba", "utRa", "east"), ("bprbb", "utRb", "east"), ("bprbc", "utRc", "east"), ("bprbs", "utRs", "south"))
 RB_SOURCE = "_ut_q_all2.jsonl"
@@ -212,11 +216,13 @@ def rb_entries():
 
 def waves():
     sets = _cells()
-    first = screen_entries(("bpi",), sets) + v1_entries() + v1b_entries(sets)
+    v1b = v1b_entries(sets)
+    first = screen_entries(("bpi",), sets) + v1_entries() + [e for e in v1b if e["tag"] not in V1B_ADDED]
     rb = rb_entries()
     arms = screen_entries(tuple(a for a in ARM_NAMES if a != "bpi"), sets)
     twins = [e for e in arms if (e["arm"], e["place"], e["key"]) in {(a, p, V1B_KEY) for _t, a, p in V1B}]
-    return {"first": first, "arms": arms, "rb": rb, "all": first + rb + arms, "twins": twins}
+    v1bx = [e for e in v1b if e["tag"] in V1B_ADDED]
+    return {"first": first, "arms": arms, "rb": rb, "all": first + rb + arms + v1bx, "twins": twins, "v1bx": v1bx}
 
 
 def entries():
