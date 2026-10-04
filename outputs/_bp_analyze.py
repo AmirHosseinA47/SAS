@@ -228,7 +228,22 @@ def _git(*args):
 
 
 EXPECTED_HEAD = OPTS["head"] or (_git("rev-parse", "HEAD") or "").strip() or "unknown"
-FOLLOW_HEAD = OPTS["head2"] or (_git("rev-parse", "HEAD") or "").strip() or "unknown"   # the follow-up runs' head
+# the follow-up runs' head(s): --head2 A[,B...]. A run that launched after an outputs-only commit records that later
+# head. An extra head is ACCEPTED only if git shows it differs from the first solely in files no run loads (anything
+# outside outputs/, or a file of the probe chain / the instrument / the pool, disqualifies it) - checked here, reported
+# in FOLLOW. The pool and the probe chain load exactly these outputs files:
+RUN_LOADED = ("outputs/_ut_probe.py", "outputs/_fb3_probe.py", "outputs/_fx3_probe.py", "outputs/_mf2_probe.py",
+              "outputs/_sd_probe.py", "outputs/_bp_inst.py", "outputs/_fm2_probe_harness.py", "outputs/_mf2_pool.py")
+FOLLOW_HEADS = [h.strip() for h in (OPTS["head2"] or (_git("rev-parse", "HEAD") or "").strip() or "unknown").split(",")
+                if h.strip()]
+FOLLOW_HEAD = FOLLOW_HEADS[0]
+HEAD_EQUIV: list = []                       # (extra head, accepted, changed files vs the first)
+for _h in FOLLOW_HEADS[1:]:
+    _ch = _git("diff", "--name-only", FOLLOW_HEAD, _h)
+    _files = sorted(x for x in (_ch or "").split() if x)
+    _ok = _ch is not None and all(f.startswith("outputs/") and f not in RUN_LOADED for f in _files)
+    HEAD_EQUIV.append((_h, _ok, _files))
+FOLLOW_HEADS_OK = [FOLLOW_HEAD] + [h for h, ok, _f in HEAD_EQUIV if ok]
 MR1V_HEAD = OPTS["head3"] or (_git("rev-parse", "HEAD") or "").strip() or "unknown"     # the mr1v validation runs' head
 MR1_RECON = {"on": False}                   # the offline MR1 reconstruction runs only for the METRICS section
 PROBE_E, RB_E = Q.entries()
@@ -413,9 +428,9 @@ def prov_check(d, e, path):
     if not _same_path(d.get("repo"), WT):
         why.append("repo %s" % d.get("repo"))
     h = str(d.get("head") or "")
-    want_head = MR1V_HEAD if e["group"] == "mr1v" else FOLLOW_HEAD if e.get("follow") else EXPECTED_HEAD
-    if not (want_head != "unknown" and h.startswith(want_head)):
-        why.append("head %s != %s" % (h[:10], want_head[:10]))
+    want = [MR1V_HEAD] if e["group"] == "mr1v" else FOLLOW_HEADS_OK if e.get("follow") else [EXPECTED_HEAD]
+    if not any(w != "unknown" and h.startswith(w) for w in want):
+        why.append("head %s != %s" % (h[:10], "/".join(w[:10] for w in want)))
     ex, sd = expected_extra(e)
     if d.get("extra_params") != ex:
         why.append("extra_params %s != %s" % (json.dumps(d.get("extra_params"), sort_keys=True),
@@ -1185,8 +1200,10 @@ def rb_prov():
             why.append("no .argv")
         s = json.load(open(p, encoding="utf-8"))
         try:   # review 3 MINOR-5: the shard JSON has no head / source record - it must postdate the head commit
+            # (the EXPECTED head the screen ran on; reading the worktree's current HEAD refused the shards after every
+            # later outputs-only commit - fixed in the follow-up, disclosed in the report's section 13.3)
             import subprocess as _sp
-            ct = int(_sp.run(["git", "-C", WT, "log", "-1", "--format=%ct", "HEAD"], capture_output=True,
+            ct = int(_sp.run(["git", "-C", WT, "log", "-1", "--format=%ct", EXPECTED_HEAD], capture_output=True,
                              text=True, timeout=30).stdout.strip())
             if os.path.getmtime(p) < ct:
                 why.append("shard older than the head commit")
@@ -1486,7 +1503,7 @@ def _recall_tag(arm, place, section="RECALL"):
     if not gs:
         out("  %-7s %s" % (tag, status_str(tag)))
         if place != "u2" and arm != "bpx":
-            verdict(section, tag, "MISSING")
+            verdict(section, tag if section == "RECALL" else "RECALL " + tag, "MISSING")
         return
     c = collections.Counter()
     bad = []
@@ -1529,7 +1546,7 @@ def _recall_tag(arm, place, section="RECALL"):
     if len(bad) > 12:
         out("        ... %d more" % (len(bad) - 12))
     if not v.startswith("REPORTED"):
-        verdict(section, tag, v)
+        verdict(section, tag if section == "RECALL" else "RECALL " + tag, v)
 
 
 def sec_recall():
@@ -1605,7 +1622,7 @@ def _invar_tag(tag, section="INVAR"):
     gs = runs(tag)
     if not gs:
         out("  %-7s %s" % (tag, status_str(tag)))
-        verdict(section, tag, "MISSING")
+        verdict(section, tag if section == "INVAR" else "INVAR " + tag, "MISSING")
         return
     c = collections.Counter()
     kinds = collections.Counter()
@@ -1627,7 +1644,7 @@ def _invar_tag(tag, section="INVAR"):
         " docked+docked %d airborne-over-docked %d | COLLISION_RISK global %d (local %d, reported) | observer"
         " errors %d  => %s%s" % (tag, len(gs), c["crash"], c["viol"], dict(kinds) or "", c["warn"], c["aa"],
                                  c["dd"], c["ad"], c["gcoll"], c["lcoll"], c["obs"], v, inc(tag)))
-    verdict(section, tag, v + ("" if not inc(tag) else " INCOMPLETE"))
+    verdict(section, tag if section == "INVAR" else "INVAR " + tag, v + ("" if not inc(tag) else " INCOMPLETE"))
 
 
 def sec_invar():
@@ -2121,6 +2138,18 @@ def _e1_line(tag):
 def sec_follow():
     head("FOLLOW - the rulings' follow-up (outputs/bayesprep_report.txt section 10, 2026-10-04) at the follow-up head %s"
          % FOLLOW_HEAD[:12])
+    for h, ok, files in HEAD_EQUIV:
+        out("  FOLLOW-UP HEAD %s accepted as code-identical to %s: %s (git diff: %s; files no run loads: outputs/ minus %s)"
+            % (h[:10], FOLLOW_HEAD[:10], "YES" if ok else "NO", files, ", ".join(os.path.basename(x) for x in RUN_LOADED)))
+        verdict("FOLLOW", "head %s == %s for the runs (outputs-only diff)" % (h[:8], FOLLOW_HEAD[:8]),
+                "PASS" if ok else "FAIL")
+    heads_seen = collections.Counter()
+    for (t, k), e in PROBE_E.items():
+        if e.get("follow") and (t, k) in PROVR:
+            d_ = json.load(open(run_path(t, k), encoding="utf-8"))
+            heads_seen[str(d_.get("head") or "")[:10]] += 1
+            del d_
+    out("  follow-up runs by recorded head: %s" % dict(heads_seen))
     out("  (1) IDENTITY at the follow-up head vs the screen run of the same line (b505d036) on every recorded field"
         " (full_diff; fb3 timing / inst / bp_switches excluded; mr compared where both runs have it). R-4 acts only at"
         " SEARCHER_TARGETING 1 (and the Bayes arms' R-1 continuation, which the recall pre-empts); the probe additions"
