@@ -2080,3 +2080,223 @@ NEXT, IN THIS ORDER (13.1):
     building.
   - The commit adding this section is the Part 1 hash that the Part 2 notes and
     _dp_analyze must print (13.1 step 0).
+
+================================================================================
+21. AMENDMENT A1 - SECTION 16 RE-CHECK AT THE MERGED BASE (2026-10-04)
+================================================================================
+B = main f686e932 (tag bayes-prep).  The dispatch branch was merged up to it
+(merge commit 154112fe; 2f0509dc stays the Part 1 hash).  The re-check was done
+read-only by three agents (code and line map; probe chain, defaults and the
+estimator; the handed-over cases).  Nothing was run.  Sections 0-20 are not
+edited; this section amends them where it says so.
+
+21.1 RESULTS.
+  C1  PASS - every cited line re-derives by a uniform shift; no cited code moved
+      inside its function.  wildfire_model.py: +0 for old lines <= 1531, +3 for
+      old 1532-2729, +6 from old 2738.  agents.py: +0 <= 669, +52 for old
+      1140-2184, +70 from old 2204 (all of Victim and Firefighter).
+      common_fixed_variables.py: +1 for old 192-247, +30 from old 248.  RP, RE,
+      AM, the dashboard maps, docs/ and the cited tests (except
+      test_base_station.py) unchanged.  Key points at HEAD: J-pre after WM:2383
+      (end of _run_execution, def 2358); J-post after the revalidation call at
+      WM:5841 (_sync_firefighter_marker_status 5839-5842); generic pairing tail
+      3982-3991; repeated-pair return 3967-3969; first-raise unassign 3971-3980;
+      assign guard 4919-4924; unassign 5017-5086; release relabel 4186-4189, D6
+      4190-4211; event-type function 4444-4456; console set 4421-4432.
+  C2  PASS - no merge hunk falls inside or changes any function the design
+      touches or relies on; AM, RP, RE and _detected_victim_ids unchanged.  The
+      Firefighter and Victim classes are byte-identical.  Indirect effect only:
+      UAV_DOCKED_NOT_OBSTACLE = 1 acts at the defaults (FREE_CELL_DOCKING = 1),
+      so UAV movement and detection timing differ from 25421865 - which is why
+      14.1 re-measures dpR at B.
+  C3  PASS - no name clash.  New accessors go in a block after
+      global_planner_mode() (AG:1673-1686), constants after GLOBAL_PLANNER_MODE
+      (CFV:545).
+  C4  PASS - the UAV docking changes never reach the Firefighter class,
+      firefighter movement or dispatch.
+  C5  PASS - the probe chain is unchanged except _fb3_probe.py (new
+      --instrument and a d["mr"] record in every run, present in all arms).
+      14.3's line composes as written; --instrument is not needed (V1b: value-
+      identical with and without).  The pool validator checks only JSON and the
+      .argv signature; run validity is the analyzer's (as 14.5 says).
+  C6  PASS - B's defaults recorded: SEARCHER_UNTUNED 1, SEARCHER_END_RECALL 1,
+      FF_RELEASE_DETECTED_ONLY 1, SEARCHER_TARGETING 0, SEARCHER_TARGETING_FIX 1
+      (inert at targeting 0), UAV_DOCKED_NOT_OBSTACLE 1 (active), the rest as
+      before.  Identity values: 21.2(d).
+  C7  PASS - fire_arrival_estimate.arrival_time(height, width, burning, wind,
+      params) returns the whole grid (no T(c) function); input today = the TRUE
+      burning set (_fix3b_true_fire), wind = the A4 vector; no RNG, no cache, no
+      writes; cost median 6-7 ms, p95 22-24 ms per call (not 11.4's "about a
+      millisecond").  Measured bias: LATE, median 51 steps ring / 41 uniform
+      over undetected victim-steps whose cell burns - not the at-detection
+      statistic M8 records (21.2(g)).
+  C8  CHANGE - case 4 filled in: 21.2(a).
+  C9  PASS - test_shipped_defaults gains a DISPATCH_* block after its Bayesian
+      lines (test_base_station.py:170-174).
+  C10 PASS - B's failing set is exactly {T5}: 1 failed / 1669 passed
+      (outputs/_bp_fullsuite2.log; no source or test change after it).
+  C11 CHANGE (records, no runs): 21.2(b), 21.2(c).
+  Also checked: both stage orders unchanged; the merge adds no print to the
+  dispatch path; the AST exactly-2 _any_victim_needs_rescue test unchanged
+  (calls at WM:3182, 4202); no dispatch-path code depends on _is_truthy or on
+  any "is True" test (RP:412's _is_truthy is reached only from the MAPE
+  option-scoring chain under RescuePlanner.plan); Fire.burning holds a NUMPY
+  bool after the first tick (AG:104, :125), so J must test burning by
+  truthiness, never by identity with True (21.2(j)).
+
+21.2 CHANGES TO PRE-REGISTERED ITEMS.
+  (a) 14.8 CASE 4 - replaces the placeholder.  Bayesian strategy arms on ring
+      set 1 D_N = seed 9613 (scenario D, wind north, VICTIM_SPAWN_MODE 0, CRN
+      on; mode (a) only; recorded at b505d036, source identical at B).  Two
+      configurations, OFF and ON each, 4 runs: BD = --set SEARCHER_TARGETING=2
+      (the brief's "Bayes-diffusion"; victim_3 detected at 58) and GP = --set
+      GLOBAL_PLANNER_MODE=1 --set SEARCHER_TARGETING=3.  No identity switches
+      (the originals ran at B's defaults).  Tags dpE4d0c, dpE4d1c, dpE4g0c,
+      dpE4g1c.  BF is dispatch-identical to BD up to the divergence and FP has
+      BD's mechanism one frame later: not run.
+      REPRODUCTION (BD): detections victim_2 20, victim_0 26, victim_3 58,
+      victim_1 75; dispatches 20 ff_unit_0->victim_2 (M20), 26
+      ff_unit_1->victim_0 (M34), 55 ff_unit_0->victim_0 (M40), 183
+      ff_unit_0->victim_1 (M69), 260 ff_unit_0->victim_3 (M70).  GP: the same,
+      victim_1 detected at 35.
+      RE-READ (corrects the hand-off): victim_3 waited UNASSIGNED from 58 to 259
+      at her spawn cell (25,3) - not "assigned, never rescued".  ff_unit_1 was
+      route_blocked at 42 at (22,39), held enclosed and died there at 57;
+      ff_unit_0 spent 55-172 on victim_0 (stalled 70-130) with no spare; at 183
+      victim-index order chose victim_1 (d69) over victim_3 (d48); from 260 the
+      unit closed to Manhattan 12-15 and looped while she fled east to (44,1).
+      Recorded result: 3 rescued / 0 dead / 1 firefighter death, never finishes.
+      EXPECT BD: identical to the record up to J-post 155 (at 20 J picks d20
+      over d21; at 26 and 55 one option; no spare at any J point, so Limit 3
+      never acts).  FIRST DIVERGENCE at J-post 156: ff_unit_0, freed by its
+      first route_blocked raise and cleared by the revalidation at (40,24),
+      faces victim_0 at (47,23) ENCLOSED by fire (d infinite for every unit);
+      J binds it to victim_3 (d36; victim_1 d63) where legacy re-bound it to
+      victim_0 at Manhattan 8, into the enclosure.  victim_3 then expected
+      rescued at about 195-215; L3 serves victim_0 (about 45) before victim_1,
+      who shelters in the fireproof NW depot at (1,48).  Either outcome is
+      recorded: (A) victim_0 survives ~90 steps unattended and the run finishes
+      if both later legs run near their route length (otherwise victim_1 is the
+      one left at 360); (B) victim_0 dies while waiting - 3 rescued / 1 dead
+      against legacy's 3 / 0 (K13).  Firefighter deaths stay at 1.  A Limit 2
+      effect, not Limit 3.
+      EXPECT GP: identical up to J-post 54; FIRST DIVERGENCE at J-post 55 - J
+      sends ff_unit_0 to victim_1 (d36) where legacy sent it to victim_0 (d52);
+      victim_1 rescued at about 95 (legacy 255); the order of victim_0 and
+      victim_3 is decided by route around step 100 and is not predicted;
+      firefighter deaths stay at 1.
+      SCREEN CELL (ring set 1 D_N at B's defaults; the Bayesian CUR run: 4
+      rescued, terminal 281, 1 firefighter death): every J decision equals the
+      legacy one (14: d51 over d52; 16, 44, 151: one option; 73: tie 41 = 41
+      broken by L5 toward victim_0, as legacy chose); no spare at any J point.
+      EXPECT dp1 == dp0 on rows_ff, rows_vic and eval (J-only fields and reason
+      strings aside); any difference is diagnosed as an implementation finding.
+  (b) 14.8 ADDITION - UNIFORM SET 1 B_N (seed 9605): RECORDED, NOT DISPATCH, no
+      dpE run.  The lost victim in the strategy arms is victim_3, dead at 210 at
+      (48,37): never detected in BD and RW; detected at 136-138 with every unit
+      bound in BF/GP/FP, no route reaches her from 195 and her cell is unclean
+      from 201 - only pre-emption could have helped (D-14); in BFx the order
+      already equals L3 (capacity after two firefighter deaths; a critical-first
+      order would be needed - section 11; M8 classifies such deaths).  LO-edge's
+      0 of 4: every J decision equals legacy; all three units die by 54 on
+      approach legs (firefighter safety and movement).  CORRECTION to the
+      hand-off: "two of three firefighters die by 60 in every arm" holds only for
+      CUR, the identity arm, LO, LO-edge and BFx (0 in BD/BF/GP, 1 in FP and RW).
+      SCREEN CELL (uniform set 1 B_N at B's defaults = CUR: 4 rescued, terminal
+      201, 3 firefighter deaths, the third after terminal): every J decision
+      equals legacy (12: d53; 17: d25 < 26; 20, 167: one option; 82: 21 < 25 <
+      48; 129: 18 < 53), no spare at any J point.  EXPECT dp1 == dp0.
+  (c) 14.8 ADDITION - FIREFIGHTER (O) RISES in the Bayesian strategy arms:
+      RECORDED, NOT AN EVIDENCE CASE.  12 of 14 comparisons rise, concentrated
+      in ring B_N, per-cell deltas of both signs (a redistribution).  Of 164
+      episodes: 139 approach leg, 15 idle (none while a detected victim waited),
+      10 unbound route_blocked, 0 carry; CUR set 1: 16 of 16 approach.  A free
+      unit existed during 99 of 139 strategy-arm and 13 of 16 CUR approach
+      episodes - the barrier loops of 2.1 that Limit 3 targets.  The strategy
+      arms ship OFF and are not in this screen.
+  (d) 14.8(a) CLERICAL - "the Bayesian round's identity values from its merge
+      notes" is replaced (no merge-notes file exists; the round merged by
+      fast-forward) by: pre-Bayesian originals add --set
+      SEARCHER_TARGETING_FIX=0 --set UAV_DOCKED_NOT_OBSTACLE=0 (arm bpi, 33/33
+      identical); pre-untune originals add --set SEARCHER_UNTUNED=0 --set
+      SEARCHER_TARGETING_FIX=0 --set UAV_DOCKED_NOT_OBSTACLE=0 (V1: fb3bdr,
+      fb3bfr, fb3bdr2, fb3bfr2, fb3vs3r reproduced exactly; FIX=0 is required
+      for SEARCHER_TARGETING 2/3 originals such as case 2); every line adds
+      --repo <checkout>; the original's own --set list and CRN mode are kept.
+  (e) 14.1 CLERICAL - "their _rblatch_camp2_dpGR*_D_*.json and _ffr_rb_dpGR*.log
+      files" is replaced by "their _rblatch_camp2_dpGR*_D_*.json, .json.argv and
+      .json.poollog files" (pool lines log to <out>.poollog).
+      _rblatch_campaign2.py has no --repo and writes beside itself, so each dpGR
+      line runs base<B>/outputs/_rblatch_campaign2.py with cwd and out in
+      base<B>/outputs, and each dpG0 / dpG1 line runs the dispatch worktree's
+      copy.  Case 1 runs as pool lines [<dispatch>/outputs/_ffr_harness.py,
+      --repo, <checkout>, original args] and, with CRN,
+      [<dispatch>/outputs/_fm2_probe_harness.py, same args, --set FM2P_CRN=1]
+      (check fm2p.counters.crn_draws > 0).
+  (f) 14.6 REPORTED ADDITIONS (no gate, threshold or rule changes):
+      G-N  - list every cell where dp1 and dp0 differ in rescued by 2 or more or
+             in firefighter deaths, every cell where all units die, and every
+             cell that switches between "never finishes" and "finishes with a
+             death"; each diagnosed like a G-RB per-seed loss (a run that
+             collapses early is invisible to G-N - the Bayesian round's R-8).
+      G-OF - episode-steps (the sum of episode lengths) and the split of
+             episodes by unit state (approach / carry / idle / route_blocked
+             unbound), per arm and per seed set: with S = 10 equal to the
+             detection window, a stall replacement can end a counted loop but
+             never prevent it being counted; only the margin rule can act
+             earlier.
+  (g) 14.7 M8 BIAS DEFINITION (pinned before any data): for each detected
+      victim, T_fire at detection at its true detection cell - computed by
+      _dp_probe on a fresh copy (arrival_time over set(_fix3b_true_fire()[0]),
+      cfv.wind_vector_from_direction, front_priority_params; outside the J
+      timing windows) - against (i) the first step >= detection at which that
+      cell burns (censored at 360, censored count reported) and (ii) for victims
+      who die, death step - detection step; median and IQR per seed set; never
+      gated, never used by the 25% trigger (which uses the true arrival).
+  (h) 17 ADDITION - K13 MOMENTARY ENCLOSURE: route-aware feasibility (5.3, 5.9)
+      with L1 and no pre-emption (D-14) sends a unit freed by its first
+      route_blocked raise to another victim while its own victim is enclosed for
+      a few steps (cells re-ignite).  Example: case 4, victim_0 enclosed at
+      156-158 and 165-167, 7 cells away; legacy's Manhattan rebind held her until
+      the enclosure opened and she was picked up at 172.  The unit has no way
+      back until another unit frees.  It breaks none of I1-I7 (the unbind is an
+      outside o1 event).  Guarded by S4 (M1c) and S5 (dead pooled).  NEW
+      RECORD-ONLY MEASURE M9 (reported, not gated): for each fill that binds a
+      unit freed by an o1 raise on v to a victim w != v while d(., v) is
+      infinite, record whether v's d became finite within P = 3 frames, and v's
+      outcome.  No design change is made (21.4).
+  (i) PART 3 BASE - if the audit of identity tests ("is True") rules changes to
+      any source or test after f686e932, B for Part 3 (13.1, 14.1) is the
+      post-audit main commit: the dispatch branch is merged up to it, C2, C6 and
+      C10 are re-run there (and every dispatch-path change it makes is
+      re-checked against this design) before the identity wave.
+  (j) IMPLEMENTATION NOTES for Part 2 (no pre-registered item changes): build
+      J's burning set by truthiness (the _fire_cells predicate); one T-J2 or
+      T-J5 fixture sets a real Fire's burning to numpy.bool_(True) so an
+      identity-test builder fails; accessors and constants placed as C3 says;
+      the test_shipped_defaults block after test_base_station.py:174; _dp_probe
+      follows the recipe of the C5 check (outermost runpy layer over _ut_probe;
+      class wraps installed before the model is built; d["dp"] written whatever
+      the rc; no stdout, no warning, no model attribute, no RNG; provenance
+      hashes of joint_dispatch.py, adaptation_manager.py and rescue_executor.py
+      and the effective DISPATCH_* switches recorded in d["dp"]); a crashed dp1
+      JSON is preserved before any relaunch.  Evidence runs now ~18 (14 + 4);
+      throughput measured at 43.5 runs/h: the screen is about 6.2 h plus the
+      suite (1.8 h).
+PAPER: the dispatch round is measured at the merged Bayesian defaults; case 4 is
+cited with its corrected story (a victim waiting unassigned for 202 steps while
+the only unit was stalled elsewhere); the uniform B_N loss and the firefighter
+(O) rise are recorded as not dispatch / not this screen; K13 is a stated cost of
+route-aware feasibility without pre-emption.
+
+21.3 WHAT DOES NOT CHANGE.  The design (sections 4-12), the switches and
+parameters, the tests of 13.3, every gate and threshold of 14.6, the decision
+rule of section 15 and the rulings of section 20.
+
+21.4 STOP.  Per 13.1(2) and section 16, this amendment changes pre-registered
+items (14.1, 14.8, the reported additions to 14.6-14.7, section 17), so the
+round STOPS for confirmation before building.  Open for the maintainer: accept
+A1 as written (recommended) - including K13 as a recorded risk with the
+record-only M9 rather than a design change (the alternative would be to hold a
+freed unit for up to P frames while its own victim is enclosed - a new design
+element that would need its own proof and tests).
