@@ -54,6 +54,27 @@ Sections (PASS / FAIL where a gate; plain numbers otherwise; both directions; re
          victims' detection (_bp_inst.victim_fire), rescued, dead, give-ups, drops, FIRE episodes, T_hat error, fp_ms.
   EXPO   the 4.6(a) exposure table for every arm.     COMP  belief / plan / fp ms, instrument overhead, wall_s.
   PILOT  E1 per run and the paired SD of bpp-bpc and bpf-bpc per placement.
+FOLLOW-UP (maintainer rulings on outputs/bayesprep_report.txt section 10, 2026-10-04; queue waves r5 / lo2, group
+"follow", PROV head = --head2, default the worktree's git HEAD). Written before any follow-up run was read.
+  FOLLOW  (1) IDENTITY at the follow-up head: bp2cr / bp2cu / bp5fr / bp5dr / bp5pr / bp5xr vs the screen run of the
+          same line on every recorded field (full_diff: provenance, fb3 timing / inst / bp_switches and the new top-level
+          mr record excluded; mr is compared where BOTH runs have it), and bp5nfr (no --instrument) vs bp5fr (V1b).
+          (2) R-5: bp_inst v2 on every follow-up instrumented run; V2 replay and V3 on bp5f / bp5d / bp5p / bp5x; the
+          instrument record equals the screen run's except overhead / version / the swept extension, and every swept
+          record's v1 fields equal the screen run's; fix on: every drop_swept / drop_covered record carries the
+          remainder and REPRODUCES the rule (drop_swept: rem_n > 0 and rem_now < rho * rem_issue; drop_covered: rem_n 0);
+          fix off (bp5x): rem_* None.
+          (3) R-4 re-screen: bpe (LO + edge geometry) vs bpc per placement: G-N, searcher G-O, firefighter G-O (the
+          screen's gate rules); RECALL and INVAR for bpe; bpe vs bpl (the screen's LO): E1, never-finishing runs,
+          never-detected victims, edge-band detection, issued anchors at edge distance 4 and reached ON the anchor, the
+          u2 cell D_W. Gates are reported for the record; LO ships OFF like every strategy.
+  METRICS record-only (rulings 2026-10-04), every usable run: M_R1 = mean over UAVs of the model's MR1_LIST (probe mr
+          record; not recorded before the follow-up head); M_R2 = the model's MR2_VALUE and M_R2 AIRBORNE = the same rule
+          over pairs of UAVs neither of which is docked (rtb_docked), from the probe's per-step record, with the pairs
+          with one / both docked; the rule copy is checked against the model's own increment every step, and the
+          analyzer's reconstruction from rows_uav (row t-2 = the pre-move positions of step t; step 1 from the
+          instrument's launch cells) against the probe; time to first detection per victim ('[Victim Detection]').
+          --write also writes outputs/_bp_metrics.jsonl (one row per run).
 """
 from __future__ import annotations
 
@@ -72,11 +93,11 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
 sys.path.insert(0, HERE)
 SECTION_ORDER = ("PROV", "ID", "INSTR", "GATES", "RECALL", "RB", "INVAR", "ITEM5", "BAND", "DW", "FP", "EXPO",
-                 "COMP", "PILOT")
+                 "COMP", "PILOT", "FOLLOW", "METRICS")
 
 
 def _parse_args(argv):
-    o = {"sections": [], "head": None, "write": False, "selftest": False, "samples": []}
+    o = {"sections": [], "head": None, "head2": None, "write": False, "selftest": False, "samples": []}
     i = 0
     while i < len(argv):
         a = argv[i]
@@ -89,12 +110,12 @@ def _parse_args(argv):
             o["samples"].append(argv[i + 1])
             i += 2
             continue
-        if a in ("--section", "--head"):
+        if a in ("--section", "--head", "--head2"):
             if i + 1 >= len(argv):
                 raise SystemExit("%s needs a value" % a)
             v = argv[i + 1]
             i += 2
-        elif a.startswith("--section=") or a.startswith("--head="):
+        elif a.startswith("--section=") or a.startswith("--head=") or a.startswith("--head2="):
             a, v = a.split("=", 1)
             i += 1
         elif a in ("--write", "--selftest"):
@@ -109,7 +130,7 @@ def _parse_args(argv):
         if a == "--section":
             o["sections"] += [s.strip().upper() for s in v.split(",") if s.strip()]
         else:
-            o["head"] = v
+            o[a[2:]] = v
     bad = [s for s in o["sections"] if s not in SECTION_ORDER]
     if bad:
         raise SystemExit("unknown section(s) %s; known: %s" % (bad, " ".join(SECTION_ORDER)))
@@ -194,6 +215,7 @@ def _git(*args):
 
 
 EXPECTED_HEAD = OPTS["head"] or (_git("rev-parse", "HEAD") or "").strip() or "unknown"
+FOLLOW_HEAD = OPTS["head2"] or (_git("rev-parse", "HEAD") or "").strip() or "unknown"   # the follow-up runs' head
 PROBE_E, RB_E = Q.entries()
 
 
@@ -376,8 +398,9 @@ def prov_check(d, e, path):
     if not _same_path(d.get("repo"), WT):
         why.append("repo %s" % d.get("repo"))
     h = str(d.get("head") or "")
-    if not (EXPECTED_HEAD != "unknown" and h.startswith(EXPECTED_HEAD)):
-        why.append("head %s != %s" % (h[:10], EXPECTED_HEAD[:10]))
+    want_head = FOLLOW_HEAD if e.get("follow") else EXPECTED_HEAD
+    if not (want_head != "unknown" and h.startswith(want_head)):
+        why.append("head %s != %s" % (h[:10], want_head[:10]))
     ex, sd = expected_extra(e)
     if d.get("extra_params") != ex:
         why.append("extra_params %s != %s" % (json.dumps(d.get("extra_params"), sort_keys=True),
@@ -466,9 +489,9 @@ def inst_health(d):
         return ["fb3.inst is a %s" % type(ins).__name__]
     bad = []
     mod = inst()
-    want = getattr(mod, "VERSION", None) if mod is not None else None
-    if want is not None and ins.get("version") != want:
-        bad.append("version %r != %r" % (ins.get("version"), want))
+    want = getattr(mod, "VERSIONS_READ", (getattr(mod, "VERSION", None),)) if mod is not None else None
+    if want is not None and ins.get("version") not in want:
+        bad.append("version %r not in %r" % (ins.get("version"), want))
     if ins.get("error_count"):
         bad.append("instrument errors %s: %s" % (ins.get("error_count"), repr((ins.get("errors") or [""])[0])[:120]))
     if ins.get("broken"):
@@ -720,7 +743,13 @@ def issued_digest(d):
     for v in (fb.get("stats") or {}).values():
         for k, n in (v or {}).items():
             stats[k] += int(n or 0)
-    return {"vals": dict(vals), "reach": dict(reach), "stats": dict(stats)}
+    lo = collections.Counter()
+    for r in iss:
+        tx, ty = int(r[2][0]), int(r[2][1])
+        lo["n"] += 1
+        lo["edge4"] += tx in (4, 45) or ty in (4, 45)
+        lo["old_outer"] += tx in (7, 42) or ty in (7, 42)
+    return {"vals": dict(vals), "reach": dict(reach), "stats": dict(stats), "lo": dict(lo)}
 
 
 def dw_digest(d):
@@ -803,6 +832,52 @@ def exposure_digest(d):
     return {k: dict(v) for k, v in c.items()}
 
 
+def _pairs(rows, sd2):
+    """[[uid, x, y, docked], ...] -> [all, airborne, one docked, both docked] pairs at squared distance < sd2 (the model's
+    MR2 rule: Euclidean distance < SECURITY_DISTANCE, each unordered pair once)."""
+    n = [0, 0, 0, 0]
+    for i in range(len(rows)):
+        for j in range(i + 1, len(rows)):
+            a, b = rows[i], rows[j]
+            if a[1] is None or b[1] is None:
+                continue
+            if (a[1] - b[1]) ** 2 + (a[2] - b[2]) ** 2 < sd2:
+                n[0] += 1
+                n[1 + int(bool(a[3])) + int(bool(b[3]))] += 1
+    return n
+
+
+def mr_digest(d):
+    """The record-only metrics of one run (rulings 2026-10-04): the probe's mr record where present, and the
+    analyzer's reconstruction of MR2 from rows_uav (the model counts at the START of step t, before any move: the row
+    recorded after step t-1; step 1 on the instrument's launch cells, docked 0 at launch)."""
+    mr = d.get("mr") if isinstance(d.get("mr"), dict) else None
+    sd = (mr or {}).get("security_distance") or 10
+    sd2 = float(sd) ** 2
+    rows = d.get("rows_uav") or []
+    launch = ((((d.get("fb3") or {}).get("inst") or {}).get("launch") or {}).get("uav_cells")
+              if isinstance((d.get("fb3") or {}).get("inst"), dict) else None)
+    recon = {}
+    if launch:
+        recon[1] = _pairs([[u, x, y, 0] for u, x, y in launch], sd2)
+    for i, r in enumerate(rows[:-1]):
+        recon[i + 2] = _pairs([[u[0], u[1], u[2], u[6]] for u in r], sd2)
+    g = {"recorded": mr is not None, "sd": sd, "recon_steps": len(recon), "recon_step1": 1 in recon,
+         "recon": [sum(v[k] for v in recon.values()) for k in range(4)]}
+    if mr is not None:
+        steps = mr.get("steps") or []
+        m1 = mr.get("mr1_list")
+        g.update(m_r1=statistics.mean(m1) if m1 else None, mr1_list=m1, n_uav=len(rows[0]) if rows else None,
+                 m_r2_model=mr.get("mr2_value"), inc_sum=sum(s[1] for s in steps), n_steps=len(steps),
+                 rule_ok=sum(1 for s in steps if s[1] == s[2]),
+                 m_r2=[sum(s[k] for s in steps) for k in (2, 3, 4, 5)], errors=len(mr.get("errors") or []),
+                 recon_cmp=sum(1 for s in steps if s[0] in recon),
+                 recon_match=sum(1 for s in steps if s[0] in recon and recon[s[0]] == list(s[2:6])),
+                 recon_first_diff=next(([s[0], recon[s[0]], list(s[2:6])] for s in steps
+                                        if s[0] in recon and recon[s[0]] != list(s[2:6])), None))
+    return g
+
+
 def digest(d, tag, key, need_inst=False, need_vf=False):
     g = {"tag": tag, "key": key, "terminal": d.get("terminal_step"), "crashed": d.get("crashed"),
          "eval": {k: (d.get("eval") or {}).get(k) for k in ("rescued", "dead", "firefighter_deaths", "unreachable")},
@@ -823,6 +898,7 @@ def digest(d, tag, key, need_inst=False, need_vf=False):
     g["issued"] = issued_digest(d)
     g["dw"] = dw_digest(d) if key == "D_W" else None
     g["expo"] = exposure_digest(d)
+    g["mr"] = mr_digest(d)
     fb = d.get("fb3") or {}
     g["timing"] = {k: list((v or {}).get("raw") or []) for k, v in (fb.get("timing") or {}).items()}
     ins = fb.get("inst")
@@ -879,7 +955,7 @@ def build(sections):
             CRASHED.append((tag, key))
         why, kinds = prov_check(d, e, p)
         INSTH[(tag, key)] = inst_health(d)
-        if e["group"] == "screen":
+        if e["group"] in ("screen", "follow"):
             arm = e["arm"]
             try:
                 DIG[(tag, key)] = digest(d, tag, key, need_inst=need_inst and e["instrument"],
@@ -1070,7 +1146,8 @@ def first_path(x, y, path=""):
 def full_diff(a, b):
     """Every recorded field but provenance: [field, ...] in the order FIELDS, other top-level, mf2, fx3, fb3, ut."""
     secs = {s for s, _ in SEC_SKIP}
-    top = [k for k in R.FIELDS] + sorted((set(a) | set(b)) - TOP_SKIP - secs - set(R.FIELDS))
+    top = [k for k in R.FIELDS] + sorted((set(a) | set(b)) - TOP_SKIP - secs - set(R.FIELDS)
+                                         - ({"mr"} if not ("mr" in a and "mr" in b) else set()))
     diffs = [k for k in top if a.get(k) != b.get(k)]
     for sec, skip in SEC_SKIP:
         sa, sb = a.get(sec), b.get(sec)
@@ -1246,6 +1323,45 @@ def _ep_lines(tag, gs):
     return lines
 
 
+def _gate_pair(place, arm, ref, section="GATES"):
+    """One gate comparison (arm vs ref at one placement, common cells): G-N, searcher G-O, firefighter G-O."""
+    ta, tr = tag_of(arm, place), tag_of(ref, place)
+    ga, gr = runs(ta), runs(tr)
+    common = sorted(set(ga) & set(gr))
+    if not common:
+        out("  %-6s vs %-6s no common runs (%s | %s)" % (ta, tr, status_str(ta), status_str(tr)))
+        for g in ("G-N", "G-O searcher", "G-O firefighter"):
+            verdict(section, "%s %s vs %s" % (g, ta, tr), "MISSING")
+        return
+    A_, R_ = [ga[k] for k in common], [gr[k] for k in common]
+    na = [k for k in common if not ga[k]["terminal"]]
+    nr = [k for k in common if not gr[k]["terminal"]]
+    ba, pa, aa, fa = _o_sum(A_)
+    br, pr, ar, fr = _o_sum(R_)
+    full = len(common) == 16
+    inc = "" if full else " INCOMPLETE %d/16" % len(common)
+    gn = ("PASS" if len(na) <= len(nr) else "FAIL") + inc
+    go = ("REPORTED (exempt)" if arm == "bpw" else ("PASS" if ba <= br and pa <= pr and aa <= ar else "FAIL")
+          + inc)
+    gf = ("PASS" if fa <= fr else "FAIL") + inc
+    mech = collections.Counter(e[4] for g in A_ for kind in ("broad", "near", "any") for e in g[kind])
+    when = collections.Counter(
+        ("after" if g["last"] is not None and e[1] >= g["last"] else "before")
+        for g in A_ for kind in ("broad", "near", "any") for e in g[kind])
+    out("  %-6s vs %-6s [%s] N %d %s -> %d %s %s | O broad %d->%d near %d->%d any %d->%d %s | ff %d->%d %s"
+        " | target 0: N %s O %s ff %s" % (
+            ta, tr, Q.LABEL[arm], len(nr), nr or "", len(na), na or "", gn, br, ba, pr, pa, ar, aa, go, fr, fa,
+            gf, "met" if not na else "not met", "met" if not (ba or pa or aa) else "not met",
+            "met" if not fa else "not met"))
+    if mech:
+        out("        %s searcher episodes by mechanism %s, %s" % (ta, dict(mech), dict(when)))
+    for ln in _ep_lines(ta, {k: ga[k] for k in common}):
+        out(ln)
+    verdict(section, "G-N %s vs %s" % (ta, tr), gn)
+    verdict(section, "G-O searcher %s vs %s" % (ta, tr), go)
+    verdict(section, "G-O firefighter %s vs %s" % (ta, tr), gf)
+
+
 def sec_gates():
     head("GATES (bayesprep 7.2, D-6): per placement, every arm vs bpc on the same cells and bpc vs bpi. G-N = runs"
          " without terminal_step by 360; G-O searcher = broad / pocket near / pocket anywhere, each must not rise;"
@@ -1254,41 +1370,7 @@ def sec_gates():
         out("  -- placement %s" % place)
         pairs = [("bpc", "bpi")] + [(a, "bpc") for a in ARMS if a not in ("bpi", "bpc")]
         for arm, ref in pairs:
-            ta, tr = tag_of(arm, place), tag_of(ref, place)
-            ga, gr = runs(ta), runs(tr)
-            common = sorted(set(ga) & set(gr))
-            if not common:
-                out("  %-6s vs %-6s no common runs (%s | %s)" % (ta, tr, status_str(ta), status_str(tr)))
-                for g in ("G-N", "G-O searcher", "G-O firefighter"):
-                    verdict("GATES", "%s %s vs %s" % (g, ta, tr), "MISSING")
-                continue
-            A_, R_ = [ga[k] for k in common], [gr[k] for k in common]
-            na = [k for k in common if not ga[k]["terminal"]]
-            nr = [k for k in common if not gr[k]["terminal"]]
-            ba, pa, aa, fa = _o_sum(A_)
-            br, pr, ar, fr = _o_sum(R_)
-            full = len(common) == 16
-            inc = "" if full else " INCOMPLETE %d/16" % len(common)
-            gn = ("PASS" if len(na) <= len(nr) else "FAIL") + inc
-            go = ("REPORTED (exempt)" if arm == "bpw" else ("PASS" if ba <= br and pa <= pr and aa <= ar else "FAIL")
-                  + inc)
-            gf = ("PASS" if fa <= fr else "FAIL") + inc
-            mech = collections.Counter(e[4] for g in A_ for kind in ("broad", "near", "any") for e in g[kind])
-            when = collections.Counter(
-                ("after" if g["last"] is not None and e[1] >= g["last"] else "before")
-                for g in A_ for kind in ("broad", "near", "any") for e in g[kind])
-            out("  %-6s vs %-6s [%s] N %d %s -> %d %s %s | O broad %d->%d near %d->%d any %d->%d %s | ff %d->%d %s"
-                " | target 0: N %s O %s ff %s" % (
-                    ta, tr, Q.LABEL[arm], len(nr), nr or "", len(na), na or "", gn, br, ba, pr, pa, ar, aa, go, fr, fa,
-                    gf, "met" if not na else "not met", "met" if not (ba or pa or aa) else "not met",
-                    "met" if not fa else "not met"))
-            if mech:
-                out("        %s searcher episodes by mechanism %s, %s" % (ta, dict(mech), dict(when)))
-            for ln in _ep_lines(ta, {k: ga[k] for k in common}):
-                out(ln)
-            verdict("GATES", "G-N %s vs %s" % (ta, tr), gn)
-            verdict("GATES", "G-O searcher %s vs %s" % (ta, tr), go)
-            verdict("GATES", "G-O firefighter %s vs %s" % (ta, tr), gf)
+            _gate_pair(place, arm, ref)
     out("  -- the u2 cell D_W (seed 9636), reported per arm (one run; not a gate)")
     ref = runs("bpcu2").get("D_W")
     for arm in ARMS:
@@ -1304,6 +1386,59 @@ def sec_gates():
             out(ln)
 
 
+def _recall_tag(arm, place, section="RECALL"):
+    """The recall end-state check of one targeting arm at one placement (the 1.2 rule)."""
+    tag = tag_of(arm, place)
+    gs = runs(tag)
+    if not gs:
+        out("  %-7s %s" % (tag, status_str(tag)))
+        if place != "u2" and arm != "bpx":
+            verdict(section, tag, "MISSING")
+        return
+    c = collections.Counter()
+    bad = []
+    for k, g in sorted(gs.items()):
+        rc = g["recall"]
+        if not rc.get("has_ut"):
+            c["no_ut"] += 1
+            continue
+        c["runs"] += 1
+        c["all_found"] += rc["all_found"]
+        c["searchers"] += rc["n_searchers"]
+        c["lo"] += rc["lo"]
+        c["post"] += len(rc["post"])
+        for uid, T, arr, lag, iss, lab, idx_ok in rc["trips"]:
+            c["trips"] += 1
+            c["iss_after"] += iss
+            c["lab_after"] += lab
+            c["idx_ok"] += idx_ok
+            c["lag1"] += lag == 1
+            if iss or lab or lag != 1 or not idx_ok:
+                bad.append("%s %s uid %s trigger %d arrival %s lag %s issued>=T %d labels>=T %d index %s" % (
+                    tag, k, uid, T, arr, lag, iss, lab, "ok" if idx_ok else "MISMATCH"))
+        if rc["lo"]:
+            bad.append("%s %s lo_continuation_steps %d" % (tag, k, rc["lo"]))
+        for e in rc["post"]:
+            bad.append("%s %s post-detection episode uid %s %d-%d (%d) %s" % (tag, k, e[0], e[1], e[2], e[3],
+                                                                             e[4]))
+    ok = (c["iss_after"] == 0 and c["lab_after"] == 0 and c["lo"] == 0 and c["lag1"] == c["trips"]
+          and c["post"] == 0 and not c["no_ut"])
+    full = len(gs) == len(keys_of(tag))
+    v = ("PASS" if ok else "FAIL") + ("" if full else " INCOMPLETE %s" % status_str(tag))
+    if arm == "bpx" or place == "u2":
+        v = "REPORTED (%s)" % ("fix-off control" if arm == "bpx" else "single cell")
+    out("  %-7s runs %2d (all victims found in %d) | recall trips %d (row index check ok %d) | trigger = last+1"
+        " %d | issued >= T %d | own labels >= T %d | lo_continuation %d | post-detection episodes %d%s  => %s" % (
+            tag, c["runs"], c["all_found"], c["trips"], c["idx_ok"], c["lag1"], c["iss_after"], c["lab_after"],
+            c["lo"], c["post"], " | NO ut SECTION in %d runs" % c["no_ut"] if c["no_ut"] else "", v))
+    for b in bad[:12]:
+        out("        " + b)
+    if len(bad) > 12:
+        out("        ... %d more" % (len(bad) - 12))
+    if not v.startswith("REPORTED"):
+        verdict(section, tag, v)
+
+
 def sec_recall():
     head("RECALL (bayesprep 1.2 pre-registered check) - every targeting arm: per searcher with a recall trip (ut.recall):"
          " issued-log entries and own-strategy exec labels (rows_uav u[8], row i = step i+1) at a step >= its trigger"
@@ -1311,55 +1446,7 @@ def sec_recall():
          " the fix-off control, reported only.")
     for arm in TARGETING_ARMS:
         for place in PLACES:
-            tag = tag_of(arm, place)
-            gs = runs(tag)
-            if not gs:
-                out("  %-7s %s" % (tag, status_str(tag)))
-                if place != "u2" and arm != "bpx":
-                    verdict("RECALL", tag, "MISSING")
-                continue
-            c = collections.Counter()
-            bad = []
-            for k, g in sorted(gs.items()):
-                rc = g["recall"]
-                if not rc.get("has_ut"):
-                    c["no_ut"] += 1
-                    continue
-                c["runs"] += 1
-                c["all_found"] += rc["all_found"]
-                c["searchers"] += rc["n_searchers"]
-                c["lo"] += rc["lo"]
-                c["post"] += len(rc["post"])
-                for uid, T, arr, lag, iss, lab, idx_ok in rc["trips"]:
-                    c["trips"] += 1
-                    c["iss_after"] += iss
-                    c["lab_after"] += lab
-                    c["idx_ok"] += idx_ok
-                    c["lag1"] += lag == 1
-                    if iss or lab or lag != 1 or not idx_ok:
-                        bad.append("%s %s uid %s trigger %d arrival %s lag %s issued>=T %d labels>=T %d index %s" % (
-                            tag, k, uid, T, arr, lag, iss, lab, "ok" if idx_ok else "MISMATCH"))
-                if rc["lo"]:
-                    bad.append("%s %s lo_continuation_steps %d" % (tag, k, rc["lo"]))
-                for e in rc["post"]:
-                    bad.append("%s %s post-detection episode uid %s %d-%d (%d) %s" % (tag, k, e[0], e[1], e[2], e[3],
-                                                                                     e[4]))
-            ok = (c["iss_after"] == 0 and c["lab_after"] == 0 and c["lo"] == 0 and c["lag1"] == c["trips"]
-                  and c["post"] == 0 and not c["no_ut"])
-            full = len(gs) == len(keys_of(tag))
-            v = ("PASS" if ok else "FAIL") + ("" if full else " INCOMPLETE %s" % status_str(tag))
-            if arm == "bpx" or place == "u2":
-                v = "REPORTED (%s)" % ("fix-off control" if arm == "bpx" else "single cell")
-            out("  %-7s runs %2d (all victims found in %d) | recall trips %d (row index check ok %d) | trigger = last+1"
-                " %d | issued >= T %d | own labels >= T %d | lo_continuation %d | post-detection episodes %d%s  => %s" % (
-                    tag, c["runs"], c["all_found"], c["trips"], c["idx_ok"], c["lag1"], c["iss_after"], c["lab_after"],
-                    c["lo"], c["post"], " | NO ut SECTION in %d runs" % c["no_ut"] if c["no_ut"] else "", v))
-            for b in bad[:12]:
-                out("        " + b)
-            if len(bad) > 12:
-                out("        ... %d more" % (len(bad) - 12))
-            if not v.startswith("REPORTED"):
-                verdict("RECALL", tag, v)
+            _recall_tag(arm, place)
 
 
 def sec_rb():
@@ -1420,6 +1507,36 @@ def _all_tags():
     return [tag_of(a, p) for a in ARMS for p in PLACES]
 
 
+def _invar_tag(tag, section="INVAR"):
+    """The invariants of one tag (crash, inline violations, warnings, co-location, global COLLISION_RISK)."""
+    gs = runs(tag)
+    if not gs:
+        out("  %-7s %s" % (tag, status_str(tag)))
+        verdict(section, tag, "MISSING")
+        return
+    c = collections.Counter()
+    kinds = collections.Counter()
+    for g in gs.values():
+        c["crash"] += bool(g["crashed"])
+        c["viol"] += g["inv"]["viol"]
+        kinds.update(g["inv"]["viol_kinds"])
+        c["warn"] += g["inv"]["warn"]
+        c["obs"] += g["inv"]["obs_err"]
+        aa, dd, ad = g["inv"]["coloc"]
+        c["aa"] += aa
+        c["dd"] += dd
+        c["ad"] += ad
+        c["gcoll"] += g["alarms"].get("COLLISION_RISK|global", 0)
+        c["lcoll"] += g["alarms"].get("COLLISION_RISK|local", 0)
+    ok = not (c["crash"] or c["viol"] or c["warn"] or c["aa"] or c["dd"] or c["gcoll"])
+    v = "PASS" if ok else "FAIL"
+    out("  %-7s runs %2d | crashed %d | inline violations %d %s | warnings %d | co-location airborne+airborne %d"
+        " docked+docked %d airborne-over-docked %d | COLLISION_RISK global %d (local %d, reported) | observer"
+        " errors %d  => %s%s" % (tag, len(gs), c["crash"], c["viol"], dict(kinds) or "", c["warn"], c["aa"],
+                                 c["dd"], c["ad"], c["gcoll"], c["lcoll"], c["obs"], v, inc(tag)))
+    verdict(section, tag, v + ("" if not inc(tag) else " INCOMPLETE"))
+
+
 def sec_invar():
     head("INVAR - crashes, inline violations, warnings 0; co-location (UAV-steps sharing a cell, rows_uav): airborne+"
          "airborne 0, docked+docked 0, airborne over docked reported; COLLISION_RISK|global 0; observer errors reported")
@@ -1428,32 +1545,7 @@ def sec_invar():
         len(crashed), crashed[:12], "PASS" if not crashed else "FAIL"))
     verdict("INVAR", "crashed (all present runs)", "PASS" if not crashed else "FAIL %d" % len(crashed))
     for tag in _all_tags():
-        gs = runs(tag)
-        if not gs:
-            out("  %-7s %s" % (tag, status_str(tag)))
-            verdict("INVAR", tag, "MISSING")
-            continue
-        c = collections.Counter()
-        kinds = collections.Counter()
-        for g in gs.values():
-            c["crash"] += bool(g["crashed"])
-            c["viol"] += g["inv"]["viol"]
-            kinds.update(g["inv"]["viol_kinds"])
-            c["warn"] += g["inv"]["warn"]
-            c["obs"] += g["inv"]["obs_err"]
-            aa, dd, ad = g["inv"]["coloc"]
-            c["aa"] += aa
-            c["dd"] += dd
-            c["ad"] += ad
-            c["gcoll"] += g["alarms"].get("COLLISION_RISK|global", 0)
-            c["lcoll"] += g["alarms"].get("COLLISION_RISK|local", 0)
-        ok = not (c["crash"] or c["viol"] or c["warn"] or c["aa"] or c["dd"] or c["gcoll"])
-        v = "PASS" if ok else "FAIL"
-        out("  %-7s runs %2d | crashed %d | inline violations %d %s | warnings %d | co-location airborne+airborne %d"
-            " docked+docked %d airborne-over-docked %d | COLLISION_RISK global %d (local %d, reported) | observer"
-            " errors %d  => %s%s" % (tag, len(gs), c["crash"], c["viol"], dict(kinds) or "", c["warn"], c["aa"],
-                                     c["dd"], c["ad"], c["gcoll"], c["lcoll"], c["obs"], v, inc(tag)))
-        verdict("INVAR", tag, v + ("" if not inc(tag) else " INCOMPLETE"))
+        _invar_tag(tag)
 
 
 def _sum_item5(gs):
@@ -1842,6 +1934,251 @@ def sec_summary():
     out("  gates not PASS: %d of %d" % (len(fails), sum(1 for x in VERD if x[0] != "PROV")))
 
 
+# ================================================================================================ follow-up (rulings)
+V1_SWEPT_KEYS = ("kind", "cov", "mot", "bo", "since", "n", "disc_issue", "disc_now")
+METRIC_ROWS: list = []
+
+
+def _entry_of(tag, key):
+    return PROBE_E.get((tag, key))
+
+
+def _inst_minus(d, drop=("overhead", "version", "swept")):
+    ins = (d.get("fb3") or {}).get("inst") or {}
+    return {k: v for k, v in ins.items() if k not in drop}
+
+
+def _r5_check(tag, key, ref):
+    """Ruling R-5 on one instrumented follow-up run: (verdict, line, problems)."""
+    e = _entry_of(tag, key)
+    d = load(tag, key)
+    dr = R.load_one(run_path(ref, key)) if os.path.exists(run_path(ref, key)) else None
+    if d is None or dr is None:
+        return "MISSING", "%s_%s or %s_%s missing" % (tag, key, ref, key), []
+    ins = (d.get("fb3") or {}).get("inst") or {}
+    ir = (dr.get("fb3") or {}).get("inst") or {}
+    g = DIG.get((tag, key)) or {}
+    fix = expected_extra(e)[0].get("SEARCHER_TARGETING_FIX") != 0
+    rho = float(((d.get("fb3") or {}).get("switches") or {}).get("SEARCHER_TARGETING_SWEPT_RHO") or 0.25)
+    bad = []
+    if ins.get("version") != "bp_inst v2":
+        bad.append("version %r (the follow-up head records bp_inst v2)" % ins.get("version"))
+    if INSTH.get((tag, key)):
+        bad.append("instrument health %s" % INSTH[(tag, key)])
+    rp, sc = g.get("replay") or {}, g.get("self_check") or {}
+    if not rp.get("ok"):
+        bad.append("V2 replay %s" % {k: rp.get(k) for k in ("steps", "mismatches", "err", "first")})
+    if not sc.get("ok"):
+        bad.append("V3 %s" % sc.get("err"))
+    a_, b_ = _inst_minus(d), _inst_minus(dr)
+    diffk = sorted(k for k in set(a_) | set(b_) if a_.get(k) != b_.get(k))
+    if diffk:
+        bad.append("instrument record differs from %s_%s in %s | first %s" % (
+            ref, key, diffk, first_path(a_.get(diffk[0]), b_.get(diffk[0]), diffk[0])))
+    sw, swr = ins.get("swept") or [], ir.get("swept") or []
+    v1 = [[r[0], r[1], r[2], {k: r[3].get(k) for k in V1_SWEPT_KEYS}] for r in sw]
+    if v1 != swr:
+        bad.append("swept v1 fields differ from %s_%s (%d vs %d records)" % (ref, key, len(sw), len(swr)))
+    c = collections.Counter()
+    shares, ratios = [], []
+    for _st, _uid, _tgt, r in sw:
+        c[r["kind"]] += 1
+        if fix:
+            if r.get("rem_n") is None or r.get("rem_issue") is None or r.get("rem_now") is None:
+                c["rem_missing"] += 1
+                continue
+            if r["kind"] == "drop_swept":
+                c["rule_ok"] += int(r["rem_n"] > 0 and r["rem_issue"] > 0 and r["rem_now"] < rho * r["rem_issue"])
+                if r.get("disc_n"):
+                    shares.append(r["rem_n"] / float(r["disc_n"]))
+                ratios.append(r["rem_now"] / r["rem_issue"])
+            else:
+                c["rule_ok"] += int(r["rem_n"] == 0)
+        else:
+            c["rule_ok"] += int(all(r.get(k) is None for k in ("rem_n", "rem_issue", "rem_now")))
+    n = len(sw)
+    if c["rule_ok"] != n:
+        bad.append("the remainder record reproduces the rule in %d of %d records (fields missing in %d)" % (
+            c["rule_ok"], n, c["rem_missing"]))
+    if n == 0:
+        bad.append("no drop_swept / drop_covered record: nothing validated")
+    v = "PASS" if not bad else "FAIL"
+    line = ("%s_%s [%s, fix %s, rho %g] swept records %d %s | V2 %s | V3 %s | rule reproduced %d / %d | remainder share"
+            " of the disc median %s, rem_now / rem_issue median %s (< rho)" % (
+                tag, key, Q.LABEL.get(e["arm"], e["arm"]), int(fix), rho, n,
+                dict((k, c[k]) for k in ("drop_swept", "drop_covered") if c[k]), "ok" if rp.get("ok") else "FAIL",
+                "ok" if sc.get("ok") else "FAIL", c["rule_ok"], n,
+                fmt(med(shares), "%.2f") if fix else "n/a (fix off)", fmt(med(ratios), "%.3f") if fix else "n/a"))
+    del d, dr
+    return v, line, bad
+
+
+def _e1_line(tag):
+    gs = runs(tag)
+    e = [_e1(g) for g in gs.values()]
+    e = [x for x in e if x is not None]
+    never = sum(1 for g in gs.values() for t in g["det"].values() if t is None)
+    nofin = sorted(k for k, g in gs.items() if not g["terminal"])
+    return gs, "E1 mean %s | never-finishing %d %s | victims never detected %d | rescued %d dead %d" % (
+        fmt(statistics.mean(e) if e else None), len(nofin), nofin or "", never,
+        sum(int(g["eval"].get("rescued") or 0) for g in gs.values()), sum(int(g["eval"].get("dead") or 0)
+                                                                            for g in gs.values()))
+
+
+def sec_follow():
+    head("FOLLOW - the rulings' follow-up (outputs/bayesprep_report.txt section 10, 2026-10-04) at the follow-up head %s"
+         % FOLLOW_HEAD[:12])
+    out("  (1) IDENTITY at the follow-up head vs the screen run of the same line (b505d036) on every recorded field"
+        " (full_diff; fb3 timing / inst / bp_switches excluded; mr compared where both runs have it). R-4 acts only at"
+        " SEARCHER_TARGETING 1 (and the Bayes arms' R-1 continuation, which the recall pre-empts); the probe additions"
+        " are record-only.")
+    for tag, arm, place, key, instrument, ref in Q.FOLLOW_TWINS:
+        ok, ln = compare_pair(tag, key, ref, key, full_diff)
+        v = "PASS" if ok else ("MISSING" if ok is None else "FAIL")
+        out("    %s  => %s" % (ln, v))
+        verdict("FOLLOW", "ID %s_%s vs %s_%s" % (tag, key, ref, key), v)
+    out("  (2) R-5 - the remainder record (bp_inst v2): V2 replay, V3, the record vs the screen run, the rule reproduced")
+    for tag, arm, place, key, instrument, ref in Q.FOLLOW_TWINS:
+        if not (instrument and tag.startswith("bp5")):
+            continue
+        if not usable(tag, key):
+            out("    %s_%s %s" % (tag, key, status_str(tag)))
+            verdict("FOLLOW", "R5 %s_%s" % (tag, key), "MISSING")
+            continue
+        v, line, bad = _r5_check(tag, key, ref)
+        out("    %s  => %s" % (line, v))
+        for b in bad:
+            out("        " + b)
+        verdict("FOLLOW", "R5 %s_%s" % (tag, key), v)
+    out("  (3) R-4 RE-SCREEN - bpe (LO with the edge geometry, follow-up head) vs bpc (gates, the screen's rules) and vs"
+        " bpl (the screen's LO, b505d036; same seeds, CRN)")
+    for place in ("r", "u"):
+        out("  -- placement %s" % place)
+        _gate_pair(place, "bpe", "bpc", section="FOLLOW")
+        _recall_tag("bpe", place, section="FOLLOW")
+        for arm in ("bpe", "bpl", "bpc"):
+            tag = tag_of(arm, place)
+            gs, ln = _e1_line(tag)
+            out("    %-6s [%s] runs %d%s | %s" % (tag, Q.LABEL[arm], len(gs), inc(tag), ln))
+            grp = collections.defaultdict(list)
+            for g in gs.values():
+                for vid, p in g["band"].items():
+                    if p["eligible"]:
+                        grp["traj band" if p["band_traj"] else "traj non-band"].append(p["det"])
+                        grp["spawn band" if p["spawn_band"] else "spawn non-band"].append(p["det"])
+            out("        detection " + " | ".join("%s %s" % (k, _det_summary(grp[k])) for k in (
+                "traj band", "traj non-band", "spawn band", "spawn non-band")))
+            if arm in ("bpe", "bpl"):
+                lo, reach = collections.Counter(), collections.Counter()
+                for g in gs.values():
+                    lo.update(g["issued"].get("lo") or {})
+                    reach.update(g["issued"]["reach"])
+                n_r = sum(reach.get(cl + "|n", 0) for cl in ("interior", "outer", "corner"))
+                on = sum(reach.get(cl + "|on", 0) for cl in ("interior", "outer", "corner"))
+                m2 = sum(reach.get(cl + "|m2", 0) for cl in ("interior", "outer", "corner"))
+                out("        issued anchors %d | at edge distance 4 (x or y in 4 / 45) %d | at the fix3b outer anchors"
+                    " (7 / 42) %d | reached ON the anchor %s, within Manhattan 2 %s" % (
+                        lo.get("n", 0), lo.get("edge4", 0), lo.get("old_outer", 0),
+                        fmt(on / n_r if n_r else None, "%.2f"), fmt(m2 / n_r if n_r else None, "%.2f")))
+        ge, gl = runs(tag_of("bpe", place)), runs(tag_of("bpl", place))
+        common = sorted(set(ge) & set(gl))
+        pr = collections.defaultdict(list)
+        cells = []
+        for k in common:
+            for vid, pe in ge[k]["band"].items():
+                pl = gl[k]["band"].get(vid)
+                if pl is None or not (pe["eligible"] and pl["eligible"]):
+                    continue
+                dlt = _cens(pe["det"]) - _cens(pl["det"])
+                pr["all"].append(dlt)
+                pr["spawn band" if pl["spawn_band"] else "spawn non-band"].append(dlt)
+                pr["traj band (bpl run)" if pl["band_traj"] else "traj non-band (bpl run)"].append(dlt)
+            if bool(ge[k]["terminal"]) != bool(gl[k]["terminal"]):
+                cells.append("%s: bpl terminal %s -> bpe %s" % (k, gl[k]["terminal"], ge[k]["terminal"]))
+        out("    PAIRED bpe%s - bpl%s per victim (same cell and victim, eligible in both; censored at %d): %d cells" % (
+            place, place, HMAX, len(common)))
+        for k in ("all", "spawn band", "spawn non-band", "traj band (bpl run)", "traj non-band (bpl run)"):
+            v = pr[k]
+            if v:
+                out("        %-24s n %3d mean %+6.1f median %+6.1f | bpe earlier %d later %d equal %d" % (
+                    k, len(v), statistics.mean(v), statistics.median(v), sum(x < 0 for x in v),
+                    sum(x > 0 for x in v), sum(x == 0 for x in v)))
+        out("        finishing changed: %s" % (cells or "none"))
+    out("  -- the u2 cell D_W (seed 9636)")
+    for tag in ("bpeu2", "bplu2", "bpcu2"):
+        g = runs(tag).get("D_W")
+        out(_dw_line(tag, g) if g else "  %-9s %s" % (tag, status_str(tag)))
+    out("  -- INVARIANTS of every follow-up tag")
+    for tag in ["bper", "bpeu", "bpeu2"] + [t[0] for t in Q.FOLLOW_TWINS]:
+        _invar_tag(tag, section="FOLLOW")
+
+
+def sec_metrics():
+    head("METRICS - record-only (rulings 2026-10-04): M_R1 = mean over UAVs of the model's MR1_LIST per run; M_R2 = the"
+         " model's MR2_VALUE; M_R2 AIRBORNE = pairs under SECURITY_DISTANCE with neither UAV docked (rtb_docked), with"
+         " the pairs with one / both docked; T_first = first '[Victim Detection]' step per victim (None = never). mr ="
+         " the probe's record (runs from the follow-up head on); recon = the analyzer's reconstruction from rows_uav")
+    del METRIC_ROWS[:]
+    tags = []
+    for (t, _k) in PROBE_E:
+        if t not in tags:
+            tags.append(t)
+    follow_tags = {e["tag"] for e in PROBE_E.values() if e.get("follow")}
+    chk = collections.Counter()
+    for tag in tags:
+        gs = runs(tag)
+        if not gs:
+            continue
+        rec = {k: g for k, g in gs.items() if g["mr"]["recorded"]}
+        m1 = [g["mr"]["m_r1"] for g in rec.values() if g["mr"].get("m_r1") is not None]
+        m2 = [g["mr"]["m_r2"] for g in rec.values()]
+        rc = [g["mr"]["recon"] for g in gs.values()]
+        nv = sum(len(g["det"]) for g in gs.values())
+        nn = sum(1 for g in gs.values() for t in g["det"].values() if t is None)
+        out("  %-7s runs %2d | mr recorded %2d | M_R1 mean %s | M_R2 mean: model %s, airborne %s, one docked %s, both"
+            " docked %s | recon (all runs) all %s airborne %s | T_first recorded for %d victims, %d never detected%s" % (
+                tag, len(gs), len(rec), fmt(statistics.mean(m1) if m1 else None, "%.3f"),
+                fmt(statistics.mean(x[0] for x in m2) if m2 else None),
+                fmt(statistics.mean(x[1] for x in m2) if m2 else None),
+                fmt(statistics.mean(x[2] for x in m2) if m2 else None),
+                fmt(statistics.mean(x[3] for x in m2) if m2 else None),
+                fmt(statistics.mean(x[0] for x in rc)), fmt(statistics.mean(x[1] for x in rc)), nv, nn, inc(tag)))
+        for k, g in sorted(gs.items()):
+            m = g["mr"]
+            row = {"tag": tag, "key": k, "follow": tag in follow_tags, "mr_recorded": m["recorded"],
+                   "M_R1": m.get("m_r1"), "MR1_LIST": m.get("mr1_list"), "M_R2_model": m.get("m_r2_model"),
+                   "M_R2_all": (m.get("m_r2") or [None])[0], "M_R2_airborne": (m.get("m_r2") or [None, None])[1],
+                   "M_R2_one_docked": (m.get("m_r2") or [None] * 3)[2],
+                   "M_R2_both_docked": (m.get("m_r2") or [None] * 4)[3],
+                   "recon_all": m["recon"][0], "recon_airborne": m["recon"][1], "recon_step1": m["recon_step1"],
+                   "T_first": dict(g["det"])}
+            METRIC_ROWS.append(row)
+            if tag in follow_tags:
+                chk["runs"] += 1
+                ok = (m["recorded"] and not m.get("errors") and m.get("n_steps") == HMAX and m.get("rule_ok") == HMAX
+                      and m.get("inc_sum") == m.get("m_r2_model")
+                      and m.get("recon_cmp") == m["recon_steps"] == (HMAX if m["recon_step1"] else HMAX - 1)
+                      and m.get("recon_match") == m.get("recon_cmp") and m.get("mr1_list") is not None
+                      and len(m["mr1_list"]) == m.get("n_uav") and len(g["det"]) > 0)
+                chk["ok"] += ok
+                if not ok:
+                    out("      RECORD CHECK FAILED %s_%s: recorded %s errors %s steps %s rule_ok %s inc_sum %s model %s"
+                        " recon %s/%s first diff %s mr1 %s n_uav %s victims %d" % (
+                            tag, k, m["recorded"], m.get("errors"), m.get("n_steps"), m.get("rule_ok"), m.get("inc_sum"),
+                            m.get("m_r2_model"), m.get("recon_match"), m.get("recon_cmp"), m.get("recon_first_diff"),
+                            m.get("mr1_list"), m.get("n_uav"), len(g["det"])))
+    n_follow = sum(1 for e in PROBE_E.values() if e.get("follow"))
+    v = ("PASS" if chk["runs"] == chk["ok"] == n_follow else
+         "FAIL %d of %d" % (chk["runs"] - chk["ok"], chk["runs"]) if chk["ok"] < chk["runs"] else
+         "INCOMPLETE %d / %d" % (chk["runs"], n_follow))
+    out("  RECORD CHECK, every follow-up run: the mr record present with 0 observer errors, 360 steps, the rule copy ="
+        " the model's own MR2 increment on every step, the increments sum to MR2_VALUE, the analyzer's rows_uav"
+        " reconstruction = the probe on every step (step 1 from the launch cells; not reconstructable without"
+        " --instrument), MR1_LIST one entry per UAV, T_first"
+        " for every victim: %d / %d runs  => %s" % (chk["ok"], chk["runs"], v))
+    verdict("METRICS", "recorded in every follow-up run", v)
+
+
 # ================================================================================================ selftest
 def sec_selftest():
     head("SELFTEST - aliases %s" % ", ".join("%s<-%s" % (k, v) for k, v in sorted(ALIAS.items())))
@@ -1960,13 +2297,13 @@ def sec_selftest():
 # ================================================================================================ main
 SECTIONS = {"PROV": sec_prov, "ID": sec_id, "INSTR": sec_instr, "GATES": sec_gates, "RECALL": sec_recall,
             "RB": sec_rb, "INVAR": sec_invar, "ITEM5": sec_item5, "BAND": sec_band, "DW": sec_dw, "FP": sec_fp,
-            "EXPO": sec_expo, "COMP": sec_comp, "PILOT": sec_pilot}
+            "EXPO": sec_expo, "COMP": sec_comp, "PILOT": sec_pilot, "FOLLOW": sec_follow, "METRICS": sec_metrics}
 
 
 def main() -> int:
     names = [s for s in SECTION_ORDER if s in OPTS["sections"]] if OPTS["sections"] else list(SECTION_ORDER)
-    out("bayesprep screen analysis | worktree %s | expected head %s | sections %s%s" % (
-        REPO, EXPECTED_HEAD[:12], " ".join(names), " | SELFTEST" if SELFTEST else ""))
+    out("bayesprep screen analysis | worktree %s | expected head %s | follow-up head %s | sections %s%s" % (
+        REPO, EXPECTED_HEAD[:12], FOLLOW_HEAD[:12], " ".join(names), " | SELFTEST" if SELFTEST else ""))
     if SELFTEST:
         sec_selftest()
     if any(n not in ("RB",) for n in names):
@@ -1978,6 +2315,12 @@ def main() -> int:
     for n in names:
         SECTIONS[n]()
     sec_summary()
+    if OPTS["write"] and METRIC_ROWS:
+        mpath = os.path.join(HERE, "_bp_metrics.jsonl")
+        with open(mpath, "w", encoding="utf-8", newline="\n") as fh:
+            for row in METRIC_ROWS:
+                fh.write(json.dumps(row, sort_keys=True) + "\n")
+        print("written %s (%d rows)" % (mpath, len(METRIC_ROWS)))
     if OPTS["write"]:
         path = os.path.join(HERE, "_bp_analysis.txt")
         with open(path, "w", encoding="utf-8", newline="\n") as fh:
