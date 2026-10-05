@@ -489,7 +489,89 @@ def prov_check(d, e, path):
     bad = sorted(rel for rel, k in kinds.items() if k in ("MISMATCH", "MISSING"))
     if bad:
         why.append("src_sha differs: %s" % bad)
+    why += istrue_switch_refusals(d)
     return why, kinds
+
+
+# ---- prereg amendment 19.11 (outputs/fix3b_part1.txt; the isTrue round, outputs/isTrue_report.txt section 3) ----------
+# (b) at a head that carries F-1 (MR1_TRUTHINESS_FIX ships 1) the model's MR1 IS the corrected count: its mr1_list
+#     must equal the probe's CORRECTED accumulation bit for bit, and the analyzer STOPS on any mismatch (mr1_digest).
+#     Runs from heads without F-1 (every bayesprep run) keep the literal rule, mr1_literal_ok, unchanged.
+#     It FAILS CLOSED: a run whose head PROV accepts but git cannot place also STOPS the analyzer. PROV prints how many
+#     runs took each path (MR1B).
+# (c) no run may set either isTrue switch: such a run is REFUSED (prov_check, and rb_prov for the rb shards). (c)'s head
+#     clause is PROV's head rule: every run must carry the analysis head (--head), so with the measurement round
+#     analysed at its post-merge head a run from an older head is refused.
+ISTRUE_SWITCHES = ("MR1_TRUTHINESS_FIX", "NUMPY_SCALAR_FLAGS")
+ISTRUE_F1 = "fef52103517d76b931366ed1951fbcf16ea5a410"      # isTrue F-1: UAV.surrounding_states counts by truthiness
+_F1_PLACED: dict = {}                       # head -> True / False; a failed git call is never cached
+MR1B = collections.Counter()                # 19.11 (b): how many digested runs took each path
+
+
+def analysis_head(h):
+    """True iff head h passes PROV's head rule for some group (the analysis head, a follow-up head, the mr1v head)."""
+    h = str(h or "")
+    return any(w and w != "unknown" and h.startswith(w) for w in [EXPECTED_HEAD] + list(FOLLOW_HEADS_OK) + [MR1V_HEAD])
+
+
+def istrue_switch_refusals(d):
+    """19.11 (c): one REFUSED reason per isTrue switch the run sets (its --set dict, or the params it recorded),
+    whatever the value; [] when it sets neither."""
+    ex = d.get("extra_params") if isinstance(d.get("extra_params"), dict) else {}
+    pa = d.get("params") if isinstance(d.get("params"), dict) else {}
+    return ["19.11 (c): the run sets the isTrue switch %s" % k for k in ISTRUE_SWITCHES if k in ex or k in pa]
+
+
+def head_has_f1(h):
+    """True iff git places the isTrue F-1 commit in the history of head h, False if it does not, None if git cannot
+    place h (no head, an unknown object, or no git)."""
+    h = str(h or "").strip()
+    if not h:
+        return None
+    if h not in _F1_PLACED:
+        try:
+            rc = subprocess.run(["git", "-C", REPO, "merge-base", "--is-ancestor", ISTRUE_F1, h],
+                                capture_output=True, timeout=120).returncode
+        except Exception:
+            rc = None
+        if rc not in (0, 1):
+            return None                     # not cached: the next call asks git again
+        _F1_PLACED[h] = rc == 0
+    return _F1_PLACED[h]
+
+
+def mr1_corrected_check(d, mr, has_f1, accepted=False):
+    """19.11 (b) for one run. Returns True when checked and equal; None when the rule does not apply: a run that sets
+    an isTrue switch (REFUSED by PROV, 19.11 (c)), a head without F-1 (the literal rule applies), or a head git cannot
+    place that PROV refuses (accepted False). STOPS the analyzer (SystemExit) when the model's mr1_list is not
+    bit-equal to the probe's corrected accumulation, when the run has no MR1 record to check, or when git cannot place
+    the head of a run PROV accepts (fails closed)."""
+    run = "%s (head %s)" % (d.get("tag") or "a run", str(d.get("head") or "")[:10])
+    if istrue_switch_refusals(d):
+        MR1B["refused: sets an isTrue switch"] += 1
+        return None
+    if has_f1 is False:
+        MR1B["head without F-1: literal rule"] += 1
+        return None
+    if has_f1 is None:
+        if accepted:
+            raise SystemExit("STOP 19.11 (b): %s: git cannot place the head of a run PROV accepts, so its MR1 rule is"
+                             " unknown" % run)
+        MR1B["head git cannot place: refused by PROV"] += 1
+        return None
+    ms = (mr or {}).get("mr1_steps")
+    model = (mr or {}).get("mr1_list")
+    if not ms or model is None:
+        raise SystemExit("STOP 19.11 (b): %s carries F-1 but has no MR1 record to check (mr1_steps / mr1_list)" % run)
+    nobs = float((mr or {}).get("n_observations") or 289)
+    cor = _mr1_acc(len(ms[0][2]), [x[2] for x in ms], nobs)        # as mr1_digest: one count per UAV per step
+    if cor != list(model):
+        first = next((i for i, (a, b) in enumerate(zip(cor, model)) if a != b), None)
+        raise SystemExit("STOP 19.11 (b): %s: the model's MR1 differs from the corrected count (UAV index %s: model %r,"
+                         " corrected %r)" % (run, first, None if first is None else model[first],
+                                             None if first is None else cor[first]))
+    MR1B["checked: model == corrected"] += 1
+    return True
 
 
 def bp_switch_check(fb, ex, instrumented):
@@ -935,6 +1017,8 @@ def mr1_digest(d, mr, rows, launch):
         g["mr1_corr_list"] = cor
         g["mr1_lit_steps_nonzero"] = sum(1 for x in ms if any(x[1]))
         g["mr1_cor_steps_nonzero"] = sum(1 for x in ms if any(x[2]))
+    g["mr1_corrected_ok"] = mr1_corrected_check(d, mr, head_has_f1(d.get("head")),     # 19.11 (b): STOPS on a mismatch
+                                                accepted=analysis_head(d.get("head")))
     if MR1_RECON["on"] and launch and isinstance((d.get("fb3") or {}).get("inst"), dict):
         g.update(_mr1_recon(d, rows, launch, nobs, mr))
     return g
@@ -1174,6 +1258,12 @@ def sec_prov():
     out("  TOTAL probe runs present %d: usable %d, REFUSED %d%s | missing %d of %d expected" % (
         n_ok + n_ref, n_ok, n_ref, " (not applied)" if SELFTEST else "", len(MISSING), len(PROBE_E)))
     verdict("PROV", "refused probe runs", "%d%s" % (n_ref, " (selftest)" if SELFTEST else ""))
+    # 19.11 (b): every digested run took one path; a mismatch or an unplaceable accepted head STOPPED before this line
+    out("  19.11 (b) MR1 rule over every digested run: %s" % (
+        ", ".join("%s %d" % kv for kv in sorted(MR1B.items())) or "no run digested"))
+    if MR1B["checked: model == corrected"]:
+        verdict("PROV", "19.11 (b) model MR1 == corrected (heads with F-1)", "PASS %d runs"
+                % MR1B["checked: model == corrected"])
 
 
 _RBPROV: dict = {}
@@ -1213,6 +1303,7 @@ def rb_prov():
             why.append("tag %s" % s.get("tag"))
         if (s.get("params") or {}).get("SEARCHER_UNTUNED") != 1:
             why.append("params SEARCHER_UNTUNED %s" % (s.get("params") or {}).get("SEARCHER_UNTUNED"))
+        why += istrue_switch_refusals(s)                       # 19.11 (c): the shards record their --set in params
         _RBPROV[tag] = why
     return _RBPROV
 

@@ -1,0 +1,676 @@
+================================================================================
+isTrue ROUND - REPORT: PART 2 (IMPLEMENTATION) AND PART 3 (VERIFICATION)        outputs/isTrue_report.txt
+Part 1 (audit and design) is outputs/isTrue_part1.txt. The maintainer's rulings are in its section 10 and govern.
+STOP: the merge runs only on the maintainer's word (section 9).
+================================================================================
+0. RESULT
+  - F-1 (MR1_TRUTHINESS_FIX) and F-2 (NUMPY_SCALAR_FLAGS) are implemented (rulings I-1, I-3).
+    - Each is on its own switch, and both SHIP ON.
+    - Each is off only on an exact 0.
+  - EVERY NEW TEST THAT TESTS A FIX FAILS WITHOUT IT (section 2.3).
+    - On f686e932 (main before this round), 23 of the 27 new tests fail:
+        16 show the defect itself;
+        7 fail because the switch or helper does not exist there yet.
+    - The 4 that pass there are guards, meant to pass both before and after the fix.
+    - At the round head all 27 pass.
+  - MUTATION. 22 of 23 single-site mutants of the committed code are killed by the committed tests. The survivor is
+    an equivalent mutant (2.4).
+  - IDENTITY RUNS, ON THE MEASUREMENT ROUND'S OWN CHAIN (section 4). ALL GATES PASS (outputs/_ist3_analysis.txt;
+    384 of 384 runs, 0 pool failures).
+    - 384 full-length runs.
+    - Coverage: every strategy arm (SEARCHER_TARGETING 0-5, GLOBAL_PLANNER_MODE 1), both placements, all four
+      winds (north included), all four scenarios, and 13 of the 14 sensitivity points (the 12 runnable parameter
+      points and the 480-step horizon).
+    - Results:
+      - the round (F-1 + F-2) changes MR1 and nothing else (G-A):
+        - every recorded field is equal;
+        - the model's console output is equal by its sha256;
+        - the pool log is equal line for line;
+      - the code F-2 adds changes nothing, and no numpy value reached any F-2 reader in any run (G-C, 4.6);
+      - with F-1 on, the model's MR1 equals the corrected accumulation, bit for bit (G1-a);
+      - with F-1 off, it equals the literal accumulation, bit for bit (G1-b);
+      - with both kill switches at 0, the round's code reproduces f686e932, MR1 included (G-K). This was run on
+        12 configurations: one per strategy arm, scenarios A-C, 360 steps.
+  - IDENTITY RUNS, ON THE HARNESS (Part 1 5.1 / 5.2 / 7 as planned; section 4.8). ALL GATES PASS.
+    - The 8 census configurations x 4 arms, through outputs/_ffr_harness.py (the evaluate_scenarios mirror).
+    - Every field is equal, fire digests included, and so is the model's console output, byte for byte.
+  - THE FULL SUITE at the round head is exactly {T5}: 1 failed / 1 696 passed (section 5).
+  - Amendment 19.11 to the measurement round's pre-registration is committed (1f58e662). This was done before any
+    measurement run exists (section 3).
+  - FIVE ITEMS AWAIT THE MAINTAINER (section 8):
+      C-1 the I-5 paper wording;
+      C-2 19.11 (c) - (e);
+      C-3 the identity-run coverage design;
+      C-4 19.7 point 2, which has no implementation;
+      C-5 the dispatch head, which the measurement round will run on and this round did not.
+  STATE.
+    - Branch istrue, worktree E:/Projects/SAS_wt/istrue, head the result commit that adds this report.
+    - 8 commits on f686e932 (main, tag bayes-prep).
+    - Nothing is pushed. main, the main checkout and the dispatch worktree are untouched.
+
+================================================================================
+1. WHAT SHIPS
+================================================================================
+  common_fixed_variables.py, block "isTrue round" after UAV_DOCKED_NOT_OBSTACLE:
+      MR1_TRUTHINESS_FIX = 1        F-1
+      NUMPY_SCALAR_FLAGS = 1        F-2
+  Both switches:
+    - are read through agents._fix2_switch, the rule of every fix2-era switch: off only on an exact 0 (0, 0.0, "0",
+      " 0 ", False, Decimal 0, numpy.int64(0)); junk, None and a missing attribute leave it ON;
+    - are read at call time, never through the star import;
+    - are set per run with --set.
+  KILL SWITCHES.
+    - MR1_TRUTHINESS_FIX = 0 is the inherited MR1 count.
+    - NUMPY_SCALAR_FLAGS = 0 is the pre-fix readers.
+    - Both at 0 reproduce f686e932 in every recorded field, MR1 included: G-K on its 12 configurations (one per
+      strategy arm, scenarios A-C, 360 steps), and H-K on the 8 harness configurations.
+  COMMITS (oldest first):
+    4b3f6d58  Part 1: the audit and fix design (outputs/isTrue_part1.txt + its census records)
+    15b47131  the rulings (section 10) and the Part 2 as-built record
+    fef52103  F-1, with tests/test_mr1_truthiness.py
+    208de51f  F-2, with tests/test_numpy_scalar_flags.py
+    1f58e662  amendment 19.11 to outputs/fix3b_part1.txt
+    55bcb62e  Part 3 tooling (queue, reach wrapper, freeze record, analyzer)
+    6904b1f8  the FROZEN Part 3 configuration list and queue, committed before launch
+    (this)   Part 3 results, this report, the record corrections of section 9
+
+================================================================================
+2. PART 2 AS BUILT
+================================================================================
+2.1 F-1 (agents.py, UAV.surrounding_states; accessor agents.mr1_truthiness_fix).
+  - The switch is read once per call.
+      ON:  a burning cell counts as int(bool(agent.is_burning())).
+      OFF: the inherited line, int(agent.is_burning() is True), byte for byte.
+  - The count's only consumer is wildfire_model.MR1, which writes MR1_LIST. No decision, gate, utility term,
+    evaluation field or dashboard field reads it.
+  - MR1_LIST has two readers (Part 1 3.1):
+      - the console print at wildfire_model.py:6267-6270. It runs only when a caller attempts step BATCH_SIZE + 2,
+        and no runner does that at its defaults;
+      - the bayesprep probe's record-only mr record (outputs/_fb3_probe.py:759-761).
+  - The identity runs confirm that nothing else changes (G-A).
+2.2 F-2 (src_extension/planning/utility_evaluation.py plain_scalar; accessor agents.numpy_scalar_flags).
+  - plain_scalar(value):
+      - a numpy.bool_ / numpy.integer / numpy.floating scalar becomes bool / int / float;
+      - numpy.timedelta64 (a numpy.integer subclass), and any value whose conversion raises, are returned unchanged;
+      - every other value is returned unchanged;
+      - at NUMPY_SCALAR_FLAGS 0, every value is returned unchanged.
+  - plain_scalar is applied at these sites:
+      - the four planners' _is_truthy (fail_safe, global_mission, local_uav_path, rescue): its first operation;
+      - planner_selection._is_maintain_option: on each value it reads;
+      - the six ptruth / ptruth_s / ptruth_p reads in utility_evaluation;
+      - safe_float: its first operation.
+    _indicator and sig reach safe_float for every non-bool value. They are covered through it and not edited
+    (pinned by test_f2_h).
+  - The accessor is called only for a numpy value. A non-numpy input takes exactly the pre-fix path, by construction.
+  - NOT TOUCHED:
+      - the 10 dead readers of Part 1 3.4 (ruling I-4). The diff leaves all 10 unchanged; test_f2_i pins the 4 in
+        utility_evaluation.py;
+      - shapes E and F.
+  - Departures from Part 1 5.2 are recorded in Part 1 section 10, "PART 2 AS BUILT". Each is behaviour-equivalent
+    or stricter:
+      - explicit casts instead of .item();
+      - the timedelta64 exclusion;
+      - _indicator / sig covered through safe_float.
+2.3 TESTS, AND THE RED CHECK (outputs/_ist_redcheck.txt).
+  - tests/test_mr1_truthiness.py (7 tests, F-1): a real model with the team pinned 3 / 5 / 3, no step.
+  - tests/test_numpy_scalar_flags.py (20 tests, F-2): no model.
+  - tests/test_base_station.py::test_shipped_defaults pins both switches at 1.
+  - Run against each checkout, with the committed files and cwd = the checkout:
+      f686e932  23 failed, 4 passed
+      6904b1f8  27 passed
+  - Of the 23 failures on f686e932, 16 show the defect itself:
+      - 4 numpy-True cells in a UAV's box count 0, not 4 (f1_a);
+      - the MR1 increment is 0.0, not 0.0138 (f1_d);
+      - a cell is not counted while it burns (f1_c);
+      - each planner's _is_truthy reads numpy.True_ as False (f2_c x 4);
+      - the maintain test misses a numpy marker (f2_d);
+      - safe_float(numpy.True_) is the default -9.0, not 1.0 (f2_e);
+      - each numpy twin scores differently from its Python twin (f2_f x 5);
+      - the confidence adjustment differs, 0.9 vs 0.6615 (f2_g);
+      - _compute_switching_cost gives 0.0, not 0.3 (f2_h).
+  - The other 7 fail because the switch or helper does not exist on f686e932:
+      - the two ships-on tests and the two accessor-rule tests;
+      - f2_a, f2_a2 and f2_b (plain_scalar is missing). By content, f2_a2 ("every other value unchanged") and f2_b
+        ("inert at 0") are guards.
+  - The 4 that pass on f686e932 are guards, meant to hold before and after the fix:
+      test_f1_b   the kill switch is the inherited identity test;
+      test_f1_e   characterisation: a fire spread tick writes a numpy bool (the cause of F-1);
+      test_f2_a3  timedelta64 never raises in safe_float or the four _is_truthy (the other readers receive it
+                  unchanged from plain_scalar);
+      test_f2_i   the four utility_evaluation dead readers are untouched (ruling I-4).
+  - LEAK-ORDER CHECK (outputs/_ist_leakcheck.txt): tests/test_dashboard_panel.py, then both new files, at
+    6904b1f8: 31 passed.
+    - Other tests leave NUM_VICTIMS = 3 set; the new files pin the team themselves.
+    - CORRECTION: Part 1 section 10's "87 passed" was a review-time run of the pre-split single test file, plus
+      tests/test_base_station.py. It did not exercise the committed files. Section 10 is corrected (section 9).
+2.4 REVIEW AND MUTATION.
+  - REVIEW BEFORE COMMIT (a 21-agent workflow):
+      - four lenses: F-1, F-2, the records, the Part 3 plan;
+      - two refuters per medium / high finding.
+    Result:
+      - no F-1 or F-2 code defect at medium or high;
+      - the record and plan findings were fixed before commit (Part 1 section 10);
+      - the Part 3 findings are built into the analyzer: provenance, effective-switch, observer-error and freeze
+        checks.
+  - MUTATION, RE-RUN ON THE COMMITTED CODE AND TESTS (outputs/_ist_mutation.py / .txt). The review-time run (18 of
+    18) used the pre-split test file and the helper before its timedelta64 / try-except change. The re-run:
+      - each mutant is a fresh copy of 6904b1f8 with one edit, run against the two committed test files;
+      - 22 of 23 are killed. The mutants cover every patched site, the helper body and each of its branches, the
+        timedelta64 exclusion, both accessors and both switch reads;
+      - M20 (the try / except removed) survives, and it is EQUIVALENT on this platform. No numpy bool / integer
+        (timedelta64 excluded) / floating scalar raises on conversion: 15 concrete types at min / max / nan / +-inf,
+        60 values, none raised. The guard is defensive only.
+  - REVIEW OF THIS REPORT (a 14-agent read-only workflow: three lenses, one refuter per medium / high finding).
+    36 findings, none refuted. All are applied here. They include:
+      - the leak-check and mutation re-runs;
+      - the harness identity runs (4.8);
+      - the analyzer's added GP / BF-fix0 / switch-value and MR1-chg checks;
+      - C-5.
+  - FINAL CHECK OF THE FILLED REPORT (a 13-agent read-only workflow: two lenses, numbers and records, one refuter per
+    finding). 11 findings, none refuted, all applied. They include:
+      - the true medians (4.5);
+      - the time concurrency changed (4.7);
+      - what Part 1's census covered (4.6);
+      - the removed analyzer NOTE (4.3);
+      - P.3's option detail, and the supersession of Part 1's G_belief wording;
+      - the dispatch file overlap (7);
+      - the shipped cfv comment (7).
+
+================================================================================
+3. AMENDMENT 19.11 (outputs/fix3b_part1.txt; commit 1f58e662, before any measurement run exists)
+================================================================================
+  (a) and (b) carry ruling I-2.
+    (a) M_R1 is the model's MR1, and the model's MR1 is now the corrected count. The literal value is not reported.
+    (b) Every measurement run is checked:
+        - the model's mr1_list must equal the probe's CORRECTED accumulation, bit for bit;
+        - the analyzer STOPS on a mismatch;
+        - bayesprep's mr1_literal_ok (outputs/_bp_analyze.py:932) holds only at MR1_TRUTHINESS_FIX 0, and the
+          measurement round does not use it.
+  (c) - (e) are this round's additions, put to the maintainer for confirmation (C-2).
+    (c) No measurement run may set either isTrue switch, and no run from a head before the isTrue merge is admitted.
+    (d) Earlier MR1 values are never pooled or compared with measurement-round M_R1.
+        - This report's review found that the committed (d) said "every MODEL M_R1 recorded before the isTrue merge
+          is the literal value". That is wrong for this round's own F1 / F12 runs, which are pre-merge but corrected.
+        - (d) is corrected in place (section 9):
+            - the literal values are those recorded at MR1_TRUTHINESS_FIX 0 or at a head without F-1;
+            - corrected values from pre-merge heads (bayesprep's M_R1_corrected, this round's F1 / F12 runs) may be
+              cited, labelled with their head, and are not pooled.
+    (e) Nothing else changes.
+        - The evidence is section 4 of this report. If it failed, the round would not merge and 19.11 would be void.
+        - OPEN: 19.7's point 2 has no implementation (C-4).
+  NOT YET IMPLEMENTED (a precondition of the measurement round, not a cleanup item). CLOSED before the merge: both
+  checks are now in outputs/_bp_analyze.py (section 10; fix3b_part1.txt 19.12 (b)).
+    - No analyzer implements (b)'s model == corrected STOP or (c)'s switch / head refusal yet.
+    - The measurement round's analyzer (19.10 (d): outputs/_bp_analyze.py METRICS) checks the literal copy
+      (mr1_digest's mr1_literal_ok). It must gain both checks before any measurement run is read.
+    - outputs/_ist3_analyze.py G1-a is a working model == corrected check (_mr1_acc, verbatim from _bp_analyze.py).
+
+================================================================================
+4. PART 3: THE IDENTITY RUNS
+================================================================================
+4.1 DESIGN.
+  Files: outputs/_ist3_queue.py, with the frozen list outputs/_ist3_configs.json and the queue outputs/_ist3_q.jsonl,
+  committed in 6904b1f8 before launch.
+  - CHAIN. The measurement round's own:
+        outputs/_ut_probe.py --crn --hazard --instrument -- --repo <checkout> --scenario S --wind W --seed N
+            --set GLOBAL_PLANNER_MODE=g --set VICTIM_SPAWN_MODE=p [the arm's --set] --steps H --set BATCH_SIZE=H
+    - It runs inside the record-only reach wrapper outputs/_ist3_reach.py, which adds <out>.reach.json (4.6).
+    - The pool is outputs/_mf2_pool.py (--maxpar 10 --min-free-gb 4).
+  - ARMS per configuration:
+      B    E:/Projects/SAS_wt/basef686, detached at f686e932       the pre-fix code
+      F1   istrue, + NUMPY_SCALAR_FLAGS=0                          F-1 alone
+      F12  istrue, the configuration only                          shipped (F-1 + F-2)
+      K    istrue, + MR1_TRUTHINESS_FIX=0 + NUMPY_SCALAR_FLAGS=0   both kill switches, on 12 configurations
+    K details:
+      - one configuration per strategy arm, both placements, all four winds, scenarios A / B / C, 360 steps;
+      - scenario D was left out on Part 1's observation that the literal count was 0 in all six scenario-D census
+        runs. These runs show that is not a rule. Two scenario-D B runs have a literal count (4.5):
+        B_042_RW_r_DE on steps 2-3, and B_095_BFfix0_u_DW on step 3.
+  - CONFIGURATIONS (124):
+      - MAIN, 96: the 12 strategy arms of 19.3 / 19.10 (a) x 2 placements x 4 winds.
+          - The arms are CUR; LO = SEARCHER_TARGETING 1; BD = 2; BF = 3; RW = 4; FP = 5; GP = GLOBAL_PLANNER_MODE 1
+            + BF; BF-coord, BF-batt, BF-motion, BF-reach; BF-fix0.
+          - The scenario is rotated: scenario = (wind + arm + placement) mod 4.
+      - SENSITIVITY, 28:
+          - the 12 runnable 19.7 parameter points x 2 placements, each on its arm;
+          - the 480-step point as BF and CUR x 2 placements, with BATCH_SIZE 480.
+  - SEEDS 52001-52124, one per configuration, frozen.
+      - Before freezing, no frozen seed appeared as a token in any top-level *.argv, *.jsonl, *.py, *.sh or *.txt of
+        outputs/ in this worktree, the main checkout or the dispatch worktree. The check was non-recursive and
+        excluded this round's own files.
+      - All seeds lie outside the measurement round's 29000-32000.
+  - 360 steps (480 for the 480-step point); CRN on in every arm.
+  - TOTAL 124 x 3 + 12 = 384 runs.
+4.2 COVERAGE AGAINST THE MEASUREMENT ROUND (19.1 / 19.3 / 19.7 / 19.10).
+  COVERED:
+    - every strategy arm, SEARCHER_TARGETING 0-5 and GLOBAL_PLANNER_MODE 1 included;
+    - both placements;
+    - all four winds, north included;
+    - all four scenarios;
+    - every (arm, placement) pair, on all four winds and all four scenarios;
+    - all 16 wind x scenario cells, across the round;
+    - 13 of the 14 sensitivity points: the 12 parameter points and the 480-step horizon;
+    - the probe flags the measurement round uses (--crn --hazard --instrument).
+  NOT COVERED:
+    - CELLS. Each (arm, placement) runs 4 of the 16 wind x scenario cells; each arm runs 8 of 16 across its two
+      placements. Each sensitivity point runs 1 of the 16 cells per placement (the 480-step point 1 per arm and
+      placement). The design covers every value of every factor, not every cell of every arm or point (C-3).
+    - 19.7 POINT 2 (2x2-cell belief): there is no code to run (C-4).
+    - SEEDS. The identity seeds are not the measurement seeds. The claims tested are structural (a type rule and a
+      metric), not seed-specific.
+    - THE HEAD. 19.4 runs the measurement round only after the dispatch merge, at the dispatch configuration main
+      then ships. No identity run includes the dispatch code or its switches:
+        - 1102d929: src_extension/planning/joint_dispatch.py +442, wildfire_model.py +492, agents.py +40,
+          common_fixed_variables.py +22 lines;
+        - DISPATCH_JOINT / DISPATCH_REASSIGN, which ship 0.
+      All of this evidence is for the isTrue head (C-5).
+4.3 VALIDITY AND PROVENANCE (gate G-V, per run; outputs/_ist3_analyze.py).
+  - Every run must pass all of these:
+      - exit 0; complete; steps_done == steps;
+      - repo and head as its arm; src_sha equal to the freeze record;
+      - extra_params == its --set list; argv and the pool's .argv sidecar == the queue line;
+      - the arm took effect:
+          - effective searcher_targeting and victim_spawn_mode;
+          - every FIX3B key in fb3.switches;
+          - every SEARCHER_FP_* key, raw and effective, in bp_switches;
+          - effective.global_planner_mode (GP);
+          - SEARCHER_TARGETING_FIX raw and effective (BF-fix0);
+          - params' MR1_TRUTHINESS_FIX / NUMPY_SCALAR_FLAGS exactly as the arm sets them;
+      - CRN draws > 0; the instrument present with 0 errors; no observer error anywhere;
+      - an mr record of one row per step.
+  - The effect of NUMPY_SCALAR_FLAGS = 0 cannot be observed, because no numpy value reached plain_scalar (4.6).
+    MR1_TRUTHINESS_FIX = 0 is observed through G1-b.
+  - Result: 384 of 384 runs pass, 0 failures.
+  - FREEZE (outputs/_ist3_freeze.py; records outputs/_ist3_freeze_launch.json / _complete.json).
+    Both checkouts are recorded at launch and after BOTH pools completed:
+      - git HEAD;
+      - tracked-file status;
+      - the raw-byte hash of every tracked file outside outputs/;
+      - for istrue, also the run-loaded chain, pool, queue and frozen-list files.
+    Result: HELD (outputs/_ist3_freeze.py --compare). The record was taken 2026-10-05 after both pools completed:
+      - both trees clean;
+      - heads f686e932 / 6904b1f8;
+      - 209 / 211 tracked files;
+      - every hash equal.
+  - DISCLOSURE: outputs/_ist3_analyze.py was edited during the pool. The edits are analysis-only: the file is not
+    run-loaded and not hashed, and no run loads it.
+      - First edit, 01:47: the reach summary counts plain_scalar and evaluate_option calls, and runs per arm.
+      - Later edits, 07:11-07:49 (last write 07:49:37), after the report review:
+          - the reach summary counts _is_maintain_option CALLS (the committed version summed marker values);
+          - it lists all four _is_truthy sites, so a site never called prints 0;
+          - it prints a per-arm numpy total;
+          - G-V gained the GP / BF-fix0 / switch-value checks of 4.3;
+          - the MR1-chg gate was added and the MR1 scale is split by horizon (4.5);
+          - the committed NOTE "mr1_list equal although F-1 should change it" (for G-A and G-C) was removed. On this
+            data it would have fired twice, falsely, for 095_BFfix0_u_DW, where the only count is the seeded cell
+            that both rules count (4.5). MR1-chg replaces it on G-A exactly, and G-B (F1 == F12, mr1_list
+            included) covers G-C;
+          - the MR1-changed line lists the unchanged configurations, and the non-zero-literal list is printed whole
+            (it has 5 entries; the committed version cut it at 6).
+      - After the freeze record, in response to the final check of this report: the MR1 scale's "median" is now
+        statistics.median (the committed s[len(s) // 2] is the upper-middle value for an even count), and a horizon
+        with at most 6 runs lists every value. outputs/_ist3_analysis.txt is the output of this final version; its
+        gates and every other line are unchanged.
+    The edited file was set aside while the completion record was taken, so the record's tracked-status line
+    compares the committed tree:
+      1. the edited file was copied aside and the committed version restored;
+      2. the completion record was taken (status clean) and compared (HELD);
+      3. the edited file was restored, byte-identical (sha256 c042474f...).
+    The final analysis, outputs/_ist3_analysis.txt, was run with the restored file. It equals the pre-freeze full
+    analysis apart from its header lines.
+    The direct evidence for 4.6's never-called sites is the reach records themselves: calls._is_maintain_option is
+    absent, and there is no truthy.rescue_planner key, in every one.
+4.4 GATES (per configuration; every recorded field compared except labels and wall-clock):
+  - SKIPPED FIELDS:
+      - top-level probe, tag, repo, head, src_sha, argv, extra_params, wall_s, python, mesa, _det;
+      - fb3.timing / fb3.probe / fb3.inst.overhead / fb3.inst.src.root;
+      - each section's probe label.
+    params are compared without the arm's own two switch keys.
+  - The model's console output:
+      - the chain captures the model's stdout into <stem>.stdout.txt;
+      - its sha256 is the recorded field stdout_sha (with the per-tag line counts stdout_tags);
+      - every gate compares these, so the model's console output is compared byte for byte.
+  - LOG compares the pool log (<out>.poollog) line by line:
+      - it holds the model's stderr ([RescueInvariant] lines) and the chain's SD_DONE / MF2_PROBE_DONE lines;
+      - only the run's tag, wall= tokens and checkout paths are normalised.
+        gate     comparison                                                  pass / fail
+        G-A      B vs F12: every field equal except mr.mr1_list              124 / 0
+        G-B      F1 vs F12: every field equal, mr.mr1_list included          124 / 0
+        G-C      B vs F1: every field equal except mr.mr1_list               124 / 0
+        G-K      B vs K: every field equal, mr.mr1_list included              12 / 0
+        G1-a     F1, F12: mr1_list == CORRECTED accumulation, bit-equal      248 / 0
+        G1-b     B, K: mr1_list == LITERAL accumulation, bit-equal           136 / 0
+        MR1-chg  MR1 changed between B and F12 exactly where the corrected   124 / 0
+                 and literal per-step counts differ
+        LOG      pool log equal, for each of the four pairs                  384 / 0
+  READING:
+    - F-1 CHANGES MR1 AND NOTHING ELSE (G-A, G-C, LOG). These are all equal:
+        - every eval field;
+        - the per-step fire record (the instrument's burn / smoke sets) and eval.burnt_cells;
+        - the CRN draws;
+        - the model's console output.
+    - F-2 CHANGES NOTHING.
+        - No numpy value reached an F-2 site (4.6), so plain_scalar returned every value unchanged and never read
+          its switch.
+        - G-A and G-C compare the pre-fix code with the code that has F-2's calls, and are equal.
+        - G-B (switch off vs on) holds trivially, for the same reason.
+    - THE KILL SWITCHES ARE EXACT (G-K, on its 12 configurations): at both switches 0, the round's code reproduces
+      f686e932, MR1 included.
+    - "IDENTICAL" here means value identity of every recorded field, the model's console output byte for byte (by
+      sha256), and the pool log line for line. This is the identity Part 1 5.1 / 5.2 define for "byte-identical":
+      every recorded field equal except labels, stdout hash included. The JSON files themselves differ in their
+      labels (tag, output path, wall time) by construction. The harness runs (4.8) also compare the console output
+      files' raw bytes directly.
+4.5 MR1.
+  - 122 of 124 configurations changed MR1 between B and F12, exactly those where the corrected and
+    literal per-step counts differ (MR1-chg).
+  - Unchanged: 2 configurations, 043_RW_r_AW and 095_BFfix0_u_DW. In both, the seeded fire went out without
+    spreading (eval.burnt_cells 0), so no numpy-True cell ever existed:
+      - in 043 no burning cell was ever inside a UAV's box;
+      - in 095 the only count is the seeded Python-True cell, in a UAV's box on step 3, which both rules count.
+  - Literal counts after step 3, in every B and K run: 0. This is Part 1's mechanism, confirmed in every
+    configuration.
+  - 5 B / K runs had a non-zero literal count on steps 1-3: the seeded Python-True cell, inside a UAV's box before
+    the first spread tick. G1-b validates them bit for bit. The runs:
+      - B_019_BD_r_BW, B_042_RW_r_DE, B_086_BFreach_u_BE: 2 steps each;
+      - B_095_BFfix0_u_DW, B_112_BF_s10pds05_r_AW: 1 step each;
+      - no K run.
+  - Corrected M_R1 (mean over UAVs), across the F12 runs:
+      at 360 steps (120 runs): min 0.000, median 10.822, max 23.138;
+      at 480 steps (4 runs): 6.051, 8.583, 16.324, 23.528 (median 12.453).
+    These are identity runs, not measurement runs. The numbers describe the metric's scale only and are not
+    measurement results.
+4.6 REACH: WHERE F-2 COULD MATTER (record-only, outputs/_ist3_reach.py).
+  The wrapper counts, per run, the type of every value at each F-2 site, and of every evaluate_option parameter and
+  context value.
+      site (one value per call)          B             F1            F12           K (12 runs)   numpy values
+      safe_float                         69 411 828    69 411 828    69 411 828    6 699 324     0
+      plain_scalar (F-2 heads only)      -             69 834 434    69 834 434    6 745 052     0 (0 converted)
+      _is_truthy fail_safe_planner       183 428       183 428       183 428       22 534        0
+      _is_truthy global_mission_planner  45 120        45 120        45 120        4 320         0
+      _is_truthy local_uav_path_planner  180 240       180 240       180 240       17 280        0
+      _is_truthy rescue_planner          0             0             0             0             -
+      _is_maintain_option (calls)        0             0             0             0             -
+      evaluate_option (calls; numpy      5 953 638     5 953 638     5 953 638     579 928       0
+        parameters / context values)
+    The B, F1 and F12 columns are equal call for call (124 runs each), which is G-A / G-C seen from the reach side.
+  - NO numpy value reached any F-2 site, or any evaluated parameter or context value, in any run of any arm. Per-arm
+    totals: B 0, F1 0, F12 0, K 0. This includes:
+      - SEARCHER_TARGETING 1-4 and wind north, which Part 1's census did not cover;
+      - SEARCHER_TARGETING 5 and GLOBAL_PLANNER_MODE 1, on many more configurations than the census's one run each
+        (east 101; there GLOBAL_PLANNER_MODE 1 ran alone, not with SEARCHER_TARGETING 3 as in the GP arm).
+  - F-2 is therefore a hardening of a latent defect, inert in every configuration run.
+  - Sites never called in any run: 2, in all 384 runs. They are, as in Part 1 3.0 (d):
+      - rescue_planner._is_truthy;
+      - planner_selection._is_maintain_option, which is reached only when no option is feasible.
+    Their behaviour is pinned by test_f2_c / test_f2_d alone.
+4.7 WALL CLOCK. Main pool 2026-10-05 01:14 - 13:49 (12 h 35 min, 384 / 384, 0 FAIL).
+  - 1-10 runs concurrent. It was 2-5 (once 6, for 7 s) until 07:58, then mostly 8 once other programs released
+    memory; it reached --maxpar 10 once. Free commit memory was the limit: _mf2_pool.py launches only above
+    --min-free-gb, by design.
+  - Per run 303-1 800 (median 578) s; 30.5 runs / h overall.
+  - The full suite ran alongside until 03:24.
+4.8 THE HARNESS IDENTITY RUNS (Part 1 5.1 G1-c / 5.2 G2 / 7, as planned there).
+  WHY. The ruling asks for Part 3 "as in section 5". Section 5 planned G1-c / G2 on the census configurations through
+  the harness. 4.1-4.7 use the measurement round's chain instead. These runs add section 5's own plan, so neither
+  replaces the other.
+  - Files: outputs/_ist3h_queue.py -> outputs/_ist3h_q.jsonl (32 lines); outputs/_ist3h_analyze.py ->
+    outputs/_ist3h_analysis.txt.
+  - CONFIGURATIONS: the 8 of Part 1 3.0 (a), same seeds, 360 steps:
+      S east 101 / west 103 / south 102;
+      B5 east 101 (SEARCHER_TARGETING 5);
+      G1 east 101 (GLOBAL_PLANNER_MODE 1);
+      A / Bsc / C east 104.
+  - ARMS: B, F12, F1, K, as in 4.1.
+  - LAUNCH. The queue was launched uncommitted: a commit then would have moved HEAD under the main pool's freeze
+    record. Its files were hashed at launch (outputs/_ist3h_launch.json) and the analyzer re-checks those hashes.
+  - GATES (the harness JSON has no MR1 field, so every gate is a full identity):
+      H-A  B vs F12; H-B  F1 vs F12; H-C  B vs F1; H-K  B vs K;
+      H-OUT the model's console output (<stem>.stdout.txt), raw bytes, for the same four pairs;
+      H-LOG the pool log, normalised as LOG;
+      H-P1  B vs Part 1's census record of the same configuration (and, for S east 101, the bare and S2 runs): the
+            harness is deterministic across the two rounds.
+    The comparison covers every field except wall_s / tag / repo: eval, all 360 fire_digests, fire_final_digest,
+    ff_steps, uav_steps, victim_steps, stdout_sha256 and the rest.
+  - RESULT: ALL GATES PASS (outputs/_ist3h_analysis.txt; 32 / 32 runs, 0 pool failures)
+        gate   pass / fail
+        H-A      8 / 0
+        H-B      8 / 0
+        H-C      8 / 0
+        H-K      8 / 0
+        H-OUT   32 / 0
+        H-LOG   32 / 0
+        H-P1    10 / 0
+    - 58 fields are compared per run.
+    - G1 east 101 equals S east 101 in every field but params / extra_params / wall_s, in every arm, as in Part 1
+      3.0 (c): at this seed GLOBAL_PLANNER_MODE 1 scored role options but applied none.
+  - POOL. The harness pool first ran with --maxpar 3 --min-free-gb 5.5, so that it would not crowd the main pool.
+      - It completed 2 runs by 08:11, then waited for memory until it launched 3 more at 13:42-13:43.
+      - At 13:52, after the main pool finished, it was stopped (taskkill of its process tree) and relaunched with
+        --maxpar 10 --min-free-gb 3.
+      - The 3 runs in flight were stopped before writing any output and re-run from scratch. The 2 finished runs
+        were skipped as valid.
+      - outputs/_ist3h_pool.log shows both STARTs. All 32 runs completed by 14:47.
+
+================================================================================
+5. FULL SUITE (outputs/_ist3_fullsuite.log)
+================================================================================
+  - Head 6904b1f8, the round's source; the later commits change outputs/ only.
+  - Run in a separate detached worktree (E:/Projects/SAS_wt/istrue_suite), 2026-10-05 01:15-03:24.
+  - Result: 1 failed, 1 696 passed, 5 warnings, 7 727.66 s.
+  - The one failure is T5, tests/test_uav_sector_assignment.py::test_fire_tracker_uavs_receive_different_target_sets,
+    the known pre-existing failure. The result is exactly {T5}, as expected.
+  - 1 696 = bayesprep's 1 669 + the 27 new tests.
+
+================================================================================
+6. FOR THE PAPER
+================================================================================
+P.1 MR1 (extends Part 1 P.1 and outputs/bayesprep_report.txt P.6).
+  - The inherited "effective wildfire monitoring" metric counted only the seeded fire cell, and only on steps 1-3,
+    in every version before this round. The cause was an identity test on a numpy bool.
+  - From the isTrue merge on, the model's MR1 is the corrected count. In the identity runs its scale at 360 steps is
+    0.000 to 23.138 per run (mean over UAVs). This is descriptive only (4.5).
+  - Every MR1 recorded at MR1_TRUTHINESS_FIX 0, or at a head without F-1, is the literal value. It is never pooled or
+    compared with measurement-round M_R1 (19.11 (d) as corrected).
+  - Correcting MR1 changed no other number. These are all equal (G-A, LOG, and H-A on the harness):
+      - rescued, dead, terminal step, firefighter deaths;
+      - the per-step fire record, and the harness's fire digests;
+      - the model's console output.
+P.2 THE LATENT CLASS (F-2).
+  - No identity run was affected: no numpy value reached a guarded reader in any configuration run at the isTrue
+    head (4.6), and the code F-2 adds changed nothing (G-A / G-C).
+  - The measurement round runs at the post-dispatch head (19.4), which this round did not run (C-5).
+  - If the paper describes the implementation's robustness, one sentence suffices: flag and number parsing in the
+    utility layer was made numpy-scalar-safe after an inherited metric was found broken by the same mechanism.
+P.3 G_belief (ruling I-5). The ruling's wording and the Part 2 premise correction are recorded in Part 1 section 10.
+  The wording proposed below REPLACES the one proposed there. That wording, "every local path option except the
+  explore-unknown-region option", does not distinguish the two options of that name (below). Part 1 section 10 is
+  marked accordingly (section 9).
+  - G_belief = pfloat("belief_gain") in _evaluate_local_path_option (utility_evaluation.py:659), weighted by the
+    profile's fire_weight. pfloat returns its default, 0.0, for a missing key, and safe_float(value, 0.0) for a
+    present one (:652-656).
+  - The options built from the path generator's base parameters carry belief_gain as a map
+    (local_adaptation_generator.py:2617-2644), which safe_float reads as its default, 0.0.
+  - The other local options carry no belief_gain key, so pfloat returns 0.0 without calling safe_float. These are
+    the horizon, movement, sensing and stability options.
+  - The one exception is the dedicated option of option_type explore_unknown_region
+    (local_adaptation_generator.py:2820-2860), which sets belief_gain to the constant 0.55.
+  - The path-planning option also named explore_unknown_region (local_path_explore_unknown_region_0, :2894-2906)
+    carries the map, so its G_belief is 0.
+  - Proposed wording, for confirmation (C-1): "G_belief never reflects the belief. It is 0 on every local option
+    except the dedicated explore-unknown-region option (option type explore_unknown_region), where it is the fixed
+    constant 0.55; the paper must not describe it as contributing belief information."
+P.4 NOTHING ELSE CHANGES. No other reported number depends on this round's code.
+
+================================================================================
+7. FOR THE CLEANUP ROUND (recorded, not changed here; Part 1 section 10)
+================================================================================
+  - The 10 dead reader lines of Part 1 3.4 (ruling I-4). Line numbers at the round head:
+      constraint_filter.py:198 / :200;
+      global_analyzer.py:1136 / :1145 / :1149 / :1284;
+      utility_evaluation.py:276 / :282 / :289 / :290 (:274 / :280 / :287 / :288 at f686e932).
+  - Two numpy-blind NUMERIC readers outside F-2's ruled scope:
+      - local_uav_path_planner.py:597 _coords_tuple;
+      - constraint_filter.py:103-119 required_battery / battery_required.
+    Each needs its own identity check if hardened.
+  - README.md's switch list (last updated 2026-09-21) lists no switch added since, these two included.
+  - Instruments that assume the literal MR1 rule, valid only at MR1_TRUTHINESS_FIX 0:
+      - outputs/_ist_probe.py / _ist_analyze.py (Part 1's literal == model check);
+      - outputs/_bp_analyze.py mr1_digest's mr1_literal_ok. It now applies only at heads without F-1; at heads
+        with F-1 the 19.11 (b) STOP applies (section 10).
+  - outputs/_fb3_probe.py's comment calls the literal count "the model's". The file is run-loaded by the measurement
+    round, so it is left byte-identical; both counts it records are unaffected.
+  - outputs/_ist3_queue.py's docstring gives "the literal count is 0 throughout scenario D" as the K arm's
+    scenario rule. That is not true in general (4.1, 4.5). The file is frozen, so the correction is recorded here.
+  - common_fixed_variables.py's NUMPY_SCALAR_FLAGS comment (shipped in 208de51f, written before Part 3 ran) says
+    "the round's Part 3 identity runs cover every measurement-round configuration (outputs/isTrue_report.txt)".
+    - They cover every factor value and 13 of the 14 sensitivity points, at the isTrue head (4.2).
+    - They do not cover every cell of every arm or point (C-3), 19.7 point 2 (C-4), or the post-dispatch head (C-5).
+    - The source is the tested source (sections 4-5), so the comment is left as shipped and the correction is
+      recorded here. Suggested rewording: "cover every factor value of the measurement round at the isTrue head;
+      see outputs/isTrue_report.txt 4.2 for what they do not cover".
+  THROUGHPUT NOTE FOR THE MEASUREMENT ROUND (not a defect):
+    - 19.10 (e) plans 5 184 runs at bayesprep's measured 45 runs / h: about 115 h (108-121 h at 43-48). That rate
+      was measured on this box at 11-12 processes, with a 3 GB free-commit floor (bayesprep_report.txt 8).
+    - Today's pool used --min-free-gb 4. It ran 1-10 concurrent, mostly 2-5 until 07:58 (the full suite ran
+      alongside until 03:24, and other programs held most of the commit), then mostly 8. That gave 30.5 runs / h
+      overall, and 39.5 runs / h in the last 6 h (237 runs, 07:49-13:49).
+    - Before scheduling the measurement round, re-measure throughput, with the floor and the background load stated.
+  DISPATCH ROUND NOTE: moving dispatch (1102d929) onto the post-isTrue main will conflict in one place.
+    - The file is tests/test_base_station.py::test_shipped_defaults. Both rounds add switch pins after
+      `assert cfv.SEARCHER_TARGETING == 0`. The resolution is to keep both.
+    - agents.py and common_fixed_variables.py are also changed by both rounds, but in hunks far apart:
+        - isTrue: agents.py UAV.surrounding_states and after uav_docked_not_obstacle; common_fixed_variables.py after
+          UAV_DOCKED_NOT_OBSTACLE;
+        - dispatch: after global_planner_mode / GLOBAL_PLANNER_MODE.
+      No textual conflict is expected there; check both files after the merge.
+    - No other file is shared. The current dispatch head, 695fa4b1, adds only outputs/ records over 1102d929.
+
+================================================================================
+8. FOR THE MAINTAINER'S CONFIRMATION (recommendation first)
+================================================================================
+C-1 THE I-5 PAPER WORDING (P.3).
+    (a) RECOMMENDED: adopt the wording of P.3. The ruling's "always 0" omits the constant 0.55 on the dedicated
+        explore-unknown-region option. Adopting P.3 also withdraws the wording proposed in Part 1 section 10.
+    (b) Keep "always 0" as ruled. It is not literally true of the code.
+C-2 19.11 (c) - (e).
+    (a) RECOMMENDED: confirm (c), (d) as corrected (section 3), and (e).
+    (b) Strike or reword any of them. This is a text change to fix3b_part1.txt, committed before any measurement run
+        is read.
+C-3 THE IDENTITY-RUN COVERAGE DESIGN (4.2).
+    (a) RECOMMENDED: accept it.
+        - It covers every value of every factor of 19.1 / 19.3 / 19.7 / 19.10 (point 2 aside), at the isTrue head,
+          and every arm on every wind and every scenario.
+        - Part 1 section 5's own census-configuration plan is also run, on the harness (4.8).
+        - The properties tested are structural. F-2 is a type rule that no numpy value reached. F-1 touches only MR1.
+    (b) Run the missing cells:
+        - MAIN: the other 12 wind x scenario cells of every (arm, placement), 288 configurations. At B and F12 only,
+          that is 576 runs, about 15-19 h at today's rates (39.5-30.5 runs / h).
+        - SENSITIVITY: 15 of 16 cells per point and placement are also missing. All of them at B and F12 is another
+          (12 x 30 + 2 x 2 x 15) x 2 = 840 runs.
+C-4 19.7 POINT 2 (2x2-cell belief, 25 x 25) has NO implementation. The belief is always built at the grid's own
+    resolution (wildfire_model.py:2720).
+    (a) RECOMMENDED: drop point 2 from 19.7, 19.8 and 19.10 (e): 13 points, sensitivity 1 248 runs (-96), total
+        5 088.
+    (b) Implement it in its own round, before the measurement round, with its own identity check.
+C-5 THE HEAD THE MEASUREMENT ROUND WILL RUN ON (4.2). Every identity result is for the isTrue head; the measurement
+    round runs after the dispatch merge (19.4).
+    (a) RECOMMENDED: when dispatch is moved onto the post-isTrue main, its own identity gate runs there (dispatch
+        S1 / G-ID).
+        - If dispatch ships at 0 / 0, its hunks are no-ops behind their switches, and nothing more is needed.
+        - If it ships a non-zero switch, repeat a reach + G-A / G-K sample at the merged head before the first
+          measurement run. For example, the 12 K configurations at B' (the merged head with both isTrue switches
+          at 0) vs F12', about 24 runs.
+    (b) Accept the isTrue-head evidence as sufficient. The dispatch module imports no numpy and calls no F-2 reader
+        and no MR1 code (to be re-checked at merge).
+
+================================================================================
+9. MERGE (only on the maintainer's word) AND HOUSEKEEPING
+================================================================================
+  MERGE STEPS, in order:
+    1. push istrue;
+    2. fast-forward main (git merge --ff-only istrue; STOP if it is not a fast-forward);
+    3. push main;
+    4. tag istrue-fix and push the tag.
+  THEN remove the round's three worktrees:
+      E:/Projects/SAS_wt/istrue        branch istrue
+      E:/Projects/SAS_wt/basef686      detached f686e932, arm B
+      E:/Projects/SAS_wt/istrue_suite  detached 6904b1f8, the full suite
+    For each:
+      1. `cmd /c rmdir .venv` (the junction);
+      2. remove the worktree;
+      3. confirm that E:/Projects/SAS/.venv is intact.
+  RECORD CORRECTIONS IN THE RESULT COMMIT (all made before any measurement run exists):
+    - outputs/isTrue_part1.txt section 10, three CORRECTED / SUPERSEDED notes, each added beside the original:
+        - the leak-check line now cites outputs/_ist_leakcheck.txt (31 passed on the committed files);
+        - the mutation line cites outputs/_ist_mutation.txt (22 / 23, M20 equivalent);
+        - the proposed G_belief wording is superseded by P.3.
+    - outputs/fix3b_part1.txt 19.11 (d): corrected as in section 3, marked as a correction.
+  FILES ADDED BY PARTS 2 AND 3 (besides the source and tests of section 2):
+    outputs/isTrue_report.txt                         this report
+    outputs/_ist_redcheck.txt                         the red / green check (2.3)
+    outputs/_ist_leakcheck.txt                        the leak-order check (2.3)
+    outputs/_ist_mutation.py / .txt                   the mutation re-run (2.4)
+    outputs/_ist3_queue.py / _configs.json / _q.jsonl design and frozen list (4.1)
+    outputs/_ist3_reach.py                            record-only reach wrapper (4.6)
+    outputs/_ist3_freeze.py / _freeze_launch.json / _freeze_complete.json   freeze record (4.3)
+    outputs/_ist3_analyze.py / _ist3_analysis.txt     analyzer and its output (4.3-4.6)
+    outputs/_ist3_pool.log                            the main pool's log
+    outputs/_sd_ist3_<arm>_<cid>.json + .json.argv + .json.poollog + .json.reach.json + .stdout.txt
+                                                      384 run records x 5 files. .stdout.txt is the model's console
+                                                      output, whose sha256 is the JSON's stdout_sha. The chain
+                                                      writes no .err file.
+    outputs/_ist3h_queue.py / _q.jsonl / _launch.json / _analyze.py / _analysis.txt / _pool.log   harness runs (4.8)
+    outputs/_ist3h_<arm>_<cid>.json + .json.argv + .json.poollog + .stdout.txt    32 harness run records
+    outputs/_ist3_fullsuite.log                       the full suite (5)
+  QUARANTINE.
+    - Every recursive search excluded outputs/_firemech_rewound_20260914.
+    - The analyzers and the freeze record read only named files and non-recursive globs.
+    - git ran no untracked walk (-uno).
+
+================================================================================
+10. RULINGS ON SECTION 8 (maintainer, 2026-10-05) - GOVERN WHERE THEY DIFFER FROM SECTIONS 0-9
+================================================================================
+  C-1 ACCEPTED. The paper uses P.3's G_belief wording (Part 1 section 10 marked ACCEPTED).
+  C-2 CONFIRMED: 19.11 (c), (d) as corrected, and (e) (outputs/fix3b_part1.txt 19.11, and 19.12 (b)).
+  C-3 ACCEPTED. The identity-run coverage design stands as run (4.2).
+  C-4 POINT 2 DROPPED, as a committed amendment stating why, before any measurement run: outputs/fix3b_part1.txt
+      19.12 (a).
+      - The reason: it has no implementation and no switch can produce it.
+      - The new run count is 13 sensitivity points, 1 248 sensitivity runs, 5 088 in all.
+  C-5 YES, as a precondition of the measurement round (19.12 (c)). After the dispatch round merges and before the first
+      measurement run, if dispatch ships any switch on, run a small identity check at the merged head:
+        - the reach census;
+        - shipped vs both isTrue switches 0, on the 12 K configurations.
+  BEFORE THE MERGE: 19.11's two new checks in outputs/_bp_analyze.py, with a test for each
+  (tests/test_istrue_bp_analyze.py):
+    - (b) mr1_corrected_check, called from mr1_digest for every digested run.
+        - At a head that carries F-1, the model's mr1_list must equal the probe's corrected accumulation bit for
+          bit, or the analyzer STOPS (also when the run has no MR1 record).
+        - The rule only applies where git places the F-1 commit (fef52103) in the run's head. Runs from heads without
+          F-1 (the bayesprep corpus) keep the literal rule, unchanged.
+        - It FAILS CLOSED: if git cannot place the head of a run PROV accepts, the analyzer STOPS. A failed git call
+          is never cached.
+        - PROV prints one line counting the path each digested run took, and adds a PASS verdict when any run was
+          checked.
+    - (c) istrue_switch_refusals, applied in prov_check and in rb_prov (the rb shards): a run that sets
+      MR1_TRUTHINESS_FIX or NUMPY_SCALAR_FLAGS, to any value, in its --set dict or its recorded params, is REFUSED.
+      The head clause is PROV's existing head rule.
+    - RED / GREEN. On the analyzer before the change, all 6 test cases fail; after it, 6 passed. 7 mutants, each
+      killed by the tests:
+        - either refusal call removed (probe runs, rb shards);
+        - the run's own head not passed as accepted;
+        - the fail-closed STOP disabled;
+        - a failed git call cached;
+        - the bit-equality test disabled;
+        - the no-record STOP disabled.
+    - REVIEW. A read-only review before commit (4 agents) found 7 points, none refuted. All are applied: the fail-closed
+      STOP, no cache of a failed git call, the coverage line, the rb shards, two test gaps, the stale :932 pointers,
+      and the 480-step point's CUR partner (recorded OPEN in 19.12 (a), not decided here).
+    - LEGACY UNCHANGED. The full analyzer was run over the bayesprep corpus, before and after the change (--head
+      b505d036 --head2 8122b463 --head3 ded3efe3; 351 expected runs, every section).
+      - The output is identical apart from one new PROV line: "19.11 (b) MR1 rule over every digested run: head
+        without F-1: literal rule 340".
+      - Every digested bayesprep run is at a head without F-1, so no STOP fires (outputs/_ist_bpa_legacy.txt).
+    - The full suite was not re-run. These commits change no model source: they add one test file and change the
+      outputs/ analyzer and records. The suite result of section 5 (6904b1f8) still describes the source.

@@ -172,6 +172,11 @@ def test_shipped_defaults() -> None:
     assert cfv.SEARCHER_TARGETING_FIX == 1
     assert cfv.UAV_DOCKED_NOT_OBSTACLE == 1
     assert cfv.SEARCHER_TARGETING == 0
+    # isTrue round (outputs/isTrue_part1.txt, rulings section 10): F-1 ships ON (off only on an exact 0, the inherited
+    # identity test): the MR1 input counts burning cells by truthiness.
+    assert cfv.MR1_TRUTHINESS_FIX == 1
+    # F-2 ships ON (off only on an exact 0, the pre-fix readers): numpy scalars in the utility layer read as Python.
+    assert cfv.NUMPY_SCALAR_FLAGS == 1
     # Dispatch round (outputs/dispatch_part1.txt, rulings section 20): joint assignment (Limit 2) and reassignment
     # (Limit 3) ship OFF - on only on an exact 1, REASSIGN only while JOINT is on; S, M, P fixed by D-8.
     assert cfv.DISPATCH_JOINT == 0

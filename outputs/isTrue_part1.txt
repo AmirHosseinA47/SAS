@@ -1,0 +1,548 @@
+================================================================================
+isTrue ROUND - PART 1: AUDIT OF EVERY `is True` / `is False` IDENTITY TEST + FIX DESIGN   outputs/isTrue_part1.txt
+No model source is edited. STOP for the maintainer's ruling at the end (section 9).
+================================================================================
+STATE. main = f686e932 = tag bayes-prep (decision R-7 of outputs/bayesprep_report.txt 13.9 is open). Branch istrue,
+cut at f686e932, lives in the worktree E:/Projects/SAS_wt/istrue; its .venv is a junction to the parent .venv
+(Python 3.10, mesa 1.2.1, numpy 2.2.6). The main checkout and the dispatch worktree (E:/Projects/SAS_wt/dispatch,
+branch dispatch, STOPPED) are not touched. The only files this round adds are outputs/_ist_* (tools and records)
+and this report.
+
+HOW THIS WAS ESTABLISHED.
+  - STATIC. outputs/_ist_sites.py walks the brief's scope (agents.py, wildfire_model.py,
+    common_fixed_variables.py, src_extension/) with the ast module: every Compare whose operators contain Is / IsNot
+    with a True / False constant on either side. It also lists, per truthiness helper, the parameter keys the helper
+    reads (outputs/_ist_sites.json). Every value source below was read in the code (file:line).
+  - DIRECT. outputs/_ist_demo.py -> outputs/_ist_demo.txt calls each helper, unpatched, with a Python value and
+    its numpy twin, and shows the MR1 input on one real WildFireModel (team pinned 3/5/3, no step).
+  - RUNTIME CENSUS. outputs/_ist_probe.py runs outputs/_ffr_harness.py unchanged behind RECORD-ONLY pass-through
+    hooks. It records the type of every value that reaches every identity site (and the key census of every option's
+    parameters), over full 360-step runs: 9 probed runs + 1 bare run, section 3.0.
+    - The probe was shown to be record-only: section 3.0 (c).
+    - The analysis is outputs/_ist_analyze.py -> outputs/_ist_census.txt.
+  - QUARANTINE. No recursive search was rooted at the repo root or at outputs/.
+    - grep -r ran only on src_extension/, tests/ and docs/.
+    - Root files were named explicitly.
+    - The outputs/ globs were non-recursive (outputs/_ist_*, outputs/*part1*.txt).
+    - git ran no status walk.
+    - _ist_sites.py walks only src_extension/.
+    - No contact with outputs/_firemech_rewound_20260914.
+
+================================================================================
+1. THE INVENTORY
+================================================================================
+31 identity tests on 28 lines (outputs/_ist_sites.json):
+  - agents.py:422;
+  - 30 tests on 27 more lines.
+The brief's "26 code sites besides agents.py:422" counts the lines with `is True` / `is False`. The 27th line is
+utility_evaluation.py:288, whose only test is `is not True`. Three lines hold two tests each:
+global_analyzer.py:1145, :1149 and :1284. Comments and docstrings that mention "is True" (wildfire_model.py:3180,
+:4311, :6317; local_adaptation_generator.py:266) are not tests; the AST cannot match them.
+
+The 28 lines fall into six shapes (section 3 has each line):
+  A  1 line    agents.py:422 - int(agent.is_burning() is True).
+               CONFIRMED DEFECT, reached in every run.
+  B  11 lines  the truthiness PARSER (4 planner _is_truthy, planner_selection :70, 6 utility_evaluation closures):
+               `v is True` -> True; non-zero int / float -> True; "1" / "true" / "yes" / "on" -> True; else False.
+               LATENT DEFECT.
+  C  4 lines   the tri-state INDICATOR (_indicator :307/309, sig :382/384): `v is True` -> 1;
+               `v is False or None` -> 0; else clamp01(safe_float(v)).
+               LATENT DEFECT, through safe_float.
+  D  10 lines  a LITERAL FLAG (`params.get(k) is True` / `is False`) on a key that no producer writes.
+               NOT A DEFECT TODAY: dead readers.
+  E  1 line    wildfire_model.py:2544 - `uav_result.get("applied") is True`.
+               NOT A DEFECT: every writer is a Python bool, and the line is unreachable in a run.
+  F  1 line    local_uav_monitor.py:184 - `prev_u is True` (None / False / True).
+               NOT A DEFECT: an intentional tri-state, always a Python bool.
+
+================================================================================
+2. WHERE THE NUMPY BOOL COMES FROM (the mechanism behind A, and the risk behind B / C)
+================================================================================
+2.1 The fire.
+  - cfv.euclidean_distance returns numpy.linalg.norm(...), a numpy.float64 (common_fixed_variables.py:1002-1006).
+  - distance_rate returns that float ** -2.0 (:1010-1015), so Fire.probability_of_fire's P is a numpy.float64
+    whenever a neighbour lies within the radius (agents.py:53-85, the product at :81).
+  - Fire.step: cell_prob = max(0.0, min(1.0, P * 0.75)) (agents.py:100-102); next_burning_state = generated <
+    cell_prob (:104). Fire.advance: burning = next_burning_state (:125).
+  - A comparison with a numpy.float64 is a numpy.bool_. numpy 2 names that type "bool"; it is neither the Python
+    True singleton nor an int.
+  - Two Python-bool cases remain:
+    (a) a cell whose probability is EXACTLY 0. Python's max returns its first argument among equals, so cell_prob
+        is the Python 0.0 and the draw yields Python False;
+    (b) a cell clamped to 1.0. This is impossible here: P <= 1, so cell_prob <= 0.75 and min(1.0, .) never returns
+        its own 1.0.
+  - So EVERY cell that is burning after any spread tick holds numpy True. The census sees Python True burning only
+    on steps 1-2: the seeded cell, created with the literal True (wildfire_model.py:2504 -> new_fire_agent :2509).
+    In every run the first burning cell that is not Python True appears at step 3 (FIRE_SPREAD_SPEED 3), and no
+    Python-True burning cell exists after step 2 (section 3.0).
+  - firefighter_extinguish / burnt / the init write Python False, which is harmless at an `is True` test.
+  - Since the first code commit. a4a01b4b (2026-07-27, "Add core project files") already has both
+    agents.py:`is_burning() is True` and euclidean_distance via numpy.linalg.norm. A numpy bool scalar has never
+    been the Python True object, in any numpy version, so the defect does not depend on numpy 2.
+2.2 Every other numpy source in scope.
+  - Only three modules import numpy: src_extension/knowledge/victim_search_belief.py,
+    planning/fire_arrival_estimate.py and planning/searcher_targeting.py. Plus cfv (euclidean_distance).
+  - Callers of euclidean_distance: local_uav_monitor.py:384 (drift), wildfire_model.py:1226 and :3508 (MR2 -
+    `distance < SECURITY_DISTANCE` is a numpy bool used only in an `if`, which is correct).
+  - A numpy.float64 is a float subclass and passes every isinstance(float) test.
+  - What fails is a numpy BOOL, a numpy INTEGER (not an int subclass) or a numpy.float32 (not a float subclass),
+    shown in outputs/_ist_demo.txt. Each arises from a comparison, a count or a reduction over numpy values.
+
+================================================================================
+3. PER-SITE AUDIT
+================================================================================
+3.0 THE CENSUS (outputs/_ist_census.txt; per-run files outputs/_ist_<arm>_<wind>_<seed>_census.json)
+  (a) 10 full 360-step runs (9 probed + 1 bare), head f686e932, 5 at a time, one process each. Every one exited 0
+      with 0 observer errors:
+        wave 1 (probe v1):  S east 101, S west 103, S south 102     shipped defaults, scenario D
+                            B5 east 101                             --set SEARCHER_TARGETING=5 (front priority:
+                                                                    the numpy-heavy Bayesian belief and targeting)
+                            G1 east 101                             --set GLOBAL_PLANNER_MODE=1 (role options valued
+                                                                    from world quantities)
+        wave 2 (probe v2):  A east 104 / Bsc east 104 / C east 104  scenarios A, B (battery), C (5 UAV), shipped
+                            S2 east 101                             a repeat of wave 1's S east 101
+                            bare east 101                           _ffr_harness.py with NO probe
+      v2 differs from v1 only in naming the parameter key at safe_float's pfloat fall-through (section 4.3).
+  (b) Coverage: the 9 probed runs.
+        - 421 309 utility evaluations (option + context) and 550 139 generated options at the constraint filter;
+          145 / 157 distinct parameter keys (scored / generated).
+        - 4 931 179 safe_float calls.
+        - 12 960 surrounding_states calls, and 3 240 passes each of the global analyzer's three hooked methods.
+        - Scenarios A, B, C and D; winds east, south and west; and the two numpy-heaviest shipped-OFF strategies
+          (SEARCHER_TARGETING 5, GLOBAL_PLANNER_MODE 1).
+        - NOT covered: SEARCHER_TARGETING 1-4, wind north, the legacy scenario-B team, and every other unlisted
+          switch value. The census is a coverage sample, not a proof for unmeasured configurations; the tests in
+          section 5 do not depend on it.
+  (c) RECORD-ONLY CHECK (outputs/_ist_identity.py -> outputs/_ist_identity.txt).
+      - The bare run (no probe) and both probe runs of S east 101 (v1, v2) are equal in ALL 59 fields of the
+        harness JSON except wall_s / tag: eval, all 360 fire_digests, ff_steps, uav_steps, victim_steps and
+        stdout_sha256. The probe changes nothing.
+      - G1 east 101 is also equal to the bare run in every field except params / extra_params: at this seed
+        GLOBAL_PLANNER_MODE 1 generated and scored role options (4.4), but none was applied.
+
+3.0 (d) VALUES SEEN AT EACH SITE, summed over the 9 probed runs ("absent" = the key is not in the dict; T / F =
+      truthiness):
+    agents.py:422                       numpy.bool T 157 102, F 340 217 | Python bool F 2 310 660, T 21
+    (fire: every Fire.burning, post-step)  numpy.bool T 394 763, F 643 713 | Python bool F 7 061 506, T 18
+    wildfire_model.py:2544              0 calls. The uav_results "applied" values it would read: Python True 13 551
+    constraint_filter.py:198 / :200     absent 550 139 / absent 550 139
+    global_analyzer.py:1136             by_uav_id absent 3 240 (the loop body is never entered)
+    global_analyzer.py:1145 / :1149     system_unsafe, fleet_emergency absent 3 240 each; the value layer absent 3 240
+    global_analyzer.py:1284             knowledge_desync_risk, desync_risk absent 3 240 each
+    local_uav_monitor.py:184            None 51 415 | Python bool F 2 523 220, T 235 545
+    fail_safe_planner.py:486            None 10 121 | Python bool T 1 275
+    global_mission_planner.py:303       None 3 240
+    local_uav_path_planner.py:641       None 12 960
+    rescue_planner.py:412               0 calls. Its callers short-circuit on option_type first and otherwise need
+                                        low victim confidence / high route or communication risk
+                                        (rescue_planner.py:239-266).
+    planner_selection.py:70             0 calls. find_maintain_option is reached only when no option is feasible
+                                        (fail_safe_planner.py:330-333, local_uav_path_planner.py:346-353,
+                                        rescue_planner.py:244-247).
+    utility_evaluation.py:274/280/287/288   absent 421 309 each
+    utility_evaluation.py ptruth / ptruth_s / ptruth_p / _indicator / sig   read option.parameters. Of all the
+                                        keys they read, only three occur in a scored option:
+                                          - do_nothing (Python True 26 742);
+                                          - search_mode (Python True 1 275);
+                                          - information_recovery (Python FLOAT, G1 only: 0.0 x 640, > 0 x 466).
+                                        Every other key they read is absent.
+    NO NUMPY VALUE anywhere: none at any of the 145 scored / 157 generated parameter keys, in any context, or at
+    safe_float.
+
+3.1 SHAPE A - agents.py:422 (MR1). CONFIRMED DEFECT, REACHED IN EVERY RUN.
+  - Value: Fire.is_burning() = Fire.burning, a numpy bool from step 3 (section 2.1).
+  - Path:
+      WildFireModel.step :6304-6305 (state() then MR1(state), before the schedule moves anything)
+      -> state() :3515-3529 -> UAV.surrounding_states agents.py:411-423 (Moore radius 8, 17 x 17 = N_OBSERVATIONS
+      289) -> MR1 :3482-3488 (sum, normalize(., 289, 1, 0), accumulated into MR1_LIST).
+  - Census:
+    - Literal count (the model's own sum): 0 on every step in the 6 scenario-D runs; 6 / 6 / 9 in A / B / C, all on
+      steps 1-3.
+    - Why step 3: the model reads the grid BEFORE the schedule moves (:6304-6305), so the step-3 read still sees the
+      seeded Python-True cell; the spread tick that replaces it runs later in that step. Every read from step 4 on
+      counts 0.
+    - Truthy count: 9 218 to 23 104 per run, positive on 128 to 349 of the 360 steps.
+    - Across the 9 runs, 157 102 numpy-True burning cells fell inside a UAV's box; the model counted none.
+  - Direct: 4 numpy-True cells in UAV 2500's box give sum(surrounding_states()) = 0; the same 4 as Python True
+    give 4 (outputs/_ist_demo.txt B).
+  - Intentional? No. The comment above the loop says "1 if its burning, 0 if it isn't"; the identity test is an
+    accident of the value's type.
+  - WHO READS MR1_LIST. Nothing that decides, gates or scores. surrounding_states has one caller
+    (wildfire_model.py:3520); MR1_LIST has two readers:
+    (1) the print at :6267-6270. It runs only when a caller attempts step BATCH_SIZE + 2, and that step then raises
+        BatchLimitReached. Since fix1 every runner gives BATCH_SIZE >= steps: _ffr_harness.py:185,
+        evaluate_scenarios.py:71/103 and serve_dashboard.py:560. ModularServer stops at running = False
+        (:6320-6321). So NO runner in the repository prints it at its defaults;
+    (2) the bayesprep probe's record-only mr record, which copies mr1_list at the end (outputs/_fb3_probe.py:759-761).
+    The datacollector has no reporters (wildfire_model.py:288). No eval field, dashboard field, test or
+    src_extension module reads MR1 (grep: 0 hits in src_extension/ and tests/).
+
+3.2 SHAPE B - THE TRUTHINESS PARSER (11 lines). LATENT DEFECT: wrong on numpy input, no numpy input reaches it.
+  - The parser's identity test is INTENTIONAL in form. It reads a flag that may arrive as a bool, a number or a
+    string, and it must not call "false" or "no" true, which bool(v) would.
+  - Its defect is in the numeric branch: isinstance(v, (int, float)) excludes numpy.bool_, numpy integers and
+    numpy.float32. All three fall through every branch to False (outputs/_ist_demo.txt A1-A3: np.True_,
+    np.int64(1) and np.float32(1.0) -> False; np.float64(1.0) -> True).
+  The 11 lines and the keys each reads (outputs/_ist_sites.json helper_keys):
+    fail_safe_planner.py:486 _is_truthy       search_mode (:352, :461), critical_trigger, emergency (:367),
+                                              _MAINTAIN_FAILSAFE_MARKERS (:377)
+    global_mission_planner.py:303 _is_truthy  return_to_base (:274)
+    local_uav_path_planner.py:641 _is_truthy  escalation (:610), _HOLD_PATH_MARKERS (:362)
+    rescue_planner.py:412 _is_truthy          confirmation, confirm_rescue (:274), delay_ / postpone_ / cancel_rescue
+                                              (:287), _MAINTAIN_RESCUE_MARKERS (:299)
+    planner_selection.py:70 (inline, in _is_maintain_option)   do_nothing, stability_control, maintain_current_config
+    utility_evaluation.py:338 ptruth_s        stability / do_nothing / keep_* markers, critical_trigger, emergency,
+                                              immediate_action, mayday (_compute_stability_bonus)
+    utility_evaluation.py:529 ptruth_p        confirmation, search_mode, information_recovery, risky_action,
+                                              execute_mission (_apply_confidence_and_uncertainty_adjustment)
+    utility_evaluation.py:807 / 1036 / 1201 / 1375 ptruth   the term evaluators' flags (global mission / rescue /
+                                              communication / fail-safe): stability_control, do_nothing,
+                                              search_mode, role_change, confirmation, dispatch, initiate_rescue,
+                                              relay_mode, reduce_bandwidth, return_to_base, low_power_mode, ...
+  - Value source: option.parameters, written by the adaptation generators. Static: every writer of a key read here
+    writes a literal Python True:
+      do_nothing        failsafe / global / local / rescue_adaptation_generator.py:43 / :26 / :2263 / :61
+      return_to_base    local_adaptation_generator.py:2571
+      comm flags        communication_adaptation_generator.py:284-349
+    The exception is information_recovery: role_option_values.py:192 writes a Python FLOAT share, under
+    GLOBAL_PLANNER_MODE 1 only (see 4.4).
+  - Census: no numpy value, at any key these helpers read, in 421 309 evaluations (3.0 d).
+    - The live values are None, Python True and, under G1, a Python float.
+    - Two of the 11 lines were never called in the sample: rescue_planner.py:412 and planner_selection.py:70
+      (3.0 d); their static analysis stands alone.
+  - Verdict: wrong for a numpy scalar, never given one in any measured configuration. The defect becomes live the
+    day a generator writes a flag computed from a numpy comparison - exactly how MR1 broke.
+
+3.3 SHAPE C - THE TRI-STATE INDICATOR (4 lines). LATENT DEFECT, carried by safe_float.
+  - utility_evaluation.py:307/309 (_indicator: role_change, task_change; _compute_switching_cost) and :382/384
+    (sig: negative_observation_recent, avoids_recent_negative_region, confirms_stale_negative_region;
+    _compute_negative_information_adjustment).
+  - The identity tests are correct as written. A numpy bool falls through to clamp01(safe_float(v, 0.0)), and
+    safe_float (:1592-1604) returns its DEFAULT for numpy bools, numpy integers and numpy.float32 (isinstance bool
+    / (int, float) / str only). So np.True_ reads as 0.0: switching cost 0.000 instead of 0.300
+    (outputs/_ist_demo.txt A4).
+  - Census: none of the five keys occurs in any option's parameters in any run (they are absent; nothing writes
+    them).
+
+3.4 SHAPE D - LITERAL FLAGS ON KEYS NO PRODUCER WRITES (10 lines, 13 tests). NOT A DEFECT TODAY.
+    constraint_filter.py:198 / :200          parameters "feasible" is False / "infeasible" is True
+    global_analyzer.py:1136                  by_uav_id[*] "unsafe" / "critical_issue" / "system_fault" is True
+    global_analyzer.py:1145 / :1149          uav_team_summary "system_unsafe" / "fleet_emergency" (both layers)
+    global_analyzer.py:1284                  communication_summary "knowledge_desync_risk" / "desync_risk"
+    utility_evaluation.py:274 / 280 / 287    merged parameters "hard_collision_violation" is True, "route_feasible"
+                                             is False, "requires_critical_communication" is True
+    utility_evaluation.py:288                "fail_safe_mode" is not True
+  - Static: no producer anywhere in scope writes any of these keys (grep over src_extension/, wildfire_model.py,
+    agents.py). The structures they read are fixed:
+      - global_monitor._uav_team_summary returns positions / roles / battery_levels / drift_levels /
+        uav_information_gain / total_information_gain / local_issues (global_monitor.py:233-241): no by_uav_id,
+        no value layer;
+      - the communication summary is communication_model.snapshot() + monitor fields (global_monitor.py:445-451;
+        communication_model.py:306-312).
+  - Census: every one of the 13 tests saw only "absent": 550 139 options at the filter,
+    421 309 evaluations, 3 240 analyzer passes (3.0 d).
+  - Only unit tests write these keys, always as literal Python bools (tests/test_global_local_planners.py:91/96/190,
+    test_rescue_failsafe_planners.py:83/88/220/232).
+  - :1136 handles strings on purpose (the `isinstance(v, str)` arm).
+  - :288 carries a SEMANTIC HAZARD, not a type defect. The one producer of a "fail_safe_mode" key in the code base
+    writes a MODE NAME string (fail_safe_planner.py:217, into FailSafeDecision.uncertainty_context; read as a
+    string token at decision_dispatcher.py:603-604). If such a value ever reached :288, the identity test ("not
+    True" -> apply the check) and truthiness ("a mode is set" -> skip it) would disagree. The branch needs
+    requires_critical_communication, which nothing writes, so it is dead today. A future producer must decide that
+    meaning explicitly; converting :288 to truthiness blindly would pick one silently.
+  - Verdict: dead readers. A numpy value cannot reach a key that is never written. No fix is proposed for the type.
+    Whether to delete or wire them is a separate cleanup question (decision I-4).
+
+3.5 SHAPE E - wildfire_model.py:2544. NOT A DEFECT.
+  - Value: uav_results[*]["applied"]. Every writer is a literal Python bool or bool(...):
+    uav_executor.py:357/374/509/579/933/992; decision_dispatcher.py:378 (the per-UAV entries; the sections' own
+    "applied" are literal or bool(...): :302, :319, :400).
+  - Reached only from _prepare_uav_directions_for_step (:2581) when the extension pipeline is INACTIVE. The
+    pipeline is always active (decision_dispatcher is constructed in __init__ :385; nothing in scope or in tests
+    sets it to None), so the model never calls it. Only tests call it directly (test_behavior_regression.py:137,
+    test_execution_drives_movement.py:19/47/61).
+  - Census: 0 calls in 9 runs. The 13 551 values it would read are all Python True.
+
+3.6 SHAPE F - local_uav_monitor.py:184. NOT A DEFECT.
+  - prev_u = _prev_fov_cell_uncertain.get(cell): None for a cell never in this UAV's field of view, else the value
+    written at :335, which is _is_visibility_uncertain(cell) = `st in (three statuses)` (:69-75).
+  - `x in tuple` always returns a Python bool, whatever the elements' __eq__ returns. So `prev_u is True` is
+    exactly "seen before AND uncertain then"; the identity test separates True from None by design.
+  - Census: None 51 415, Python False 2 523 220, Python True 235 545; nothing else.
+
+================================================================================
+4. THE SIBLING CLASS (not identity tests; found by the same evidence) AND TWO INCIDENTAL FINDINGS
+================================================================================
+4.1 safe_float (utility_evaluation.py:1592-1604; also bound by name in planner_selection.py:8-13 and
+    rescue_planner.py:25).
+  - It returns the DEFAULT for numpy.bool_, numpy integers and numpy.float32 (outputs/_ist_demo.txt A5).
+  - It reads every numeric parameter of every utility term.
+  - Census: of 4 931 179 calls, NONE received a numpy value.
+  - It is the carrier of shape C and belongs to the same fix (F-2).
+4.2 Display-only and config siblings, out of scope, recorded:
+  - dashboard/contracts.py:10 (_json_safe) turns a numpy bool into the STRING "True" in dashboard JSON (no
+    `.value`, falls to str()).
+  - local_adaptation_generator.py:1069 reads NUM_VICTIMS, a config int, never numpy.
+4.3 INCIDENTAL: safe_float receives an EMPTY DICT at pfloat.
+  - 62 696 of the 4 931 179 calls received an EMPTY DICT (in every run).
+  - Probe v2 names the key: every one is pfloat("belief_gain") in _evaluate_local_path_option
+    (utility_evaluation.py:657). v1 = v2 = 6 484 on the S / S2 repeat pair, so wave 1's unnamed ones are the same.
+  - The local generator stores the "belief_gain" MAP (cell -> gain, read with a {} default, always empty in the
+    census) under the key the utility reads as a SCALAR (local_adaptation_generator.py:2617-2621, :2644).
+    safe_float returns the default 0.0. So the G_belief term is 0 for every local path option, except the
+    exploration option that sets "belief_gain": 0.55 explicitly (:2830).
+  - A shape mismatch, not an identity test and not numpy. Fixing it would CHANGE local path scores, so it is a
+    measured change of its own. Recorded for the owner of the local utility; this round proposes nothing (I-5).
+4.4 INCIDENTAL: under GLOBAL_PLANNER_MODE 1 a Python FLOAT share reaches a flag reader.
+  - role_option_values.py:192 writes "information_recovery" as a float share (0.0 or positive); ptruth_p
+    (utility_evaluation.py:559) reads the same key as a FLAG. The census sees it only in G1 (640 zero, 466 non-zero
+    values).
+  - It is INERT: ptruth_p runs only inside `if "uncertainty_level" in params` (:550), and role options carry the
+    nine values plus base parameters, never uncertainty_level (global_adaptation_generator.py:240-275).
+  - Not an identity-test issue. Recorded for the planner's owner: if role options ever gain uncertainty_level,
+    every non-zero share becomes an "inquiry" option with the uncertainty boost.
+
+================================================================================
+5. PROPOSED FIXES (each on its own switch; NOTHING IS IMPLEMENTED)
+================================================================================
+5.1 F-1  MR1_TRUTHINESS_FIX - SHIPS 1; off only on an exact 0 (agents._fix2_switch, the rule of every fix2-era
+    switch: junk, None and missing ARM; 0, 0.0, "0" and False disarm).
+  CODE (agents.py:411-423, one accessor + one line):
+      def mr1_truthiness_fix() -> bool:            # read at call time, never through the star import
+          return _fix2_switch("MR1_TRUTHINESS_FIX")
+      ...
+      truthy = mr1_truthiness_fix()                # once per call, outside the loop
+      ...
+      surrounding_states.append(int(bool(agent.is_burning())) if truthy else int(agent.is_burning() is True))
+    The OFF branch is the inherited line, byte for byte. cfv gets MR1_TRUTHINESS_FIX = 1 with the switch comment.
+  WHAT IT CHANGES: MR1_LIST only (3.1). No decision, eval field, dashboard field, fire draw, harness JSON field or
+    harness stdout line can change. The single caller of surrounding_states is MR1, and no runner prints MR1_LIST.
+  REJECTED ALTERNATIVE - fix the type at its source (Fire.step: next_burning_state = bool(generated < cell_prob)).
+    It would make every reader of burning see a Python bool. That changes the dashboard JSON (4.2: "True" strings
+    become JSON true), the type of every sum over burning flags (numpy int -> int) and every repr. That is not
+    behaviour-neutral by construction and needs its own audit of the burning readers. F-1 is local by
+    construction.
+  TESTS (tests/test_mr1_truthiness.py; real model, team pinned NUM_AGENTS / NUM_VICTIMS / NUM_FIREFIGHTERS 3 / 5 / 3
+    on cfv AND wildfire_model, no step):
+    T1-1 numpy burning counted: 4 Fire cells in UAV 0's box set to numpy.True_ (the rest False) ->
+         sum(surrounding_states()) == 4. FAILS on f686e932 (0; outputs/_ist_demo.txt B).
+    T1-2 kill switch: MR1_TRUTHINESS_FIX = 0 -> numpy.True_ gives 0 and Python True gives 4 (the inherited rule).
+    T1-3 accessor: 1 / 0.5 / "junk" / None / missing -> on; 0 / 0.0 / "0" / False -> off.
+    T1-4 MR1 accumulates the corrected count: model.MR1(model.state()) with the 4 cells set adds
+         normalize(4, 289, 1, 0) to that UAV's MR1_LIST entry. FAILS on f686e932 (adds 0).
+    T1-5 the cause, characterisation only: one Fire.step / Fire.advance spread tick next to a burning cell leaves
+         `burning` a numpy bool. Passes before and after; it fails only if someone changes the fire's type, which
+         is when the rejected alternative and this test must be revisited together.
+    Leak check (memory: other tests leave NUM_VICTIMS = 3 set): run `pytest tests/test_dashboard_panel.py
+    tests/test_mr1_truthiness.py`.
+  VERIFICATION (Part 3, record-only probe outputs/_fb3_probe.py mr v2, which records the model's mr1_list and the
+    literal and corrected per-step counts):
+    G1-a at MR1_TRUTHINESS_FIX 1: the model's mr1_list == the probe's CORRECTED accumulation, bit-equal, every UAV,
+         every run.
+    G1-b at MR1_TRUTHINESS_FIX 0: the model's mr1_list == the LITERAL accumulation, bit-equal (bayesprep's mr1v
+         check, unchanged).
+    G1-c every harness JSON field except wall_s / tag equal between 0 and 1 on the census configurations
+         (_ist_identity.py), stdout_sha256 included.
+  HAND-OFF (the measurement round, outputs/fix3b_part1.txt 19.10 (d)). M_R1 is "the model's MR1 (MR1_LIST)", and
+    outputs/_bp_analyze.py:932 (mr1_literal_ok) compares the model with the LITERAL copy. At MR1_TRUTHINESS_FIX 1
+    that check reads False on every run. If F-1 merges before the measurement round, 19.10 (d) needs a committed
+    amendment BEFORE any measurement run is read:
+      - "M_R1 = the model's MR1 = the corrected count; the check is model == corrected";
+      - the literal value is no longer reported (it is 0 by construction).
+    Decision I-2.
+
+5.2 F-2  NUMPY_SCALAR_FLAGS - SHIPS 1; off only on an exact 0 (_fix2_switch). Closes shapes B and C and safe_float.
+  CODE: one helper in utility_evaluation.py (the four planners and planner_selection already import from it):
+      def plain_scalar(value):
+          """A numpy scalar as its Python twin (numpy.bool_ -> bool, integer -> int, floating -> float); anything
+          else unchanged. Inert at NUMPY_SCALAR_FLAGS 0."""
+          if isinstance(value, numpy.generic):
+              import agents as _agents  # lazy: a root module, as _check_utility_feasibility already does (:257)
+              if _agents.numpy_scalar_flags():
+                  return value.item()
+          return value
+    plus `import numpy` at the top of utility_evaluation.py (already loaded through cfv) and the accessor
+    agents.numpy_scalar_flags() = _fix2_switch("NUMPY_SCALAR_FLAGS").
+    Applied as the FIRST operation of:
+      - the four _is_truthy (value = plain_scalar(value));
+      - planner_selection._is_maintain_option (per value);
+      - ptruth / ptruth_s / ptruth_p (v = plain_scalar(params.get(key)));
+      - _indicator / sig;
+      - safe_float.
+    Every existing branch then runs unchanged, so every NON-numpy input gets exactly today's result by
+    construction. The accessor is called only for a numpy value, i.e. never in any measured run, so the cost is one
+    isinstance per call.
+  WHAT IT CHANGES: nothing in any measured configuration (3.0 census: no numpy value at any of these sites, at any
+    key they read, or at safe_float). It is a HARDENING of a latent defect. Shape D, E and F lines are NOT touched
+    (dead or always Python bool; changing dead code adds diff for no behaviour).
+  TESTS (tests/test_numpy_scalar_flags.py, no model; each FAILS on f686e932 except the kill-switch tests):
+    T2-1 each planner _is_truthy (4 modules) and _is_maintain_option: np.True_ / np.int64(1) / np.float32(1.0)
+         -> True; np.False_ / np.int64(0) / np.float32(0.0) -> False.
+    T2-2 the numpy twin evaluates identically. For each of the five term evaluators and _compute_stability_bonus /
+         _compute_switching_cost / _compute_negative_information_adjustment /
+         _apply_confidence_and_uncertainty_adjustment: an option whose read flags are Python True gives exactly
+         the same OptionEvaluation (or value) as the same option with numpy.True_.
+    T2-3 safe_float: np.True_ -> 1.0, np.int64(3) -> 3.0, np.float32(0.5) -> 0.5, np.False_ -> 0.0.
+    T2-4 kill switch: NUMPY_SCALAR_FLAGS = 0 -> every T2-1 / T2-3 call returns today's value (False / default).
+    T2-5 accessor rule (as T1-3).
+  VERIFICATION (Part 3): G2 = every harness JSON field except wall_s / tag equal between NUMPY_SCALAR_FLAGS 0 and 1
+    on the census configurations (it is expected to be a pure identity).
+
+5.3 NO FIX PROPOSED.
+  - Shape D (10 lines): dead readers; a type fix cannot matter. :288's meaning must be decided by whoever first
+    writes the key (3.4). Decision I-4: delete them in a cleanup round, or leave them.
+  - Shape E (wildfire_model.py:2544) and shape F (local_uav_monitor.py:184): correct as written.
+
+================================================================================
+6. FOR THE PAPER
+================================================================================
+P.1 MR1 (extends outputs/bayesprep_report.txt P.6).
+  - The inherited "effective wildfire monitoring" metric counts only the seeded fire cell, and only on steps 1-3.
+    From step 4 on it counts nothing, in every run, in every version of this repository (since a4a01b4b, the first
+    code commit). The cause is an identity test on a numpy bool, independent of the numpy version.
+  - Every MR1 value recorded before F-1 is that literal value (0.0 to 0.0026 per run in bayesprep). It is not a
+    monitoring measure and must never be pooled with values recorded after F-1.
+  - MR1 has never been an input to any decision, gate, utility term or evaluation field. Correcting it changes NO
+    outcome number: rescued, dead, terminal step, firefighter deaths and every digest are untouched (G1-c).
+  - With F-1 the model's own MR1 is the corrected measure, so the measurement round can report it directly
+    (decision I-2).
+P.2 THE LATENT CLASS (shapes B and C, and safe_float).
+  - No measured run was affected: the census shows no numpy value at any of these sites.
+  - The paper needs no correction. If it describes the implementation's robustness, one sentence suffices: flag
+    and number parsing in the utility layer was made numpy-scalar-safe after an inherited metric was found broken
+    by the same mechanism.
+P.3 NOTHING ELSE CHANGES. No reported number depends on a shape D / E / F line.
+
+================================================================================
+7. PART 2 / PART 3 (only if ruled)
+================================================================================
+PART 2 (implementation):
+  - one commit per fix (F-1, then F-2), each with its tests;
+  - cfv switch blocks with comments in the house style;
+  - docs: a one-line note where MR1 is described, if anywhere (grep docs/: no MR1 mention today).
+PART 3 (verification):
+  - G1-a / G1-b on the probe;
+  - G1-c and G2 on the census configurations: 8 configurations x (switch 0, 1). F-1 and F-2 can share the arms:
+    shipped (1, 1) vs both off (0, 0) plus (1, 0) for G1-a. About 24 runs, about 1 h at 5 concurrent;
+  - the full suite once on the final source, expected exactly {T5} + the new tests passing.
+  Tags ist* are reserved by this round; check the tags' outputs/_ffr_ist* files are untracked before reuse
+  (memory: harness tag collision).
+
+================================================================================
+8. HOUSEKEEPING
+================================================================================
+  - Added files, all record-only or analysis:
+      outputs/_ist_sites.py / .json              static enumerator + its output
+      outputs/_ist_demo.py / _ist_demo.txt       direct demonstration
+      outputs/_ist_probe.py                      record-only census probe (v2)
+      outputs/_ist_wave1.sh / _ist_wave2.sh      the two waves (wave 2 includes the bare run)
+      outputs/_ist_analyze.py / _ist_census.txt  census analysis
+      outputs/_ist_identity.py / .txt            harness JSON identity check + its output (3.0 (c))
+      outputs/_ist_<arm>_<wind>_<seed>.json / _census.json / .log / .err / .stdout.txt   10 run records
+  - Model source, tests and cfv: unchanged (git diff of the source tree is empty).
+  - The model's stderr in two runs holds "[RescueInvariant] ... assigned but firefighters=[]" lines:
+      - B5 east 101: 17 lines, steps 169-185;
+      - Bsc east 104: 6 lines, steps 87-89 and 150-152.
+    That is the model's own stderr-only invariant checker, not the probe (3.0 (c): the probe changes nothing).
+    Recorded for dispatch, whose Part 1 lists the checker.
+
+================================================================================
+9. DECISIONS FOR THE MAINTAINER (recommendation first) - STOP
+================================================================================
+I-1 F-1 (MR1_TRUTHINESS_FIX, ships 1).
+    (a) RECOMMENDED: implement as in 5.1. It is the only defect reached in every run, it changes only MR1_LIST,
+        and it closes R-7 (a).
+    (b) Leave the model and report the corrected M_R1 only (R-7 (b)).
+I-2 THE MEASUREMENT ROUND'S M_R1 (only if I-1 (a)).
+    (a) RECOMMENDED: amend outputs/fix3b_part1.txt 19.10 (d) before any measurement run is read: M_R1 = the
+        model's MR1 = corrected; the analyzer's check becomes model == corrected (bit-equal); the literal value is
+        dropped.
+    (b) Keep 19.10 (d) and run the measurement round at MR1_TRUTHINESS_FIX 0.
+I-3 F-2 (NUMPY_SCALAR_FLAGS, ships 1).
+    (a) RECOMMENDED: implement in this round, as in 5.2.
+        - This round IS the class round R-7 asked for.
+        - The fix is a pure identity in every measured configuration (G2).
+        - It removes the mechanism that broke MR1 from the 11 + 4 helper lines and safe_float before any later
+          producer writes a flag computed from numpy arithmetic.
+    (b) Record only: the class is latent; no change.
+    (c) Its own later round.
+I-4 SHAPE D (10 dead reader lines).
+    (a) RECOMMENDED: leave them, recorded here as dead; a cleanup round may delete them.
+    (b) Delete them now. That means rewriting the 7 unit-test sites that write the keys (3.4), for no behaviour.
+I-5 THE INCIDENTALS (4.3 pfloat empty dict, 4.4 information_recovery read as a flag): record only; route them to
+    the owners of those terms. RECOMMENDED: no change in this round.
+
+================================================================================
+10. RULINGS (maintainer, 2026-10-05) - GOVERN WHERE THEY DIFFER FROM SECTIONS 0-9
+================================================================================
+  I-1 ACCEPTED. F-1 MR1_TRUTHINESS_FIX is implemented, SHIPPING ON (5.1).
+  I-2 ACCEPTED. outputs/fix3b_part1.txt 19.10 (d) is amended for F-1 BEFORE any measurement run is read, as a
+      committed amendment.
+  I-3 ACCEPTED. F-2 NUMPY_SCALAR_FLAGS is implemented, SHIPPING ON (5.2).
+  I-4 NO. The 10 dead reader lines (3.4) stay; they are listed for a cleanup round.
+  I-5 RECORD ONLY.
+      RECORDED FOR THE PAPER: the local-path utility's G_belief term is ALWAYS 0 (4.3), so the paper must not
+      describe it as contributing.
+      CORRECTION OF THE PREMISE (Part 2, 2026-10-05; the maintainer is asked to confirm the wording below):
+        - The round's summary to the maintainer said "always 0" and dropped the one exception that 4.3 states.
+        - The explore-unknown-region option (local_adaptation_generator.py:2830) sets belief_gain to the CONSTANT
+          0.55. The census scores it once per victim searcher per step: 720 times per run with two searchers, 1 080
+          in the 5-UAV scenario C (e.g. outputs/_ist_A_east_104_census.json belief_gain: float:T 720, dict:F 6 573).
+        - So G_belief is 0 on every other local path option and a fixed 0.55 on that one: it never carries belief
+          information.
+        - Proposed paper wording: "G_belief never reflects the belief. It is 0 on every local path option except the
+          explore-unknown-region option, where it is a fixed constant 0.55; the paper must not describe it as
+          contributing belief information."
+        - SUPERSEDED (outputs/isTrue_report.txt P.3 / C-1): two local options carry that name. Only the dedicated one
+          (option_type explore_unknown_region) has the 0.55; the path option local_path_explore_unknown_region_0 has
+          G_belief 0. The report's P.3 wording, which names the option type, is the one put to the maintainer.
+        - ACCEPTED 2026-10-05 (ruling C-1 on outputs/isTrue_report.txt section 8): the paper uses P.3's wording.
+  Part 1 is committed on istrue first. Then Part 2 and Part 3 as in section 5:
+    - each fix with a test that fails without it;
+    - identity runs showing every output unchanged except MR1 (F-1) and byte-identical (F-2);
+    - the full suite (expected {T5}).
+  THE PART 3 IDENTITY RUNS MUST ALSO COVER SEARCHER_TARGETING 1, 2, 3, 4 and 5, GLOBAL_PLANNER_MODE 1, and all four
+  winds including north: every configuration the measurement round will use.
+  Report, then merge on the maintainer's word:
+    - push istrue; fast-forward main (--ff-only; STOP if not); push; tag istrue-fix;
+    - unlink the worktree's .venv junction with cmd /c rmdir before removing it, and confirm the real .venv is
+      intact.
+
+  PART 2 AS BUILT (recorded 2026-10-05; every item is behaviour-equivalent to section 5 or stricter):
+    - F-2's helper is plain_scalar((numpy.bool_, numpy.integer, numpy.floating) -> bool / int / float), not 5.2's
+      numpy.generic + .item():
+        - .item() leaves numpy.longdouble a numpy type (still misread) and retypes datetime64 / str_ / complex for no
+          reason; the explicit casts do neither;
+        - numpy.timedelta64 is a numpy.integer subclass whose int() raises for most units: it is left unchanged, and
+          any conversion that raises returns the value unchanged, so no reader raises where it did not (review F2-1).
+    - _indicator / sig are NOT edited: they reach safe_float for every non-bool value, and safe_float converts first.
+      A dedicated call there would be redundant and untestable (no test could tell it apart). test_f2_h pins the
+      behaviour through safe_float.
+    - The tests are the two files 5.1 / 5.2 name: tests/test_mr1_truthiness.py (F-1) and
+      tests/test_numpy_scalar_flags.py (F-2). The leak-order check ran test_dashboard_panel.py first (87 passed).
+      CORRECTED (outputs/isTrue_report.txt 2.3): that run used the pre-split single test file plus
+      test_base_station.py. On the committed files: 31 passed (outputs/_ist_leakcheck.txt).
+      One commit per fix (section 7).
+    - Review before commit (workflow, 21 agents): four lenses (F-1, F-2, records, Part 3 plan), two refuters per
+      medium / high finding, and a mutation test. 18 of 18 single-site mutants killed (every patched site, the helper
+      body, both accessors, the int / float casts). CORRECTED (outputs/isTrue_report.txt 2.4): that run used the
+      pre-split test file and the helper before review F2-1. Re-run on the committed code and tests: 22 of 23 killed;
+      the survivor (the try / except removed) is equivalent (outputs/_ist_mutation.txt). No F-1 or F-2 code defect at
+      medium or high; four record / plan
+      findings confirmed and fixed (19.11 (b), (d), (e) wording; Part 3 provenance and sensitivity-value checks).
+  FOR THE CLEANUP ROUND (recorded, not changed here):
+    - the 10 dead reader lines of 3.4 (ruling I-4);
+    - two numpy-blind NUMERIC readers outside F-2's ruled scope:
+        - local_uav_path_planner.py:597 _coords_tuple (isinstance(value[0], (int, float)) on target_position /
+          waypoints; the producers cast with float() / int());
+        - constraint_filter.py:103-119 required_battery / battery_required (no producer writes either key);
+      each needs its own identity check if hardened;
+    - README.md's switch list, last updated 2026-09-21: it lists no switch added since, these two included.
+  INSTRUMENTS THAT ASSUME THE LITERAL RULE (valid only at MR1_TRUTHINESS_FIX 0, i.e. before the merge or at the kill
+  switch):
+    - outputs/_ist_probe.py's literal == model check, and outputs/_ist_analyze.py, which STOPs on it;
+    - outputs/_bp_analyze.py:932 mr1_literal_ok (19.11 (b)).
+    - outputs/_fb3_probe.py's docstring / comment call the literal count "the model's". It is a run-loaded file of the
+      measurement round, so it is left byte-identical; its data (both counts) are unaffected.
+  F-2's lazy `import agents` inside plain_scalar (as in _check_utility_feasibility) means a numpy input needs the
+  root module importable. Every runner and test has it on sys.path; no import cycle (review F2-2).

@@ -22,7 +22,7 @@ from ..analysis.trigger_objects import TriggerBatch
 from .decision_objects import RescueDecision
 from .planner_selection import find_maintain_option, option_confidence, option_id, option_parameters
 from .mission_goal_integration import resolve_utility_mode as _resolve_utility_mode_from_goals
-from .utility_evaluation import ScoredOption, UtilityEvaluation, safe_float
+from .utility_evaluation import ScoredOption, UtilityEvaluation, plain_scalar, safe_float
 
 _NON_RESCUE_SCOPES = frozenset({"global", "local", "system"})
 _NON_RESCUE_TYPE_MARKERS = ("fail_safe", "failsafe", "fail-safe", "mission", "path", "movement")
@@ -409,6 +409,7 @@ def _uncertainty_context(params: dict[str, Any], analysis_snapshot: object | Non
 
 
 def _is_truthy(value: object) -> bool:
+    value = plain_scalar(value)  # isTrue round F-2 (NUMPY_SCALAR_FLAGS)
     if value is True:
         return True
     if isinstance(value, (int, float)) and value != 0.0:

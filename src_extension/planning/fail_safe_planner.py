@@ -18,7 +18,7 @@ from ..execution.fallback_strategy import FallbackStrategy, FallbackStrategyLibr
 from ..execution.safety_checker import SafetyChecker
 from .decision_objects import FailSafeDecision
 from .planner_selection import find_maintain_option, option_confidence, option_id, option_parameters
-from .utility_evaluation import ScoredOption, UtilityEvaluation
+from .utility_evaluation import ScoredOption, UtilityEvaluation, plain_scalar
 
 _SEARCH_TRIGGER_MARKERS = ("SEARCH_MODE_REQUIRED", "INFORMATION_INSUFFICIENT")
 _CRITICAL_TRIGGER_MARKERS = (
@@ -483,6 +483,7 @@ def _uncertainty_context(params: dict[str, Any], analysis_snapshot: object | Non
 
 
 def _is_truthy(value: object) -> bool:
+    value = plain_scalar(value)  # isTrue round F-2 (NUMPY_SCALAR_FLAGS)
     if value is True:
         return True
     if isinstance(value, (int, float)) and value != 0.0:
