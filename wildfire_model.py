@@ -70,6 +70,7 @@ from src_extension.execution.decision_dispatcher import DecisionDispatcher
 from src_extension.execution.execution_log import ExecutionLog
 from src_extension.execution.rescue_executor import RescueExecutor
 from src_extension.planning.decision_objects import RescueDecision
+from src_extension.planning import joint_dispatch as _jd
 from src_extension.planning.rescue_planner import (
     RescuePlanner,
     select_rescue_assignment,
@@ -2381,6 +2382,9 @@ class WildFireModel(mesa.Model):
             self.latest_execution_result,
             float(current_step_time),
         )
+        # Dispatch round J-pre (design 5.7): the last pre-move binding opportunity. No-op unless
+        # DISPATCH_JOINT is an exact 1; inside an existing stage, so the pinned stage order holds.
+        self._joint_dispatch_point("pre")
 
     def _update_failsafe_mode(self, current_step_time: float) -> None:
         runtime_models: dict[str, Any] = {
@@ -3044,6 +3048,9 @@ class WildFireModel(mesa.Model):
 
     def _try_dispatch_unresolved_confirmed_victims(self) -> None:
         """Re-dispatch confirmed victims that still need rescue when firefighters become available."""
+        if agents.dispatch_joint():
+            # Dispatch round (design 5.7): J-post of this same post-move cycle pairs every waiting victim.
+            return
         managed = getattr(self, "managed_victims", None)
         markers = getattr(self, "victim_marker_agents", None)
         if not isinstance(managed, dict) or not isinstance(markers, dict):
@@ -3979,6 +3986,14 @@ class WildFireModel(mesa.Model):
                 ),
             )
 
+        if agents.dispatch_joint():
+            # Dispatch round (design 5.7): no pairing here - J pairs at its solve points (J-post of
+            # this step for every post-move and mid-advance incident). Every state change above is
+            # kept; only the victim's pending cause is noted, for the bind's reason string.
+            self._dispatch_note_pending(vid, itype)
+            self._dispatch_count_avoided_writeoff(vid, reason, itype)
+            return
+
         snapshot = self.get_rescue_operational_snapshot()
         decision = select_rescue_assignment(snapshot, reason, victim_id=vid or None)
         victim_marker = None
@@ -4058,8 +4073,15 @@ class WildFireModel(mesa.Model):
         victim_marker: Any,
         keep_ff_id: str,
         reason: str,
+        *,
+        only_ff_id: str = "",
     ) -> list[str]:
         """Release every live firefighter still bound to a victim that is now terminal.
+
+        only_ff_id (dispatch round, design 7.1): when set, ONLY that unit is considered - the
+        single-unit release a reassignment uses AFTER its new unit is bound, so the victim (live,
+        now held by the new unit) is not reset. The default reproduces the three terminal call
+        sites exactly.
 
         The executor allows one victim to hold two claimants, and the
         route_blocked replacement pathway depends on that: a unit blocked twice
@@ -4105,6 +4127,7 @@ class WildFireModel(mesa.Model):
         """
         vid = str(victim_id or "").strip()
         keep = str(keep_ff_id or "").strip()
+        only = str(only_ff_id or "").strip()
         markers = getattr(self, "firefighter_marker_agents", None)
         if not isinstance(markers, dict):
             return []
@@ -4130,6 +4153,8 @@ class WildFireModel(mesa.Model):
         released: list[str] = []
         for ff_id, ff_marker in list(markers.items()):
             ff_id_s = str(ff_id)
+            if only and ff_id_s != only:
+                continue
             unit_label = str(getattr(ff_marker, "unit_id", ff_id_s) or ff_id_s)
             try:
                 if getattr(ff_marker, "dead", False):
@@ -4423,6 +4448,7 @@ class WildFireModel(mesa.Model):
             "dispatch_initial",
             "dispatch_replacement_after_blocked",
             "dispatch_replacement_after_casualty",
+            "dispatch_reassignment",
             "route_blocked",
             "casualty",
             "rescue_complete",
@@ -4453,6 +4479,9 @@ class WildFireModel(mesa.Model):
             return "dispatch_replacement_after_blocked"
         if "replacement" in reason_l and "casualty" in reason_l:
             return "dispatch_replacement_after_casualty"
+        if reason_l.startswith("reassign_") or reason_l == "joint_replace_latched":
+            # Dispatch round (design 5.10): a Limit 3 replacement or a latch-fill.
+            return "dispatch_reassignment"
         return "dispatch_initial"
 
     def _physical_rescue_executor(self) -> RescueExecutor:
@@ -5011,6 +5040,9 @@ class WildFireModel(mesa.Model):
                 reason,
                 {"manhattan_dist": ff_dist, "target_pos": victim_cell},
             )
+            if agents.dispatch_joint():
+                # Dispatch round (design 5.6): the ledger counts every bind at this single sink.
+                self._dispatch_ledger_record(ff_id, vid)
             self._sync_firefighter_operational_knowledge()
             return True
 
@@ -5588,6 +5620,10 @@ class WildFireModel(mesa.Model):
         reason: str,
     ) -> bool:
         """Test-compat wrapper: planner pairing + RescueExecutor physical apply."""
+        if agents.dispatch_joint():
+            # Dispatch round (design 5.7): J is the only binder while DISPATCH_JOINT is on - this also
+            # closes the dormant _sync_victim_agent_status fallback that calls this wrapper.
+            return False
         snapshot = self.get_rescue_operational_snapshot()
         decision = select_rescue_assignment(
             snapshot, str(reason or ""), victim_id=str(victim_id or "")
@@ -5839,7 +5875,463 @@ class WildFireModel(mesa.Model):
     def _sync_firefighter_marker_status(self) -> None:
         """Mirror firefighter marker status into managed + knowledge models."""
         self._revalidate_route_blocked_firefighters()
+        # Dispatch round J-post (design 5.7, 6.7): after both post-move incident drains, the
+        # casualty sweep and the revalidation; before the invariant checker. No-op unless
+        # DISPATCH_JOINT is an exact 1.
+        self._joint_dispatch_point("post")
         self._sync_firefighter_operational_knowledge()
+
+    # ------------------------------------------------------------------
+    # Dispatch round: the joint dispatcher J (outputs/dispatch_part1.txt
+    # sections 5-7, rulings section 20, amendment A1 section 21). Everything
+    # below acts only while agents.dispatch_joint() is on; the decisions are
+    # the pure module src_extension/planning/joint_dispatch.py (_jd).
+    # State (created lazily, so nothing exists while the switch is off):
+    #   _dispatch_ledger    {(unit, victim): binds}   counted at the assign sink
+    #   _dispatch_progress  {(unit, victim): _jd.Progress}
+    #   _dispatch_pending_cause {victim: initial|blocked|casualty}
+    #   _dispatch_events    [dict]   every J bind / replacement / refusal
+    #   _dispatch_cf_taken  {step, units}  record-only: the M6 counterfactual's units taken this step
+    # ------------------------------------------------------------------
+    _DISPATCH_FILL_REASONS = {
+        "initial": "joint_initial",
+        "blocked": "joint_replacement_after_blocked",
+        "casualty": "joint_replacement_after_casualty",
+    }
+    _DISPATCH_PENDING_CAUSES = {
+        "victim_confirmed": "initial",
+        "route_blocked": "blocked",
+        "firefighter_casualty": "casualty",
+    }
+
+    def _dispatch_state(self, name: str, factory: Any) -> Any:
+        value = getattr(self, name, None)
+        if value is None:
+            value = factory()
+            setattr(self, name, value)
+        return value
+
+    def _dispatch_step(self) -> int:
+        return int(getattr(self, "evaluation_timesteps_counter", 0) or 0)
+
+    def _dispatch_record(self, **event: Any) -> None:
+        event.setdefault("step", self._dispatch_step())
+        self._dispatch_state("_dispatch_events", list).append(event)
+
+    def _dispatch_note_pending(self, vid: str, itype: str) -> None:
+        cause = self._DISPATCH_PENDING_CAUSES.get(str(itype or ""))
+        if not vid or cause is None:
+            return
+        self._dispatch_state("_dispatch_pending_cause", dict)[str(vid)] = cause
+
+    def _dispatch_count_avoided_writeoff(self, vid: str, reason: str, itype: str) -> None:
+        """Ruling D-6 (design 5.9, 14.4 M6) - RECORD-ONLY: count the casualty write-off today's planner would make.
+        Today's select is re-run for every incident that reaches the skipped pairing tail, on the current state
+        minus the units it would already have taken earlier in the same step (legacy pairs each incident in drain
+        order, so an earlier detection or casualty consumes a free unit); only a casualty's mark_unreachable is
+        counted. A measurement, not a decision: it reads the full snapshot (the legacy D1 read) and no J function
+        reads what it writes (T-INFO-c)."""
+        step = self._dispatch_step()
+        taken = self._dispatch_state("_dispatch_cf_taken", dict)
+        if taken.get("step") != step:
+            taken.clear()
+            taken["step"] = step
+            taken["units"] = set()
+        try:
+            snapshot = self.get_rescue_operational_snapshot()
+            for ff_id in taken["units"]:
+                entry = snapshot["firefighters"].get(ff_id)
+                if isinstance(entry, dict):
+                    entry["available"] = False
+            decision = select_rescue_assignment(snapshot, reason, victim_id=vid or None)
+        except Exception:
+            return
+        if isinstance(decision, RescueDecision):
+            action = str(decision.rescue_action or "")
+            unit = str(decision.firefighter_id or "")
+        elif isinstance(decision, dict):
+            action = str(decision.get("action", "") or "")
+            unit = str(decision.get("firefighter_id", "") or "")
+        else:
+            action, unit = "", ""
+        action = action.strip().lower()
+        if action == "assign" and unit:
+            taken["units"].add(unit)
+        if itype != "firefighter_casualty" or action != "mark_unreachable":
+            return
+        self.dispatch_writeoffs_avoided_total = (
+            int(getattr(self, "dispatch_writeoffs_avoided_total", 0) or 0) + 1
+        )
+        self._dispatch_state("dispatch_writeoffs_avoided", list).append(
+            {"step": self._dispatch_step(), "victim_id": str(vid)}
+        )
+
+    def _dispatch_ledger_record(self, ff_id: str, vid: str) -> None:
+        """Design 5.6: b(unit, victim) += 1 at every successful bind, whoever issued it; the binding's
+        progress state is reset (J re-initialises it for its own binds, design 7.1 step 4)."""
+        key = (str(ff_id), str(vid))
+        ledger = self._dispatch_state("_dispatch_ledger", dict)
+        ledger[key] = int(ledger.get(key, 0) or 0) + 1
+        self._dispatch_state("_dispatch_progress", dict).pop(key, None)
+
+    @staticmethod
+    def _dispatch_victim_needy(state: Any, marker: Any) -> bool:
+        """The planner's needy semantics (RP:593-611; design 5.2): not rescued, dead, cancelled or
+        unreachable by the state flags OR the marker status, and on the grid."""
+        m_status = str(getattr(marker, "status", "") or "").strip().lower()
+        s_status = str(getattr(state, "status", "") or "").strip().lower()
+        if bool(getattr(state, "rescued", False)) or "rescued" in (m_status, s_status):
+            return False
+        if "dead" in (m_status, s_status):
+            return False
+        if bool(getattr(state, "cancelled", False)) or m_status == "cancelled":
+            return False
+        if bool(getattr(state, "unreachable", False)) or m_status == "unreachable":
+            return False
+        return getattr(marker, "pos", None) is not None
+
+    def _dispatch_view(self) -> dict[str, Any]:
+        """The detected-only view J reads (design 5.2, 9.1). Of an undetected victim it reads exactly one
+        attribute - its detection flag, inside _detected_victim_ids - and nothing else: bindings are
+        matched by marker identity, never by reading the bound victim's attributes."""
+        ff_markers = getattr(self, "firefighter_marker_agents", None)
+        ff_markers = ff_markers if isinstance(ff_markers, dict) else {}
+        v_markers = getattr(self, "victim_marker_agents", None)
+        v_markers = v_markers if isinstance(v_markers, dict) else {}
+        managed = getattr(self, "managed_victims", None)
+        managed = managed if isinstance(managed, dict) else {}
+        detected = sorted((str(v) for v in _detected_victim_ids(self)), key=_jd.id_index)
+
+        victims: dict[str, dict[str, Any]] = {}
+        by_marker: dict[int, str] = {}
+        for vid in detected:
+            marker = v_markers.get(vid)
+            state = managed.get(vid)
+            if marker is None or state is None:
+                continue
+            by_marker[id(marker)] = vid
+            if not self._dispatch_victim_needy(state, marker):
+                continue
+            pos = marker.pos
+            victims[vid] = {"marker": marker, "cell": (int(pos[0]), int(pos[1])), "binders": []}
+
+        units: dict[str, Any] = {}
+        free: list[str] = []
+        for ff_id, ff_marker in sorted(ff_markers.items(), key=lambda kv: _jd.id_index(str(kv[0]))):
+            uid = str(ff_id)
+            if getattr(ff_marker, "dead", False):
+                continue
+            if str(getattr(ff_marker, "status", "") or "").strip().lower() == "dead":
+                continue
+            units[uid] = ff_marker
+            bound = getattr(ff_marker, "rescued_victim", None)
+            if bound is not None:
+                vid = by_marker.get(id(bound))
+                if vid is not None and vid in victims:
+                    victims[vid]["binders"].append(uid)
+            if self._firefighter_available_for_dispatch(ff_marker):
+                free.append(uid)
+
+        waiting: list[str] = []
+        latched: list[str] = []
+        contest: dict[str, str] = {}
+        for vid, info in victims.items():
+            binders = info["binders"]
+            cell = info["cell"]
+            custody = False
+            for uid in binders:
+                unit = units[uid]
+                if getattr(unit, "exiting", False) or getattr(unit, "rescue_completed", False):
+                    custody = True
+                elif unit.pos is not None and (int(unit.pos[0]), int(unit.pos[1])) == cell:
+                    custody = True
+            if custody:
+                continue
+            if not binders:
+                waiting.append(vid)
+                continue
+            statuses = [str(getattr(units[u], "status", "") or "").strip().lower() for u in binders]
+            if all(s == "route_blocked" for s in statuses):
+                latched.append(vid)
+            elif (
+                len(binders) == 1
+                and statuses[0] in ("en_route", "assigned")
+                and units[binders[0]].pos is not None
+            ):
+                contest[vid] = binders[0]
+        return {
+            "victims": victims,
+            "units": units,
+            "free": free,
+            "waiting": waiting,
+            "latched": latched,
+            "contest": contest,
+        }
+
+    def _dispatch_fire_sets(self, need_smoke: bool) -> tuple[set[tuple[int, int]], set[tuple[int, int]]]:
+        """The true burning set (truthiness - Fire.burning is a numpy bool after the first tick) and, for
+        Limit 3's clean-approach test only, the true smoky cells (design 9.2)."""
+        burning = self._active_burning_cells()
+        smoky: set[tuple[int, int]] = set()
+        if need_smoke:
+            for agent in getattr(self.schedule, "agents", []) or []:
+                if type(agent) is not agents.Fire:
+                    continue
+                smoke = getattr(agent, "smoke", None)
+                pos = getattr(agent, "pos", None)
+                if smoke is None or pos is None:
+                    continue
+                if smoke.is_smoke_active():
+                    smoky.add((int(pos[0]), int(pos[1])))
+        return burning, smoky
+
+    def _joint_dispatch_point(self, phase: str) -> None:
+        """J-pre (phase "pre") and J-post (phase "post") - design 5.7, 5.8, 6.7. A no-op unless
+        DISPATCH_JOINT is an exact 1. PRE = (a free unit AND a waiting or latched-held victim) OR (Limit 3
+        on at J-post AND a contestable binding); when it does not hold nothing is computed."""
+        if not agents.dispatch_joint():
+            return
+        reassign = agents.dispatch_reassign()
+        post = phase == "post"
+        view = self._dispatch_view()
+        victims = view["victims"]
+        units = view["units"]
+        free = view["free"]
+        waiting = view["waiting"]
+        latched = view["latched"]
+        contest = view["contest"] if (reassign and post) else {}
+        progress = self._dispatch_state("_dispatch_progress", dict)
+        if post:
+            live = {(uid, vid) for vid, info in victims.items() for uid in info["binders"]}
+            for key in list(progress):
+                if key not in live:
+                    progress.pop(key, None)
+        if not ((free and (waiting or latched)) or contest):
+            return
+
+        ledger = self._dispatch_state("_dispatch_ledger", dict)
+        x_size, y_size = int(self.grid.width), int(self.grid.height)
+        burning, smoky = self._dispatch_fire_sets(need_smoke=bool(contest))
+        maps: dict[str, dict[tuple[int, int], int]] = {}
+        for vid in list(waiting) + list(latched) + list(contest):
+            maps[vid] = _jd.bfs_distances(victims[vid]["cell"], x_size, y_size, burning)
+
+        def unit_cell(uid: str) -> tuple[int, int]:
+            pos = units[uid].pos
+            return (int(pos[0]), int(pos[1]))
+
+        def d_of(uid: str, vid: str) -> int | None:
+            return _jd.route_distance(maps[vid], unit_cell(uid), burning)
+
+        unclean: set[tuple[int, int]] | None = None
+        clean_maps: dict[str, dict[tuple[int, int], int] | None] = {}
+
+        def clean_ok(uid: str, vid: str) -> bool:
+            nonlocal unclean
+            if unclean is None:
+                unclean = _jd.unclean_cells(burning, smoky)
+            if vid not in clean_maps:
+                vcell = victims[vid]["cell"]
+                clean_maps[vid] = (
+                    None if vcell in unclean else _jd.bfs_distances(vcell, x_size, y_size, unclean)
+                )
+            cmap = clean_maps[vid]
+            return cmap is not None and _jd.route_distance(cmap, unit_cell(uid), unclean) is not None
+
+        # 1 PROGRESS (design 6.3) - J-post, Limit 3 only.
+        current_d: dict[str, int | None] = {}
+        unevaluated: set[str] = set()
+        for vid, uid in contest.items():
+            key = (uid, vid)
+            cell = unit_cell(uid)
+            d_now = _jd.route_distance(maps[vid], cell, burning)
+            current_d[vid] = d_now
+            state = progress.get(key)
+            if state is None:
+                if d_now is not None:
+                    progress[key] = _jd.new_progress(d_now, cell)
+                continue
+            x_now = _jd.route_distance(maps[vid], state.cell_prev, burning)
+            if d_now is None or x_now is None:
+                # 6.3: d or x infinite - the state is frozen and the binding is not evaluated this frame (no
+                # persistence count, no replacement).
+                unevaluated.add(vid)
+                continue
+            frozen = not (clean_ok(uid, vid) or any(clean_ok(f, vid) for f in free))
+            progress[key] = _jd.progress_step(state, d_now, x_now, cell, frozen)
+
+        # 2 FILL (design 5.4-5.6); under Limit 3 a latched-held victim's bind is a LATCH-FILL.
+        bound_units: set[str] = set()
+        bound_victims: set[str] = set()
+        fill_victims = list(waiting) + list(latched)
+        if free and fill_victims:
+            dist = {(u, v): d_of(u, v) for u in free for v in fill_victims}
+            capped = latched if reassign else []
+            for pair in _jd.solve_fill(free, fill_victims, dist, ledger, capped=capped):
+                if reassign and pair.victim in latched:
+                    ok = self._dispatch_replace(
+                        view, pair.victim, list(victims[pair.victim]["binders"]), pair.unit,
+                        "joint_replace_latched", pair.distance, phase, kind="latch_fill",
+                    )
+                else:
+                    ok = self._dispatch_fill_bind(view, pair.victim, pair.unit, pair.distance, phase, kind="fill")
+                if ok:
+                    bound_units.add(pair.unit)
+                    bound_victims.add(pair.victim)
+        if not contest:
+            return
+
+        # 3 REPLACE (design 6.4, 6.5) - spares only, fresh pairs only.
+        spares = [u for u in free if u not in bound_units]
+        stall_steps = agents.dispatch_stall_steps()
+        margin = agents.dispatch_margin_steps()
+        persist = agents.dispatch_margin_persist()
+        contests: list[_jd.Contest] = []
+        dist3: dict[tuple[str, str], int | None] = {}
+        clean3: dict[tuple[str, str], bool] = {}
+        for vid, uid in contest.items():
+            d_inc = current_d.get(vid)
+            state = progress.get((uid, vid))
+            if state is None or d_inc is None or vid in unevaluated:
+                continue
+            spare_d = {b: d_of(b, vid) for b in spares}
+            fresh = {b: int(ledger.get((b, vid), 0) or 0) == 0 for b in spares}
+            state = _jd.update_persistence(state, spare_d, d_inc, margin, fresh)
+            progress[(uid, vid)] = state
+            for b in spares:
+                dist3[(b, vid)] = spare_d[b]
+                if state.k >= stall_steps:
+                    clean3[(b, vid)] = clean_ok(b, vid)
+            contests.append(
+                _jd.Contest(victim=vid, incumbent=uid, d=int(d_inc), k=state.k, persist=state.persist_map())
+            )
+        released: list[str] = []
+        if spares and contests:
+            plan = _jd.plan_replacements(
+                contests, spares, dist3, ledger, clean3, stall_steps=stall_steps, margin_persist=persist,
+            )
+            for rep in plan:
+                if self._dispatch_replace(
+                    view, rep.victim, [rep.old_unit], rep.new_unit, "reassign_" + rep.cause,
+                    rep.distance, phase, kind="replace",
+                ):
+                    released.append(rep.old_unit)
+
+        # 4 SECOND FILL (design 6.7 step 4): released units x victims still waiting.
+        if released:
+            again = [u for u in released if self._firefighter_available_for_dispatch(units[u])]
+            still = [v for v in waiting if v not in bound_victims]
+            if again and still:
+                dist4 = {(u, v): d_of(u, v) for u in again for v in still}
+                for pair in _jd.solve_fill(again, still, dist4, ledger):
+                    self._dispatch_fill_bind(view, pair.victim, pair.unit, pair.distance, phase, kind="second_fill")
+
+    def _dispatch_fill_bind(
+        self, view: dict[str, Any], vid: str, uid: str, distance: int, phase: str, *, kind: str
+    ) -> bool:
+        """A FILL bind (design 7.3): through the executor's pairing apply, whose guards (needs rescue,
+        already_assigned) pass for an unserved victim and for a latched-held one under Limit 2 alone."""
+        marker = view["victims"][vid]["marker"]
+        pending = self._dispatch_state("_dispatch_pending_cause", dict)
+        reason = self._DISPATCH_FILL_REASONS.get(pending.get(vid, "initial"), "joint_initial")
+        decision = RescueDecision(
+            decision_id=f"joint-pair-assign-{vid}-{uid}-{self._dispatch_step()}",
+            selected_option_id="joint_pairing",
+            rescue_action="assign",
+            victim_id=vid,
+            firefighter_id=uid,
+            route_choice="",
+            payload={"reason": reason, "distance": int(distance)},
+            confidence_score=1.0,
+            uncertainty_context={"joint_pairing": True},
+            comparison_summary={"summary": f"Joint fill {uid} -> {vid}"},
+            explanation=f"Joint route-aware fill (route={int(distance)})",
+        )
+        result = self._physical_rescue_executor().apply_physical_pairing_decision(
+            self, decision, victim_marker=marker
+        )
+        ok = bool(result.get("success"))
+        if ok:
+            pending.pop(vid, None)
+            pos = view["units"][uid].pos
+            self._dispatch_state("_dispatch_progress", dict)[(uid, vid)] = _jd.new_progress(
+                int(distance), (int(pos[0]), int(pos[1]))
+            )
+        self._dispatch_record(
+            phase=phase, kind=kind if ok else kind + "_refused", victim_id=vid, unit=uid, old_units=[],
+            reason=reason, distance=int(distance), message=str(result.get("message", "") or ""),
+        )
+        return ok
+
+    def _dispatch_replace(
+        self,
+        view: dict[str, Any],
+        vid: str,
+        old_units: list[str],
+        new_uid: str,
+        reason: str,
+        distance: int,
+        phase: str,
+        *,
+        kind: str,
+    ) -> bool:
+        """An atomic replacement - a Limit 3 REPLACE or a LATCH-FILL (design 7.1): bind the new unit FIRST
+        (the model-level assign accepts a second live claimant), then release each old unit through
+        _release_other_claimants(only_ff_id=...), in one frame. Failure-atomic: a refused assign changes
+        nothing."""
+        info = view["victims"][vid]
+        marker = info["marker"]
+        units = view["units"]
+        new_unit = units.get(new_uid)
+        state = (getattr(self, "managed_victims", None) or {}).get(vid)
+        refused = ""
+        if new_unit is None or not self._firefighter_available_for_dispatch(new_unit):
+            refused = "new_unit_not_free"
+        elif state is None or not self._dispatch_victim_needy(state, marker):
+            refused = "victim_not_needy"
+        else:
+            for old in old_units:
+                unit = units.get(old)
+                if (
+                    unit is None
+                    or getattr(unit, "exiting", False)
+                    or getattr(unit, "rescue_completed", False)
+                    or getattr(unit, "rescued_victim", None) is not marker
+                ):
+                    refused = f"old_unit_not_bound:{old}"
+                    break
+        if not refused:
+            result = self._physical_rescue_executor().execute_physical_command(
+                self,
+                PhysicalRescueCommand(
+                    action="assign",
+                    victim_id=vid,
+                    firefighter_id=new_uid,
+                    reason=reason,
+                    metadata={"victim_marker": marker, "target_pos": info["cell"]},
+                ),
+            )
+            if not result.get("success"):
+                refused = "assign_refused"
+        if refused:
+            self._dispatch_record(
+                phase=phase, kind=kind + "_aborted", victim_id=vid, unit=new_uid, old_units=list(old_units),
+                reason=reason, distance=int(distance), message=refused,
+            )
+            return False
+        progress = self._dispatch_state("_dispatch_progress", dict)
+        released: list[str] = []
+        for old in old_units:
+            released.extend(self._release_other_claimants(vid, marker, "", reason, only_ff_id=old))
+            progress.pop((old, vid), None)
+        pos = new_unit.pos
+        progress[(new_uid, vid)] = _jd.new_progress(int(distance), (int(pos[0]), int(pos[1])))
+        self._dispatch_state("_dispatch_pending_cause", dict).pop(vid, None)
+        self._dispatch_record(
+            phase=phase, kind=kind, victim_id=vid, unit=new_uid, old_units=list(old_units),
+            released=released, reason=reason, distance=int(distance), message="",
+        )
+        return True
 
     # ------------------------------------------------------------------
     # Feature 2: bookkeeping for a victim that stepped away from fire

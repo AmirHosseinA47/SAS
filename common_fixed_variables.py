@@ -544,6 +544,28 @@ FF_EXIT_LEG_SERVED = 1
 # agents.global_planner_mode(), never through the star import. Deterministic: no RNG.
 GLOBAL_PLANNER_MODE = 0
 
+# Dispatch round (outputs/dispatch_part1.txt; rulings section 20, amendment A1 section 21).
+# DISPATCH_JOINT - Limit 2, joint route-aware assignment: free firefighters are matched to
+#   unserved DETECTED victims at once (most served, fewest re-used pairs, least total
+#   fire-free route time) at two fixed points per step (end of _run_execution; after the
+#   route_blocked revalidation in _sync_firefighter_marker_status), replacing the per-incident
+#   nearest-Manhattan pairing. Every legacy binder is closed while it is on.
+# DISPATCH_REASSIGN - Limit 3, reassignment: a free unit with a clean approach replaces an
+#   incumbent that is stalled (DISPATCH_STALL_STEPS steps without own progress) or worse by
+#   DISPATCH_MARGIN_STEPS steps held over DISPATCH_MARGIN_PERSIST evaluations; a per-pair
+#   ledger makes a cost-driven reversal impossible (design 6.9). Acts ONLY while
+#   DISPATCH_JOINT is on (ruling D-4, the FF_EXIT_LEG_SERVED precedent).
+# Both ship OFF and turn on ONLY ON AN EXACT 1 (agents._exact_integer: 1, True, 1.0, "1");
+# missing, 0, 2, 0.5, "1.0", "2.0", "on" and junk are OFF. DISPATCH_JOINT = 0 alone restores
+# the legacy dispatch exactly. The three step parameters are fixed by ruling D-8 and never
+# tuned on screen data; an exact positive integer, otherwise the default. Read at call time
+# through the agents accessors, never through the star import. Deterministic: no RNG.
+DISPATCH_JOINT = 0
+DISPATCH_REASSIGN = 0
+DISPATCH_STALL_STEPS = 10
+DISPATCH_MARGIN_STEPS = 5
+DISPATCH_MARGIN_PERSIST = 3
+
 # Base station (feature 3). A set of 5x5 depots - shipped as two, NW and SE (see
 # BASE_STATION_DEPOTS) - that the UAV team and the firefighters launch from, that a
 # UAV returns to (the nearest of its own berths) when its battery reaches the return

@@ -117,6 +117,7 @@ class AlertManager:
             elif event_type in {
                 "dispatch_replacement_after_blocked",
                 "dispatch_replacement_after_casualty",
+                "dispatch_reassignment",
             }:
                 add(
                     alert_type="dispatch_started",

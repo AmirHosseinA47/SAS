@@ -12,6 +12,7 @@ _RESCUE_TIMELINE_MAP: dict[str, str] = {
     "dispatch_initial": "dispatch_initial",
     "dispatch_replacement_after_blocked": "replacement_dispatch",
     "dispatch_replacement_after_casualty": "replacement_dispatch",
+    "dispatch_reassignment": "replacement_dispatch",
     "route_blocked": "route_blocked",
     "rescue_complete": "rescue_complete",
     "victim_dead": "victim_dead",

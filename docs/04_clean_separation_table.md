@@ -98,7 +98,9 @@ Local models
 
 Purpose: Maintain a structured, uncertainty-aware picture of where fire is believed to be, how it may evolve, and what has been ruled out (with limits).
 
-Core idea: Fire state is represented as beliefs over cells and fronts, not as a single crisp map assumed fully correct.
+Core idea (the design intent of this belief model, which the UAV / MAPE side uses): Fire state is represented as beliefs over cells and fronts, not as a single crisp map assumed fully correct.
+
+Assumption actually implemented for the firefighter team (paper assumption A3; dispatch round ruling D-12, outputs/dispatch_part1.txt 9.2): the firefighter team and its central dispatcher do NOT use this belief. They read the true burning cells and the true smoke in real time (today = truth): the units' movement and route test, and the joint dispatcher's route distances and clean-approach test. A tracker-only (belief-based) fire and smoke picture for dispatch is future work.
 
 Fields
 

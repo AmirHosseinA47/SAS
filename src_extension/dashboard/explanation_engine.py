@@ -408,7 +408,12 @@ class ExplanationEngine:
         add_decision: Any,
     ) -> list[dict[str, Any]]:
         out: list[dict[str, Any]] = []
-        dispatch_types = {"dispatch_initial", "dispatch_replacement_after_blocked", "dispatch_replacement_after_casualty"}
+        dispatch_types = {
+            "dispatch_initial",
+            "dispatch_replacement_after_blocked",
+            "dispatch_replacement_after_casualty",
+            "dispatch_reassignment",
+        }
         for event in list(getattr(model, "_rescue_event_log", None) or []):
             event_type = str(event.get("event_type", "") or "")
             if event_type not in dispatch_types:
@@ -724,6 +729,7 @@ class ExplanationEngine:
             "dispatch_initial",
             "dispatch_replacement_after_blocked",
             "dispatch_replacement_after_casualty",
+            "dispatch_reassignment",
         }
         for event in list(getattr(model, "_rescue_event_log", None) or [])[-30:]:
             event_type = str(event.get("event_type", "") or "rescue_event")

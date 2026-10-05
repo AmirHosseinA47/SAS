@@ -1686,6 +1686,46 @@ def global_planner_mode() -> int:
     return 1 if _exact_integer(getattr(cfv, "GLOBAL_PLANNER_MODE", 0)) == 1 else 0
 
 
+# --- dispatch round (outputs/dispatch_part1.txt, rulings section 20) ----------------------
+
+def dispatch_joint() -> bool:
+    """DISPATCH_JOINT - Limit 2, joint route-aware assignment (design section 5). Ships 0.
+    ON ONLY ON AN EXACT 1: _exact_integer(raw) == 1 (1, True, 1.0, "1", " 1 "); missing and
+    every other value are OFF. Read at call time, never cached."""
+    return _exact_integer(getattr(cfv, "DISPATCH_JOINT", 0)) == 1
+
+
+def dispatch_reassign() -> bool:
+    """DISPATCH_REASSIGN - Limit 3, reassignment with the ledger guarantee (design section 6).
+    Ships 0; ON only on an exact 1. ENFORCED OFF whenever dispatch_joint() is off (ruling D-4):
+    reassignment is defined only on top of the joint dispatcher's solve points."""
+    if not dispatch_joint():
+        return False
+    return _exact_integer(getattr(cfv, "DISPATCH_REASSIGN", 0)) == 1
+
+
+def _dispatch_steps_param(name: str, default: int) -> int:
+    value = _exact_integer(getattr(cfv, name, default))
+    if value is None or value <= 0:
+        return default
+    return value
+
+
+def dispatch_stall_steps() -> int:
+    """DISPATCH_STALL_STEPS, S (design 6.4; ruling D-8: 10, never tuned). Exact positive integer."""
+    return _dispatch_steps_param("DISPATCH_STALL_STEPS", 10)
+
+
+def dispatch_margin_steps() -> int:
+    """DISPATCH_MARGIN_STEPS, M (design 6.5; ruling D-8: 5, never tuned). Exact positive integer."""
+    return _dispatch_steps_param("DISPATCH_MARGIN_STEPS", 5)
+
+
+def dispatch_margin_persist() -> int:
+    """DISPATCH_MARGIN_PERSIST, P (design 6.5; ruling D-8: 3 = FIRE_SPREAD_SPEED, never tuned)."""
+    return _dispatch_steps_param("DISPATCH_MARGIN_PERSIST", 3)
+
+
 # --- fix1 item 6: the searcher's wind-search counters count per STEP ----------------------
 
 def searcher_counters_per_step() -> bool:

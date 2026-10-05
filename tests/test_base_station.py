@@ -172,6 +172,13 @@ def test_shipped_defaults() -> None:
     assert cfv.SEARCHER_TARGETING_FIX == 1
     assert cfv.UAV_DOCKED_NOT_OBSTACLE == 1
     assert cfv.SEARCHER_TARGETING == 0
+    # Dispatch round (outputs/dispatch_part1.txt, rulings section 20): joint assignment (Limit 2) and reassignment
+    # (Limit 3) ship OFF - on only on an exact 1, REASSIGN only while JOINT is on; S, M, P fixed by D-8.
+    assert cfv.DISPATCH_JOINT == 0
+    assert cfv.DISPATCH_REASSIGN == 0
+    assert cfv.DISPATCH_STALL_STEPS == 10
+    assert cfv.DISPATCH_MARGIN_STEPS == 5
+    assert cfv.DISPATCH_MARGIN_PERSIST == 3
 
 
 # --- depot geometry -----------------------------------------------------------

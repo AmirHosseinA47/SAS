@@ -1,0 +1,536 @@
+================================================================================
+DISPATCH ROUND - PART 2 NOTES: IMPLEMENTATION, TESTS, INSTRUMENT, ANALYZER (STOP)
+Branch dispatch, worktree E:/Projects/SAS_wt/dispatch. Written 2026-10-05.
+Pre-registration: outputs/dispatch_part1.txt
+  2f0509dc  Part 1 + rulings D-1..D-15 (section 20)   <- THE Part 1 commit (13.1)
+  154112fe  merge of main f686e932 (tag bayes-prep) before Part 2
+  1cf70598  amendment A1 (section 21: the section 16 re-check at the merged base)
+  9b219455  ruling 21.5: A1 accepted as written; K13 a recorded risk measured by
+            M9 (no new design element); Part 3 runs on the post-audit main
+Section 15 (the decision rule) is unchanged since 2f0509dc (the analyzer checks
+this at every run and refuses otherwise).
+STOPPED BEFORE PART 3: no screen line was generated into a queue that ran, no
+pool was started. The screen runs on the post-audit main, after the is-True
+audit's rulings (21.5).
+"PAPER:" lines say what each item means for the paper.
+================================================================================
+
+1. WHAT WAS BUILT (line numbers at the Part 2 commit)
+--------------------------------------------------------------------------------
+common_fixed_variables.py
+  DISPATCH_JOINT = 0, DISPATCH_REASSIGN = 0, DISPATCH_STALL_STEPS = 10,
+  DISPATCH_MARGIN_STEPS = 5, DISPATCH_MARGIN_PERSIST = 3 (with a comment block,
+  after GLOBAL_PLANNER_MODE).  Both switches ship OFF; ON only on an exact 1.
+agents.py
+  dispatch_joint(), dispatch_reassign() (enforced off while JOINT is off, D-4),
+  _dispatch_steps_param() and the three step accessors (exact positive integer,
+  else the shipped default; D-8).
+src_extension/planning/joint_dispatch.py  (NEW, pure: no model, grid, agent or RNG)
+  id_index; GridDistances + bfs_distances (flat-array BFS, read as a Mapping);
+  route_distance (unit-cell exemption); unclean_cells; FillPair, solve_fill
+  (exhaustive, key (-served, re-used, total, worst, ids), refuses > 100 000
+  configurations); Progress, new_progress, progress_step (6.3),
+  update_persistence (6.5), Contest, Replacement, plan_replacements (6.4, 6.5,
+  6.7 step 3).
+wildfire_model.py
+  import of joint_dispatch as _jd; J-pre as the last statement of
+  _run_execution; J-post inside _sync_firefighter_marker_status between
+  _revalidate_route_blocked_firefighters and the knowledge sync;
+  _try_dispatch_unresolved_confirmed_victims and _dispatch_firefighter_to_victim
+  return at once under JOINT; _handle_rescue_incident skips its generic pairing
+  tail under JOINT (records the pending cause, runs the record-only M6
+  counterfactual); _release_other_claimants(..., only_ff_id=...);
+  the dispatch_reassignment event type (reason prefix reassign_ /
+  joint_replace_latched) added to the reason map and to
+  _RESCUE_EVENT_CONSOLE_TYPES; the ledger line at the assign sink; the
+  dispatch block (_DISPATCH_FILL_REASONS ... _dispatch_replace).
+Dashboard maps: alert_manager.py, explanation_engine.py (2 sets),
+  timeline_builder.py gain dispatch_reassignment.
+docs/04_clean_separation_table.md: the A3 / D-12 paragraph (the firefighter
+  team and its dispatcher do NOT use the fire belief; they read the true burning
+  cells and smoke), and line 101 marked as the belief model's design intent.
+tests/test_base_station.py::test_shipped_defaults gains the five DISPATCH_*.
+NEW tests: tests/dispatch_test_support.py (helpers, not a test module),
+  tests/test_dispatch_joint.py (19 functions), tests/test_dispatch_reassign.py
+  (21), tests/test_dispatch_information.py (13): 53 functions, 583 cases (500 of
+  them T-FLIP-a seeds).
+NEW tooling: outputs/_dp_mutants.py (the 13.3 mutation check), outputs/_dp_probe.py
+  (the 14.4 instrument), outputs/_dp_queue.py (the 14.9 queues; generates only),
+  outputs/_dp_seeds.txt (frozen cells), outputs/_dp_analyze.py (14.5-14.7, 15),
+  outputs/_dp_mutants_result.txt (the per-test record).
+LINE MAP: see section 11 (generated at the commit).
+
+2. IMPLEMENTATION READINGS AND DEVIATIONS
+--------------------------------------------------------------------------------
+P2-1 Inline helpers.  13.2 names _victim_route_distances / _victim_clean_approach;
+  they are closures inside _joint_dispatch_point (d_of, clean_ok) over the one BFS
+  per victim of interest and the one CLEAN BFS per contestable victim.  Same
+  semantics.  PAPER: none.
+P2-2 FROZEN (6.3) uses the incumbent plus every unit free at the start of the
+  J-post (before the fill), per 6.7's order (PROGRESS precedes FILL).  PAPER:
+  none.
+P2-3 6.3's infinite-distance rule, implemented literally (R2 finding 3): when d
+  or x is infinite the progress state is left unchanged and the binding is NOT
+  evaluated that frame (no persistence count, no REPLACE).  Because the state is
+  unchanged, cell_prev keeps the last evaluated cell: if THAT cell stays enclosed
+  while the unit's own route is open (possible only after a gap of two or more
+  cells between evaluations, e.g. after latched frames), the binding stays
+  unevaluated until the cell reopens or the binding changes.  Re-anchoring would
+  be a design change, so it was not made.  KNOWN LIMITATION: Limit 3 is
+  conservative there (the incumbent is kept).  PAPER: one line in the
+  limitations - "a binding is not judged while its progress reference cell is
+  enclosed by fire".
+P2-4 The would-have-been casualty write-off counter (D-6, 5.9, M6) lives in the
+  model (T-J8 needs a test-visible counter; the instrument reads it).  It re-runs
+  today's select for EVERY incident that reaches the skipped pairing tail, on the
+  current state minus the units it already "took" earlier in the same step
+  (legacy pairs incidents in drain order; R1 finding 3), and counts only a
+  casualty's mark_unreachable.  It is a per-incident counterfactual ON THE
+  DISPATCHER'S OWN STATE - after the first divergence the legacy world differs -
+  so it is an estimate, neither a lower nor an upper bound (R3 note 16: it
+  undercounts units legacy would take at its closed recycle / return kicks,
+  which never pass this tail, and overcounts when an earlier incident's
+  counterfactual "takes" one unit while J-pre actually bound another to that
+  victim).  Its snapshot read
+  (every marker, undetected ones included) is the only new read of the legacy D1
+  snapshot: measurement only; T-INFO-c asserts that no J function reads what it
+  writes.  PAPER: "would-have-been write-offs" are reported as a per-incident
+  counterfactual estimate.
+P2-5 J-pre timing versus legacy's pre-move pairing (R1 finding 6).  Legacy pairs
+  a pre-move detection inside the pre-move incident drain (AM:101), before the
+  MAPE stages; J-pre pairs after them (end of _run_execution).  For a launch
+  detection the MAPE stages of step 1 therefore see a confirmed, UNBOUND victim
+  under JOINT.  The movement timing is unchanged (5.7).  MEASURED on one uniform
+  cell with a step-1 detection (A_N, seed 9601, VICTIM_SPAWN_MODE 1, CRN, 20
+  steps, scratch run): dp0 and dp1 rows_uav, rows_ff, rows_vic, rows_dec,
+  rows_trig and eval are IDENTICAL; J's binds equal legacy's.  How often it
+  arises: launch detections occur in 5/16 (set 1) and 10/16 (set 2) uniform
+  cells of the untune screen (ut2u / ut2u2) and 0/32 ring cells.  FOR PART 3: a
+  cell whose dp0 run has a pre-phase assign can diverge from dp1 before J's first
+  different decision; diagnose such a cell with this in mind (21.2(a)/(b)).
+  PAPER: "a launch detection is dispatched after, not before, the MAPE stages of
+  step 1; no effect was measured in the one cell checked".
+P2-6 BFS on a flat array (GridDistances).  The dict-based search cost 1.4 ms per
+  search on an idle core (design 12.2 assumed 1.0-1.8 ms); in the 90-step dp1
+  smoke cell (D_N 9633) J-post calls with a contestable binding took 50-70 ms
+  (J p99 69 ms - S6's limit is 50 ms).  The flat-array search is value-identical
+  (3000 random grids with blocked sources and out-of-grid blocked cells: 0
+  mismatches in contents, membership, get() and route_distance) and the dp1
+  smoke cell re-run with it is identical in every row, eval, command, release,
+  J event, ledger, binder, waiting, invariant, M8, M9 and write-off record; J
+  total 1072 -> 420 ms, p99 69 -> 9 ms, max 9.4 ms.  The 50-70 ms calls were
+  most probably cyclic-GC pauses triggered by the dict search's ~2500 tuple
+  allocations per search (inferred, not measured).  This is 12.2's cost model
+  implemented, not a design change; 15's NOT READY path ("optimised ... with
+  value identity to dp1") was not needed.  PAPER: dispatch cost (M7) is
+  reported for this implementation.
+P2-7 M4's counterfactual (the instrument's legacy select in victim-index order
+  on J's snapshot) can differ from what dp0 actually did: in the smoke cell at
+  step 63 it matched J while dp0 (drain order) chose another victim.  M4 counts
+  disagreement with that rule, not with the realised baseline.  Reported, not
+  gated.  PAPER: say so where M4 is quoted.
+P2-8 A stationary incumbent is a stalled one.  Calling J-post repeatedly without
+  movement (a profiling scratch run) chains stall replacements through FRESH
+  pairs only (each pair once, at most N-1 per victim): the ledger theorem at
+  work, and the stall rule's intent - but note it for Part 3's diagnoses (a unit
+  held in place by something other than fire is replaced after S steps if a
+  fresh challenger with a clean approach qualifies).  PAPER: none beyond 6.4.
+P2-9 K13 (21.2(h), 21.5): recorded risk; measured by the instrument's
+  record-only M9.  No design element was added.
+P2-10 Design 6.7 step 4 versus 14.6 G-B(f) (R3 finding 5) - A CONFLICT INSIDE
+  THE PRE-REGISTRATION, NOT RESOLVED HERE (ruling R-A, section 9).  The SECOND
+  FILL offers units released by a REPLACE to W only (6.7, implemented as
+  written).  A released unit that could LATCH-FILL an unmatched latched-held
+  victim (b <= 1, finite d) therefore stays free until the next J-pre, and the
+  after-J-post sample counts that victim-step as ledger-allowed abandoned
+  waiting - 14.6's STRUCTURAL zero.  Rare (a REPLACE and an unmatched W_L victim
+  in the same frame).  T-INV's I4 latch leg follows 6.7 as written (released
+  units exempt in that frame); the analyzer applies 14.6 literally and prints the
+  ledger-allowed count split W / W_L, so either ruling can be applied to data
+  without re-running.  PAPER: depends on the ruling.
+P2-11 G-B(f) custody (R3 finding 4): the instrument's waiting sample excludes a
+  victim whose binder is exiting, rescue_completed or on the victim's cell -
+  J's own W / W_L (5.2).  14.6 says "no ACTIVE binder"; a carried victim whose
+  carrier is route_blocked (the HOLD-0 repeated raise, 8.4) has no active
+  binder but is in custody, and J never touches custody by design.  Excluded
+  victims are listed in dp.waiting_custody.  PAPER: "abandoned waiting" counts
+  victims no unit is carrying or standing on.
+
+3. TESTS (13.3) - each with its named mutant; per-test kills in section 4
+--------------------------------------------------------------------------------
+LIMIT 2 (tests/test_dispatch_joint.py)
+  T-J1 crossing; T-J2 route-aware through a numpy-bool wall (+ tj2b identity
+  mutant); T-J3 scarcity (D-1: nearest by route); T-J4 pure + model, the model
+  test parametrized over the unit registry order, the victim registries' order
+  and the incident drain order; T-J5 closed route; T-J6 missing kick (+ a REAL
+  step: a unit free between steps is bound at J-pre, phase "pre", before any
+  unit moves - R3-12); T-J7 (a)
+  direct - the raise's own unassign and no assign mid-advance, the same-step
+  detection, and the rebind carrying joint_replacement_after_blocked /
+  dispatch_replacement_after_blocked (R1 finding 1), (b) a REAL model step with
+  a phase spy around schedule.step(): A's own move raises route_blocked inside
+  the advance, no assign is issued while schedule.step() runs, J-post binds C
+  with the blocked cause; T-J8 (a) empty pool waits + counted, (b) the casualty
+  reason on the rebind, (c) a returning off-grid unit -> no would-have-been
+  write-off, (d) two casualties and one free unit in one step -> one write-off
+  (drain order); T-J9 integer tie-break; T-J10 latched-held victim under Limit 2
+  alone; T-J11 coverage before re-use; T-J12 reasons and types; T-J13 single
+  sink.
+LIMIT 3 (tests/test_dispatch_reassign.py)
+  T-R1 pure (loop, front, burn-out, drift) + model-level loop at exactly S +
+  model-level BURN-OUT (a wall burning out every 3 frames: still stalls at S+1)
+  + the FROZEN spare leg (incumbent ringed by smoke, spare clean: k counts);
+  T-R2 pure (chase, detour, shortcut) + model-level CHASE (never stalls);
+  T-R3 charge boundary; T-R4 margin (pure) + a model-level unclean spare never
+  sent; the infinite-x rule (P2-3); T-R5 exiting / rescue_completed /
+  co-located-and-latched + off-grid; T-R6 release path (spy, invariant checker
+  silent); T-R7 failure atomicity; T-R8 latch-fill + no allowed unit keeps the
+  latched binder; T-R9 ring / band + a stall with no spare releases nothing.
+  T-FLIP-a: a 500-seed simulator rebuilt in the MODEL's J order (R2 finding 1):
+  J-pre fill; the advance's outside events (closed route or random raise: first
+  raise unbinds, a repeated raise latches; deaths) and route changes (an
+  exogenous part plus the unit's own step); the post-move cycle; J-post PROGRESS
+  on start-of-frame contests (x = the anchor moved by the exogenous part only;
+  FROZEN from a random clean-approach predicate), FILL / LATCH-FILL,
+  persistence, REPLACE, SECOND FILL.  Asserts: REPLACE only on b = 0;
+  LATCH-FILL only on b <= 1; every return A..X..A on a victim AND v..w..v on a
+  unit follows an outside event and is never a REPLACE; REPLACEs per victim <=
+  N_ff - 1; binds per victim <= 5 N_ff.  Over the 500 seeds: 4591 fills, 317
+  REPLACEs, 697 LATCH-FILLs, 65 second fills, 1326 victim-side and 927 unit-side
+  returns - all checked.  A guard test (test_tflip_a_simulator_is_not_vacuous)
+  keeps those counts from collapsing.
+  T-FLIP-b: 200 alternating frames -> exactly one REPLACE; the holder raises ->
+  the other returns by FILL; the other raises -> a fresh unit C (farther than
+  both) is chosen; C raises -> a re-used pair serves the victim (R2 finding 5).
+INFORMATION, SWITCHES, INVARIANTS (tests/test_dispatch_information.py)
+  T-INFO-a: the read trap over FOUR J-post frames with a far looping incumbent,
+  a waiting victim and a spare 21 closer (reassign 1: progress, clean-approach,
+  persistence and a margin replacement all run under the trap; R1 finding 5).
+  T-INFO-b: one-frame forms (decisions; applied audit) + the PRE-REGISTERED
+  short real run (4 steps; variants perturbing undetected victims' fates, cells
+  and marker statuses; a variant is accepted only if its per-step detected ids
+  AND burning set equal the base run's - the fire is a legitimate input and a
+  variant could change it through shared randomness; all three variants were
+  accepted and left J's decisions and the assign/unassign audit identical).
+  T-INFO-c: source check (+ no J function reads the M6 counter's output).
+  T-SW: exact-1 tables; REASSIGN's own exact-1 while JOINT is on (R1 finding 2);
+  the dependency; step parameters; shipped defaults; JOINT = 0: J never entered,
+  a victim_confirmed incident gets today's legacy bind with reason "initial",
+  and no dispatch state is created.
+  T-INV: a pinned real run with TWO victims detected (a spare exists); Limit 3
+  is made to act inside the run - one binder put in the repeated-raise state ->
+  a LATCH-FILL must follow; an incumbent moved far and a fresh spare parked
+  beside its victim -> a margin REPLACE must follow - and both are asserted
+  (R2 finding 0, MAJOR); I1, I3, I4 (with the latch-cap leg - units a REPLACE
+  released in that same call exempt, as 6.7 step 4 is written: P2-10), I5, I6
+  (exiting, rescue_completed AND co-located units: never a donor or target,
+  binding untouched), I7 after every J call.
+Run times: T-INFO-b real run about 216 s, T-INV about 125 s, the T-J6 and T-J7
+real steps a few seconds each; everything else under 12 s for all 583 cases.
+
+4. MUTATION RECORD (13.3) - outputs/_dp_mutants_result.txt
+--------------------------------------------------------------------------------
+The harness copies the source, applies each mutant (exact text, matched once),
+runs ALL its listed tests in ONE pytest call WITHOUT -x and reads every test's
+own outcome from the JUnit XML (R1 finding 7, R2 finding 4).  A node naming a
+case must fail itself; a node naming a parametrized function is killed when at
+least one case fails (k/n recorded).
+RESULT (final source, 3 jobs): CONTROL passes all 63 distinct listed nodes;
+  ALL 48 MUTANTS KILLED ON EVERY ONE OF THEIR 70 LISTED TESTS ("ALL MUTANTS
+  KILLED ON EVERY LISTED TEST, CONTROL PASSES").  Per-test lines in
+  outputs/_dp_mutants_result.txt.  The first per-test run (before the T-R5
+  fix) had found one survivor, T-R5 [colocated] - see below.
+Notes on mutant / test pairings (all deliberate, all recorded):
+  - tr1 (the NAMED T-R1/T-R2 mutant: no exogenous shift) is EQUIVALENT on the
+    loop and front inputs (e = 0, or e > 0, which can only add to k), so no test
+    of them can fail on it; those two cases are listed under tr1cmp (progress
+    judged against d_prev - the "approaching" flag 6.3 rejects).  The
+    model-level loop test is listed under tr1m (stall rule disabled).  The
+    model's feeding of x is guarded by tr1x (x := d_prev at the call), killed by
+    the model-level chase and burn-out tests.
+  - T-R5 co-located: a plain co-located incumbent has d = 0, which no rule can
+    beat, so the custody mutant is equivalent there; the case is co-located AND
+    latched, where custody prevents a latch-fill away from a pickup.
+  - tr5og (off-grid unit offered as a spare) is killed by an exception (J
+    computes a route from pos None): a failure, but not an assertion.
+  - Mutants added after R1/R2 (not named in 13.3, each the smallest change
+    removing what its test guards): tj4i, reason_const, tj8cnt, tj8cf, tr1cmp,
+    tr1x, tfreeze, tclean3, txnone, tr5og, tr8capm, tr8capp, tr9rel (13.3's
+    second T-R9 mutant), tflip_vac, tinfoc, tsw_reassign, tsw_exact, tsw_param,
+    tsw_shipped; after R3: tjpre, tinfo_read (13.3's named T-INFO-a mutant - a
+    pure read; tinfo, which reads AND uses, stays for T-INFO-b).  T-INV is listed
+    under tr6 and tr8 (13.3 names no T-INV mutant).
+
+5. INSTRUMENT, QUEUE, ANALYZER
+--------------------------------------------------------------------------------
+_dp_probe.py: the outermost layer of the probe chain; record-only wraps (14.4);
+  writes d["dp"] whatever the return code (the chain is wrapped; a pre-existing
+  out is moved to <out>.prevN, never written into); refuses a line without
+  --repo; every dispatch accessor optional (B has none).  Records: commands
+  (with its own BFS verdict at each assign), releases, j_calls (net ms, M4
+  counterfactual), j_detail (14.4: sets, PRE, the d matrix and ledger of each
+  fill, each replacement plan's contests / spares / clean verdicts, each
+  progress evaluation incl. FROZEN, every binding's progress state, the
+  bindings left unevaluated), j_timing (raw / net / thread ms, GC collections),
+  j_events, ledger, binders, waiting (custody excluded) + waiting_custody, m3a,
+  invariant capture, m8, m9 (a J-post bind's own frame not sampled),
+  writeoffs_avoided, timing, errors.
+_dp_queue.py: waves seeds / identity / on / gate / evidence / all; generates
+  outputs/_dp_q_<wave>.jsonl only; tag check (absent, or present only as the
+  wave's own line with --resume; never tracked).  Fixed after the analyzer
+  author's report: the check now looks for <out minus .json>.stdout.txt, which
+  is what _sd_probe.py:369 writes (it looked for <out>.stdout.txt before).
+_dp_seeds.txt: set1 = 16 cells (9601-9616), set2 = 16 cells (9621-9636), equal
+  to the fx3mS / fx3mS2 argv cells; never re-selected.
+_dp_analyze.py: written by a delegated agent; sections header/PROV, G-ID, gates,
+  measures M1-M9, evidence, decision; refuses if section 15 differs from
+  2f0509dc; exit 2 refused, 1 = S1 STOP.  Its author reported 11 places where
+  the spec could not be followed literally (G-T(a) same-frame latch counted
+  from rows_ff / the J-pre latch-fill excusals of G-B(c) / G-B(f) ledger-blocked
+  vs dp0 / G-RB noise by hand / M8 arm / M5 realised steps / evidence
+  reproduction keys / G-ID dp keys / G-INV from a quiet log / head checks only
+  with --head-* / no 24-cell rule in S4); R3 assessed each (section 7, R3-21..23)
+  and three became rulings (section 9).  Updated after R3: crash validity, B's
+  path, dpR provenance, M3(a) split, the G-B(f) W / W_L split, J-detail counts,
+  the evidence "J saw" rows, case 2 BF-R.
+  Smoke: on the B / dp0 / dp1 smoke above the analyzer runs clean (G-ID PASS
+  with dp fields compared; M7 p99 8.7 ms).
+
+6. VALIDATION RUNS (smoke only; scratch outputs, nothing of the screen)
+--------------------------------------------------------------------------------
+- Identity: a 90-step D_N 9633 CRN run of the plain _ut_probe chain and of
+  _dp_probe with switches 0 are value-identical on FIELDS, mf2, ut and fb3
+  (timing aside); the analyzer's G-ID on them: 1/1 cells identical, PASS.
+- dp1 (both switches on, same cell): J acted; first decision different from
+  legacy at step 63 (dp0 ff_unit_1 -> victim_1, dp1 ff_unit_1 -> victim_0);
+  rows identical before it.  Re-run with the flat-array BFS: identical in every
+  record (P2-6).
+- Launch-detection cell (P2-5): A_N 9601 uniform, 20 steps, dp0 == dp1.
+- B identity of the instrument (R3-1): a detached worktree at f686e932 (created
+  for this check and removed, junction first); 30-step D_N 9633 CRN runs of
+  dpR (--repo B), dp0 and dp1: G-ID dpR == dp0 with every non-J dp field
+  compared; dp1's new j_detail shows, e.g., at step 14 J chose ff_unit_0 (d 51)
+  over ff_unit_1 (d 52).  NOTE: Part 3's B is the post-audit main, not
+  f686e932 - this check validates the instrument at a B without dispatch code.
+- An early full suite on the pre-review source and the final full suite: section 8.
+
+7. REVIEWS (at most 3 agents: R1, R2, R3)
+--------------------------------------------------------------------------------
+R1 (Limit 2 + information rule) and R2 (Limit 3 + proof): 14 findings, 1 MAJOR.
+  R1-0 MINOR cause -> reason chain untested -> T-J7 / T-J8 reason cases +
+        reason_const.  FIXED.
+  R1-1 MINOR REASSIGN's own exact-1 untested; JOINT = 0 docstring overclaimed ->
+        new T-SW case + tsw_reassign; the JOINT = 0 test now drives a legacy
+        bind through the handler.  FIXED.
+  R1-2 MINOR M6 undercount (no in-step consumption) + an undeclared D1 read ->
+        per-step taken set, negative and drain-order T-J8 cases, T-INFO-c guard,
+        P2-4.  FIXED / RECORDED.
+  R1-3 MINOR docs paragraph wrong ("belief equals truth") -> reworded.  FIXED.
+  R1-4 MINOR T-INFO-a never ran the progress code; T-INFO-b single frame ->
+        multi-frame trap with incumbent + spare; the pre-registered real run.
+        FIXED.
+  R1-5 MINOR T-J4 / T-J7 shapes partial -> registry / incident orders; rebind +
+        real-step phase spy.  FIXED.
+  R1-6 MINOR J-pre MAPE visibility -> measured, recorded (P2-5).  RECORDED.
+  R1-7 MINOR mutation record not per test -> JUnit per-test harness.  FIXED.
+  R2-0 MAJOR T-INV vacuous for Limit 3 -> forced LATCH-FILL and margin REPLACE in
+        the real run, asserted; I4 latch leg; I6 extended.  FIXED.
+  R2-1 MINOR T-FLIP-a not in the model's order; no unit-side check -> rebuilt
+        simulator, unit-side v..w..v, non-vacuity guard.  FIXED.
+  R2-2 MINOR the model's progress feed unguarded -> chase, burn-out, freeze leg,
+        unclean spare tests; tr1x, tfreeze, tclean3.  FIXED.
+  R2-3 MINOR infinite x still evaluated -> literal 6.3 (P2-3).  FIXED /
+        LIMITATION RECORDED.
+  R2-4 MINOR = R1-7, plus missing mutants (off-grid, latch caps, release before
+        spare check) and three unlisted tests -> added.  FIXED.
+  R2-5 MINOR T-FLIP-b third phase missing -> added.  FIXED.
+  Per-test kill run after these fixes found ONE more survivor - T-R5
+  [colocated] - fixed as described in section 4.
+  R1's contact disclosure: one early recursive grep from the worktree root
+  traversed outputs/ (post-filtered, not excluded) - a breach of the exclude
+  rule; the quarantine directory does not exist in this worktree (checked
+  without traversal), so nothing quarantined was contacted.
+R3 (tooling and identity, plus the post-R1/R2 fixes): 23 findings, 3 MAJOR.
+  R3-1 MAJOR the instrument called agents.dispatch_joint() before building each
+        assign record; at B (dpR) that accessor does not exist, so every assign
+        record would have been dropped and G-ID would have failed 64/64 (S1 STOP,
+        the identity wave wasted).  The earlier "1/1 identical" smoke had used a
+        reference WITHOUT a dp section, so it never compared dp fields at B.
+        FIXED (records first, every dispatch accessor optional) and VERIFIED: a
+        detached B worktree at f686e932 (removed afterwards, its .venv junction
+        first), 30-step D_N 9633 CRN smoke of dpR / dp0 / dp1 -> dpR records the
+        same 2 assigns as dp0, no instrument error, and the analyzer's G-ID is
+        IDENTICAL with every non-J dp field compared.
+  R3-2 MAJOR a crashed dp1 run had no .argv (the pool writes it only on rc 0) ->
+        INVALID -> INCOMPLETE instead of FAIL; and a re-queued line would
+        overwrite it.  FIXED: a crashed run is checked on its recorded argv only
+        and is never INVALID for the missing .argv; the queue refuses (even with
+        --resume) to re-emit a line whose out exists without .argv until it is
+        copied aside; the probe itself moves any pre-existing out to
+        <out>.prevN instead of writing into it.
+  R3-3 MAJOR 14.4 items not recorded (PRE, the sets, the d matrix, the rule, the
+        ledger, progress state).  FIXED, record-only: dp.j_detail per J call with
+        PRE (sets, solve_fill / plan_replacements / progress_step inputs and
+        outputs captured by wraps on the module object WM calls through, the
+        progress state of every binding, the bindings left unevaluated - P2-3 is
+        now measured).  The analyzer counts PRE points, progress evaluations,
+        FROZEN evaluations and unevaluated bindings (M4 block) and prints, for each
+        evidence run, what J saw at every J call that acted ("J saw at ...").
+  R3-4 MINOR custody in G-B(f) -> P2-11.  FIXED.
+  R3-5 MINOR 6.7 step 4 vs 14.6 -> P2-10.  RULING R-A.
+  R3-6 MINOR B's path spelling (forward slashes) would make every dpR run
+        INVALID.  FIXED (the queue normalises --base; the analyzer rebuilds the
+        line from the recorded argv's --repo and checks it is the recorded repo).
+  R3-7 MINOR tag check ran git in the wrong repository for dpR outputs and
+        checked exact paths only.  FIXED (git in the folder that holds the path;
+        0.4 / 14.9 reserved patterns per wave tag, in both outputs/ folders,
+        top-level listings only).
+  R3-8 MINOR case 2's BF-R configuration (ST=3) was not queued although 14.8
+        pre-registers its expectation.  FIXED: 4 lines dpE2f{0,1}{n,c} (evidence
+        22 lines), original _sd_fb3bfr2_D_W.json in the analyzer.  The EXTRA case
+        keeps ST=2 only: its ST=3 original is identical up to the step-39 death.
+  R3-9 MINOR M9 sampled a J-post bind's own frame.  FIXED (skipped).
+  R3-10 MINOR instrument work inside the J timing window.  FIXED: j_calls ms and
+        timing.j_ms_total are NET of the instrument's nested work; raw time,
+        thread time and GC collections per call in dp.j_timing (thread_time has
+        about 15 ms resolution on Windows - it reads 0 for most calls).
+  R3-11 MINOR M3(a) not split.  FIXED (dp.m3a, analyzer m3a_allowed /
+        m3a_blocked).  The ledger-blocked baseline -> RULING R-B.
+  R3-12 MINOR T-J6's J-pre half never ran model.step().  FIXED: a real-step test
+        (a free unit and a waiting victim between steps -> a phase-"pre" bind)
+        and mutant tjpre (the J-pre call removed).
+  R3-13 MINOR dpR provenance weaker than 14.5.  FIXED: --head-b and --head-dp
+        mandatory outside smoke; dpR from exactly one checkout and one source
+        record, never the shared main checkout.
+  R3-14 NOTE the 50-70 ms J calls in the old smoke are pauses (identical J work
+        at neighbouring steps took 6-14 ms); with the flat-array BFS p99 is 9 ms.
+  R3-15 NOTE M4's counterfactual is a rule comparison (P2-7).
+  R3-16 NOTE the write-off counter errs both ways (P2-4 updated).
+  R3-17 NOTE which arm drives M8's 25% trigger is unstated -> RULING R-C.
+  R3-18 NOTE test coverage: T-R1 pure boundary now asserts frames 1..S (was
+        1..S-1); T-FLIP-a's guard now requires both stall and margin REPLACEs;
+        T-INV's I2 holds by representation (one rescued_victim field); I6's
+        custody cases are guarded by T-R5, not by T-INV.
+  R3-19 NOTE T-INFO-a's named mutant (a pure read) was not used.  FIXED: mutant
+        tinfo_read (reads one undetected marker's cell, uses nothing).
+  R3-20 NOTE probe robustness.  FIXED (the chain wrapped; captured invariant
+        lines kept when the checker raises; the stale-out case of R3-2).
+  R3-21..23 NOTE/ACCEPTED: the literal 6.3 reading (P2-3); two analyzer choices
+        accepted; the analyzer's non-literal choices assessed (acceptable: G-T
+        o2@frame, G-B(c) on REPLACE / LATCH-FILL events, M4, M5 realised minus d
+        (report by phase), M6 split by the sweep phase, G-RB fire divergence by
+        hand, S6 p99 over all J points, G-ID's field set, evidence reproduction
+        on first detections and dispatches, M1c, M8 censoring at 360).
+  R3's contact disclosure: one unscoped `git status --short` in this worktree
+  (walks outputs/; the quarantine directory is absent here) and one stray
+  scratch write to Git Bash's /tmp - both breaches of the housekeeping rules,
+  neither touched anything quarantined or another session's files.
+
+8. FULL SUITE
+--------------------------------------------------------------------------------
+Machine NOT idle: the is-True audit session's pool (up to 10 jobs) and its own
+suite ran throughout.
+- Early run on the pre-review source: stopped at about 97% when superseded
+  (one failure seen at about 90%; names are printed only at the end).
+- First final-source run: stopped by the 2-hour background limit at about 99%
+  (one failure at about 89% - the same position).
+- Final-source run as a detached process with a JUnit record (2026-10-05,
+  2 h 10 min): 1 failed / 2252 passed - the failing set is EXACTLY {T5}
+  (tests/test_uav_sector_assignment.py::test_fire_tracker_uavs_receive_
+  different_target_sets), B's recorded set; 2252 = B's 1669 passed + the 583
+  new dispatch cases.  Every existing test is green at the shipped defaults,
+  including the ones that pin greedy semantics and the double-claim fixture.
+  PAPER: the dispatch change, shipped OFF, alters no existing tested behaviour.
+
+9. HANDED TO PART 3 - AND THREE RULINGS NEEDED BEFORE ITS DATA ARE READ
+--------------------------------------------------------------------------------
+R-A (P2-10, R3-5) 6.7 step 4 vs 14.6 G-B(f).  Options: (a) extend the SECOND
+    FILL to W union W_L with the LATCH-FILL cap (a design change: the proof is
+    unaffected - the bind is a LATCH-FILL with b <= 1, an existing bind kind of
+    6.9); (b) keep 6.7 and make G-B(f)'s structural part cover W only, W_L
+    reported.  RECOMMENDED (a): it removes the gap instead of excusing it, and
+    "no free unit stands beside a victim it may serve" stays a structural
+    property.  Either way the analyzer already prints the W / W_L split.
+R-B (R3-11) the ledger-blocked parts of G-B(f) and M3(b) "must not rise" against
+    dp0, which has no ledger, so they are 0 there by construction: as written,
+    any ledger-blocked wait in dp1 fails S2.  Options: (a) keep it literal (the
+    ledger may never cost a wait); (b) compute dp0's ledger from dp0's own assign
+    record (b per pair at each step) and compare like with like; (c) report-only.
+    RECOMMENDED (b): it keeps the pre-registered comparison meaningful.
+R-C (R3-17) which arm drives M8's 25% trigger for proposing an urgency round.
+    RECOMMENDED: dp0 (today's dispatcher, the system the paper describes as
+    measured), dp1 reported beside it.
+
+Handed over:
+- Base: the post-audit main (21.5).  If the is-True audit changes source, Part 2
+  is merged forward onto it, this suite and the mutation check are re-run there,
+  and the identity wave (dpR at B = that main) measures it.
+- P2-5: uniform cells with a launch detection.
+- P2-3: the not-evaluated binding - measured now (dp.j_detail "unevaluated";
+  analyzer M4 block, prog_unevaluated).
+- P2-6: J cost now measured with the flat-array BFS.
+- The analyzer's open points (section 7, R3).
+
+10. CONTACT AND HOUSEKEEPING
+--------------------------------------------------------------------------------
+- Quarantine: outputs/_firemech_rewound_20260914 is absent from this worktree;
+  every search was scoped to named files, src_extension/ or tests/ (R1's one
+  breach above).  The Bayesian worktree and branch were not touched.
+- Runs: scratch smoke runs only (identity, dp1, dp1 re-run, launch cell, the
+  B / dp0 / dp1 instrument check), the mutation harness in
+  E:/Projects/SAS_wt/_dpmut (removed after each run), the dispatch tests, two
+  full suites.  No screen run, no pool.
+- Worktrees: E:/Projects/SAS_wt/dpbase_f686e932 created for R3-1's check and
+  removed (`cmd /c rmdir` of its .venv junction first; the shared .venv checked
+  intact).  E:/Projects/SAS_wt/basef686, istrue and istrue_suite belong to the
+  is-True audit session and were not touched; that session's pool and suite ran
+  concurrently with this round's final mutation run and suite (the mutation run
+  was held to 3 jobs for the shared commit-charge budget).
+- Switch convention: both switches ship 0 and turn on only on an exact 1.
+
+11. LINE MAP (at the Part 2 commit)
+--------------------------------------------------------------------------------
+common_fixed_variables.py  563-567 DISPATCH_JOINT / _REASSIGN / _STALL_STEPS /
+                           _MARGIN_STEPS / _MARGIN_PERSIST (comment block above)
+agents.py                  1691 dispatch_joint; 1698 dispatch_reassign;
+                           1707 _dispatch_steps_param; 1714 / 1719 / 1724 the
+                           S / M / P accessors
+src_extension/planning/joint_dispatch.py (442 lines)
+                           40 id_index; 50 GridDistances; 95 _bfs_dict;
+                           115 bfs_distances; 156 route_distance;
+                           173 unclean_cells; 187 FillPair; 194
+                           count_configurations; 199 solve_fill; 272 Progress;
+                           286 new_progress; 291 progress_step; 320
+                           update_persistence; 342 Contest; 354 Replacement;
+                           362 plan_replacements
+wildfire_model.py          73 import _jd
+                           2387 J-pre (end of _run_execution, 2359)
+                           3051 _try_dispatch_unresolved_confirmed_victims (3049)
+                                returns under JOINT
+                           3989 _handle_rescue_incident (3887): the tail skipped
+                                under JOINT (pending cause + record-only M6)
+                           4070 _release_other_claimants: only_ff_id (4077)
+                           4446 _RESCUE_EVENT_CONSOLE_TYPES gains
+                                dispatch_reassignment (4451); 4470 the reason
+                                map's new branch (4484)
+                           5043-5045 the ledger at the assign sink
+                                (apply_physical_rescue_command, 4918)
+                           5623 _dispatch_firefighter_to_victim (5616) returns
+                                under JOINT
+                           5881 J-post (inside _sync_firefighter_marker_status,
+                                5875)
+                           5884-6338 the dispatch block: 5896 reasons; 5907
+                                state helpers; 5927 the M6 counterfactual; 5969
+                                ledger; 5978 needy; 5993 _dispatch_view; 6071 fire
+                                sets; 6088 _joint_dispatch_point; 6229
+                                _dispatch_fill_bind; 6266 _dispatch_replace
+dashboard maps             alert_manager.py:120, explanation_engine.py:415 and
+                           :732, timeline_builder.py:15
+tests                      dispatch_test_support.py (204 lines),
+                           test_dispatch_joint.py (19 functions),
+                           test_dispatch_reassign.py (21), test_dispatch_
+                           information.py (13): 53 functions, 583 cases;
+                           test_base_station.py::test_shipped_defaults
+tooling (outputs/)         _dp_probe.py 686, _dp_queue.py 234, _dp_analyze.py
+                           2017, _dp_mutants.py 521 lines; _dp_seeds.txt;
+                           _dp_mutants_result.txt
