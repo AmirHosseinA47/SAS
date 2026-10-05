@@ -15,6 +15,8 @@ G-V, PER RUN (provenance and validity; every failure is listed):
     sidecar == {argv, cwd} of the line;
   - the arm took effect: fb3.eff.searcher_targeting / victim_spawn_mode as asked; every --set key of FIX3B_KEYS equal
     in fb3.switches; every SEARCHER_FP_* --set key equal in fb3.bp_switches (raw and effective) - a dead key fails;
+    effective.global_planner_mode as asked (GP); fb3.bp_switches SEARCHER_TARGETING_FIX raw / eff as asked (BF-fix0);
+    params' MR1_TRUTHINESS_FIX / NUMPY_SCALAR_FLAGS exactly the arm's own --set (absent elsewhere);
   - CRN on with draws > 0; fb3.inst present with error_count 0 and broken False; mr.errors, ut.errors and the reach
     errors empty; no HOOK_ERR / ERR marker anywhere in mf2 / fx3;
   - mr record: mr1_steps has one row per step, t = 1..steps, one count per UAV in both columns; n_observations set.
@@ -27,6 +29,7 @@ switch keys; the pool log compared with wall-clock tokens and checkout paths nor
   G1-a F1, F12    mr.mr1_list == the CORRECTED accumulation (mr1_steps row[2]), bit-equal, outputs/_bp_analyze.py
                   _mr1_acc verbatim
   G1-b B, K       mr.mr1_list == the LITERAL accumulation (row[1]), bit-equal
+  MR1-chg         MR1 changed between B and F12 exactly where the corrected and literal per-step counts differ
 SKIP (labels and wall-clock only): top-level probe, tag, repo, head, src_sha, argv, extra_params, wall_s, python, mesa,
   _det; fb3.timing, fb3.probe, fb3.inst.overhead, fb3.inst.src.root; mf2 / fx3 / ut / mr .probe.
 REACH (record-only, outputs/_ist3_reach.py): numpy-typed values at each F-2 site per arm. In arm B a numpy bool /
@@ -39,6 +42,7 @@ import importlib.util
 import json
 import os
 import re
+import statistics
 import sys
 from collections import Counter, defaultdict
 
@@ -247,6 +251,21 @@ def main() -> int:
                 rec = (fb3.get("bp_switches") or {}).get(k) or {}
                 if rec.get("raw") != v or rec.get("eff") is None or float(rec["eff"]) != float(v):
                     probs.append("FP %s recorded %s != %s" % (k, rec, v))
+        # GP's GLOBAL_PLANNER_MODE and BF-fix0's SEARCHER_TARGETING_FIX are neither FIX3B nor SEARCHER_FP_* keys; their
+        # effective values are recorded by the accessor (_sd_probe effective) and in fb3.bp_switches (report review K20)
+        gpm_eff = (d.get("effective") or {}).get("global_planner_mode")
+        if gpm_eff != int(sets.get("GLOBAL_PLANNER_MODE", 0)):
+            probs.append("effective global_planner_mode %s != %s" % (gpm_eff, sets.get("GLOBAL_PLANNER_MODE", 0)))
+        stf = (fb3.get("bp_switches") or {}).get("SEARCHER_TARGETING_FIX") or {}
+        want_stf = sets.get("SEARCHER_TARGETING_FIX", 1)
+        if stf.get("raw") != want_stf or stf.get("eff") is not (want_stf != 0):
+            probs.append("SEARCHER_TARGETING_FIX recorded %s != %s" % (stf, want_stf))
+        # the arm's own isTrue switches as the run's params record them (absent = the shipped 1 / not in checkout B)
+        for k in sorted(ARM_KEYS):
+            want_k = {"F1": {"NUMPY_SCALAR_FLAGS": 0}, "K": {"MR1_TRUTHINESS_FIX": 0, "NUMPY_SCALAR_FLAGS": 0}}.get(
+                arm, {}).get(k)
+            if (d.get("params") or {}).get(k) != want_k:
+                probs.append("params %s = %s, the arm sets %s" % (k, (d.get("params") or {}).get(k), want_k))
         crn = fb3.get("crn") or {}
         if not (crn.get("on") and (crn.get("crn_draws") or 0) > 0):
             probs.append("CRN not on with draws > 0: %s" % crn)
@@ -290,12 +309,13 @@ def main() -> int:
         print("STOP: %d runs missing (e.g. %s); use --partial for an interim report" % (len(missing), missing[:3]))
         return 3
 
-    gates = {g: [0, 0] for g in ("G-A", "G-B", "G-C", "G-K", "G1-a", "G1-b", "LOG")}
+    gates = {g: [0, 0] for g in ("G-A", "G-B", "G-C", "G-K", "G1-a", "G1-b", "MR1-chg", "LOG")}
     fails, notes = [], []
     lit_after3 = 0
     lit_nonzero_runs = []
     cor_mean = []
     mr1_changed = 0
+    mr1_same = []
     for c in cfgs:
         names = {arm: "ist3_%s_%s" % (arm, c["cid"]) for arm in ("B", "F1", "F12", "K")}
         r = {arm: runs.get(n) for arm, n in names.items()}
@@ -318,7 +338,7 @@ def main() -> int:
             if arm in ("F1", "F12"):
                 gate("G1-a", cor == list(mr["mr1_list"]), "mr1_list != corrected accumulation")
                 if arm == "F12":
-                    cor_mean.append(sum(cor) / max(1, n))
+                    cor_mean.append((int(c["steps"]), sum(cor) / max(1, n)))
             else:
                 gate("G1-b", lit == list(mr["mr1_list"]), "mr1_list != literal accumulation")
                 lit_after3 += sum(1 for x in ms if x[0] > 3 and any(x[1]))
@@ -334,40 +354,63 @@ def main() -> int:
             lx, ly = logs.get(names[x]), logs.get(names[y])
             gate("LOG", lx == ly, "%s vs %s pool log differs (first: %s)" % (
                 x, y, next((p for p in zip(lx or [], ly or []) if p[0] != p[1]), "length")))
-            if skip and r[x]["mr"]["mr1_list"] != r[y]["mr"]["mr1_list"]:
-                if g == "G-A":
+            if g == "G-A":
+                # MR1 must change exactly when the corrected and literal per-step counts differ on some step (G-A
+                # has shown both columns equal between the arms)
+                changed = r[x]["mr"]["mr1_list"] != r[y]["mr"]["mr1_list"]
+                expect = any(row[1] != row[2] for row in r[y]["mr"]["mr1_steps"])
+                gate("MR1-chg", changed == expect, "MR1 changed %s, corrected != literal on some step %s"
+                     % (changed, expect))
+                if changed:
                     mr1_changed += 1
-            elif skip and any(r[y]["mr"]["mr1_list"]):
-                notes.append("%s %s: mr1_list equal although F-1 should change it" % (g, c["cid"]))
+                else:
+                    mr1_same.append("%s (corrected total %d)" % (c["cid"], sum(sum(row[2])
+                                                                             for row in r[y]["mr"]["mr1_steps"])))
     print("\nGATES (pass / fail):")
     for g, (p, f) in gates.items():
         print("  %-5s %4d / %d" % (g, p, f))
-    print("configurations whose MR1 changed between B and F12 (expected: all with a burning cell in a box): %d / %d"
-          % (mr1_changed, len(cfgs)))
+    print("MR1-chg = MR1 changed between B and F12 exactly where the corrected and literal per-step counts differ")
+    print("configurations whose MR1 changed between B and F12: %d / %d; unchanged: %s"
+          % (mr1_changed, len(cfgs), mr1_same))
     print("literal MR1 counts after step 3 in B / K runs (expected 0): %d" % lit_after3)
-    print("B / K runs with a non-zero literal count (steps 1-3, the seeded cell): %d  e.g. %s"
-          % (len(lit_nonzero_runs), lit_nonzero_runs[:6]))
-    if cor_mean:
-        s = sorted(cor_mean)
-        print("corrected M_R1 (mean over UAVs) across F12 runs: min %.3f median %.3f max %.3f"
-              % (s[0], s[len(s) // 2], s[-1]))
+    print("B / K runs with a non-zero literal count (steps 1-3, the seeded cell): %d: %s"
+          % (len(lit_nonzero_runs), lit_nonzero_runs))
+    for h in sorted({h for h, _v in cor_mean}):
+        s = sorted(v for hh, v in cor_mean if hh == h)
+        print("corrected M_R1 (mean over UAVs) across the %d F12 runs at %d steps: min %.3f median %.3f max %.3f%s"
+              % (len(s), h, s[0], statistics.median(s), s[-1],
+                 ("  (all: %s)" % ", ".join("%.3f" % v for v in s)) if len(s) <= 6 else ""))
     for f in fails[:80]:
         print("  FAIL", f)
     for nn in notes[:20]:
         print("  NOTE", nn)
 
     print("\nREACH (record-only): numpy-typed values at each F-2 site, summed per arm")
+    print("  (calls = values seen; maintain = calls of _is_maintain_option, marker values in its numpy column;")
+    print("   plain_scalar_converted = numpy inputs it converted; a site never called shows calls 0)")
     per_arm = defaultdict(lambda: defaultdict(Counter))
     calls = defaultdict(Counter)
+    numpy_total = Counter()
     for name, rch in reach.items():
         arm = name.split("_")[1]
-        for site, cnt in (rch.get("truthy") or {}).items():
+        rc = rch.get("calls") or {}
+        for site in ("fail_safe_planner", "global_mission_planner", "local_uav_path_planner", "rescue_planner"):
+            cnt = (rch.get("truthy") or {}).get(site) or {}
             per_arm[arm]["truthy." + site].update({k: v for k, v in cnt.items() if k.startswith("numpy.")})
             calls[arm]["truthy." + site] += sum(cnt.values())
         for key in ("maintain", "safe_float", "plain_scalar", "plain_scalar_converted"):
             cnt = rch.get(key) or {}
             per_arm[arm][key].update({k: v for k, v in cnt.items() if k.startswith("numpy.")})
-            calls[arm][key] += sum(cnt.values())
+            if key == "plain_scalar":          # every call (the tally holds numpy inputs only)
+                calls[arm][key] += int(rc.get("plain_scalar", 0))
+            elif key == "maintain":            # the tally holds marker-key values; the call count is separate
+                calls[arm][key] += int(rc.get("_is_maintain_option", 0))
+            elif key == "plain_scalar_converted":
+                calls[arm][key] += sum(cnt.values())
+            else:
+                calls[arm][key] += sum(cnt.values())
+        calls[arm]["evaluate_option"] += int(rc.get("evaluate_option", 0))
+        calls[arm]["runs"] += 1
         for key in ("params", "context"):
             for k2, cnt in (rch.get(key) or {}).items():
                 per_arm[arm]["%s.%s" % (key, k2)].update(cnt)
@@ -377,6 +420,9 @@ def main() -> int:
         print("  arm %s:" % arm)
         for site in sorted(set(per_arm[arm]) | set(calls[arm])):
             print("    %-40s calls %9d  numpy %s" % (site, calls[arm].get(site, 0), dict(per_arm[arm].get(site, {}))))
+            numpy_total[arm] += sum(per_arm[arm].get(site, {}).values())
+    print("numpy-typed values at any F-2 site, any evaluated parameter or context value, per arm: %s"
+          % {a: numpy_total[a] for a in ("B", "F1", "F12", "K") if a in calls})
     ok = not bad_v and not problems_global and not any(f for _p, f in gates.values()) and not missing
     print("\nVERDICT:", "ALL GATES PASS" if ok else ("INCOMPLETE" if missing else "FAIL"))
     return 0 if ok else 1
