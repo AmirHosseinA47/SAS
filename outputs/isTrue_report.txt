@@ -198,10 +198,11 @@ STOP: the merge runs only on the maintainer's word (section 9).
     (e) Nothing else changes.
         - The evidence is section 4 of this report. If it failed, the round would not merge and 19.11 would be void.
         - OPEN: 19.7's point 2 has no implementation (C-4).
-  NOT YET IMPLEMENTED (a precondition of the measurement round, not a cleanup item):
+  NOT YET IMPLEMENTED (a precondition of the measurement round, not a cleanup item). CLOSED before the merge: both
+  checks are now in outputs/_bp_analyze.py (section 10; fix3b_part1.txt 19.12 (b)).
     - No analyzer implements (b)'s model == corrected STOP or (c)'s switch / head refusal yet.
     - The measurement round's analyzer (19.10 (d): outputs/_bp_analyze.py METRICS) checks the literal copy
-      (mr1_literal_ok, :932). It must gain both checks before any measurement run is read.
+      (mr1_digest's mr1_literal_ok). It must gain both checks before any measurement run is read.
     - outputs/_ist3_analyze.py G1-a is a working model == corrected check (_mr1_acc, verbatim from _bp_analyze.py).
 
 ================================================================================
@@ -515,7 +516,8 @@ P.4 NOTHING ELSE CHANGES. No other reported number depends on this round's code.
   - README.md's switch list (last updated 2026-09-21) lists no switch added since, these two included.
   - Instruments that assume the literal MR1 rule, valid only at MR1_TRUTHINESS_FIX 0:
       - outputs/_ist_probe.py / _ist_analyze.py (Part 1's literal == model check);
-      - outputs/_bp_analyze.py:932 mr1_literal_ok. This one is ALSO a measurement-round precondition (section 3).
+      - outputs/_bp_analyze.py mr1_digest's mr1_literal_ok. It now applies only at heads without F-1; at heads
+        with F-1 the 19.11 (b) STOP applies (section 10).
   - outputs/_fb3_probe.py's comment calls the literal count "the model's". The file is run-loaded by the measurement
     round, so it is left byte-identical; both counts it records are unaffected.
   - outputs/_ist3_queue.py's docstring gives "the literal count is 0 throughout scenario D" as the K arm's
@@ -625,3 +627,50 @@ C-5 THE HEAD THE MEASUREMENT ROUND WILL RUN ON (4.2). Every identity result is f
     - Every recursive search excluded outputs/_firemech_rewound_20260914.
     - The analyzers and the freeze record read only named files and non-recursive globs.
     - git ran no untracked walk (-uno).
+
+================================================================================
+10. RULINGS ON SECTION 8 (maintainer, 2026-10-05) - GOVERN WHERE THEY DIFFER FROM SECTIONS 0-9
+================================================================================
+  C-1 ACCEPTED. The paper uses P.3's G_belief wording (Part 1 section 10 marked ACCEPTED).
+  C-2 CONFIRMED: 19.11 (c), (d) as corrected, and (e) (outputs/fix3b_part1.txt 19.11, and 19.12 (b)).
+  C-3 ACCEPTED. The identity-run coverage design stands as run (4.2).
+  C-4 POINT 2 DROPPED, as a committed amendment stating why, before any measurement run: outputs/fix3b_part1.txt
+      19.12 (a).
+      - The reason: it has no implementation and no switch can produce it.
+      - The new run count is 13 sensitivity points, 1 248 sensitivity runs, 5 088 in all.
+  C-5 YES, as a precondition of the measurement round (19.12 (c)). After the dispatch round merges and before the first
+      measurement run, if dispatch ships any switch on, run a small identity check at the merged head:
+        - the reach census;
+        - shipped vs both isTrue switches 0, on the 12 K configurations.
+  BEFORE THE MERGE: 19.11's two new checks in outputs/_bp_analyze.py, with a test for each
+  (tests/test_istrue_bp_analyze.py):
+    - (b) mr1_corrected_check, called from mr1_digest for every digested run.
+        - At a head that carries F-1, the model's mr1_list must equal the probe's corrected accumulation bit for
+          bit, or the analyzer STOPS (also when the run has no MR1 record).
+        - The rule only applies where git places the F-1 commit (fef52103) in the run's head. Runs from heads without
+          F-1 (the bayesprep corpus) keep the literal rule, unchanged.
+        - It FAILS CLOSED: if git cannot place the head of a run PROV accepts, the analyzer STOPS. A failed git call
+          is never cached.
+        - PROV prints one line counting the path each digested run took, and adds a PASS verdict when any run was
+          checked.
+    - (c) istrue_switch_refusals, applied in prov_check and in rb_prov (the rb shards): a run that sets
+      MR1_TRUTHINESS_FIX or NUMPY_SCALAR_FLAGS, to any value, in its --set dict or its recorded params, is REFUSED.
+      The head clause is PROV's existing head rule.
+    - RED / GREEN. On the analyzer before the change, all 6 test cases fail; after it, 6 passed. 7 mutants, each
+      killed by the tests:
+        - either refusal call removed (probe runs, rb shards);
+        - the run's own head not passed as accepted;
+        - the fail-closed STOP disabled;
+        - a failed git call cached;
+        - the bit-equality test disabled;
+        - the no-record STOP disabled.
+    - REVIEW. A read-only review before commit (4 agents) found 7 points, none refuted. All are applied: the fail-closed
+      STOP, no cache of a failed git call, the coverage line, the rb shards, two test gaps, the stale :932 pointers,
+      and the 480-step point's CUR partner (recorded OPEN in 19.12 (a), not decided here).
+    - LEGACY UNCHANGED. The full analyzer was run over the bayesprep corpus, before and after the change (--head
+      b505d036 --head2 8122b463 --head3 ded3efe3; 351 expected runs, every section).
+      - The output is identical apart from one new PROV line: "19.11 (b) MR1 rule over every digested run: head
+        without F-1: literal rule 340".
+      - Every digested bayesprep run is at a head without F-1, so no STOP fires (outputs/_ist_bpa_legacy.txt).
+    - The full suite was not re-run. These commits change no model source: they add one test file and change the
+      outputs/ analyzer and records. The suite result of section 5 (6904b1f8) still describes the source.

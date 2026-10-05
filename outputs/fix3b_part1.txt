@@ -1126,6 +1126,7 @@ NEXT: Part 2 (section 8), one review agent on the diff (the last of 3), then the
 19.11 AMENDMENT 3 - maintainer ruling I-2 on outputs/isTrue_part1.txt section 9 (2026-10-05). Fixed BEFORE any
      measurement run is read. Governs where it differs from 19.1-19.10. (a) and (b) are the ruling; (c) - (e) are the
      isTrue round's Part 2 additions, put to the maintainer for confirmation in outputs/isTrue_report.txt.
+     CONFIRMED 2026-10-05 (ruling C-2): (c), (d) as corrected, and (e); see 19.12 (b).
      (a) M_R1 IS THE MODEL'S MR1, AND THE MODEL'S MR1 IS NOW THE CORRECTED COUNT.
          - The isTrue round's F-1 (MR1_TRUTHINESS_FIX, ships 1) makes UAV.surrounding_states count a burning cell by
            truthiness. The inherited test (`is_burning() is True`) counted nothing once every burning cell held a
@@ -1159,3 +1160,53 @@ NEXT: Part 2 (section 8), one review agent on the diff (the last of 3), then the
            The belief is built at the grid's own resolution in every run (wildfire_model.py:2720,
            VictimSearchBelief.with_uniform_prior(HEIGHT, WIDTH, ...)). Neither this round nor the measurement round
            can run it, yet 19.8 / 19.10 (e) still budget it. Recorded for the maintainer.
+         - CLOSED by 19.12 (a): point 2 is dropped (ruling C-4).
+19.12 AMENDMENT 4 - maintainer rulings C-2, C-4 and C-5 on outputs/isTrue_report.txt section 8 (2026-10-05). Fixed
+     BEFORE any measurement run exists. Governs where it differs from 19.1-19.11.
+     (a) 19.7 POINT 2 IS DROPPED (ruling C-4). Point 2 is 10.7's "a 2x2-cell belief (25x25)".
+         WHY: it has no implementation, so it cannot be run.
+         - The belief is built at the grid's own resolution in every run (wildfire_model.py _init_victim_search_belief:
+           VictimSearchBelief.with_uniform_prior(HEIGHT, WIDTH, ...)), and no switch changes that resolution
+           (SEARCHER_BELIEF_STRIDE is point 1's candidate lattice, not the belief grid).
+         - Building it now would add new method code after this pre-registration was fixed; that needs its own round
+           and its own identity check.
+         It is DROPPED, not deferred: the measurement round runs without it, and the paper reports 13 sensitivity
+         points and names point 2 as pre-registered and dropped for this reason.
+         - The sensitivity set (19.7) is now 13 points: the 10 remaining pre-registered points of 10.7 / 18.5 plus FP
+           U10 10 km/h, FP U10 40 km/h and FP kappa 3.
+         - RUN COUNT (replaces 19.8 and 19.10 (e)):
+             main         12 arms x 16 cells x 10 seeds x 2 placements = 3 840
+             sensitivity  13 points x 48 runs x 2 placements           = 1 248
+             TOTAL 5 088 runs
+           At 45 runs / h (19.10 (e)): about 113 h (106-118 h at 43-48 runs / h).
+         - OPEN, found while writing this amendment, NOT decided here: the 480-step horizon point (10.7) compares BF
+           with CUR ("BF vs CUR unless stated"), and no 480-step CUR run exists in the main design. If its CUR
+           partner is run separately, that adds 48 x 2 = 96 runs (sensitivity 1 344, total 5 184), each about 4/3 the
+           length of a 360-step run. 19.8 / 19.10 (e) carried the same count. Recorded for the maintainer before the
+           measurement queue is built.
+         - The isTrue round measured 30.5 runs / h overall and 39.5 runs / h at its best on this box, under memory
+           pressure (outputs/isTrue_report.txt section 7). Throughput is re-measured, with the free-commit floor and the
+           background load stated, before the measurement round is scheduled.
+     (b) 19.11 (c) - (e) CONFIRMED (ruling C-2), with (d) as corrected on 2026-10-05. 19.11 (e)'s OPEN item is closed
+         by (a).
+         19.11 (b) and (c) are implemented in the measurement round's analyzer, outputs/_bp_analyze.py:
+         - (b) mr1_corrected_check, called from mr1_digest for every digested run. At a head that carries F-1, the
+           model's mr1_list must equal the probe's corrected accumulation bit for bit, or the analyzer STOPS (also
+           when the run has no MR1 record). Runs from heads without F-1 keep the literal rule, unchanged.
+           - It FAILS CLOSED: if git cannot place the head of a run that PROV accepts, the analyzer STOPS. A failed
+             git call is never cached.
+           - PROV prints how many digested runs took each path, and adds a PASS verdict when any run was checked.
+           - 19.11 (b)'s "outputs/_bp_analyze.py:932" is mr1_digest's mr1_literal_ok; the line moved with these checks.
+         - (c) istrue_switch_refusals, applied in prov_check and, for the rb shards, in rb_prov. A run whose
+           extra_params or params set MR1_TRUTHINESS_FIX or NUMPY_SCALAR_FLAGS, to any value, is REFUSED.
+         - (c)'s head clause is PROV's head rule: every run must carry the analysis head. The measurement round is
+           analysed with --head = its post-merge head, so a run from an older head is refused.
+         - Tests: tests/test_istrue_bp_analyze.py. Each test fails without its check.
+     (c) PRECONDITION OF THE MEASUREMENT ROUND (ruling C-5). After the dispatch round merges and before the first
+         measurement run: if dispatch ships ANY switch on, run a small identity check at the merged head:
+         - the isTrue reach census (outputs/_ist3_reach.py): no numpy value at any F-2 site;
+         - shipped vs both isTrue switches 0 on the 12 configurations of the isTrue K arm (outputs/_ist3_configs.json,
+           k_arm), about 24 runs: every recorded field equal except mr.mr1_list, which must equal the literal
+           accumulation at 0 and the corrected one when shipped (outputs/isTrue_report.txt 4.4: G-A, G-K, G1-a, G1-b).
+         Any difference STOPS the measurement round until it is explained. If dispatch ships every switch at 0, no
+         check is needed: its hunks are behind their own switches.
