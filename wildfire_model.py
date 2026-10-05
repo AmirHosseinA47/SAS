@@ -5883,14 +5883,14 @@ class WildFireModel(mesa.Model):
 
     # ------------------------------------------------------------------
     # Dispatch round: the joint dispatcher J (outputs/dispatch_part1.txt
-    # sections 5-7, rulings section 20, amendment A1 section 21). Everything
+    # sections 5-7, rulings section 20, amendments A1 and A2, sections 21-22). Everything
     # below acts only while agents.dispatch_joint() is on; the decisions are
     # the pure module src_extension/planning/joint_dispatch.py (_jd).
     # State (created lazily, so nothing exists while the switch is off):
     #   _dispatch_ledger    {(unit, victim): binds}   counted at the assign sink
     #   _dispatch_progress  {(unit, victim): _jd.Progress}
     #   _dispatch_pending_cause {victim: initial|blocked|casualty}
-    #   _dispatch_events    [dict]   every J bind / replacement / refusal
+    #   _dispatch_events    [dict]   every J bind / replacement / refusal, with its stage (2 / 3 / 4, A2)
     #   _dispatch_cf_taken  {step, units}  record-only: the M6 counterfactual's units taken this step
     # ------------------------------------------------------------------
     _DISPATCH_FILL_REASONS = {
@@ -6171,10 +6171,12 @@ class WildFireModel(mesa.Model):
                 if reassign and pair.victim in latched:
                     ok = self._dispatch_replace(
                         view, pair.victim, list(victims[pair.victim]["binders"]), pair.unit,
-                        "joint_replace_latched", pair.distance, phase, kind="latch_fill",
+                        "joint_replace_latched", pair.distance, phase, kind="latch_fill", stage=2,
                     )
                 else:
-                    ok = self._dispatch_fill_bind(view, pair.victim, pair.unit, pair.distance, phase, kind="fill")
+                    ok = self._dispatch_fill_bind(
+                        view, pair.victim, pair.unit, pair.distance, phase, kind="fill", stage=2
+                    )
                 if ok:
                     bound_units.add(pair.unit)
                     bound_victims.add(pair.victim)
@@ -6213,24 +6215,37 @@ class WildFireModel(mesa.Model):
             for rep in plan:
                 if self._dispatch_replace(
                     view, rep.victim, [rep.old_unit], rep.new_unit, "reassign_" + rep.cause,
-                    rep.distance, phase, kind="replace",
+                    rep.distance, phase, kind="replace", stage=3,
                 ):
                     released.append(rep.old_unit)
 
-        # 4 SECOND FILL (design 6.7 step 4): released units x victims still waiting.
+        # 4 SECOND FILL (design 6.7 step 4 as amended by A2, outputs/dispatch_part1.txt 22.1): released units x
+        # the victims not bound in step 2 - those of W, and those of W_L under the LATCH-FILL cap. A W_L bind is
+        # a LATCH-FILL exactly as in step 2. Runs only after a REPLACE, so only under Limit 3.
         if released:
             again = [u for u in released if self._firefighter_available_for_dispatch(units[u])]
-            still = [v for v in waiting if v not in bound_victims]
+            still = [v for v in list(waiting) + list(latched) if v not in bound_victims]
             if again and still:
+                still_latched = [v for v in latched if v not in bound_victims]
                 dist4 = {(u, v): d_of(u, v) for u in again for v in still}
-                for pair in _jd.solve_fill(again, still, dist4, ledger):
-                    self._dispatch_fill_bind(view, pair.victim, pair.unit, pair.distance, phase, kind="second_fill")
+                for pair in _jd.solve_fill(again, still, dist4, ledger, capped=still_latched):
+                    if pair.victim in latched:
+                        self._dispatch_replace(
+                            view, pair.victim, list(victims[pair.victim]["binders"]), pair.unit,
+                            "joint_replace_latched", pair.distance, phase, kind="latch_fill", stage=4,
+                        )
+                    else:
+                        self._dispatch_fill_bind(
+                            view, pair.victim, pair.unit, pair.distance, phase, kind="second_fill", stage=4
+                        )
 
     def _dispatch_fill_bind(
-        self, view: dict[str, Any], vid: str, uid: str, distance: int, phase: str, *, kind: str
+        self, view: dict[str, Any], vid: str, uid: str, distance: int, phase: str, *, kind: str, stage: int
     ) -> bool:
         """A FILL bind (design 7.3): through the executor's pairing apply, whose guards (needs rescue,
-        already_assigned) pass for an unserved victim and for a latched-held one under Limit 2 alone."""
+        already_assigned) pass for an unserved victim and for a latched-held one under Limit 2 alone. `stage` is
+        the step of the J call that made the bind (2 = the fill, at J-pre or J-post; 4 = the second fill; A2,
+        22.5(3)), recorded on the event."""
         marker = view["victims"][vid]["marker"]
         pending = self._dispatch_state("_dispatch_pending_cause", dict)
         reason = self._DISPATCH_FILL_REASONS.get(pending.get(vid, "initial"), "joint_initial")
@@ -6258,8 +6273,8 @@ class WildFireModel(mesa.Model):
                 int(distance), (int(pos[0]), int(pos[1]))
             )
         self._dispatch_record(
-            phase=phase, kind=kind if ok else kind + "_refused", victim_id=vid, unit=uid, old_units=[],
-            reason=reason, distance=int(distance), message=str(result.get("message", "") or ""),
+            phase=phase, kind=kind if ok else kind + "_refused", stage=int(stage), victim_id=vid, unit=uid,
+            old_units=[], reason=reason, distance=int(distance), message=str(result.get("message", "") or ""),
         )
         return ok
 
@@ -6274,11 +6289,13 @@ class WildFireModel(mesa.Model):
         phase: str,
         *,
         kind: str,
+        stage: int,
     ) -> bool:
         """An atomic replacement - a Limit 3 REPLACE or a LATCH-FILL (design 7.1): bind the new unit FIRST
         (the model-level assign accepts a second live claimant), then release each old unit through
         _release_other_claimants(only_ff_id=...), in one frame. Failure-atomic: a refused assign changes
-        nothing."""
+        nothing. `stage` is the step of the J call that made the bind (2 = a step-2 LATCH-FILL at J-pre or J-post,
+        3 = a REPLACE, 4 = a second-fill LATCH-FILL; A2, 22.5(3)), recorded on the event."""
         info = view["victims"][vid]
         marker = info["marker"]
         units = view["units"]
@@ -6315,8 +6332,8 @@ class WildFireModel(mesa.Model):
                 refused = "assign_refused"
         if refused:
             self._dispatch_record(
-                phase=phase, kind=kind + "_aborted", victim_id=vid, unit=new_uid, old_units=list(old_units),
-                reason=reason, distance=int(distance), message=refused,
+                phase=phase, kind=kind + "_aborted", stage=int(stage), victim_id=vid, unit=new_uid,
+                old_units=list(old_units), reason=reason, distance=int(distance), message=refused,
             )
             return False
         progress = self._dispatch_state("_dispatch_progress", dict)
@@ -6328,7 +6345,7 @@ class WildFireModel(mesa.Model):
         progress[(new_uid, vid)] = _jd.new_progress(int(distance), (int(pos[0]), int(pos[1])))
         self._dispatch_state("_dispatch_pending_cause", dict).pop(vid, None)
         self._dispatch_record(
-            phase=phase, kind=kind, victim_id=vid, unit=new_uid, old_units=list(old_units),
+            phase=phase, kind=kind, stage=int(stage), victim_id=vid, unit=new_uid, old_units=list(old_units),
             released=released, reason=reason, distance=int(distance), message="",
         )
         return True

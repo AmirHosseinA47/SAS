@@ -90,11 +90,11 @@ def _decide(model, monkeypatch):
     the progress code run (the scope of design 9.3)."""
     decisions = []
 
-    def record_fill(view, vid, uid, distance, phase, *, kind):
+    def record_fill(view, vid, uid, distance, phase, *, kind, stage):
         decisions.append((kind, vid, uid, int(distance)))
         return True
 
-    def record_replace(view, vid, old_units, new_uid, reason, distance, phase, *, kind):
+    def record_replace(view, vid, old_units, new_uid, reason, distance, phase, *, kind, stage):
         decisions.append((kind, vid, new_uid, int(distance)))
         return True
 
@@ -109,11 +109,11 @@ def _decide_frames(model, monkeypatch, frames, loop):
     `loop` - so the progress, clean-approach, persistence and replacement code all run."""
     decisions = []
 
-    def record_fill(view, vid, uid, distance, phase, *, kind):
+    def record_fill(view, vid, uid, distance, phase, *, kind, stage):
         decisions.append((model.evaluation_timesteps_counter, kind, vid, uid))
         return True
 
-    def record_replace(view, vid, old_units, new_uid, reason, distance, phase, *, kind):
+    def record_replace(view, vid, old_units, new_uid, reason, distance, phase, *, kind, stage):
         decisions.append((model.evaluation_timesteps_counter, kind, vid, new_uid))
         return True
 
@@ -385,9 +385,9 @@ def test_tsw_with_joint_off_j_is_never_entered_and_nothing_changes(monkeypatch):
 
 # ============================================================================ T-INV: the invariants, stepped
 
-def _check_frame(model, failures, released=()):
-    """I1, I4, I5, I7 at a frame boundary. `released`: units a REPLACE released in this J call - design 6.7 step 4's
-    SECOND FILL offers them to W only, so I4's latch-cap leg does not apply to them until the next J point."""
+def _check_frame(model, failures):
+    """I1, I4, I5, I7 at a frame boundary. I4 as amended by A2 (outputs/dispatch_part1.txt 22.1): the SECOND FILL
+    offers the units a REPLACE released to W and, under the latch cap, to W_L, so no unit is exempt from either leg."""
     view = model._dispatch_view()
     victims, units = view["victims"], view["units"]
     for vid, info in victims.items():
@@ -404,7 +404,7 @@ def _check_frame(model, failures, released=()):
     for vid in list(view["waiting"]) + list(view["latched"]):
         dmap = jd.bfs_distances(victims[vid]["cell"], model.grid.width, model.grid.height, burning)
         for uid in view["free"]:
-            if vid in view["latched"] and (int(ledger.get((uid, vid), 0) or 0) > 1 or uid in released):
+            if vid in view["latched"] and int(ledger.get((uid, vid), 0) or 0) > 1:
                 continue
             if jd.route_distance(dmap, tuple(units[uid].pos), burning) is not None:
                 failures.append(("I4", vid, uid))
@@ -481,7 +481,6 @@ def test_tinv_invariants_hold_at_every_frame_of_a_real_run(monkeypatch):
         for uid, rv in custody.items():
             if model.firefighter_marker_agents[uid].rescued_victim is not rv:
                 failures.append(("I6", uid))
-        released = set()
         for e in events(model)[n_before:]:
             vid = e.get("victim_id")
             touched = {e.get("unit")} | set(e.get("old_units") or [])
@@ -489,9 +488,7 @@ def test_tinv_invariants_hold_at_every_frame_of_a_real_run(monkeypatch):
                 failures.append(("I6", e))
             if bound_before.get(vid) and not binders(model, vid):
                 failures.append(("I3", e))
-            if e.get("kind") == "replace":
-                released |= set(e.get("old_units") or [])
-        _check_frame(model, failures, released)
+        _check_frame(model, failures)
 
     monkeypatch.setattr(model, "_joint_dispatch_point", checked)
 

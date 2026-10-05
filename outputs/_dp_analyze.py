@@ -1,6 +1,9 @@
 """Dispatch round Part 3 analyzer - PRE-REGISTERED (outputs/dispatch_part1.txt 14.5, 14.6, 14.7, 15; amendment A1
-21.2(f) G-N / G-OF reported additions, 21.2(g) the M8 bias definition, 21.2(h) M9). READ-ONLY: it reads run files
-from this worktree's outputs/ (or --smoke DIR) and writes nothing but --out.
+21.2(f) G-N / G-OF reported additions, 21.2(g) the M8 bias definition, 21.2(h) M9; amendment A2 22.2 R-B (dp0's
+ledger rebuilt from its own assigns, the latch cap in both arms, three tooling checks), 22.3 R-C (dp0 drives M8's
+trigger), 22.4 P2-7 / 22.5(3) (stage-4 binds apart)). READ-ONLY: it reads run files from this worktree's outputs/
+(or --smoke DIR) and writes nothing but --out. The R-B and R-C rules are pure functions (rb_ledgers, rb_figures,
+m8_classify, m8_trigger) checked on hand-built records by outputs/_dp_analyze_selftest.py (A2 22.5(4)).
 
 usage (dispatch worktree root):
   .venv/Scripts/python.exe outputs/_dp_analyze.py [--out REPORT] [--smoke DIR] [--suite-log PATH] [--allow-incomplete]
@@ -59,7 +62,8 @@ finally:
     sys.argv = _ARGV
 
 PART1 = "2f0509dc"
-AMENDMENTS = ("1cf70598", "9b219455")
+AMENDMENTS = ("1cf70598", "9b219455", "695fa4b1")   # A1, the A1 ruling, A2 (dispatch_part1.txt sections 21-22)
+A2 = "695fa4b1"
 H = 360
 STUCK, WIN = 20, 30                        # _sd_analyze I2 thresholds (14.6 G-OF)
 PLACES = (("r", "ring", 0, "set1"), ("r2", "ring", 0, "set2"),
@@ -421,6 +425,163 @@ def ledger_check(cmds):
     return viol, reused, b
 
 
+# ================================================================================================ R-B (pure; A2 22.2)
+RB_CUT_PHASES = ("pre", "advance", "post")
+
+
+def rb_cut_refusals(cmds):
+    """A2 22.2: successful assigns stamped init or sweep. The sample cut cannot place them, so a run with one is
+    REFUSED as a tooling defect. Rows [step, phase, victim, unit, reason]."""
+    return [[c[0], c[1], c[3], c[4], c[5]] for c in cmds or () if c[2] == "assign" and c[6]
+            and c[1] not in RB_CUT_PHASES]
+
+
+def rb_ledgers(cmds, steps):
+    """A2 22.2 (R-B): a run's ledger REBUILT from its own assign record, at the sample of each step in `steps`.
+    b(u, v) at step s = the successful assign commands of (u, v) at steps < s, plus those at step s stamped pre,
+    advance or post. The sample is taken right after _sync_firefighter_marker_status returns, and nothing after it
+    assigns. Returns {s: Counter((unit, victim) -> b)}."""
+    by_step = collections.defaultdict(list)
+    for c in cmds or ():
+        if c[2] == "assign" and c[6]:
+            by_step[int(c[0])].append((c[1], str(c[4]), str(c[3])))
+    keys = sorted(by_step)
+    out, before, j = {}, collections.Counter(), 0
+    for s in sorted({int(x) for x in steps}):
+        while j < len(keys) and keys[j] < s:
+            for _ph, u, v in by_step[keys[j]]:
+                before[(u, v)] += 1
+            j += 1
+        cur = collections.Counter(before)
+        for ph, u, v in by_step.get(s, ()):
+            if ph in RB_CUT_PHASES:
+                cur[(u, v)] += 1
+        out[s] = cur
+    return out
+
+
+def rb_figures(waiting, binders, m3a, cmds, live):
+    """A2 22.2 (R-B): G-B(f), M3(a) and M3(b), with the latch cap applied in EVERY arm.
+    live True = the arm keeps a live ledger (dp1): its recorded b is used, and check (i) compares it with the rebuild
+    from its own commands. live False (dp0, dpR): b = b0, the rebuild.
+    A LATCHED-HELD victim at a sample is a dp.waiting victim that appears in the same step's dp.binders sample (every
+    binder route_blocked, since dp.waiting excludes a victim with an active binder). A pair of a latched-held victim is
+    ledger-blocked iff b >= 2; a pair of a W victim (no living binder) is never blocked (a FILL is uncapped).
+    M3(a) is recomputed from the m3a free-unit ids (dp_probe v2) over EVERY waiting victim of the same step, those
+    with no finite route included. The waiting record holds b only for pairs with a finite route, so dp1 uses the
+    rebuild for the other pairs; check (i) compares the rebuild with every recorded b.
+    Returns (num Counter, lists dict, checks dict). Every check is a TOOLING check:
+      (i)   dp1: each recorded b at a waiting sample equals the rebuild;
+      (ii)  dp1: the recorded m3a n_ok equals its recomputation from the ids;
+      (iii) every arm: each (unit, victim) of a binders sample has b >= 1 under that step's cut;
+      refused: successful assigns stamped init or sweep."""
+    num, lists = collections.Counter(), collections.defaultdict(list)
+    checks = {"i": [], "ii": [], "iii": [], "refused": rb_cut_refusals(cmds), "m3a_noids": 0, "dup": [],
+              "n_i": 0, "n_ii": 0, "n_iii": 0}
+    bsamp = {int(step): {vid: bl for vid, bl in lst} for step, lst in binders or ()}
+    wsamp = {int(step): (n_free, rows) for step, n_free, rows in waiting or ()}
+    for name, rows_ in (("binders", binders), ("waiting", waiting), ("m3a", m3a)):
+        seen = collections.Counter(int(r[0]) for r in rows_ or ())
+        checks["dup"] += [[name, k] for k, n in sorted(seen.items()) if n > 1]
+    steps = set(bsamp) | set(wsamp) | {int(r[0]) for r in m3a or ()}
+    led = rb_ledgers(cmds, steps)
+    for s, sample in sorted(bsamp.items()):
+        for vid, bl in sample.items():
+            for uid, _st in bl:
+                checks["n_iii"] += 1
+                if led[s][(str(uid), str(vid))] < 1:
+                    checks["iii"].append([s, uid, vid])
+
+    def latched_at(s, vid):
+        bl = bsamp.get(s, {}).get(vid)
+        return bool(bl) and all(str(st).lower() == "route_blocked" for _, st in bl)
+
+    for s, (n_free, rows) in sorted(wsamp.items()):
+        recorded = {}
+        u_any, u_ok = set(), set()
+        for vid, cand in rows:
+            for uid, _dd, bb in cand:
+                recorded[(str(uid), str(vid))] = int(bb)
+                checks["n_i"] += 1 if live else 0
+                if live and int(bb) != led[s][(str(uid), str(vid))]:
+                    checks["i"].append([s, uid, vid, int(bb), led[s][(str(uid), str(vid))]])
+            if not cand:
+                continue
+            latched = latched_at(s, vid)
+            used = [[uid, dd, int(bb) if live else led[s][(str(uid), str(vid))]] for uid, dd, bb in cand]
+            ok = [c for c in used if not (latched and c[2] >= 2)]
+            if ok:
+                num["gb_f_allowed"] += 1
+                num["gb_f_allowed_WL" if latched else "gb_f_allowed_W"] += 1
+                lists["gb_f_allowed"].append([s, vid, used])
+            else:
+                num["gb_f_blocked"] += 1
+                lists["gb_f_blocked"].append([s, vid, used])
+            for c in used:
+                u_any.add(c[0])
+                if c in ok:
+                    u_ok.add(c[0])
+        num["m3b_allowed"] += len(u_ok)
+        num["m3b_blocked"] += len(u_any - u_ok)
+        wsamp[s] = (n_free, rows, recorded)
+    for row in m3a or ():
+        s, n_free = int(row[0]), int(row[1])
+        num["m3a"] += n_free
+        if len(row) < 4 or not isinstance(row[3], list):
+            checks["m3a_noids"] += 1
+            continue
+        ids = [str(u) for u in row[3]]
+        entry = wsamp.get(s)
+        if not (entry and len(entry) == 3):
+            checks["ii"].append([s, "m3a row without a waiting sample at its step"])
+            continue
+        rows, recorded = entry[1], entry[2]
+        checks["n_ii"] += 1 if live else 0
+
+        def b_of(uid, vid, s=s, recorded=recorded):
+            if live and (uid, vid) in recorded:
+                return recorded[(uid, vid)]
+            return led[s][(uid, vid)]
+        n_ok = sum(1 for uid in ids if any(not (latched_at(s, vid) and b_of(uid, str(vid)) >= 2) for vid, _ in rows))
+        num["m3a_allowed"] += n_ok
+        num["m3a_blocked"] += n_free - n_ok
+        if len(ids) != n_free:
+            checks["ii"].append([s, "n_free %d but %d ids" % (n_free, len(ids))])
+        elif live and int(row[2]) != n_ok:
+            checks["ii"].append([s, "recorded n_ok %s, recomputed %d" % (row[2], n_ok)])
+    return num, lists, checks
+
+
+def rb_checks_fail(checks):
+    """True when any R-B tooling check fails (the R-B figures are then STOPPED, A2 22.2)."""
+    return bool(checks["i"] or checks["ii"] or checks["iii"] or checks["refused"] or checks["m3a_noids"]
+                or checks["dup"])
+
+
+# ================================================================================================ M8 (pure; R-C, A2 22.3)
+def m8_classify(entries):
+    """11.6 / 14.7 M8: each detected-victim death (a dp.m8 entry with a death_step) is FEASIBLE-CRITICAL iff min_d + 1
+    <= death step - detection step, else FUTILE. Returns (feasible-critical, futile, rows)."""
+    fc = fu = 0
+    rows = []
+    for e in entries:
+        det, dth, md = e.get("detection_step"), e.get("death_step"), e.get("min_d")
+        if dth is None:
+            continue
+        feas = md is not None and det is not None and md + 1 <= dth - det
+        fc += feas
+        fu += not feas
+        rows.append((e.get("victim"), det, dth, md, "FEASIBLE-CRITICAL" if feas else "FUTILE"))
+    return fc, fu, rows
+
+
+def m8_trigger(by_set):
+    """R-C (A2 22.3): the urgency-round trigger, evaluated on dp0 only. by_set = {set: (feasible-critical, futile)}.
+    MET iff, in BOTH seed sets, there is at least one detected-victim death AND feasible-critical deaths are at least
+    25% of them (a set with no detected-victim death does not meet it)."""
+    return all(fc + fu > 0 and 4 * fc >= fc + fu for fc, fu in (by_set.get(s, (0, 0)) for s in ("set1", "set2")))
+
+
 # ================================================================================================ 0 HEADER
 def section15(text):
     """The text between the '15. DECISION RULE' header block and the '16. RE-CHECK' header block."""
@@ -449,7 +610,8 @@ def outcome_bullets(sec15):
 
 
 def sec_header(opts):
-    head("DISPATCH ROUND - PART 3 ANALYZER (outputs/dispatch_part1.txt 14.5-14.7 and 15; amendment A1 21.2(f)(g)(h))")
+    head("DISPATCH ROUND - PART 3 ANALYZER (outputs/dispatch_part1.txt 14.5-14.7 and 15; amendment A1 21.2(f)(g)(h);"
+         " amendment A2 22.2-22.5)")
     if opts.smoke:
         out("SMOKE - NOT A SCREEN  (one cell from %s; completeness / 360-step / queue-signature checks relaxed)" % (
             opts.smoke,))
@@ -460,6 +622,16 @@ def sec_header(opts):
         rc, txt = git("log", "-1", "--format=%H %ad %s", "--date=short", c)
         out("amendment commit:                 %s  %s" % (c, txt.decode("utf-8", "replace").strip() if rc == 0 else
                                                           "NOT FOUND"))
+    if opts.head_dp:
+        # A2 22.5(5): the commit that builds A2 is Part 3's --head-dp; it must descend from the A2 amendment commit
+        rc, txt = git("log", "-1", "--format=%H %ad %s", "--date=short", opts.head_dp)
+        anc, _ = git("merge-base", "--is-ancestor", A2, opts.head_dp)
+        out("A2 build commit (= --head-dp):    %s  %s | descends from A2 %s: %s" % (
+            opts.head_dp, txt.decode("utf-8", "replace").strip() if rc == 0 else "NOT FOUND", A2,
+            "yes" if anc == 0 else "NO"))
+        if anc != 0 and not opts.smoke:
+            out("REFUSED: --head-dp %s does not descend from the A2 amendment %s (22.5(5))" % (opts.head_dp, A2))
+            return None
     rc, head_b = git("rev-parse", "HEAD")
     out("analyzer worktree %s at %s" % (WT, head_b.decode().strip() if rc == 0 else "?"))
     rc, blob = git("show", "%s:outputs/dispatch_part1.txt" % PART1)
@@ -529,14 +701,14 @@ def load_seeds():
 
 
 # ================================================================================================ 1 LOAD + PROV
-def screen_cells(frozen, smoke):
+def screen_cells(frozen, smoke, smoke_cell="set2/ring/D_N"):
     cells = []
     for suffix, plc, mode, which in PLACES:
         for key, scen, wind, seed in frozen[which]:
             cells.append({"id": "%s/%s/%s" % (which, plc, key), "set": which, "plc": plc, "suffix": suffix,
                           "mode": mode, "key": key, "scen": scen, "wind": wind, "seed": int(seed)})
-    if smoke:     # the smoke cell: scenario D, wind north, seed 9633, ring = set 2 ring D_N
-        cells = [c for c in cells if c["id"] == "set2/ring/D_N"]
+    if smoke:     # the smoke cell: by default scenario D, wind north, seed 9633, ring = set 2 ring D_N (--smoke-cell)
+        cells = [c for c in cells if c["id"] == smoke_cell]
     return cells
 
 
@@ -619,8 +791,12 @@ def prov_probe(d, arm, cell, path, opts):
         if not (opts.smoke and arm == "dpR"):
             why.append("dp section missing")
     else:
-        if dp.get("probe") != "dp_probe v1":
-            why.append("dp.probe %r" % dp.get("probe"))
+        if dp.get("probe") != "dp_probe v2":
+            why.append("dp.probe %r (A2 22.2: dp_probe v2, whose m3a record carries the free-unit ids)" % dp.get("probe"))
+        refused = rb_cut_refusals(dp.get("commands"))
+        if refused and not (arm == "dp1" and crashed_run):    # a dp1 crash is a gate failure, never INVALID (14.5)
+            why.append("REFUSED (A2 22.2, tooling defect): successful assign stamped init / sweep %s - fix the "
+                       "instrument or the analyzer's cut first (under CRN a re-run reproduces it)" % refused[:3])
         sw = dp.get("switches") or {}
         want_on = arm == "dp1"
         if bool(sw.get("joint_on")) is not want_on or bool(sw.get("reassign_on")) is not want_on:
@@ -829,37 +1005,12 @@ def digest(d, arm, label, censor):
             lists["gb_c"].append([step, e.get("phase"), e.get("kind"), vid, uid, e.get("old_units")])
     num["gb_d"] = len(dp.get("invariant") or [])
     lists["gb_d"] = list(dp.get("invariant") or [])[:20]
-    # G-B(f) + M3 from dp.waiting (same instant as the binders sample)
-    cap = g["reassign_on"]
-    for step, n_free, rows in dp.get("waiting") or []:
-        sample = bsteps.get(step, {})
-        if rows:
-            num["m3a"] += int(n_free or 0)
-        u_any, u_ok = set(), set()
-        for vid, cand in rows:
-            if not cand:
-                continue
-            latched = vid in sample and bool(sample[vid]) and all(
-                str(s).lower() == "route_blocked" for _, s in sample[vid])
-
-            def allowed(bb, latched=latched):
-                return not (cap and latched and int(bb) >= 2)
-            if any(allowed(c[2]) for c in cand):
-                num["gb_f_allowed"] += 1
-                num["gb_f_allowed_WL" if latched else "gb_f_allowed_W"] += 1
-                lists["gb_f_allowed"].append([step, vid, cand])
-            else:
-                num["gb_f_blocked"] += 1
-                lists["gb_f_blocked"].append([step, vid, cand])
-            for uid, _dd, bb in cand:
-                u_any.add(uid)
-                if allowed(bb):
-                    u_ok.add(uid)
-        num["m3b_allowed"] += len(u_ok)
-        num["m3b_blocked"] += len(u_any - u_ok)
-    for step, n_free, n_ok in dp.get("m3a") or []:
-        num["m3a_allowed"] += int(n_ok)
-        num["m3a_blocked"] += int(n_free) - int(n_ok)
+    # G-B(f) + M3 from dp.waiting / dp.m3a (same instant as the binders sample), the latch cap applied in every arm
+    # and dp0's ledger rebuilt from its own assigns (R-B, A2 22.2)
+    live = bool(sw.get("joint_on"))
+    rb_num, rb_lists, g["rb_checks"] = rb_figures(dp.get("waiting"), binders, dp.get("m3a"), cmds, live)
+    num.update(rb_num)
+    lists.update(rb_lists)
     # G-T
     rets = gt_returns(cmds, binders, ff_dead, ff_rb)
     num["gt_b"] = len(rets)
@@ -876,14 +1027,24 @@ def digest(d, arm, label, censor):
         mism = sorted(k for k in set(led) | {"%s|%s" % kv for kv in bcount}
                       if int(led.get(k, 0)) != bcount.get(tuple(k.split("|", 1)), 0))
         lists["ledger_mismatch"] = mism
-    # M4
-    for e in dp.get("j_events") or []:
+    # M4 - binds made by the SECOND FILL (stage 4: second fills and, under A2, LATCH-FILLs of the units a REPLACE
+    # released) are counted apart, with the cause of the REPLACE that released the unit (22.4 P2-7, 22.5(3))
+    evs = dp.get("j_events") or []
+    for e in evs:
         k = str(e.get("kind") or "")
         if k == "replace":
             num["replace_" + ("stall" if e.get("reason") == "reassign_stall" else
                               "margin" if e.get("reason") == "reassign_margin" else "other")] += 1
         elif k in ("fill", "latch_fill", "second_fill"):
-            num[k] += 1
+            if e.get("stage") == 4:
+                num[k + "_s4"] += 1
+                cause = next((x.get("reason") for x in evs if x.get("kind") == "replace"
+                              and x.get("step") == e.get("step") and x.get("phase") == e.get("phase")
+                              and e.get("unit") in (x.get("old_units") or [])), None)
+                lists["stage4"].append([e.get("step"), e.get("phase"), k, e.get("victim_id"), e.get("unit"),
+                                        e.get("old_units"), cause])
+            else:
+                num[k] += 1
         elif k.endswith("_refused"):
             num["refused"] += 1
         elif k.endswith("_aborted"):
@@ -946,8 +1107,8 @@ def digest(d, arm, label, censor):
     g["h_ff"], g["h_vic"], g["h_uav"] = hashes(rows_ff), hashes(rows_vic), hashes(d["rows_uav"])
     g["cmd_seq"] = [(c[0], c[2], c[3], c[4], bool(c[6])) for c in cmds if c[2] in ("assign", "unassign")]
     g["cmds"] = [c[:7] + [c[8]] for c in cmds]
-    g["j_events"] = [{k: e.get(k) for k in ("step", "phase", "kind", "victim_id", "unit", "old_units", "reason",
-                                             "distance")} for e in dp.get("j_events") or []]
+    g["j_events"] = [{k: e.get(k) for k in ("step", "phase", "kind", "stage", "victim_id", "unit", "old_units",
+                                             "reason", "distance")} for e in dp.get("j_events") or []]
     g["num"], g["lists"] = num, lists
     return g
 
@@ -959,7 +1120,7 @@ def process(cells, opts):
     recs = []
     for c in cells:
         rec = {"cell": c, "prov": {}, "crash": {}, "missing": [], "ident": None, "d0": None, "d1": None,
-               "repo": {}, "head": {}, "src": {}}
+               "repo": {}, "head": {}, "src": {}, "rb_dpR": None}
         loaded = {}
         for arm in ("dpR", "dp0"):
             p = run_path(arm, c, opts)
@@ -975,6 +1136,11 @@ def process(cells, opts):
             rec["repo"][arm], rec["head"][arm] = d.get("repo"), str(d.get("head") or "")[:10]
             rec["src"][arm] = (json.dumps(d.get("src_sha"), sort_keys=True),
                                json.dumps((d.get("dp") or {}).get("src_sha"), sort_keys=True))
+            if arm == "dpR" and isinstance(d.get("dp"), dict):
+                # R-B check (iii) runs in EVERY arm (A2 22.2); dpR is not digested otherwise
+                dpr = d["dp"]
+                rec["rb_dpR"] = rb_figures(dpr.get("waiting"), dpr.get("binders"), dpr.get("m3a"),
+                                           dpr.get("commands"), False)[2]
             loaded[arm] = d
         if "dpR" in loaded and "dp0" in loaded:
             a, b = loaded["dpR"], loaded["dp0"]
@@ -1250,8 +1416,26 @@ def sec_gates(recs, opts, st):
     G["G-B(c)"] = gate_line("(c) dispatch abandonment I3", cells, "gb_c", structural=True)
     G["G-B(d)"] = gate_line("(d) captured RescueInvariant lines", cells, "gb_d")
     G["G-B(e)"] = gate_line("(e) inline_violations", cells, "gb_e")
-    G["G-B(f) allowed"] = gate_line("(f) abandoned waiting, ledger-allowed", cells, "gb_f_allowed", structural=True)
-    G["G-B(f) blocked"] = gate_line("(f) abandoned waiting, ledger-blocked", cells, "gb_f_blocked")
+    rb_fail = rb_report(recs)
+    G["_rb_fail"] = rb_fail
+    if rb_fail:
+        gate_line("(f) abandoned waiting, ledger-allowed [STOPPED]", cells, "gb_f_allowed", report_only=True)
+        gate_line("(f) abandoned waiting, ledger-blocked [STOPPED]", cells, "gb_f_blocked", report_only=True)
+        G["G-B(f) allowed"] = G["G-B(f) blocked"] = "STOPPED (R-B tooling check failed - A2 22.2)"
+        out("    G-B(f) allowed / blocked STOPPED (and every R-B figure in section 4) until the analyzer or instrument "
+            "is fixed (no run is re-run for it); the counts above are NOT gate results")
+    else:
+        G["G-B(f) allowed"] = gate_line("(f) abandoned waiting, ledger-allowed", cells, "gb_f_allowed",
+                                        structural=True)
+        G["G-B(f) blocked"] = gate_line("(f) abandoned waiting, ledger-blocked", cells, "gb_f_blocked")
+    out("    (f) is counted with the latch cap in BOTH arms; dp0's b is its ledger REBUILT from its own assigns, dp1's "
+        "its live ledger (R-B, A2 22.2); the ledger-allowed zero is I4 as amended by A2 22.1")
+    blk = [(r["cell"]["id"], arm, x) for r in cells for arm in ("d0", "d1")
+           for x in r[arm]["lists"].get("gb_f_blocked", [])]
+    out("    every ledger-blocked victim-step, by cell (dp0 and dp1; [step, victim, [[unit, d, b], ...]]): %s" % (
+        "none" if not blk else ""))
+    for cid, arm, x in blk:
+        out("      %s %s %s" % (cid, "dp0" if arm == "d0" else "dp1", x))
     gate_line("    cross-check: _sd_analyze I5 double binding", cells, "i5_double", report_only=True)
     for key in ("gb_b", "gb_c", "gb_f_allowed", "gb_f_blocked"):
         rows = [(r["cell"]["id"], x) for r in cells for x in r["d1"]["lists"].get(key, [])[:3]]
@@ -1283,6 +1467,39 @@ def sec_gates(recs, opts, st):
     out("  %-40s %d %s  %s" % ("dp1 crashes / early stops (S2)", len(st["crash_dp1"]), st["crash_dp1"][:4],
                                "PASS" if not st["crash_dp1"] else "FAIL"))
     return G
+
+
+def rb_report(recs):
+    """A2 22.2: print the three R-B tooling checks over every run of every arm; True when one fails."""
+    tot, cmp_n = collections.Counter(), collections.Counter()
+    ex = collections.defaultdict(list)
+    for r in recs:
+        for arm, chk in (("dpR", r.get("rb_dpR")), ("dp0", (r["d0"] or {}).get("rb_checks")),
+                         ("dp1", (r["d1"] or {}).get("rb_checks"))):
+            if not chk:
+                continue
+            for k in ("i", "ii", "iii", "refused", "dup"):
+                tot[(k, arm)] += len(chk[k])
+                ex[(k, arm)] += [(r["cell"]["id"], x) for x in chk[k][:2]]
+            tot[("noids", arm)] += chk["m3a_noids"]
+            for k in ("n_i", "n_ii", "n_iii"):
+                cmp_n[(k, arm)] += int(chk.get(k) or 0)
+    fail = any(tot.values())
+    out("R-B   tooling checks of the rebuilt ledger (A2 22.2; a failure STOPS the R-B figures, no run is re-run) - "
+        "failures / comparisons made: (i) dp1 recorded b != rebuild %d / %d | (ii) m3a n_ok or ids inconsistent dpR %d "
+        "dp0 %d dp1 %d (dp1 n_ok compared %d) | (iii) binder with b < 1 under the step's cut dpR %d / %d, dp0 %d / %d, "
+        "dp1 %d / %d | init / sweep assigns (refused) dpR %d dp0 %d dp1 %d | m3a rows without ids %d | duplicate "
+        "sample steps %d  => %s" % (
+            tot[("i", "dp1")], cmp_n[("n_i", "dp1")], tot[("ii", "dpR")], tot[("ii", "dp0")], tot[("ii", "dp1")],
+            cmp_n[("n_ii", "dp1")], tot[("iii", "dpR")], cmp_n[("n_iii", "dpR")], tot[("iii", "dp0")],
+            cmp_n[("n_iii", "dp0")], tot[("iii", "dp1")], cmp_n[("n_iii", "dp1")],
+            tot[("refused", "dpR")], tot[("refused", "dp0")], tot[("refused", "dp1")],
+            sum(tot[("noids", a)] for a in ("dpR", "dp0", "dp1")),
+            sum(tot[("dup", a)] for a in ("dpR", "dp0", "dp1")), "FAIL" if fail else "PASS"))
+    for key, rows in sorted(ex.items()):
+        if rows:
+            out("    %s %s examples: %s" % (key[1], key[0], rows[:4]))
+    return fail
 
 
 def sec_rbgate(opts):
@@ -1398,7 +1615,7 @@ def sec_suite(opts):
 
 
 # ================================================================================================ 4 MEASURES
-def sec_measures(recs, opts):
+def sec_measures(recs, opts, s1="?", rb_fail=False):
     cells = pairs(recs)
     M = {}
     head("4 MEASURES (14.7) - M1 PRIMARY: per victim rescued in BOTH arms, delta = (rescue - detection) dp1 minus dp0;"
@@ -1506,27 +1723,47 @@ def sec_measures(recs, opts):
         out("  none")
     # ---------------------------------------------------------------- M3 / M4
     out("M3 idle while a detected victim waits (dp.waiting, sampled as G-B(f)): (a) unit-steps free while a detected "
-        "needy victim without an active binder exists; (b) the same with a finite d, ledger-allowed / ledger-blocked")
-    for name in ("m3a", "m3a_allowed", "m3a_blocked", "m3b_allowed", "m3b_blocked"):
-        gate_line(name, cells, name, report_only=True)
+        "needy victim without an active binder exists (recomputed in both arms from the m3a free-unit ids); (b) the "
+        "same with a finite d; both ledger-allowed / ledger-blocked with the latch cap in BOTH arms and dp0's ledger "
+        "rebuilt from its own assigns (R-B, A2 22.2)")
+    if rb_fail:
+        out("  STOPPED (an R-B tooling check failed, A2 22.2): the M3 ledger-allowed / ledger-blocked split is not read")
+        gate_line("m3a", cells, "m3a", report_only=True)
+    else:
+        for name in ("m3a", "m3a_allowed", "m3a_blocked", "m3b_allowed", "m3b_blocked"):
+            gate_line(name, cells, name, report_only=True)
     out("G-B(f) ledger-allowed split (the structural count above, by victim set - W = no living binder, W_L = "
-        "latched-held; design 6.7 step 4 offers a unit released by REPLACE to W only)")
-    for name in ("gb_f_allowed_W", "gb_f_allowed_WL"):
-        gate_line(name, cells, name, report_only=True)
-    out("M4 reassignments (dp1 j_events) per scenario; latch-fills apart; counterfactual (dp.j_calls legacy vs "
-        "j_fills); "
-        "re-used-pair binds (b_before >= 1, dp.commands); ledger-blocked victim-steps; what J saw (dp.j_detail): PRE "
-        "points, progress evaluations, FROZEN evaluations, bindings left unevaluated (d or x infinite - note P2-3)")
+        "latched-held; under A2 (22.1) the second fill also serves W_L with the latch cap, so both are structural "
+        "zeros in dp1)")
+    if rb_fail:
+        out("  STOPPED (an R-B tooling check failed, A2 22.2)")
+    else:
+        for name in ("gb_f_allowed_W", "gb_f_allowed_WL"):
+            gate_line(name, cells, name, report_only=True)
+    out("M4 reassignments (dp1 j_events) per scenario; LATCH-FILLs apart from REPLACEs; the SECOND FILL's binds (stage "
+        "4: second_fill_s4, latch_fill_s4 - units a REPLACE released, A2) apart, with the cause of that REPLACE; "
+        "counterfactual (dp.j_calls legacy vs j_fills, stage-4 binds excluded - 22.4 P2-7); re-used-pair binds "
+        "(b_before >= 1, dp.commands); ledger-blocked victim-steps for BOTH arms (gb_f_blocked dp1, gb_f_blocked_dp0 "
+        "with the rebuilt ledger - R-B, A2 22.2); what J saw (dp.j_detail): PRE points, progress evaluations, FROZEN "
+        "evaluations, bindings left unevaluated (d or x infinite - note P2-3)")
     for s, sel in SCEN_GROUPS:
         sub = [r for r in cells if sel(r["cell"])]
         c = collections.Counter()
         for r in sub:
             for k in ("replace_stall", "replace_margin", "replace_other", "latch_fill", "fill", "second_fill",
-                      "refused", "aborted", "cf_points", "cf_diff", "reused_binds", "gb_f_blocked", "j_pre_points",
-                      "prog_evals", "prog_frozen", "prog_unevaluated"):
-                c[k] += r["d1"]["num"].get(k, 0)
+                      "second_fill_s4", "latch_fill_s4", "refused", "aborted", "cf_points", "cf_diff", "reused_binds",
+                      "gb_f_blocked", "j_pre_points", "prog_evals", "prog_frozen", "prog_unevaluated"):
+                if not (rb_fail and k == "gb_f_blocked"):
+                    c[k] += r["d1"]["num"].get(k, 0)
+            if not rb_fail:
+                c["gb_f_blocked_dp0"] += r["d0"]["num"].get("gb_f_blocked", 0)
             c["reused_dp0"] += r["d0"]["num"].get("reused_binds", 0)
-        out("  %s %s" % (s, dict(c)))
+        out("  %s %s%s" % (s, dict(c), " (ledger-blocked victim-steps STOPPED - R-B, A2 22.2)" if rb_fail else ""))
+    s4 = [(r["cell"]["id"], x) for r in cells for x in r["d1"]["lists"].get("stage4", [])]
+    out("  stage-4 binds (%d) [step, phase, kind, victim, unit, units released by this bind (a LATCH-FILL's latched "
+        "binders), cause of the REPLACE that released the unit]: %s" % (len(s4), "none" if not s4 else ""))
+    for cid, x in s4:
+        out("    %s %s" % (cid, x))
     cf = [(r["cell"]["id"], x) for r in cells for x in r["d1"]["lists"].get("cf_diff", [])]
     out("  counterfactual differences (first 8 of %d): %s" % (len(cf), cf[:8]))
     # ---------------------------------------------------------------- M5
@@ -1597,20 +1834,26 @@ def sec_measures(recs, opts):
     out("  S6 (median R <= 2%%, p99 J <= 50 ms) => %s" % ("PASS" if s6 else "FAIL"))
     # ---------------------------------------------------------------- M8
     out("M8 (D-11 ACTIVE) detected-victim deaths by the TRUE arrival (dp.m8): FEASIBLE-CRITICAL iff min_d + 1 <= "
-        "death - detection, else FUTILE; trigger = feasible-critical >= 25% of detected-victim deaths on BOTH sets")
+        "death - detection, else FUTILE. The urgency-round trigger is read on dp0 ONLY (R-C, A2 22.3), over EVERY "
+        "usable dp0 run of the 64 cells (not only paired cells): MET iff in BOTH seed sets there is at least one "
+        "detected-victim death and feasible-critical >= 25%% of them. Read only after S1 passes (S1 here: %s)" % s1)
     for arm in ("d0", "d1"):
-        trig = {}
+        name = "dp0" if arm == "d0" else "dp1"
+        # every VALID run that finished (14.5): INVALID runs and crashed / early-stopped runs are left out, counted
+        usable = [r for r in recs if r[arm] and r[arm].get("usable") and not r["prov"].get(name)
+                  and not r["crash"].get(name)]
+        excl = sum(1 for r in recs if r[arm] and (r["prov"].get(name) or r["crash"].get(name)))
+        out("  %s: %d valid finished runs used, %d INVALID or crashed runs left out" % (name, len(usable), excl))
+        counts = {}
         for s in ("set1", "set2"):
-            fc = fu = 0
             rows = []
             bias_burn, bias_death, cens, nofire = [], [], 0, 0
-            for r in cells:
-                if r["cell"]["set"] != s:
-                    continue
+            fc = fu = 0
+            sub = [r for r in usable if r["cell"]["set"] == s]
+            for r in sub:
                 g = r[arm]
                 for e in g["m8"]:
-                    det, dth, md = e.get("detection_step"), e.get("death_step"), e.get("min_d")
-                    tf = e.get("t_fire")
+                    det, dth, tf = e.get("detection_step"), e.get("death_step"), e.get("t_fire")
                     if tf is None:
                         nofire += 1
                     else:
@@ -1621,27 +1864,29 @@ def sec_measures(recs, opts):
                         bias_burn.append(tf - (fb - det))
                         if dth is not None:
                             bias_death.append(tf - (dth - det))
-                    if dth is None:
-                        continue
-                    feas = md is not None and md + 1 <= dth - det
-                    fc += feas
-                    fu += not feas
-                    rows.append((r["cell"]["id"], e.get("victim"), det, dth, md, "FEASIBLE-CRITICAL" if feas else
-                                 "FUTILE"))
+                a, b, rws = m8_classify(g["m8"])
+                fc += a
+                fu += b
+                rows += [(r["cell"]["id"],) + x for x in rws]
+            counts[s] = (fc, fu)
             n = fc + fu
-            trig[s] = n > 0 and fc / n >= 0.25
             q1b, mb, q3b = iqr(bias_burn)
             q1d, md_, q3d = iqr(bias_death)
-            out("  %s %s detected-victim deaths %d: feasible-critical %d futile %d (%s) | T_fire bias vs first burn "
-                "(censored at %d: %d; no estimate %d) median %s IQR [%s, %s] n %d | vs death median %s IQR [%s, %s] "
-                "n %d"
-                % ("dp0" if arm == "d0" else "dp1", s, n, fc, fu, fmt(100.0 * fc / n if n else None, "%.0f%%"),
+            out("  %s %s over %d usable runs: detected-victim deaths %d: feasible-critical %d futile %d (%s) | T_fire "
+                "bias vs first burn (censored at %d: %d; no estimate %d) median %s IQR [%s, %s] n %d | vs death median "
+                "%s IQR [%s, %s] n %d"
+                % ("dp0" if arm == "d0" else "dp1", s, len(sub), n, fc, fu, fmt(100.0 * fc / n if n else None, "%.0f%%"),
                    H, cens, nofire, fmt(mb, "%.1f"), fmt(q1b, "%.1f"), fmt(q3b, "%.1f"), len(bias_burn),
                    fmt(md_, "%.1f"), fmt(q1d, "%.1f"), fmt(q3d, "%.1f"), len(bias_death)))
             for row in rows[:12]:
                 out("      %s" % (row,))
-        out("  %s 25%% trigger on both sets: %s" % ("dp0" if arm == "d0" else "dp1",
-                                                   "MET" if all(trig.values()) else "not met"))
+        if arm == "d0":
+            M["M8"] = {"met": m8_trigger(counts), "counts": counts, "read": s1 == "PASS"}
+            out("  dp0 25%% TRIGGER (both sets, at least one death each): %s" % (
+                ("MET - propose an urgency round" if M["M8"]["met"] else "not met") if s1 == "PASS"
+                else "NOT READ (S1 not established - 22.3)"))
+        else:
+            out("  dp1: reported, not the trigger")
     # ---------------------------------------------------------------- M9
     out("M9 (K13, record only): fills binding a unit freed by an o1 raise on v to w != v while d(., v) infinite: "
         "[step, unit, v, w, frames_finite (P = 3 samples), v's end status]")
@@ -1905,14 +2150,17 @@ def sec_decision(sec15, ident, st, G, M, gs, ginv, rb, opts):
     s1_fail = ident["probe_same"] < ident["probe_compared"] or ident["shards"] is False
     out("S1 IDENTITY  %s (probe %d / %d, shards %s)" % ("PASS" if s1 else "FAIL" if s1_fail else "INCOMPLETE",
                                                         ident["probe_same"], ident["probe_compared"], ident["shards"]))
-    gates = collections.OrderedDict((k, ("PASS" if v else "FAIL")) for k, v in G.items() if not k.startswith("_"))
+    gates = collections.OrderedDict((k, ("PASS" if v is True else "FAIL" if v is False else str(v)))
+                                    for k, v in G.items() if not k.startswith("_"))
     gates["G-RB"] = rb["status"]
     gates["G-S"] = gs
     gates["G-INV"] = ginv
     fails = [k for k, v in gates.items() if v == "FAIL"]
-    pend = [k for k, v in gates.items() if v not in ("PASS", "FAIL") and not str(v).startswith("EXERCISED")]
-    s2 = "FAIL" if fails else "PENDING" if pend else "PASS"
-    out("S2 GATES     %s | failing %s | not run / missing %s" % (s2, fails or "none", pend or "none"))
+    stopped = [k for k, v in gates.items() if str(v).startswith("STOPPED")]
+    pend = [k for k, v in gates.items() if v not in ("PASS", "FAIL") and not str(v).startswith(("EXERCISED", "STOPPED"))]
+    s2 = "FAIL" if fails else "PENDING" if (pend or stopped) else "PASS"
+    out("S2 GATES     %s | failing %s | not run / missing %s | STOPPED by a failed R-B tooling check (A2 22.2) %s" % (
+        s2, fails or "none", pend or "none", stopped or "none"))
     s3, s4, s5, s6 = M["S3"], M["S4"], M["S5"], M["S6"]
     out("S3 PRIMARY   %s" % s3["verdict"])
     out("S4 HARD-VICTIM TRADE %s" % s4["verdict"])
@@ -1932,6 +2180,9 @@ def sec_decision(sec15, ident, st, G, M, gs, ginv, rb, opts):
         verdict, key = "PASS", "ALL pass"
     if not s1_fail and not s1:
         verdict = "INCOMPLETE (S1 not established: identity wave incomplete) - would be %s" % verdict
+    elif stopped and verdict != "FAIL":
+        verdict = ("INCOMPLETE (%s STOPPED: an R-B tooling check failed, A2 22.2) - the outcome is undetermined until "
+                   "the analyzer or instrument is fixed" % ", ".join(stopped))
     elif s2 == "PENDING" and verdict != "FAIL":
         verdict = "INCOMPLETE (%s not run / missing) - would be %s" % (", ".join(pend), verdict)
     if incomplete:
@@ -1960,6 +2211,7 @@ def main():
     ap = argparse.ArgumentParser(add_help=True)
     ap.add_argument("--out")
     ap.add_argument("--smoke")
+    ap.add_argument("--smoke-cell", default="set2/ring/D_N")
     ap.add_argument("--suite-log")
     ap.add_argument("--allow-incomplete", action="store_true")
     ap.add_argument("--gate-ref", default="dpGR")
@@ -1983,7 +2235,7 @@ def main():
         frozen = load_seeds()
         if frozen is None:
             return 2
-        cells = screen_cells(frozen, bool(opts.smoke))
+        cells = screen_cells(frozen, bool(opts.smoke), opts.smoke_cell)
         recs = process(cells, opts)
         st = sec_prov(recs, opts)
         if any("SEED MISMATCH" in w for _a, _c, why in st["invalid"] for w in why):
@@ -2000,7 +2252,9 @@ def main():
                                                                               "gt_c")}
         rb = sec_rbgate(opts)
         gs, ginv = sec_suite(opts)
-        M = sec_measures(recs, opts)
+        s1 = ("PASS" if ident["probe"] and (ident["shards"] is True or (opts.smoke and ident["shards"] is None))
+              else "not established")
+        M = sec_measures(recs, opts, s1, bool(G.get("_rb_fail")))
         smoke_pair = None
         if opts.smoke:
             smoke_pair = tuple(os.path.join(opts.smoke, SMOKE_FILES[a]) for a in ("dp0", "dp1", "dpR"))

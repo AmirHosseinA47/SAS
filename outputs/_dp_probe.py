@@ -1,5 +1,5 @@
 """Dispatch round Part 3 instrument: outputs/_ut_probe.py (UNCHANGED, run in-process) plus read-only dispatch
-recorders (outputs/dispatch_part1.txt 14.4, amendment A1 21.2(g)/(h)/(j)).
+recorders (outputs/dispatch_part1.txt 14.4, amendment A1 21.2(g)/(h)/(j), amendment A2 22.2 / 22.5(3)).
 
 usage: _dp_probe.py [--crn] [--hazard] [--instrument] -- <_sd_probe.py args ...>   (exactly _ut_probe.py's interface)
        --repo is REQUIRED after "--" (every layer below defaults to the main checkout otherwise).
@@ -15,9 +15,13 @@ d["dp"]:
              route_open, d_route, manhattan] - route_open / d_route = the instrument's BFS verdict at an assign
   releases   every _release_other_claimants call: [step, phase, victim, keep, reason, only_ff_id, released]
   j_calls    every J solve point while DISPATCH_JOINT is on: [step, phase, ms, new_events(, {"legacy": [[victim,
-             unit], ...], "j_fills": [[victim, unit], ...]})] - M4's counterfactual: today's rule (victim-index
-             order, nearest free unit by Manhattan, ties to the smaller id string) on the same state, before J acts
-  j_events   the model's _dispatch_events at the end (fill / latch_fill / replace / second_fill / *_refused / *_aborted)
+             unit], ...], "j_fills": [[victim, unit], ...], "stage4": [[kind, victim, unit], ...]})] - M4's
+             counterfactual: today's rule (victim-index order, nearest free unit by Manhattan, ties to the smaller
+             id string) on the same state, before J acts; j_fills = J's step-2 fills / LATCH-FILLs; binds of units
+             released inside the same J call (stage 4: second fills and step-4 LATCH-FILLs, amendment A2) are left
+             out of j_fills and listed apart in stage4 (22.4 P2-7, 22.5(3))
+  j_events   the model's _dispatch_events at the end (fill / latch_fill / replace / second_fill / *_refused /
+             *_aborted), each with its stage (2 / 3 / 4) from A2's build on
   ledger     {"unit|victim": binds} at the end
   binders    after each _sync_firefighter_marker_status (after J-post, before the escape sweep):
              [step, [[victim, [[unit, status], ...]], ...]] for victims with a living binder
@@ -26,7 +30,10 @@ d["dp"]:
              J's own W / W_L, design 5.2): every free unit with a finite route d, and the pair's ledger count b
   waiting_custody  same instant: [step, [victim, ...]] - detected needy victims with no active binder that ARE in a
              binder's custody (excluded from `waiting`; R3 finding 4)
-  m3a        same instant, when some victim is waiting: [step, n_free, n_free_ledger_allowed] (M3(a) split, 14.7)
+  m3a        same instant, when some victim is waiting: [step, n_free, n_free_ledger_allowed, [free unit ids]]
+             (M3(a), 14.7; the ids since dp_probe v2, amendment A2 22.2). n_free_ledger_allowed is this probe's own
+             count with the live ledger and the cap only while DISPATCH_REASSIGN is on, so in dp0 / dpR it equals
+             n_free by construction; the analyzer applies the latch cap in BOTH arms from the ids (R-B, 22.2)
   invariant  captured _check_rescue_assignment_invariant stderr lines: [step, text] (re-emitted to stderr)
   m8         per detected victim: {victim, detection_step, cell, t_fire, min_d, first_burn_step, death_step}
   m9         K13: [step, unit, from_victim, to_victim, frames_finite (list of P post samples: v reachable?)] - for a
@@ -394,11 +401,15 @@ def main() -> int:
             rec["j_raw_ms"] += raw
             try:
                 new = (getattr(self, "_dispatch_events", None) or [])[n0:]
+                # A2 / P2-7: binds of units released inside this J call (stage 4) are not J's answer to the
+                # snapshot the counterfactual reads - left out of j_fills, listed apart
                 fills = sorted([e.get("victim_id"), e.get("unit")] for e in new
-                               if e.get("kind") in ("fill", "latch_fill", "second_fill"))
+                               if e.get("kind") in ("fill", "latch_fill", "second_fill") and e.get("stage") != 4)
+                stage4 = sorted([e.get("kind"), e.get("victim_id"), e.get("unit")] for e in new
+                                if e.get("kind") in ("latch_fill", "second_fill") and e.get("stage") == 4)
                 entry = [step_of(self), str(phase), round(ms, 3), len(new)]
-                if fills or legacy:
-                    entry.append({"legacy": sorted(legacy or []), "j_fills": fills})
+                if fills or legacy or stage4:
+                    entry.append({"legacy": sorted(legacy or []), "j_fills": fills, "stage4": stage4})
                 rec["j_calls"].append(entry)
                 rec["j_timing"].append([step_of(self), str(phase), round(raw, 3), round(ms, 3),
                                         round(thread_ms, 3), gcn])
@@ -468,13 +479,15 @@ def main() -> int:
                 rec["waiting_custody"].append([step, custody_rows])
             if rows:
                 # M3(a) split (14.7): a free unit is ledger-allowed when it has an allowed pair with SOME waiting
-                # victim, whatever d (a fill is uncapped; a latched-held victim's LATCH-FILL needs b <= 1 under
-                # Limit 3 only)
+                # victim, whatever d (a fill is uncapped; a latched-held victim's LATCH-FILL needs b <= 1). This
+                # probe's own count uses the live ledger and caps only while DISPATCH_REASSIGN is on (dp1); the
+                # analyzer recomputes it in BOTH arms from the ids with the cap applied to both (R-B, A2 22.2) -
+                # dp0's own count is not used.
                 cap = bool(getattr(ag, "dispatch_reassign", lambda: False)())
                 held = {v for v, _ in rows if bound.get(v)}
                 n_ok = sum(1 for fid in free
                            if any(not (cap and v in held and int(ledger.get((fid, v), 0) or 0) >= 2) for v, _ in rows))
-                rec["m3a"].append([step, len(free), n_ok])
+                rec["m3a"].append([step, len(free), n_ok, sorted(free)])
             # M9: P post samples after each K13 bind; a J-post bind's own step is not sampled (v closed there)
             still = []
             for item in rec["m9_open"]:
@@ -634,7 +647,7 @@ def main() -> int:
                     shas[rel] = hashlib.sha256(fh.read()).hexdigest()
         ledger = getattr(m, "_dispatch_ledger", None) or {} if m is not None else {}
         dp = {
-            "probe": "dp_probe v1",
+            "probe": "dp_probe v2",
             "rc_chain": rc,
             "chain_exception": repr(chain_exc) if chain_exc is not None else None,
             "switches": {

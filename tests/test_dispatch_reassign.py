@@ -1,5 +1,5 @@
 """Dispatch round, LIMIT 3 - reassignment and the no-flip-flop guarantee (outputs/dispatch_part1.txt section 6,
-13.3 T-R1..T-R9, T-FLIP-a, T-FLIP-b).
+13.3 T-R1..T-R9, T-FLIP-a, T-FLIP-b; T-R10 from amendment A2, 22.5(3)).
 
 Every test is mutation-checked against the named mutant in its docstring (outputs/_dp_mutants.py records them).
 """
@@ -473,6 +473,173 @@ def test_tr9_a_stall_with_no_spare_releases_nothing(model):
     assert bound_to(model, FF_A) == V0
 
 
+# ============================================================================ T-R10: the second fill (A2)
+
+def _i4_violations(model):
+    """I4 as amended by A2 (outputs/dispatch_part1.txt 22.1): no free unit with a finite route to a waiting victim
+    (a fill is uncapped), nor to a latched-held victim on a pair bound at most once (the LATCH-FILL cap)."""
+    view = model._dispatch_view()
+    burning = model._active_burning_cells()
+    ledger = getattr(model, "_dispatch_ledger", {}) or {}
+    out = []
+    for vid in list(view["waiting"]) + list(view["latched"]):
+        dmap = jd.bfs_distances(view["victims"][vid]["cell"], model.grid.width, model.grid.height, burning)
+        for uid in view["free"]:
+            if vid in view["latched"] and int(ledger.get((uid, vid), 0) or 0) > 1:
+                continue
+            if jd.route_distance(dmap, tuple(view["units"][uid].pos), burning) is not None:
+                out.append((vid, uid))
+    return out
+
+
+def _tr10_scene(model, b_a_w):
+    """The scene the A2 proof review ran on the real model (22.5(3)): A bound to v = victim_0 (route 30); a fresh
+    spare B 2 from v; X bound to w = victim_1 and latched (route_blocked, still bound); b(B, w) = 2, so step 2 cannot
+    give w to B; d(A, w) = 25 and b(A, w) = b_a_w. Returns the ledger."""
+    place_units(model, {FF_A: (20, 5), FF_B: (20, 33), FF_C: (40, 20)})
+    place_victims(model, {V0: (20, 35), V1: (40, 10)})
+    assert assign(model, V0, FF_A) and assign(model, V1, FF_C)
+    ff(model, FF_C).status = "route_blocked"
+    ledger = model._dispatch_ledger
+    ledger[(FF_B, V1)] = 2
+    ledger[(FF_A, V1)] = b_a_w
+    view = model._dispatch_view()
+    assert view["contest"] == {V0: FF_A} and view["latched"] == [V1] and view["free"] == [FF_B]
+    return ledger
+
+
+def test_tr10_a_released_unit_latch_fills_a_latched_held_victim_in_the_same_j_post(model):
+    """T-R10 (a). With b(A, w) = 1 (the cap allows it): no decision at the first two J-posts; at the 3rd B REPLACEs A
+    on v (reassign_margin, stage 3) and A LATCH-FILLs w in the SAME J-post (joint_replace_latched, stage 4) - w ends
+    with ONE binder (A), X is an unassigned route_blocked unit, b(A, w) rises by 1, A is bound once in the frame, and
+    I4 holds at the end of the frame (no free unit is left beside a victim it may serve).
+    MUTANT tr10a: step 4 offers W only (6.7 step 4 as it stood before A2) - A is left free beside w."""
+    ledger = _tr10_scene(model, 1)
+    j_post(model, P - 1)
+    assert [e for e in events(model) if e["kind"] in ("replace", "latch_fill")] == []
+    n_before = len(events(model))
+    j_post(model)
+    frame = events(model)[n_before:]
+    assert [(e["kind"], e["stage"], e["unit"], e["victim_id"]) for e in frame] == [
+        ("replace", 3, FF_B, V0), ("latch_fill", 4, FF_A, V1)
+    ], frame
+    assert frame[0]["reason"] == "reassign_margin" and frame[0]["old_units"] == [FF_A]
+    assert frame[1]["reason"] == "joint_replace_latched" and frame[1]["old_units"] == [FF_C]
+    assert binders(model, V1) == [FF_A] and binders(model, V0) == [FF_B]
+    assert bound_to(model, FF_C) is None and str(ff(model, FF_C).status).lower() == "route_blocked"
+    assert model.managed_victims[V1].firefighter_id == FF_A
+    assert ledger[(FF_A, V1)] == 2
+    assert sum(1 for e in frame if e["unit"] == FF_A) == 1
+    assert _i4_violations(model) == []
+
+
+def test_tr10_b_the_latch_cap_holds_in_the_second_fill(model):
+    """T-R10 (b). With b(A, w) = 2 the REPLACE still happens at the 3rd J-post, but the released unit A may not bring
+    the pair (A, w) in a third time: A stays free, X keeps w, b(A, w) stays 2 - and I4 holds (its latch leg excludes
+    a capped pair).
+    MUTANT tr10b: step 4's W_L list not passed to the solver as capped."""
+    ledger = _tr10_scene(model, 2)
+    j_post(model, P)
+    assert [(e["kind"], e["unit"]) for e in events(model) if e["kind"].startswith(("replace", "latch_fill"))] == [
+        ("replace", FF_B)
+    ]
+    assert bound_to(model, FF_A) is None and str(ff(model, FF_A).status).lower() == "available"
+    assert binders(model, V1) == [FF_C]
+    assert ledger[(FF_A, V1)] == 2
+    assert _i4_violations(model) == []
+
+
+def test_tr10_c_the_w_leg_binds_a_released_unit_across_an_artificial_bridge(model):
+    """T-R10 (c). The second fill's W leg, on an artificial bridge (22.1 WHICH LEG IS LIVE: in normal play no unit
+    stands on a burning cell at J-post): a burning wall (row 20, every column) cuts w = victim_1 off from B's side;
+    A stands ON the wall - exempt as a route source - with a route to both sides. w is unbound and waiting; B has no
+    route to it, so step 2 binds nothing. At the 3rd J-post B REPLACEs A on v and A is bound to w by a second fill
+    (stage 4) in the same J-post - although b(A, w) = 2: a W victim's bind is uncapped at step 4 as at step 2.
+    MUTANT tr10c: step 4 offers W_L only. MUTANT tr10wcap: step 4 caps W too."""
+    place_units(model, {FF_A: (20, 20), FF_B: (20, 33)})
+    place_victims(model, {V0: (20, 35), V1: (40, 10)})
+    burn(model, [(x, 20) for x in range(50)])
+    assert assign(model, V0, FF_A)
+    model._dispatch_ledger[(FF_A, V1)] = 2
+    view = model._dispatch_view()
+    assert view["contest"] == {V0: FF_A} and view["waiting"] == [V1] and view["free"] == [FF_B]
+    j_post(model, P - 1)
+    assert [e for e in events(model) if e["kind"] in ("replace", "second_fill", "fill")] == []
+    n_before = len(events(model))
+    j_post(model)
+    frame = events(model)[n_before:]
+    assert [(e["kind"], e["stage"], e["unit"], e["victim_id"]) for e in frame] == [
+        ("replace", 3, FF_B, V0), ("second_fill", 4, FF_A, V1)
+    ], frame
+    assert frame[1]["distance"] == 30
+    assert bound_to(model, FF_A) == V1 and bound_to(model, FF_B) == V0
+    assert _i4_violations(model) == []
+
+
+def test_tr10_d_a_victim_bound_in_step_2_is_not_offered_again_at_step_4(model):
+    """T-R10 (d), 22.5(3)'s pool definition: step 4 offers only the victims NOT bound in step 2. In the J-post of the
+    margin REPLACE (B takes v from A), a newly detected W victim u is FILLed in step 2 by a third unit C beside it;
+    the released unit A has a finite route to u, but u is bound, so step 4 offers A nothing: no refused or aborted
+    event, u keeps its one binder C, A is free. Stages: the fill 2, the replace 3.
+    MUTANT tr10bound: step 4 offers every W and W_L victim, bound in step 2 or not."""
+    place_units(model, {FF_A: (20, 5), FF_B: (20, 33), FF_C: (45, 8)})
+    place_victims(model, {V0: (20, 35), V2: (40, 8)}, detected={V0})
+    assert assign(model, V0, FF_A)
+    j_post(model, P - 1)
+    assert events(model) == []
+    state = model.managed_victims[V2]
+    state.confirmed = True
+    state.status = "confirmed"
+    victim(model, V2).status = "confirmed"
+    n_before = len(events(model))
+    j_post(model)
+    frame = events(model)[n_before:]
+    assert [(e["kind"], e["stage"], e["unit"], e["victim_id"]) for e in frame] == [
+        ("fill", 2, FF_C, V2), ("replace", 3, FF_B, V0)
+    ], frame
+    assert binders(model, V2) == [FF_C] and bound_to(model, FF_A) is None
+    assert _i4_violations(model) == []
+
+
+def test_stage_field_on_j_pre_refused_and_latch_fill_events(model, monkeypatch):
+    """The stage field (22.5(3)) on the events the M4 split and the "which leg is live" record read: a J-pre FILL and
+    a refused one carry stage 2 (phase pre), a step-2 LATCH-FILL stage 2, an aborted REPLACE stage 3.
+    MUTANT tstage: step-2 binds tagged stage 4. MUTANT tstage_rec: the stage dropped from refused / aborted records."""
+    place_units(model, {FF_A: (10, 10)})
+    place_victims(model, {V0: (12, 10)})
+    original = model.apply_physical_rescue_command
+    monkeypatch.setattr(model, "apply_physical_rescue_command", lambda cmd: False)
+    model._joint_dispatch_point("pre")
+    monkeypatch.setattr(model, "apply_physical_rescue_command", original)
+    model._joint_dispatch_point("pre")
+    assert [(e["kind"], e["phase"], e.get("stage")) for e in events(model)] == [
+        ("fill_refused", "pre", 2), ("fill", "pre", 2)
+    ], events(model)
+    # a step-2 LATCH-FILL (T-R8's scene)
+    place_units(model, {FF_A: (10, 10), FF_B: (16, 10)})
+    place_victims(model, {V1: (12, 10)})
+    assert assign(model, V1, FF_A)
+    ff(model, FF_A).status = "route_blocked"
+    j_post(model)
+    assert [(e["kind"], e.get("stage")) for e in events(model, "latch_fill")] == [("latch_fill", 2)]
+    # an aborted REPLACE (T-R7's scene)
+    model2_events = len(events(model))
+    place_units(model, {FF_A: (20, 5)})
+    place_victims(model, {V2: (20, 35)})
+    j_post(model)
+    _revive(model, FF_B, (20, 33))
+
+    def refuse_b(cmd):
+        if str(cmd.action).lower() == "assign" and str(cmd.firefighter_id) == FF_B:
+            return False
+        return original(cmd)
+
+    monkeypatch.setattr(model, "apply_physical_rescue_command", refuse_b)
+    j_post(model, P)
+    aborted = [e for e in events(model)[model2_events:] if e["kind"] == "replace_aborted"]
+    assert aborted and all(e.get("stage") == 3 for e in aborted), events(model)[model2_events:]
+
+
 # ============================================================================ T-FLIP-a: the theorem, simulated
 
 def _simulate(seed: int, steps: int = 400, n_units: int = 3, n_victims: int = 3):
@@ -486,9 +653,11 @@ def _simulate(seed: int, steps: int = 400, n_units: int = 3, n_victims: int = 3)
       J-post  PROGRESS on the bindings contestable at its start (x = the anchor distance moved by the exogenous
               part only; FROZEN from a random clean-approach predicate over the incumbent and the free units),
               FILL / LATCH-FILL, persistence on the spares left, REPLACE, SECOND FILL (units released by REPLACE x
-              victims still waiting, uncapped).
-    Returns every bind (with b before), the per-victim histories (with how each binding ended: "outside" for o1-o3,
-    "J" for a REPLACE, "terminal") and the per-unit bind sequences."""
+              the victims still waiting - unserved ones uncapped, latched-held ones under the LATCH-FILL cap, A2,
+              outputs/dispatch_part1.txt 22.1).
+    Returns every bind (with b before and the J step that made it: 2, 3 or 4), the per-victim histories (with how
+    each binding ended: "outside" for o1-o3, "J" for a REPLACE, "terminal") and the per-unit bind sequences. Every set
+    is iterated sorted, so a seed fixes the run whatever PYTHONHASHSEED is."""
     rng = random.Random(seed)
     units = [f"ff_unit_{i}" for i in range(n_units)]
     victims = [f"victim_{i}" for i in range(n_victims)]
@@ -515,7 +684,7 @@ def _simulate(seed: int, steps: int = 400, n_units: int = 3, n_victims: int = 3)
                 entry["end"] = cause
                 return
 
-    def bind(v, u, kind, cause=None):
+    def bind(v, u, kind, cause=None, stage=2):
         before = ledger.get((u, v), 0)
         ledger[(u, v)] = before + 1
         active[v] = u
@@ -524,15 +693,15 @@ def _simulate(seed: int, steps: int = 400, n_units: int = 3, n_victims: int = 3)
         seq[0] += 1
         history[v].append({"unit": u, "kind": kind, "end": None, "seq": seq[0]})
         unit_hist[u].append((v, seq[0], kind))
-        binds.append({"victim": v, "unit": u, "kind": kind, "b_before": before, "cause": cause})
+        binds.append({"victim": v, "unit": u, "kind": kind, "b_before": before, "cause": cause, "stage": stage})
 
     def free_units():
         bound = set(active.values()) | {x for s in latched.values() for x in s}
         return [u for u in units if u not in dead and u not in blocked and u not in bound]
 
-    def fill(pool_units, kind="fill", allow_latched=True):
+    def fill(pool_units, kind="fill", stage=2):
         waiting = [v for v in victims if v not in terminal and v not in active and not latched[v]]
-        held = [v for v in victims if v not in terminal and v not in active and latched[v]] if allow_latched else []
+        held = [v for v in victims if v not in terminal and v not in active and latched[v]]
         if not pool_units or not (waiting or held):
             return []
         pairs = jd.solve_fill(pool_units, waiting + held,
@@ -543,9 +712,9 @@ def _simulate(seed: int, steps: int = 400, n_units: int = 3, n_victims: int = 3)
                 for x in sorted(latched[pair.victim]):
                     blocked.add(x)           # released: an unassigned route_blocked unit
                 latched[pair.victim].clear()
-                bind(pair.victim, pair.unit, "latch_fill")
+                bind(pair.victim, pair.unit, "latch_fill", stage=stage)
             else:
-                bind(pair.victim, pair.unit, kind)
+                bind(pair.victim, pair.unit, kind, stage=stage)
             used.append(pair.unit)
         return used
 
@@ -580,7 +749,7 @@ def _simulate(seed: int, steps: int = 400, n_units: int = 3, n_victims: int = 3)
                 dead.add(u)                                  # o3: death
                 end(v, u, "outside")
         for v in victims:                                    # post-move cycle
-            for u in list(latched[v]):
+            for u in sorted(latched[v]):                     # sorted: the draws never depend on set order
                 if rng.random() < 0.005:
                     latched[v].discard(u)
                     dead.add(u)
@@ -589,7 +758,7 @@ def _simulate(seed: int, steps: int = 400, n_units: int = 3, n_victims: int = 3)
                 if v in active:
                     end(v, active.pop(v), "terminal")
                 latched[v].clear()
-        for u in list(blocked):
+        for u in sorted(blocked):
             if rng.random() < 0.2:
                 blocked.discard(u)
         for v in victims:
@@ -632,10 +801,10 @@ def _simulate(seed: int, steps: int = 400, n_units: int = 3, n_victims: int = 3)
             for rep in plan:
                 end(rep.victim, rep.old_unit, "J")
                 progress.pop((rep.old_unit, rep.victim), None)
-                bind(rep.victim, rep.new_unit, "replace", rep.cause)
+                bind(rep.victim, rep.new_unit, "replace", rep.cause, stage=3)
                 released.append(rep.old_unit)
         if released:
-            fill([u for u in released if u in free_units()], kind="second_fill", allow_latched=False)
+            fill([u for u in released if u in free_units()], kind="second_fill", stage=4)
     return binds, history, unit_hist, units
 
 
@@ -677,19 +846,24 @@ def test_tflip_a_no_reversal_by_a_cost_decision(seed):
 
 def test_tflip_a_simulator_is_not_vacuous():
     """The simulator reaches every rule the theorem speaks about: REPLACEs (stall and margin), LATCH-FILLs, second
-    fills, returns on victims and on units. A guard on T-FLIP-a itself, not a separate property."""
+    fills, LATCH-FILLs made by the second fill (A2, 22.5(3)), returns on victims and on units. A guard on T-FLIP-a
+    itself, not a separate property.
+    MUTANT tflip_vac: plan_replacements returns nothing."""
     kinds: dict[str, int] = {}
     returns = 0
     for seed in range(100):
         binds, history, unit_hist, _ = _simulate(seed)
         for b in binds:
             kinds[b["kind"]] = kinds.get(b["kind"], 0) + 1
+            if b["kind"] == "latch_fill" and b["stage"] == 4:
+                kinds["latch_fill_stage4"] = kinds.get("latch_fill_stage4", 0) + 1
             if b["kind"] == "replace":
                 kinds["replace_" + str(b["cause"])] = kinds.get("replace_" + str(b["cause"]), 0) + 1
         for seqs in unit_hist.values():
             real = [v for v, _, k in seqs if k != "recover"]
             returns += sum(1 for i in range(2, len(real)) if real[i] in real[: i - 1] and real[i - 1] != real[i])
     assert kinds.get("replace", 0) > 20 and kinds.get("latch_fill", 0) > 20 and kinds.get("second_fill", 0) > 0
+    assert kinds.get("latch_fill_stage4", 0) >= 1, kinds
     assert kinds.get("replace_stall", 0) > 5 and kinds.get("replace_margin", 0) > 5, kinds
     assert returns > 20
 

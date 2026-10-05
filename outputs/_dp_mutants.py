@@ -1,4 +1,5 @@
-"""Dispatch round Part 2 - the mutation check of section 13.3 (outputs/dispatch_part1.txt).
+"""Dispatch round Part 2 - the mutation check of section 13.3 (outputs/dispatch_part1.txt), with amendment A2's
+mutants tr10a-tr10c (22.5(3)).
 
 Every new test names a MUTANT: the smallest source change that removes what the test guards. For each mutant this
 script copies the source (root *.py, src_extension/, tests/) of the given checkout into a scratch directory,
@@ -261,9 +262,12 @@ MUTANTS: dict[str, tuple[str, list[tuple[str, str, str]], list[str]]] = {
         [f"{TR}::test_tr7_a_refused_assign_changes_nothing"],
     ),
     "tr8": (
-        "the latched binder is not released by the latch-fill (second claim kept under Limit 3)",
-        [(WM, "view, pair.victim, list(victims[pair.victim][\"binders\"]), pair.unit,",
-              "view, pair.victim, [], pair.unit,")],
+        "the latched binder is not released by the latch-fill (second claim kept under Limit 3) - step 2's call "
+        "(re-anchored on its stage=2 line at A2's build so it matches once; step 4's own call is tr10rel)",
+        [(WM, "view, pair.victim, list(victims[pair.victim][\"binders\"]), pair.unit,\n"
+              "                        \"joint_replace_latched\", pair.distance, phase, kind=\"latch_fill\", stage=2,",
+              "view, pair.victim, [], pair.unit,\n"
+              "                        \"joint_replace_latched\", pair.distance, phase, kind=\"latch_fill\", stage=2,")],
         [f"{TR}::test_tr8_latched_incumbent_is_replaced_by_a_latch_fill", TINV],
     ),
     "tr8capm": (
@@ -293,6 +297,60 @@ MUTANTS: dict[str, tuple[str, list[tuple[str, str, str]], list[str]]] = {
               "                                              \"reassign_stall\", only_ff_id=c.incumbent)\n"
               "        if spares and contests:\n")],
         [f"{TR}::test_tr9_a_stall_with_no_spare_releases_nothing"],
+    ),
+    # ------------------------------------------------------------------ A2 (dispatch_part1.txt 22.1, 22.5(3))
+    "tr10a": (
+        "step 4 offers W only (6.7 step 4 as it stood before A2)",
+        [(WM, "            still = [v for v in list(waiting) + list(latched) if v not in bound_victims]",
+              "            still = [v for v in waiting if v not in bound_victims]")],
+        [f"{TR}::test_tr10_a_released_unit_latch_fills_a_latched_held_victim_in_the_same_j_post"],
+    ),
+    "tr10b": (
+        "step 4's W_L list not passed to the solver as capped",
+        [(WM, "                for pair in _jd.solve_fill(again, still, dist4, ledger, capped=still_latched):",
+              "                for pair in _jd.solve_fill(again, still, dist4, ledger, capped=[]):")],
+        [f"{TR}::test_tr10_b_the_latch_cap_holds_in_the_second_fill"],
+    ),
+    "tr10rel": (
+        "the latched binder is not released by a step-4 LATCH-FILL (step 4's call; tr8 is step 2's)",
+        [(WM, "view, pair.victim, list(victims[pair.victim][\"binders\"]), pair.unit,\n"
+              "                            \"joint_replace_latched\", pair.distance, phase, kind=\"latch_fill\", stage=4,",
+              "view, pair.victim, [], pair.unit,\n"
+              "                            \"joint_replace_latched\", pair.distance, phase, kind=\"latch_fill\", stage=4,")],
+        [f"{TR}::test_tr10_a_released_unit_latch_fills_a_latched_held_victim_in_the_same_j_post"],
+    ),
+    "tr10wcap": (
+        "step 4 caps W victims too (capped = every victim offered)",
+        [(WM, "                for pair in _jd.solve_fill(again, still, dist4, ledger, capped=still_latched):",
+              "                for pair in _jd.solve_fill(again, still, dist4, ledger, capped=still):")],
+        [f"{TR}::test_tr10_c_the_w_leg_binds_a_released_unit_across_an_artificial_bridge"],
+    ),
+    "tr10bound": (
+        "step 4 offers every W and W_L victim, bound in step 2 or not",
+        [(WM, "            still = [v for v in list(waiting) + list(latched) if v not in bound_victims]",
+              "            still = [v for v in list(waiting) + list(latched)]")],
+        [f"{TR}::test_tr10_d_a_victim_bound_in_step_2_is_not_offered_again_at_step_4"],
+    ),
+    "tstage": (
+        "step-2 FILL binds tagged stage 4",
+        [(WM, "view, pair.victim, pair.unit, pair.distance, phase, kind=\"fill\", stage=2",
+              "view, pair.victim, pair.unit, pair.distance, phase, kind=\"fill\", stage=4")],
+        [f"{TR}::test_stage_field_on_j_pre_refused_and_latch_fill_events"],
+    ),
+    "tstage_rec": (
+        "the stage dropped from refused and aborted records",
+        [(WM, "phase=phase, kind=kind if ok else kind + \"_refused\", stage=int(stage),",
+              "phase=phase, kind=kind if ok else kind + \"_refused\", stage=int(stage) if ok else None,"),
+         (WM, "phase=phase, kind=kind + \"_aborted\", stage=int(stage),",
+              "phase=phase, kind=kind + \"_aborted\","),
+         ],
+        [f"{TR}::test_stage_field_on_j_pre_refused_and_latch_fill_events"],
+    ),
+    "tr10c": (
+        "step 4 offers W_L only",
+        [(WM, "            still = [v for v in list(waiting) + list(latched) if v not in bound_victims]",
+              "            still = [v for v in latched if v not in bound_victims]")],
+        [f"{TR}::test_tr10_c_the_w_leg_binds_a_released_unit_across_an_artificial_bridge"],
     ),
     "tflip": (
         "the b = 0 rule for REPLACE removed (persistence and plan)",
