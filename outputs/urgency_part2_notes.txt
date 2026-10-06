@@ -1,0 +1,341 @@
+URGENCY ROUND - PART 2 NOTES
+Build, tests, mutation check, Part 3 tooling, reviews, full suite and smoke.
+Branch urgency, worktree E:/Projects/SAS_wt/urgency.
+Design: outputs/urgency_part1.txt
+  - Part 1: c59b5058
+  - Part 1b: 4a44d2a3
+  - amendment B2 (section 23): 7ecb6c77
+  - amendment B3 (section 24) and B4 (section 25, the Z7 ruling): committed with these notes
+Rulings applied: 21 (U-0..U-14), 23.1 (V-1(b), V-2..V-12 (a)).
+Each finding and decision carries a "PAPER:" line saying what it means for the paper.
+
+================================================================================
+1. COMMITS
+================================================================================
+  - 088b21f9  merge of main a20a2ef5 into urgency (U-12).
+  - c52486dd  Part 2 BUILD. Contents:
+                - source and tests;
+                - the Part 3 tooling;
+                - the frozen queues W1-W4 and the smoke queue;
+                - the dpR / dpE reference copies;
+                - the mutation record.
+              The smoke ran on this commit; the first full suite too (section 7).
+  - 13892c02  round tests start from the import-time configuration (section 7: the first suite's order dependence).
+              Model source unchanged; mutation check re-run. The second full suite ran on this commit.
+  - (this)    these notes, sections 24-25, the Z7 ruling in _ud_analyze.py (Z7_READING = "acc"), the smoke records
+              and the suite logs. Its model source is byte-identical to c52486dd, its tests to 13892c02.
+              THIS COMMIT IS PART 3'S HEAD (15.1 (8)): the analyzer's --head, and the head every screen run must
+              record.
+  C1-C3 (15.1 (1)):
+  - 27744a28..a20a2ef5 changes only outputs/fix3b_part1.txt and outputs/isTrue_report.txt, so the merge is text
+    only.
+  - main has not moved since (a20a2ef5).
+  - C1: the line map in section 2 was re-derived on the merged tree.
+  - C2: no touched function changed in the merge.
+  - C3: test_shipped_defaults is still in tests/test_base_station.py.
+  PAPER: the code is base 27744a28 plus this diff.
+
+================================================================================
+2. LINE MAP (at c52486dd; base lines in brackets)
+================================================================================
+  agents.py (+343 lines):
+    15          import of movement_paths
+    1685-1731   the accessors:
+                  - dispatch_urgency, ff_approach_path and ff_retreat_keep_approach (exact 1);
+                  - ff_carry_replan (exact 1, and effective MODE 2 and SERVED 1);
+                  - fire_board_sets
+    2485-2488   tier labels 7, 8, 9 and 10 (section 24.1 (b))
+    3024-3046   fix (b) in advance's survival branch [AG:2960-2999]
+    3109-3115   fix (a) in the approach branch [AG:3029]
+    3160-3164   fix (c) in the exiting branch under MODE 2 [AG:3074]
+    3777-4025   the pure choices and the writers:
+                  - pure: _board_sets, _clean_predicate, _greedy_choice, _survival_choice, _approach_path_choice,
+                    _retreat_on_route_choice, _carry_replan_choice;
+                  - writers: _relabel_if_route_blocked, _fix_move, _carry_replan_step
+  wildfire_model.py (+93 -4):
+    86          import of urgency_dispatch
+    3052-3054   the switch branch of _try_dispatch_unresolved_confirmed_victims [WM:3050]
+    3076-3149   _urgency_waiting, _urgency_dispatch_view and _urgency_dispatch_pass
+    4126-4135   C-4 in _find_active_firefighter_for_victim [WM:4046]
+    5862        the C-5 guard condition [WM:5773]
+  common_fixed_variables.py (+28): the four switches, each = 0, with documentation.
+  docs/04_clean_separation_table.md (+2): the A3 line.
+  tests/test_base_station.py (+6): the four pins.
+  NEW:
+    - src_extension/planning/urgency_dispatch.py (140 lines)
+    - src_extension/planning/movement_paths.py (188 lines)
+    - tests/test_urgency_dispatch.py (66 nodes)
+    - tests/test_movement_fixes.py (88 nodes)
+    - tests/urgency_test_support.py
+
+================================================================================
+3. READINGS AND DEVIATIONS
+================================================================================
+  Readings of open details, and corrections of Part 1 statements: urgency_part1.txt 24.1 and 24.2.
+  Further build facts:
+  - _last_move_tier persists through _survival_move, so ACTED(b) is read from the movement record (24.1 (b)).
+  - The qualifying gate is checked twice: in the pass's pre-check and in urgency_dispatch.qualifies.
+    Value-equivalent.
+  - Two lines in movement_paths cannot be killed by any mutant:
+      - retreat_choice's clean filter (the field holds clean cells only);
+      - shelter_step's burning-start exclusion (a burning start has fire distance 0 and never wins).
+    T-Mc2's burning-start test uses mutant mc2_burning_hold instead.
+  - Inside U1's route search, fire adjacency is redundant with T*: T* = 0 next to a burning cell.
+    The in-time cut c + 1 <= T bites only for fractional T (R3 D-21).
+  - Test practice:
+      - the real-model tests stub the searcher's _never_seen_proximity_bonus to 0.0 in every arm. A real step
+        costs about 10 s otherwise. Dispatch never reads it.
+      - T-ID-M's digest and the T-NT pins are tied to 27744a28. Regenerate them with
+        `outputs/_ud_mutants_mv.py --golden` and `--pins`.
+  - Pre-registration items that differ from the text (R3), each disclosed:
+      - D-8: t_star is per cell; urgency_order's records carry no d (the probe records d); urgency_order takes an
+        unused params= argument; no credit is given to the dispatch branch's BFS.
+      - D-9: the board digest lives in the probe, not in movement_paths.
+      - D-17: U1's tests are in one file.
+      - D-19: the spies sit on the command sink.
+  PAPER: the rules run as written; every reading is recorded before the screen.
+
+================================================================================
+4. TESTS AND THE MUTATION CHECK (15.3, 15.4, 22.6.2)
+================================================================================
+  - Every pre-registered test id exists (R3 table B).
+  - U1: T-U1..T-U11, T-CAS, T-DRN, T-FLIP-U (500 sequences), T-SRC, T-INFO-a/b/c, T-SW, T-ID, plus the 13.3 test.
+  - Movement:
+      - (a): T-Ma1..8
+      - (b): T-Mb1..6
+      - (c): T-Mc1..9, plus the two C-2 walk tests (24.1 (a))
+      - all three: T-SAFE-M, T-SW-M, T-ID-M, T-NT
+  - The three round files pass 213 / 213 (PYTHONHASHSEED 0, 263 s): test_urgency_dispatch.py,
+    test_movement_fixes.py and test_base_station.py.
+  - The mutation check, recorded per test in outputs/_ud_mutants_result.txt / .json:
+      - 93 mutants and 163 (mutant, test) records;
+      - every listed test fails on its mutant, with 0 setup / teardown errors;
+      - the CONTROL passes all 114 listed nodes;
+      - the docstring cross-check is clean;
+      - the result is bound to its tree: sha256 3c4618c0... over 210 files (13892c02), plus each module, test file,
+        spec file and the engine.
+  - Kills not by AssertionError, all intended:
+      - T-INFO-a fails by the read trap's _TrapError (3 mutants);
+      - T-U8's non-square test fails by IndexError under the x / y swap.
+  - Property-test margins (actual / threshold):
+      - T-Ma6 (a) acted on 285 / 100 boards;
+      - T-Ma8 1044 raises / 300, 193 (a) steps / 100;
+      - T-Mb6 277 moved / 150;
+      - T-Mc9 2946 re-plans / 300, 413 shelters / 30;
+      - T-SAFE-M (a) 159 / 80, (b) 58 / 40, (c) 300 / 250;
+      - C-2 walk property: 384 walks / 300, 51 discriminating / 30, 16 stays / 5;
+      - T-FLIP-U: at least 800 qualifying kicks (the assertion), 0 when off.
+  PAPER: "every behavioural claim of the rule has a test that fails without it" holds for all 93 mutants,
+  including every named form in 15.3.
+
+================================================================================
+5. TOOLING VERIFICATION (15.5, 22.6.3)
+================================================================================
+  _ud_probe.py ("ud_probe v2"):
+    - d["dp"] equals _dp_probe v2 line for line.
+    - Identity, with ud0 compared to _dp_probe on the same line (ident_diff):
+        - IDENTICAL on A_N 9601 / 40 steps and on s1 ring D_W 9616 / 70 steps;
+        - current dp equals dp on the main checkout (a20a2ef5) on D_W / 70.
+    - Purity, by deep snapshot on D_W / 70 with all switches 0 and with all 1: 0 failures. The two positive
+      controls are detected.
+    - Synthetic: 156 checks, 0 failed. These cover the planner refusals of index and U1 heads, all-refused kicks
+      and genuine divergence.
+    - CRN check on s1 ring D_W / 70, four arms (scratch; structure only):
+        - 2 qualifying kicks, 1 divergent;
+        - acc, attempts and flags consistent;
+        - 0 errors and 0 mismatches.
+      The analyzer's smoke mode on these records shows every zero 0, with Z1's first difference at the
+      divergent kick.
+    - A claim from the fix agent, refuted: it read "an older source deviated on D_W from step 18" from a
+      configuration difference. The old records ran with CRN on, the new ones with CRN off. The source never
+      deviated.
+  _ud_analyze.py:
+    - The self-test passes 108 / 108. It includes 23.3's four required cases and known-answer cases for every
+      count (R3 D-2).
+    - Hash checks pass:
+        - 16.5-16.11 and 17 match c59b5058;
+        - 21, 22.5-22.9 and 23 match 7ecb6c77;
+        - this commit's section 24 does not disturb section 23's extent.
+    - 26 _dp_analyze functions are verbatim, and 9 reused modules are byte-identical to cc8d653c.
+  Queues and references:
+    - The queues rebuild byte-identically (R3). Counts are 75 / 256 / 64 / 11 and the smoke has 8.
+    - All 300 dpR / dpE copies equal the cc8d653c blobs and _ud_dpR_sha256.txt.
+    - No ud tag exists elsewhere (R2).
+  PAPER: the instrument is record-only (identity, purity) and costs under 1 % of a run.
+
+================================================================================
+6. REVIEWS (3 of the allowed 3; reports in the session record)
+================================================================================
+  R1, source: rule, proof and information. 0 BLOCKER, 0 MAJOR, 2 MINOR, 4 NOTE.
+    - R1-1 (13.3): the triage line was printed before the binds, naming the order's head.
+      FIXED (24.1 (c)).
+      PAPER: the log names the victim actually sent.
+    - R1-2 (C-2 exposure): FIXED as a reading (24.1 (a)).
+      PAPER: the shelter walk avoids hazard cells when an equally short walk does.
+    - R1-3: 22.4.5's claim corrected (24.2 (b)).
+      PAPER: the U1-only arm inherits today's custody gap.
+    - R1-4: a C-4 consumer was missing from the table (24.2 (c)).
+      PAPER: none.
+    - R1-5: the C-4 site's reads; the effective MODE (24.2 (d)).
+      PAPER: none.
+    - R1-6: inventory details (section 3).
+      PAPER: none.
+    - Checked as written:
+        - every rule;
+        - the proof's theorem;
+        - the information reads;
+        - the safety guard (no new path enters a burning cell);
+        - determinism;
+        - OFF identity;
+        - the exact-1 tables of all four accessors.
+  R2, tooling and identity. 2 BLOCKER, 3 MAJOR, 6 MINOR, 4 NOTE, all dispositioned.
+    - B-1 and B-2: the head-based divergence and the hard-coded Z8 count. FIXED through the planner reading
+      (24.1 (e)).
+      PAPER: without this fix a refused victim would have failed U1 on a technicality.
+    - M-1 (the harness evidence reading): FIXED.
+    - M-2 (provenance): FIXED (24.1 (h)).
+    - M-3 (outcomes printed in incomplete or wave-check analyses): FIXED (24.1 (i)).
+    - m-1 (early crash goes to Z6): FIXED.
+    - m-2 (smoke masks values): FIXED.
+    - m-3 (the mutation result bound to its tree; errors are not kills): FIXED.
+    - m-4 (NOTES_REQUIRED): FIXED, 23 files.
+    - m-5 (section 24 must be a new top-level section): DONE.
+    - m-6 (Z3 on attempts): FIXED.
+    - NOTEs: no change needed.
+  R3, pre-registration compliance. 0 BLOCKER; 3 MAJOR, 1 MAJOR procedural, 10 MINOR, 12 NOTE.
+    - P-1: the mutation check re-run on the final tree. DONE (section 4).
+    - D-1: T-FLIP-U restored to 500 sequences. DONE.
+    - D-2: self-tests for every count. DONE.
+    - D-24: Z7's premise (Lemma 2) is false for a refused head. RULING REQUESTED (24.3); recommendation (ii).
+      PAPER: see 24.3.
+    - D-4: the smoke re-run on the final tree. DONE (24.4).
+    - D-5 and D-6: registered in 24.1.
+    - D-7: the named mutant forms added. DONE (24.1 (k)).
+    - D-10: registered (24.1 (d)).
+    - D-12: REPORTED (24.1 (f)).
+    - D-13: registered (24.1 (j)).
+    - D-15: notes list. DONE.
+    - D-16: dcb added. DONE.
+    - D-8 and D-9: section 3.
+    - The other NOTEs are recorded in the R3 report; none needs a change.
+    - R3's ruling on the C-2 change: a permissible reading of underspecified text, not a change of a
+      pre-registered item, if recorded in section 24. Done.
+  Analyzer question, ruled by the coordinator under 16.6: a shadow_mismatch is behaviour, not an instrument
+  error (24.1 (g)).
+  Probe question, kept: the probe also checks every OFF-arm kick bind against index_wb. In arm 0 a failure is
+  a STOP, since it would be a base or instrument defect.
+
+================================================================================
+7. FULL SUITE (15.1 (6)): outputs/_ud_fullsuite.log
+================================================================================
+  - Run in the detached worktree E:/Projects/SAS_wt/urgency_suite: `pytest tests -q -p no:cacheprovider`.
+  - RUN 1 at c52486dd (outputs/_ud_fullsuite_run1.log), 14:34-16:01: 4 failed, 1 853 passed (5 229 s).
+      - Failed: T5, and three round tests: T-ID-M (test_tidm_...), T-ID (test_tid_...) and T-INFO-b's real run.
+      - All three pass in isolation (213 / 213). Cause: other test files leave scenario settings on cfv / wf
+        (apply_scenario_config and plain assignment, never restored: e.g. FF_EXIT_LEG_MODE, BASE_STATION_MODE,
+        WIND_DIRECTION), and the round's real-model runs pinned only the team and the RNGs.
+      - In each failure the switch-off identity itself held (T-ID-M: absent == zero); only the trajectory, and
+        with it the golden digest or the expected kicks, came from a different scenario.
+      - Fix (13892c02, tests only): urgency_test_support.restore_config restores every UPPERCASE config name to a
+        fresh copy of common_fixed_variables.py, on cfv, wildfire_model and agents, and removes names other tests
+        added. An autouse fixture in both round files calls it; T-ID-M's _identity_run calls it again after its
+        monkeypatch.undo().
+      - Reproduced: a prefix test that leaves FF_EXIT_LEG_MODE=1, BASE_STATION_MODE=0, WIND_DIRECTION=north and a
+        2/2/2 team makes the old tests fail (T-ID-M, T-INFO-b) and the fixed ones pass (4 / 4).
+      - The mutation check was re-run on the fixed tests: 93 mutants, 163 records, all killed, control passes.
+  - RUN 2 at 13892c02 (outputs/_ud_fullsuite.log), 16:12-17:37: 1 failed, 1 856 passed, 5 warnings (5 081 s).
+      - The one failure is T5. The result is EXACTLY {T5}, as expected.
+      - 1 857 = isTrue's 1 697 + the 6 tests of 27744a28 + this round's 154 (66 + 88).
+  - Expected failing set: exactly {T5} = tests/test_uav_sector_assignment.py::
+    test_fire_tracker_uavs_receive_different_target_sets.
+  PAPER: the round adds 154 tests and changes no existing test's outcome. The first run showed that a real-model
+  test must restore the whole scenario configuration, not only the team.
+
+================================================================================
+8. SMOKE, OVERHEAD, HOURS (15.1 (7)): urgency_part1.txt 24.4-24.5
+================================================================================
+  - Records: outputs/_sd_uds{0,1,2,3}{r1,u1}_A_N.json (+ .argv, .stdout.txt, .poollog) and
+    outputs/_ud_smoke_pool.log. All are at c52486dd (the model source of every later commit is identical).
+  - Results:
+      - 8 / 8 valid;
+      - Z0 PASS on both cells;
+      - every zero 0;
+      - probe 0.354-0.643 % of wall;
+      - movement code R 0.111-0.148 %, p99 9.6-9.7 ms;
+      - restated hours 12.8-16.0 h.
+  - Read: in outcome-suppressed smoke mode only. No outcome was read.
+
+================================================================================
+9. PROCESS RECORD
+================================================================================
+  - Set-1 outcome reading (24.6): I read part of the first smoke's section 4 (set 1 ring A_N). The analyzer agent
+    saw section 6 values on the check records (set 1 ring D_W, 70 steps). The probe-fix agent saw SD_DONE tallies
+    and row counts in earlier logs. I saw one 70-step OFF-run SD_DONE tally (D_W) while diagnosing the CRN
+    difference.
+    None of these informed a setting, a rule or a reading.
+  - Recursive operations outside the permitted scope, all inside the worktree, none touching the quarantine
+    (which is not in this worktree):
+      - the Part 2 movement-test builder ran `git ls-files --others ... '*.py'` from the worktree root;
+      - the probe builder ran `git status --short` without -uno once;
+      - R3 ran `git status --untracked-files=all` on src_extension/planning and tests.
+    The Part 1b agents' two root-rooted Greps were recorded in Part 1b.
+  - Concurrency: the probe-fix agent briefly had 4 python processes (a file-edit helper).
+  - Extra base run: the probe-fix agent made one read-only base run with --repo on the main checkout (cwd
+    E:/Projects/SAS, -B), writing to scratch only.
+  - Housekeeping:
+      - E:/Projects/SAS_wt/_udmut, the mutation engine's empty scratch root, was removed with rmdir.
+      - E:/Projects/SAS_wt/urgency_suite (detached, with a .venv junction) holds the suite run. It is removed
+        at the round's end: `cmd /c rmdir .venv` first, then the worktree is removed.
+  - Superseded records: the first smoke (12:50, pre-review source, ud_probe v1) is moved out of outputs/ into the
+    session scratch record.
+  PAPER: no outcome on sets 1-2 informed the design; the only outcome-gated sets are 3-4.
+
+================================================================================
+10. RULING (maintainer, 2026-10-06): Z7 READING (ii)
+================================================================================
+  urgency_part1.txt 25 (amendment B4): Z7 is read as "the first victim of its order the planner accepts, or none".
+  - _ud_analyze.py: Z7_READING = "acc" (Z7-ACC gates; the literal 16.7 reading is reported).
+  - The self-test's Z7-2 case pins it: 108 / 108 pass after the change.
+  - Committed here, before any run that includes U1.
+  - The smoke records above were read before the ruling; their Z7 count is 0 under both readings.
+  PAPER: each qualifying decision binds the first victim of the urgency order that the planner accepts.
+
+================================================================================
+11. SHA256 OF EVERY TOOLING FILE AND FROZEN QUEUE (15.1 (8), 15.5; verified by _ud_analyze.py --part2-notes)
+================================================================================
+  Format: sha256, size in bytes, path (the LF bytes on disk; the analyzer also accepts the CRLF form).
+    cfc0c3a09b65456dc896f605f0fd75563100cde7c9b7e4d8a08b5da3f68bbe10     78504 outputs/_ud_probe.py
+    2eac0c2ccab54f11d20fa8c3145b4ef6eea1ebf7ae3bbec0f5d953c75567546f     45031 outputs/_ud_probe_check.py
+    54cf40294c95ccaf38a9ad0a2af57f0d5d979e2c5b603843052e0bcc24d5e51a    216710 outputs/_ud_analyze.py
+    45f82875de4430bee6697c15821baa24780db84c0c9211b5448375496826363a     77817 outputs/_ud_analyze_selftest.py
+    045c0ce127115c6f6b25f3d7e27b088893f1aa99dafb641566deb77136ec1c32     32846 outputs/_ud_queue.py
+    60d9a995891ba9ca009ba328079800bb18736b8d6191f5f20b747e7a27e190fd     40683 outputs/_ud_mutants.py
+    b88a9aa787290ab3e0b2be50fd2bced34a165e870aa228e8e0781f87f8804664     23087 outputs/_ud_mutants_u1.py
+    1bc5598257268836975397fba4f26c9c624e9f064170e06a06da06a4fe3ea43c     35044 outputs/_ud_mutants_mv.py
+    20fd8562ac4c94aa76d6061289b2630f21535b3c4ff8812c26d0e4c9d9d8017b     35518 outputs/_ud_mutants_result.txt
+    be8080802af0940b412e6d0923feed268837c92dbaa7655c3a5c6c71e7d153c0    100751 outputs/_ud_mutants_result.json
+    d71ee270cb99b99a0fe821498eaf76069117c171971399fb05006f73e06e4b50     40419 outputs/_ud_q_w1.jsonl
+    b5e2002d5c4e299eda5e03d3dd3407108483e40ec0563f6535a5884312dbe834    152064 outputs/_ud_q_w2.jsonl
+    9ae1a1105f19102c3b6e54f8b119a87290985b8d2bb3c99395db33f9c7b72323     35680 outputs/_ud_q_w3.jsonl
+    2e861473c5d179d35c5c27da01fe961897a89da6a5ddeaf9ba8037d7ed42dd5d      7064 outputs/_ud_q_w4.jsonl
+    394fada351d9b7e6bda3cfd42bff999d610d4dae02dd645d2448b57afed61fd8      4772 outputs/_ud_q_smoke.jsonl
+    c72af13700d83a8bac447b023cde9b57cc61085b69664df5b7f812cf03b00fd5      3673 outputs/_ud_seeds.txt
+    9909ccf00bc18e15e68d21a70b592961ce9c2be0c3911dbf86955c60aeb83364     10514 outputs/_ud_seedscan.py
+    9d4a423f43346b578e102bba66adbb76827bae31e3d8faf5a5d13d3847edbd00     33646 outputs/_ud_dpR_sha256.txt
+    9175c21bd55f5a485938e804b25ddf5f43bda41c88ad41736a6e815d07c0bb6b     10001 outputs/_ut_probe.py
+    67d322ddf7a04cff399a7692129154bf294cf87ab29378478e56a3750e2a3519     41302 outputs/_fb3_probe.py
+    4a57f42af2e591d7be1261e1e34afcf9155197e7393d866b78239c829c92fc4e     13961 outputs/_fx3_probe.py
+    09d27b9e316f92e48c44c45302b1ad7e4b3a945d0d81cbeecf7276a24b3c82dc     14141 outputs/_mf2_probe.py
+    f0745a10408343438d753bd75c5ef420854456a400e6b9b3d043367fe6359f97     20365 outputs/_sd_probe.py
+    d32d7109768ffb54092e389f8f4674437cd91a5a3b31d863443669095cbd7501     10329 outputs/_fm2_probe_harness.py
+    ea6d6f990abe720986236153d6f0cdc3ed298e964c260c3b63103ad127b09273     47444 outputs/_ffr_harness.py
+    e3c84bb672c87562a6233bd9250454b08309a6efe55346d1d4a21386764841b0     29061 outputs/_bp_inst.py
+    9630353906c156c523260866a320d57b90c3e6ea36858812ac964fe4e4aedd36      4962 outputs/_mf2_pool.py
+    57a921693c3511e72cf3faaed2608e9785464a89eafeaf830fdffe2a7d3aeb69     59262 outputs/_fx3r_analyze.py
+    221234d92085f1fe78d4e938e680f02308b202bf87f72eb5247d694414c75405     24943 outputs/_fb3_analyze.py
+    fea6c0b92b401dad6e6e1354d598938ff051003b217794438f7ed2271621486b     17293 outputs/_sd_analyze.py
+    084fa38ff13633f1ee294fe00b2b1fb1e6b2512c4f6adf1dd61743106f7e87bb     11830 outputs/_ut_analyze.py
+    0a0e53b85ebd472f0e85ad12de8da9b97126fd7a9ca9be8cff1a6ceff2c614f0     15093 outputs/_ut_analyze2.py
+    72d49a9beebb7a42c1965cf0b6c6cb594efa2fe621062f5652c7cc720838d7d5      4896 outputs/_fx3_pockets.py
+    3ffca5d75b078d51fcdebbbf1648d7bfd2d46e69d4b1c70c711fe8af6edb8036     72271 outputs/_mf2_p3_analyze.py
+    acd12c5c23b46d49396dbac10664b98bd0682adfddc3c21f9072e826c871ebe4      5797 outputs/_fb3_queue.py

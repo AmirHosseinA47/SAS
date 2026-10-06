@@ -41,8 +41,8 @@ SECTIONS
   3 ZEROS         22.8.2: arm-0 failures; U1-owned Z1 Z2 Z3 Z4 Z7 Z8; movement-owned Z1-M Z-RB Zm-a Zm-b Zm-c Z-S
                   Z2-M (in U / E1: REPORTED, R3 D-12); shared Z5 (amended outside events, section 10) and Z6. Every
                   failing instance is listed. Divergence = the victim each order WOULD BIND (v2 index_wb / u1_wb: the
-                  first planner-accepted victim), not the list head (R2 B-1). Z7 gates by Z7_READING ('literal', 16.7);
-                  Z7-ACC is reported beside it (R3 D-24).
+                  first planner-accepted victim), not the list head (R2 B-1). Z7 gates by Z7_READING ('acc': the maintainer's
+                  ruling (ii), urgency_part1.txt 25); the literal 16.7 reading is reported beside it (R3 D-24).
   4 COMPARISONS   0->M, 0->U, 0->MU, M->MU, U->MU on the 64 FRESH cells: literal L1-L3 and the 24 sign-tested counts
                   (23.2: exact one-sided sign test over the diverged cells, Holm within the comparison's family of
                   24); S3 (17.2); S6 (cost); FULL and HARMLESS. In-sample 0->U on sets 1-2: reported.
@@ -121,9 +121,10 @@ NOTES_REQUIRED = ("outputs/_ud_probe.py", "outputs/_ud_analyze.py", "outputs/_ud
 # accepted; per d["mv"] row: dcb. A v1 record is INVALID for the screen; --smoke may still read one.
 UD_PROBE = "ud_probe v2"
 UD_PROBE_SMOKE_OK = ("ud_probe v1", "ud_probe v2")
-# 16.7 Z7 as pre-registered ("U binds exactly one victim (the first in its order) to the unit f") GATES; Z7-ACC ("U binds
-# u1_wb - none iff u1_wb is None - to f") is REPORTED. R3 D-24 asks the maintainer to rule; "acc" swaps the two.
-Z7_READING = "literal"
+# Z7 READING - RULED (maintainer, 2026-10-06; urgency_part1.txt 25, amendment B4): reading (ii) GATES, Z7-ACC ("U binds
+# u1_wb, the first victim of its order the planner accepts - none iff u1_wb is None - to f"). 16.7's literal reading
+# ("the first in its order") is REPORTED beside it. "literal" would swap the two.
+Z7_READING = "acc"
 H = 360
 STUCK, WIN = 20, 30                        # _sd_analyze I2 thresholds (as _dp_analyze)
 ALPHA = 0.05

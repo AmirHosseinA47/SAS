@@ -253,10 +253,12 @@ def review_cases():
          len(UA.z7_kicks(ref_head)) == 1 and not UA.z7_acc_kicks(ref_head) and len(UA.z7_kicks(all_ref)) == 1
          and not UA.z7_acc_kicks(all_ref) and len(UA.z7_acc_kicks(wrong)) == 1 and len(UA.z7_kicks(wrong)) == 1,
          (UA.z7_kicks(ref_head), UA.z7_acc_kicks(wrong)))
-    r_lit, r_acc = UA.z7_readings(ref_head), UA.z7_readings(ref_head, "acc")
-    case("Z7-2 Z7_READING = 'literal' (the module constant) gates the literal reading and REPORTS Z7-ACC; 'acc' swaps "
-         "them", UA.Z7_READING == "literal" and len(r_lit["gate"]) == 1 and not r_lit["reported"]
-         and not r_acc["gate"] and len(r_acc["reported"]) == 1, (r_lit, r_acc))
+    r_lit, r_acc = UA.z7_readings(ref_head, "literal"), UA.z7_readings(ref_head, "acc")
+    r_def = UA.z7_readings(ref_head)
+    case("Z7-2 Z7_READING = 'acc' (the module constant: the maintainer's ruling (ii), part1 25) gates Z7-ACC and "
+         "REPORTS the literal reading; 'literal' swaps them",
+         UA.Z7_READING == "acc" and r_def == r_acc and len(r_lit["gate"]) == 1 and not r_lit["reported"]
+         and not r_acc["gate"] and len(r_acc["reported"]) == 1, (r_lit, r_acc, r_def))
     # ============================================================== Z8 / Z3 on the v2 records
     q_none = kick2(0, 4, index=(V1,), u1=(V1,), acc={V1: True}, bound=())
     nq_ok = kick2(1, 6, index=(V0, V1), u1=(V0, V1), acc={V0: False, V1: True}, bound=((V1, U0),),
