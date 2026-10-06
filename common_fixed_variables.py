@@ -290,6 +290,34 @@ MR1_TRUTHINESS_FIX = 1
 # measurement-round configuration (outputs/isTrue_report.txt). SHIPS 1; off only on an exact 0, which is the pre-fix
 # readers.
 NUMPY_SCALAR_FLAGS = 1
+# ---- Urgency round (outputs/urgency_part1.txt; rulings in its sections 21 and 23) --------------------------------
+# Four switches, each SHIPS 0 and is ON only on an exact 1 (agents._exact_integer); everything else is OFF. With all
+# four at 0 dispatch and movement are the base commit's exactly: one accessor check at each decision site, nothing
+# else (no new state read, no print, no RNG).
+# DISPATCH_URGENCY (U1, sections 6-14, agents.dispatch_urgency): at a re-dispatch kick
+# (_try_dispatch_unresolved_confirmed_victims) with exactly ONE free unit, two or more waiting detected victims and a
+# fire, the waiting victims are served in urgency order: first those the free unit can reach before the fire is
+# estimated to reach them, along a route the fire is not estimated to close (src_extension/planning/
+# urgency_dispatch.py), by the published-rate fire-arrival estimate; the rest in today's victim-index order. It never
+# unbinds, pre-empts or writes a victim off. If the dispatch branch's DISPATCH_JOINT ever ships on, J closes this kick
+# and U1 is inert.
+DISPATCH_URGENCY = 0
+# FF_APPROACH_PATH (fix (a), section 22.2, agents.ff_approach_path): an approaching unit whose greedy step is NOT on a
+# shortest path over CLEAN cells (not burning, not smoky, not fire-adjacent) to its victim, while such a path exists
+# and the victim's clean region has a clean way out, steps along that path instead ("do not circle while a safe path
+# exists"). Otherwise today's _move_toward runs.
+FF_APPROACH_PATH = 0
+# FF_RETREAT_KEEP_APPROACH (fix (b), section 22.3, agents.ff_retreat_keep_approach): an approaching unit forced to
+# retreat (trigger unchanged) whose retreat cell is off its clean route to the victim steps to the clean on-route
+# neighbour instead, when the victim's clean region has a clean way out ("do not abandon an approach while a safe
+# route remains"). Otherwise today's retreat runs.
+FF_RETREAT_KEEP_APPROACH = 0
+# FF_CARRY_REPLAN (fix (c), section 22.4, agents.ff_carry_replan): the carrying leg takes MODE 2's clean path; with
+# none, the least-exposure path over non-burning cells; with no route out, the safest pocket cell; enclosed, it holds -
+# a carried victim is never dropped (C-0..C-3). C-4: a live exiting carrier counts as the victim's active unit whatever
+# its status label, so a victim in custody is never re-dispatched. C-5: the casualty sweep's corpse guard. ENFORCED:
+# effective only while FF_EXIT_LEG_MODE is 2 and FF_EXIT_LEG_SERVED is 1 (both shipped).
+FF_CARRY_REPLAN = 0
 # The ONE battery threshold pair (fix1 item 2), read at call time through
 # agents.battery_low_threshold() / battery_critical_threshold() by every reader: the UAV
 # labels, both analyzers, the resource model, the global monitor, the dashboard alert and

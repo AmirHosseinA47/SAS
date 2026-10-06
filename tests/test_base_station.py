@@ -177,6 +177,12 @@ def test_shipped_defaults() -> None:
     assert cfv.MR1_TRUTHINESS_FIX == 1
     # F-2 ships ON (off only on an exact 0, the pre-fix readers): numpy scalars in the utility layer read as Python.
     assert cfv.NUMPY_SCALAR_FLAGS == 1
+    # Urgency round (outputs/urgency_part1.txt, rulings sections 21 and 23): U1 and the three movement fixes ship OFF
+    # (each on only on an exact 1) until the factorial screen of section 22 is read.
+    assert cfv.DISPATCH_URGENCY == 0
+    assert cfv.FF_APPROACH_PATH == 0
+    assert cfv.FF_RETREAT_KEEP_APPROACH == 0
+    assert cfv.FF_CARRY_REPLAN == 0
 
 
 # --- depot geometry -----------------------------------------------------------

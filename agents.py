@@ -12,6 +12,7 @@ from src_extension.dashboard.movement_explainability import (
     movement_transition_key,
     notable_firefighter_movement_category,
 )
+from src_extension.planning import movement_paths
 
 
 # Class Fire holds methods for managing Fire agents
@@ -1678,6 +1679,56 @@ def ff_exit_leg_served() -> int:
     return EXIT_LEG_SERVED_JUNK
 
 
+# ---- Urgency round (outputs/urgency_part1.txt sections 13.1, 22.5, 23) ----------------------------------------------
+# Four switches; each SHIPS 0 and is ON only on an exact 1. Read at call time from the cfv module.
+
+def dispatch_urgency() -> bool:
+    """DISPATCH_URGENCY - U1, the urgency order at a qualifying re-dispatch kick. Ships 0; on only on an exact 1."""
+    return _exact_integer(getattr(cfv, "DISPATCH_URGENCY", 0)) == 1
+
+
+def ff_approach_path() -> bool:
+    """FF_APPROACH_PATH - fix (a), the clean-path approach step. Ships 0; on only on an exact 1."""
+    return _exact_integer(getattr(cfv, "FF_APPROACH_PATH", 0)) == 1
+
+
+def ff_retreat_keep_approach() -> bool:
+    """FF_RETREAT_KEEP_APPROACH - fix (b), the on-route survival retreat. Ships 0; on only on an exact 1."""
+    return _exact_integer(getattr(cfv, "FF_RETREAT_KEEP_APPROACH", 0)) == 1
+
+
+def ff_carry_replan() -> bool:
+    """FF_CARRY_REPLAN - fix (c), the carrying leg's re-plan / shelter / hold, custody-active lookup and corpse
+    guard. Ships 0; on only on an exact 1. ENFORCED DEPENDENCY (22.4.1): False unless FF_EXIT_LEG_MODE is 2 and
+    FF_EXIT_LEG_SERVED is 1 (both shipped) - SERVED keeps a sheltering carrier's victim from the isolation write-off,
+    and keeps the escape sweep's unassign from ever reaching a carrier through the custody-active lookup."""
+    if ff_exit_leg_mode() != 2 or ff_exit_leg_served() != 1:
+        return False
+    return _exact_integer(getattr(cfv, "FF_CARRY_REPLAN", 0)) == 1
+
+
+def fire_board_sets(model) -> tuple[set, set]:
+    """(burning cells, active-smoke cells) from the Fire agents, by the units' own predicates: burning by
+    truthiness (Fire.is_burning), smoke by Smoke.is_smoke_active (Firefighter._cell_has_active_smoke). One scan."""
+    burning: set = set()
+    smoky: set = set()
+    for agent in model.schedule.agents:
+        if type(agent) is not Fire:
+            continue
+        pos = getattr(agent, "pos", None)
+        if pos is None:
+            continue
+        cell = (int(pos[0]), int(pos[1]))
+        if agent.is_burning():
+            burning.add(cell)
+        smoke = getattr(agent, "smoke", None)
+        if smoke is not None:
+            is_smoke_active = getattr(smoke, "is_smoke_active", None)
+            if callable(is_smoke_active) and is_smoke_active():
+                smoky.add(cell)
+    return burning, smoky
+
+
 def global_planner_mode() -> int:
     """GLOBAL_PLANNER_MODE - the planning strategy for UAV roles. Shipped 0.
 
@@ -2429,6 +2480,12 @@ EXIT_LEG_SEARCH_ORDER = ((1, 0), (-1, 0), (0, 1), (0, -1))
 # _move_toward's tiers, 5 a mode-2 path step, 6 a HOLD.
 EXIT_LEG_PATH_TIER = 5
 EXIT_LEG_HOLD_TIER = 6
+# Urgency round movement fixes (outputs/urgency_part1.txt 22.5): 7 a clean-path approach step (a), 8 a carrying
+# least-exposure re-plan step (C-1), 9 a carrying shelter step or stay (C-2), 10 an on-route survival retreat (b).
+APPROACH_PATH_TIER = 7
+CARRY_REPLAN_TIER = 8
+CARRY_SHELTER_TIER = 9
+RETREAT_ON_ROUTE_TIER = 10
 
 
 def exit_leg_first_step(start, passable, is_boundary, out_of_bounds, order=EXIT_LEG_SEARCH_ORDER):
@@ -2964,6 +3021,29 @@ class Firefighter(mesa.Agent):
             nearest = self._min_fire_distance(cell, fire_cells)
             smoke = self._cell_has_active_smoke(cell)
             on_fire = self._cell_contains_active_fire(cell)
+            # Urgency round fix (b), FF_RETREAT_KEEP_APPROACH (22.3): when today's retreat cell is off the
+            # clean route to the victim and an on-route clean cell with a clean way out exists, retreat there.
+            on_route = (
+                self._retreat_on_route_choice()
+                if ff_retreat_keep_approach() and self.target_pos and not self.exiting
+                else None
+            )
+            if on_route is not None:
+                self._fix_move(on_route, RETREAT_ON_ROUTE_TIER)
+                self._record_movement_reason(
+                    "survival_retreat_on_route",
+                    (
+                        f"retreated along the route to victim {self._assigned_victim_label()}: "
+                        f"nearest-fire dist {nearest}, smoke={'yes' if smoke else 'no'}"
+                    ),
+                    nearest_fire_dist=nearest,
+                    smoke="yes" if smoke else "no",
+                    on_fire=on_fire,
+                    target_pos=self.target_pos,
+                )
+                if firefight is not None:
+                    self._firefight_after_retreat(firefight, cell)
+                return
             self._survival_move()
             if (
                 self.target_pos
@@ -3026,7 +3106,13 @@ class Firefighter(mesa.Agent):
                 )
                 recorded = True
             else:
-                self._move_toward(self.target_pos)
+                # Urgency round fix (a), FF_APPROACH_PATH (22.2): step along a shortest clean path when
+                # today's greedy step is off every one; otherwise today's mover.
+                path_step = self._approach_path_choice() if ff_approach_path() else None
+                if path_step is not None:
+                    self._fix_move(path_step, APPROACH_PATH_TIER)
+                else:
+                    self._move_toward(self.target_pos)
                 cell = (int(self.pos[0]), int(self.pos[1]))
                 self._record_movement_reason(
                     "moving_to_victim",
@@ -3071,7 +3157,11 @@ class Firefighter(mesa.Agent):
                 recorded = True
             else:
                 if exit_mode == 2:
-                    self._exit_leg_step()
+                    # Urgency round fix (c), FF_CARRY_REPLAN (22.4): enforced off unless MODE 2 and SERVED 1.
+                    if ff_carry_replan():
+                        self._carry_replan_step()
+                    else:
+                        self._exit_leg_step()
                 else:
                     self._move_toward(self.exit_target)
                 if self.rescued_victim is not None:
@@ -3683,6 +3773,255 @@ class Firefighter(mesa.Agent):
         if str(getattr(self, "status", "") or "").strip().lower() == "route_blocked":
             self.status = "assigned" if self.assigned else "available"
         self._last_move_tier = EXIT_LEG_HOLD_TIER
+
+    # ------------------------------------------------------------------
+    # Urgency round, movement fixes (outputs/urgency_part1.txt section 22, rulings 23).
+    # Every *_choice method below is PURE - it reads the board and this unit, and never
+    # moves, raises, relabels or writes state - so the instrument can evaluate it as a
+    # shadow in every arm. The fixes act only through _fix_move / _carry_replan_step,
+    # each behind its own exact-1 switch (ff_approach_path, ff_retreat_keep_approach,
+    # ff_carry_replan); with the switches at 0 none of this is ever entered.
+    # ------------------------------------------------------------------
+    def _board_sets(self) -> tuple[set, set]:
+        return fire_board_sets(self.model)
+
+    def _clean_predicate(self, burning: set, smoky: set):
+        """CLEAN = in bounds, not burning, not smoky, no burning 4-neighbour: the exact negation of the
+        assigned-unit survival trigger, and MODE 2's passable (_exit_leg_step)."""
+        grid = self.model.grid
+
+        def is_clean(cell) -> bool:
+            if grid.out_of_bounds(cell) or cell in burning or cell in smoky:
+                return False
+            cx, cy = cell
+            for ox, oy in EXIT_LEG_SEARCH_ORDER:
+                if (cx + ox, cy + oy) in burning:
+                    return False
+            return True
+
+        return is_clean
+
+    def _greedy_choice(self, target, burning: set, smoky: set):
+        """PURE replica of _move_toward's step choice (its tiers 1-4 and tie-breaks): the cell today's mover
+        would step to, or None when every in-grid neighbour burns. No route test, no raise, no move."""
+        tx, ty = target
+        cx, cy = self.pos
+        dx, dy = tx - cx, ty - cy
+        if abs(dx) >= abs(dy):
+            preferred = (cx + (1 if dx > 0 else -1 if dx < 0 else 0), cy)
+        else:
+            preferred = (cx, cy + (1 if dy > 0 else -1 if dy < 0 else 0))
+        dist_before = abs(cx - tx) + abs(cy - ty)
+        scored = []
+        for cell in self._neighbor_cells():
+            if cell in burning:
+                continue
+            dist_after = abs(cell[0] - tx) + abs(cell[1] - ty)
+            adjacent = any(
+                (cell[0] + ox, cell[1] + oy) in burning for ox, oy in EXIT_LEG_SEARCH_ORDER
+            )
+            smoke = cell in smoky
+            scored.append(
+                {
+                    "cell": cell,
+                    "dist_after": dist_after,
+                    "improving": dist_after < dist_before,
+                    "maintaining": dist_after == dist_before,
+                    "adjacent_fire": adjacent,
+                    "smoke": smoke,
+                    "preferred": cell == preferred,
+                    "risk": (100 if adjacent else 0) + (10 if smoke else 0),
+                }
+            )
+        if not scored:
+            return None
+        tier_pools = [
+            [i for i in scored if i["improving"] and not i["adjacent_fire"] and not i["smoke"]],
+            [i for i in scored if i["maintaining"] and not i["adjacent_fire"] and not i["smoke"]],
+            [i for i in scored if not i["adjacent_fire"] and not i["smoke"]],
+        ]
+        for pool in tier_pools:
+            if pool:
+                return min(pool, key=lambda i: (i["dist_after"], 0 if i["preferred"] else 1))["cell"]
+        return min(
+            scored, key=lambda i: (i["risk"], i["dist_after"], 0 if i["preferred"] else 1)
+        )["cell"]
+
+    def _one_step_retreat_choice(self, fire_cells) -> tuple[int, int] | None:
+        """PURE replica of _assigned_one_step_retreat's destination (None = it would not move)."""
+        cell = (int(self.pos[0]), int(self.pos[1]))
+        best = None
+        best_score = -1
+        for ncell in self._neighbor_cells():
+            if self._cell_contains_active_fire(ncell):
+                continue
+            if self._cell_adjacent_to_fire(ncell):
+                continue
+            if self._cell_has_active_smoke(ncell):
+                continue
+            score = self._min_fire_distance(ncell, fire_cells)
+            if score > best_score:
+                best_score = score
+                best = ncell
+        if best is not None and best != cell:
+            return best
+        return None
+
+    def _survival_choice(self) -> tuple[int, int] | None:
+        """PURE replica of _survival_move's destination for this unit, from its stored _idle_retreat_* state
+        (None = it would not move). Reads the state; writes nothing."""
+        if self.pos is None:
+            return None
+        cell = (int(self.pos[0]), int(self.pos[1]))
+        fire_cells = self._fire_cells()
+        if self._cell_is_ideal_idle_standoff(cell, fire_cells):
+            return None
+        origin = getattr(self, "_idle_retreat_origin", None)
+        stalled = bool(getattr(self, "_idle_retreat_stalled", False))
+        steps = int(getattr(self, "_idle_retreat_steps", 0) or 0)
+        last_cell = getattr(self, "_idle_retreat_last_cell", None)
+        if origin is None or (
+            not self.target_pos
+            and abs(cell[0] - origin[0]) + abs(cell[1] - origin[1]) > IDLE_RETREAT_MAX_CELLS
+        ):
+            origin, steps, stalled, last_cell = cell, 0, False, None
+        if stalled:
+            if self.target_pos:
+                return self._one_step_retreat_choice(fire_cells)
+            chosen = self._pick_improving_retreat(
+                self._retreat_candidates(
+                    cell, origin, last_cell, fire_cells, self._min_fire_distance(cell, fire_cells)
+                ),
+                self._min_fire_distance(cell, fire_cells),
+                self._firefighter_cell_risk(cell),
+            )
+            return None if chosen is None else chosen["cell"]
+        at_cap = steps >= IDLE_RETREAT_MAX_CELLS
+        current_dist = self._min_fire_distance(cell, fire_cells)
+        current_risk = self._firefighter_cell_risk(cell)
+        candidates = self._retreat_candidates(cell, origin, last_cell, fire_cells, current_dist)
+        if not candidates:
+            return self._one_step_retreat_choice(fire_cells) if self.target_pos else None
+        if not at_cap:
+            chosen = self._pick_improving_retreat(candidates, current_dist, current_risk)
+            if chosen is None:
+                chosen = max(candidates, key=lambda c: (int(c["dist"]), -int(c["risk"])))
+        else:
+            required = [c for c in candidates if c["required"]]
+            chosen = max(required or candidates, key=lambda c: (int(c["dist"]), -int(c["risk"])))
+        if chosen["cell"] == cell:
+            return self._one_step_retreat_choice(fire_cells) if self.target_pos else None
+        return chosen["cell"]
+
+    def _victim_clean_field(self, burning: set, smoky: set):
+        """(clean distance field from the bound victim's cell, has_exit, is_clean, in_bounds)."""
+        grid = self.model.grid
+        is_clean = self._clean_predicate(burning, smoky)
+
+        def in_bounds(c) -> bool:
+            return not grid.out_of_bounds(c)
+
+        target = (int(self.target_pos[0]), int(self.target_pos[1]))
+        field = movement_paths.clean_distance_field(target, is_clean, in_bounds)
+        has_exit = movement_paths.region_has_exit(field, self._on_grid_boundary)
+        return field, has_exit, is_clean, in_bounds
+
+    def _approach_path_choice(self) -> tuple[int, int] | None:
+        """Fix (a), PURE (22.2.1): the cell this approach step goes to INSTEAD of today's, or None."""
+        if self.pos is None or not self.target_pos or self.exiting:
+            return None
+        unit = (int(self.pos[0]), int(self.pos[1]))
+        if unit == (int(self.target_pos[0]), int(self.target_pos[1])):
+            return None
+        burning, smoky = self._board_sets()
+        field, has_exit, _is_clean, in_bounds = self._victim_clean_field(burning, smoky)
+        if unit not in field:
+            return None
+        today = self._greedy_choice(self.target_pos, burning, smoky)
+        return movement_paths.approach_choice(
+            unit, field, has_exit, today, lambda c: self._min_fire_distance(c, burning), in_bounds
+        )
+
+    def _retreat_on_route_choice(self) -> tuple[int, int] | None:
+        """Fix (b), PURE (22.3.1): the retreat cell INSTEAD of today's, or None (today's retreat runs)."""
+        if self.pos is None or not self.target_pos or self.exiting:
+            return None
+        unit = (int(self.pos[0]), int(self.pos[1]))
+        burning, smoky = self._board_sets()
+        field, has_exit, is_clean, in_bounds = self._victim_clean_field(burning, smoky)
+        if not field:
+            return None
+        today = self._survival_choice()
+        return movement_paths.retreat_choice(
+            unit, field, has_exit, today, is_clean, lambda c: self._min_fire_distance(c, burning), in_bounds
+        )
+
+    def _carry_replan_choice(self) -> tuple[str, tuple[int, int]]:
+        """Fix (c), PURE (22.4.1): (kind, cell) for this carrying step. kind is "path" (C-0, MODE 2's clean
+        first step), "replan" (C-1), "shelter" or "shelter_stay" (C-2), or "hold" (C-3, every neighbour burns)."""
+        grid = self.model.grid
+        burning, smoky = self._board_sets()
+        start = (int(self.pos[0]), int(self.pos[1]))
+        is_clean = self._clean_predicate(burning, smoky)
+        first = exit_leg_first_step(start, is_clean, self._on_grid_boundary, grid.out_of_bounds)
+        if first is not None:
+            return "path", first
+
+        def in_bounds(c) -> bool:
+            return not grid.out_of_bounds(c)
+
+        def is_burning(c) -> bool:
+            return c in burning
+
+        def is_fire_adjacent(c) -> bool:
+            return any((c[0] + ox, c[1] + oy) in burning for ox, oy in EXIT_LEG_SEARCH_ORDER)
+
+        def is_smoky(c) -> bool:
+            return c in smoky
+
+        first = movement_paths.least_exposure_first_step(
+            start, is_burning, is_fire_adjacent, is_smoky, self._on_grid_boundary, in_bounds
+        )
+        if first is not None:
+            return "replan", first
+        step = movement_paths.shelter_step(
+            start, is_burning, is_fire_adjacent, is_smoky, lambda c: self._min_fire_distance(c, burning), in_bounds
+        )
+        if step is None:
+            return "hold", start
+        if step == start:
+            return "shelter_stay", start
+        return "shelter", step
+
+    def _relabel_if_route_blocked(self) -> None:
+        """_move_toward's tail relabel: a unit labelled route_blocked that moves on a route is visible again."""
+        if str(getattr(self, "status", "") or "").strip().lower() == "route_blocked":
+            self.status = "assigned" if self.assigned else "available"
+
+    def _fix_move(self, cell, tier: int) -> None:
+        """Apply a fix's step: tier label, the step's risk, the relabel tail, the move."""
+        self._last_move_tier = tier
+        self._last_move_risk = int(self._firefighter_cell_risk(cell))
+        self._relabel_if_route_blocked()
+        self.model.grid.move_agent(self, cell)
+
+    def _carry_replan_step(self) -> str:
+        """One carrying step under FF_CARRY_REPLAN (C-0..C-3). Never calls _move_toward or _exit_leg_step, so a
+        carrier never raises route_blocked and never drops its victim. Returns the kind taken."""
+        kind, cell = self._carry_replan_choice()
+        if kind == "path":
+            self._fix_move(cell, EXIT_LEG_PATH_TIER)
+        elif kind == "replan":
+            self._fix_move(cell, CARRY_REPLAN_TIER)
+        elif kind == "shelter":
+            self._fix_move(cell, CARRY_SHELTER_TIER)
+        elif kind == "shelter_stay":
+            self._relabel_if_route_blocked()
+            self._last_move_tier = CARRY_SHELTER_TIER
+            self._last_move_risk = int(self._firefighter_cell_risk(cell))
+        else:
+            self._exit_leg_hold()
+        return kind
 
     def _move_toward(self, target):
         tx, ty = target

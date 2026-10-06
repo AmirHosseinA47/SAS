@@ -100,6 +100,8 @@ Purpose: Maintain a structured, uncertainty-aware picture of where fire is belie
 
 Core idea: Fire state is represented as beliefs over cells and fronts, not as a single crisp map assumed fully correct.
 
+Assumption A3 as the code implements it (outputs/urgency_part1.txt 11.3; the dispatch round's ruling D-12): the firefighter team and its dispatcher read the TRUE current burning set and the TRUE active smoke in real time (today = truth) - the units' route test, survival rule and movement, the route_blocked revalidation, the escape sweep, and the urgency rule all use it. The belief-based fields below are the search side's model; a belief-based (tracker-only) fire picture for dispatch and movement is future work.
+
 Fields
 
 - `estimated_burning_cells`

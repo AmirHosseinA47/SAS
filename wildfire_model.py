@@ -83,6 +83,7 @@ from src_extension.execution.failsafe_modes import FailSafeMode
 from src_extension.execution.mode_manager import ModeManager, build_failsafe_dashboard_summary
 from src_extension.execution.safety_checker import SafetyChecker
 from src_extension.planning.planning_coordinator import PlanningCoordinator
+from src_extension.planning import urgency_dispatch
 from src_extension.dashboard.dashboard_state_builder import DashboardStateBuilder
 from src_extension.dashboard.dashboard_exporter import DashboardStateExporter
 
@@ -3048,6 +3049,9 @@ class WildFireModel(mesa.Model):
         markers = getattr(self, "victim_marker_agents", None)
         if not isinstance(managed, dict) or not isinstance(markers, dict):
             return
+        if agents.dispatch_urgency():
+            self._urgency_dispatch_pass(managed, markers)
+            return
         for vid, state in managed.items():
             marker = markers.get(vid)
             if not self._victim_needs_rescue(vid, marker):
@@ -3063,6 +3067,82 @@ class WildFireModel(mesa.Model):
             if self._find_active_firefighter_for_victim(vid, marker):
                 continue
             self._dispatch_firefighter_to_victim(vid, marker, "initial")
+
+    # ------------------------------------------------------------------
+    # Urgency round U1 (outputs/urgency_part1.txt sections 6-14, rulings 21 / 23). Reached only with
+    # DISPATCH_URGENCY on an exact 1. It changes ONLY the order in which today's loop body visits the
+    # waiting victims at a qualifying kick; it issues no unassign, release or write-off.
+    # ------------------------------------------------------------------
+    def _urgency_waiting(self, managed: dict, markers: dict) -> list[tuple[str, Any]]:
+        """W: the victims today's loop would visit, by today's three predicates, in today's (index) order."""
+        waiting: list[tuple[str, Any]] = []
+        for vid, state in managed.items():
+            marker = markers.get(vid)
+            if not self._victim_needs_rescue(vid, marker):
+                continue
+            confirmed = bool(getattr(state, "confirmed", False) if state is not None else False)
+            marker_status = (
+                str(getattr(marker, "status", "") or "").strip().lower()
+                if marker is not None
+                else ""
+            )
+            if not confirmed and marker_status != "confirmed":
+                continue
+            if self._find_active_firefighter_for_victim(vid, marker):
+                continue
+            waiting.append((vid, marker))
+        return waiting
+
+    def _urgency_dispatch_view(self, waiting: list[tuple[str, Any]], unit: Any) -> dict:
+        """The reads of 11.1, made AFTER W is built: each waiting (detected) victim's live cell, the free
+        unit's cell, the true burning and active-smoke sets (A3), the wind (A4), the grid's extents."""
+        burning, smoky = agents.fire_board_sets(self)
+        cells = []
+        for vid, marker in waiting:
+            pos = getattr(marker, "pos", None)
+            if pos is None:
+                continue
+            cells.append((vid, (int(pos[0]), int(pos[1]))))
+        wind_label = getattr(getattr(self, "wind", None), "wind_direction", None)
+        return {
+            "waiting": cells,
+            "unit_cell": (int(unit.pos[0]), int(unit.pos[1])),
+            "burning": burning,
+            "smoky": smoky,
+            "wind": cfv.wind_vector_from_direction(wind_label),
+            "x_size": int(self.grid.width),
+            "y_size": int(self.grid.height),
+        }
+
+    def _urgency_dispatch_pass(self, managed: dict, markers: dict) -> None:
+        """Today's loop body over W, ordered by urgency at a qualifying kick (6, 9.1); otherwise in today's
+        order. One [UrgencyTriage] line per qualifying kick, after the binds (13.3); served = the victim bound."""
+        waiting = self._urgency_waiting(managed, markers)
+        order = [vid for vid, _marker in waiting]
+        triage = None
+        free = [
+            unit
+            for unit in (getattr(self, "firefighter_marker_agents", None) or {}).values()
+            if self._firefighter_available_for_dispatch(unit)
+        ]
+        if len(free) == 1 and len(waiting) >= 2:
+            view = self._urgency_dispatch_view(waiting, free[0])
+            if urgency_dispatch.qualifies(len(view["waiting"]), len(free), bool(view["burning"])) and len(
+                view["waiting"]
+            ) == len(waiting):
+                ordered, records = urgency_dispatch.urgency_order(
+                    view["waiting"], view["unit_cell"], view["burning"], view["smoky"], view["wind"],
+                    view["x_size"], view["y_size"],
+                )
+                order = ordered
+                triage = (str(getattr(free[0], "unit_id", "") or ""), ordered, records)
+        by_id = dict(waiting)
+        served = None
+        for vid in order:
+            if self._dispatch_firefighter_to_victim(vid, by_id.get(vid), "initial") and served is None:
+                served = vid
+        if triage is not None:
+            print(urgency_dispatch.triage_line(self.evaluation_timesteps_counter, *triage, served))
 
     def _revalidate_route_blocked_firefighters(self) -> None:
         """Clear a stale route_blocked flag once a live route reopens.
@@ -4043,7 +4123,16 @@ class WildFireModel(mesa.Model):
                 continue
             status = str(getattr(ff_marker, "status", "") or "").strip().lower()
             if status in ("dead", "route_blocked"):
-                continue
+                # Urgency round C-4 (FF_CARRY_REPLAN, 22.4.1): a live, on-grid EXITING carrier is the
+                # victim's active unit whatever its status label, so a victim in custody is never
+                # re-dispatched. Approaching units are unchanged.
+                if not (
+                    status == "route_blocked"
+                    and getattr(ff_marker, "exiting", False)
+                    and getattr(ff_marker, "pos", None) is not None
+                    and agents.ff_carry_replan()
+                ):
+                    continue
             rv = getattr(ff_marker, "rescued_victim", None)
             if rv is None:
                 continue
@@ -5770,7 +5859,7 @@ class WildFireModel(mesa.Model):
                 casualty_meta = {"reset_victim_pending": True}
                 if (
                     getattr(ff_marker, "exiting", False)
-                    and agents.ff_exit_leg_hold()
+                    and (agents.ff_exit_leg_hold() or agents.ff_carry_replan())  # + urgency round C-5
                     and not self._victim_needs_rescue(casualty_vid, victim_ref)
                 ):
                     # Carrying-leg D2: a HELD carrier can die in custody, which today
