@@ -51,12 +51,21 @@ from urgency_test_support import (
     place_units,
     place_victims,
     quiet_fire,
+    restore_config,
     smoke,
     switches,
     victim,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+@pytest.fixture(autouse=True)
+def _pristine_config(monkeypatch):
+    """Every test starts from the import-time configuration: the full suite's other files leave scenario settings
+    behind, and the real-model tests here (T-ID-M's golden digest among them) depend on them. A test's own switches
+    are set afterwards and win; monkeypatch undoes all of it."""
+    restore_config(monkeypatch)
 OFFSETS = ((1, 0), (-1, 0), (0, 1), (0, -1))
 TIER_A, TIER_C1, TIER_C2, TIER_B = 7, 8, 9, 10       # agents.APPROACH_PATH_TIER .. RETREAT_ON_ROUTE_TIER (22.5)
 TIER_PATH, TIER_HOLD = 5, 6                          # agents.EXIT_LEG_PATH_TIER, EXIT_LEG_HOLD_TIER
@@ -1491,7 +1500,10 @@ def _identity_run(monkeypatch, setting: str) -> str:
     moved behind an 11-cell fire wall and bound to ff_unit_0 - the barrier on which today's mover 2-cycles and fix
     (a) would act at the third step. `setting` "absent" deletes the four switches from cfv; "zero" sets them 0.
     Returns one sha256 over stdout, the command audit, the rescue events, the movement transitions and every
-    unit's (cell, status, tier) after each of ID_STEPS model steps. Base-safe: no name new in this round."""
+    unit's (cell, status, tier) after each of ID_STEPS model steps. Base-safe: no name new in this round.
+    Each run starts from the import-time configuration (the caller's monkeypatch.undo() also undoes the autouse
+    fixture's restore, and the full suite's other files leave scenario settings behind)."""
+    restore_config(monkeypatch)
     for name in SWITCH_NAMES:
         if setting == "absent":
             monkeypatch.delattr(cfv, name, raising=False)

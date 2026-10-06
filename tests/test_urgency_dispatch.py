@@ -58,6 +58,7 @@ from urgency_test_support import (
     place_units,
     place_victims,
     quiet_fire,
+    restore_config,
     set_step,
     smoke,
     switches,
@@ -71,6 +72,14 @@ VICTIMS = (V0, V1, V2, V3, V4)
 UNITS = (FF_A, FF_B, FF_C)
 _TRIAGE_RE = re.compile(r"^\[UrgencyTriage\] step=(\S+) unit=(\S*) order=\[(.*)\] served=(\S*)$")
 _TOKEN_RE = re.compile(r"(victim_\d+)\(T=([^,]+),c=([^,]+),([PD])\)")
+
+
+@pytest.fixture(autouse=True)
+def _pristine_config(monkeypatch):
+    """Every test starts from the import-time configuration: the full suite's other files leave scenario settings
+    behind, and the real-model tests here (T-ID, T-INFO-b) depend on them. A test's own switches are set afterwards
+    and win; monkeypatch undoes all of it."""
+    restore_config(monkeypatch)
 
 
 # ================================================================================================ helpers

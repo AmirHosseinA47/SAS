@@ -8,8 +8,10 @@ test (the kick loop, Firefighter.advance, the choice methods) is called directly
 
 from __future__ import annotations
 
+import importlib.util
 import os
 import random
+from pathlib import Path
 
 os.environ.setdefault("MPLBACKEND", "Agg")
 
@@ -22,6 +24,37 @@ from wildfire_model import PhysicalRescueCommand, WildFireModel
 V0, V1, V2, V3, V4 = "victim_0", "victim_1", "victim_2", "victim_3", "victim_4"
 FF_A, FF_B, FF_C = "ff_unit_0", "ff_unit_1", "ff_unit_2"
 SWITCH_NAMES = ("DISPATCH_URGENCY", "FF_APPROACH_PATH", "FF_RETREAT_KEEP_APPROACH", "FF_CARRY_REPLAN")
+
+
+def _load_pristine_config() -> dict[str, object]:
+    """The import-time value of every UPPERCASE name of common_fixed_variables.py, read from a FRESH copy of the file -
+    not from the shared module, which other test files change (apply_scenario_config, plain assignment) and leave
+    changed. The file imports only random and numpy, so executing a copy has no side effect."""
+    spec = importlib.util.spec_from_file_location("_urgency_pristine_cfv", Path(cfv.__file__))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return {name: value for name, value in vars(module).items() if name.isupper()}
+
+
+PRISTINE_CONFIG = _load_pristine_config()
+
+
+def restore_config(monkeypatch) -> None:
+    """Every UPPERCASE configuration name back to its import-time value on cfv and on the two modules that copy it with
+    `from common_fixed_variables import *` (wildfire_model, agents; neither defines a name of its own that cfv has),
+    and every UPPERCASE name another test ADDED to cfv removed - all through monkeypatch, so undone after the test.
+
+    The full suite runs dozens of files that leave scenario settings behind (wind, base-station, planner and exit-leg
+    modes, batch size, ...); the team pins of pinned_model do not cover them, and a real-model trajectory depends on
+    them. Called by the autouse fixture of both round test files, BEFORE the test sets its own switches."""
+    import wildfire_model as wf
+
+    for name, value in PRISTINE_CONFIG.items():
+        for module in (cfv, wf, agents):
+            if name in vars(module) and vars(module)[name] is not value:
+                monkeypatch.setattr(module, name, value)
+    for name in [n for n in vars(cfv) if n.isupper() and n not in PRISTINE_CONFIG]:
+        monkeypatch.delattr(cfv, name)
 
 
 def switches(monkeypatch, urgency: object = 0, approach: object = 0, retreat: object = 0, carry: object = 0,
