@@ -1,0 +1,2190 @@
+================================================================================
+URGENCY-AWARE DISPATCH ROUND - PART 1: DESIGN, PRE-REGISTERED SCREEN, DECISION RULE
+(STOP FOR RULINGS)
+
+When free firefighters are scarce, serve first the DETECTED victims that the fire
+will reach soonest AND that can still be reached in time.
+
+Branch urgency, worktree E:/Projects/SAS_wt/urgency, cut from main 27744a28
+(= tag istrue-fix). Written 2026-10-06; revised the same day after 3 review
+agents (Appendix A.5).
+
+DESIGN ONLY: no source file, test or default is changed by this document. Part 2
+(the build) starts only after the maintainer's rulings on section 19.
+================================================================================
+
+Every line number is at 27744a28 unless marked otherwise.
+
+ABBREVIATIONS
+  WM   wildfire_model.py
+  AG   agents.py
+  RP   src_extension/planning/rescue_planner.py
+  RE   src_extension/execution/rescue_executor.py
+  AM   src_extension/adaptation_manager.py
+  CFV  common_fixed_variables.py
+  FAE  src_extension/planning/fire_arrival_estimate.py
+  JD   src_extension/planning/joint_dispatch.py (on the dispatch branch only)
+  DP1  the dispatch round's outputs/dispatch_part1.txt (branch dispatch, cc8d653c)
+  DPR  the dispatch round's outputs/dispatch_report.txt (branch dispatch, cc8d653c)
+  dp0  the dispatch round's switch-off arm. It is value-identical to 27744a28
+       (DPR S1), so dp0 numbers describe TODAY's dispatch.
+  dp1  the dispatch round's arm with its joint dispatcher switched on.
+  FC   "feasible-critical": the M8 class of DP1 11.6.
+
+Lines starting "PAPER:" say what a finding or decision means for the paper.
+
+================================================================================
+0. RESULT OF PART 1 IN ONE PAGE
+================================================================================
+THE FINDING THAT SHAPES EVERYTHING ELSE (section 3)
+
+The dispatch round's M8 trigger said that 11 of 13 detected-victim deaths were
+"feasible-critical". We re-read those deaths one by one on the 64 dp0 runs.
+- Two independent passes reproduced M8 and every victim's waiting record.
+- One pass classified the mechanism of each death; a reviewer re-checked it.
+
+The re-reading does NOT show that the ORDER of service cost those lives:
+- In today's dispatch, none of the 13 victims who died ever waited for a single
+  step while a FREE firefighter had a fire-free route to her. This was checked
+  two ways: per-step samples, and a reconstruction of every re-dispatch "kick"
+  at bind time.
+- 10 of the 13 were bound at their detection step to the nearest unit, or to a
+  unit within 4 route steps of it.
+- 12 of the 13 had their unit's route closed by fire before they died.
+
+Of the 11 FC deaths:
+
+  | Mechanism                                                 | Deaths |
+  |-----------------------------------------------------------|--------|
+  | Reachable by ordering (U1)                                | 0      |
+  | Reassignment of a stalled unit (the dispatch round's      | 1      |
+  |   Limit 3)                                                |        |
+  | Movement layer: greedy-mover loops while a fire-free path | 8      |
+  |   existed, the survival retreat before pickup, one        |        |
+  |   carrying-leg livelock (one of the 8 possibly futile)    |        |
+  | Futile in practice                                        | 2      |
+
+M8 counts BUSY units and uses a lower-bound route measured at detection. It
+measures "reachable in principle", not "lost to dispatch order".
+
+How often today's dispatch faced a scarce choice:
+- 14 of its 285 binds in 64 runs had more waiting victims than free units.
+- All 14 were at the two kick points, all with exactly one free unit, and all
+  went to the lowest victim index.
+- Passed over at those points:
+    - 10 victims who survived (13 pass-overs in all);
+    - 2 who died. Neither had a viable route at that moment.
+
+THE ESTIMATOR (section 4)
+
+Front-priority's fire-arrival estimate RANKS well:
+- Harrell C 0.86 against the first burn of the victim's cell (seed-level 95 %
+  interval [0.82, 0.90]);
+- today's victim-index order scores 0.46, which is chance.
+
+As a CLOCK it is poor, and wrong in both directions:
+- late in 100 of the 101 detection cells that burned by step 360, by a median of
+  74-91 steps;
+- early in 24 of the 126 cells it said would burn before 360 but did not (by at
+  least 8 steps, median at least 95).
+Fleeing kept dying victims alive 6-204 steps after their detection cell burned.
+
+RECOMMENDATION (section 5): form U1, the minimal one.
+- It changes only which waiting victim a single newly free unit takes at a kick.
+- It applies only when the unit can reach her before the fire along a route that
+  stays clear of the fire's estimated edge.
+- It is attributable with two arms: the first divergence in each cell must be a
+  U1 decision (structural gate Z1).
+- Its no-flip-flop proof is short: U1 adds no unbind.
+- Its switch-off path is today's loop verbatim.
+
+U2, by comparison:
+- needs the failed joint dispatcher and three fixes to it;
+- needs four arms to attribute anything to urgency;
+- its urgency term would act on 14 of 491 fill decisions;
+- on sets 1-2, the deaths it reached came from reassignment, not urgency.
+
+EXPECTED OUTCOME, stated before any run (17.4)
+- On the PRIMARY (detected-victim deaths) the screen will most likely be NOT
+  SHOWN. A chance rise of one must-not-rise guard could make it a FAIL. Either way
+  the switch ships 0.
+- The round is still worth running:
+    - it gives a measured answer to the supervisor's question, "how does the
+      system treat an easy rescue versus a critical one?";
+    - it leaves a tested critical-first policy;
+    - it supports a paper statement naming the movement layer as the binding
+      constraint on detected-victim deaths.
+- Decision U-0 asks whether to build anyway. The recommendation is yes. The
+  alternative is a movement-layer round first.
+
+DECISIONS NEEDED: U-0 .. U-14 (section 19).
+
+PAPER: the urgency question gets two answers.
+- Today's system has no notion of urgency. It serves waiting victims in
+  victim-index order, a hidden function of ring geometry.
+- On the recorded data, detected-victim deaths were not decided by service order.
+
+================================================================================
+1. ROUND START AND HOUSEKEEPING
+================================================================================
+1.1 HEAD
+    - At round start, main was 27744a28ec37dc59cd14bb0bafaf675ce85ae15f, and tag
+      istrue-fix peels to it (git rev-parse istrue-fix^{commit}).
+    - Branch `urgency` was created from 27744a28 in a new worktree,
+      E:/Projects/SAS_wt/urgency.
+    - Its .venv is a JUNCTION to E:\Projects\SAS\.venv.
+      RULE: run `cmd /c rmdir .venv` before the worktree is removed.
+
+1.2 MAIN MOVED DURING PART 1
+    - Another session fast-forwarded main to a20a2ef5 ("prereg amendment 19.13:
+      the 480-step point's CUR partner runs are added"; reflog main@{0}).
+    - `git diff --stat 27744a28 a20a2ef5` touches only outputs/fix3b_part1.txt
+      (+19) and outputs/isTrue_report.txt (+5). No source or test file changed.
+    - Branch prereg-480cur and its worktree no longer exist.
+    - This Part 1 stays on 27744a28, the confirmed base. Ruling U-12 says when
+      a20a2ef5 is merged.
+    PAPER: none (a text-only commit).
+
+1.3 OTHER WORKTREES - none was touched:
+    - E:/Projects/SAS (main; another session may hold it);
+    - .claude/worktrees/zealous-colden-0b9fe2 (f686e932);
+    - E:/Projects/SAS_wt/dispatch (cc8d653c).
+    Only named files in the dispatch worktree were read, plus one non-recursive
+    `ls` of its outputs/.
+
+1.4 NOTHING RAN. Part 1 ran no simulation, probe, pool, harness, model analyzer
+    or test. Read-only scripts parsed recorded run files (Appendix A).
+
+1.5 QUARANTINE
+    - outputs/_firemech_rewound_20260914 exists only in the main checkout
+      (untracked; listed in .git/info/exclude).
+    - Per-agent contact is in A.3. No agent opened, listed or descended into the
+      directory. The seed scanner's os.walk saw its NAME in the listing of
+      E:/Projects/SAS/outputs and pruned it before descending (disclosed as
+      listing contact).
+    STANDING RULES FOR PARTS 2-3 (every session and every agent):
+    - every recursive search carries --exclude-dir=_firemech_rewound_20260914 or
+      is scoped to src_extension/, tests/ or named files;
+    - no search is rooted at a repository root or recursively at an outputs/
+      directory;
+    - `find` uses -prune;
+    - `git status` runs only with -uno and a pathspec.
+
+1.6 RUN TAGS RESERVED: prefix "ud" (urgency dispatch).
+    - Checked unused in all four trees (main, dispatch, zealous, urgency), in
+      every form: _sd_ud*, _ffr_ud*, _ffr_rb_ud*, _rblatch_camp2_ud*, _ud_*,
+      ud*, _ffr_logs/ud*.
+    - Checked by non-recursive listing and by git ls-files, with positive
+      controls.
+    - Reserved:
+        ud0<p><k>               control (switch absent)
+        ud1<p><k>               urgency ON
+        udE<case><0|1><c|n>     evidence cases
+      where <p> = r/u (ring/uniform) and <k> = seed set 1-4.
+    - The check is repeated before every wave (the harness-tag-collision rule).
+    - outputs/urgency_* and outputs/_ud_* are this round's own documents and
+      tooling.
+
+1.7 SWITCH CONVENTION
+    - The new switch DISPATCH_URGENCY ships 0. It is ON only when
+      agents._exact_integer(raw) == 1 (AG:1490): 1, True, 1.0, "1" or " 1 ".
+    - Everything else is OFF: missing, 0, 2, 0.5, "2.0", "on", "", None.
+    - If it ever ships ON (17.3 THE FLIP), the accessor changes to "off only on
+      an exact 0".
+    PAPER: one switch; off = the baseline.
+
+1.8 REVIEW AGENTS: 3 of the allowed 3 were used on this document (A.5).
+
+1.9 WAVE CHECKS: Part 3 waves are checked every 20-30 minutes (16.12).
+
+================================================================================
+2. TODAY'S DISPATCH, RE-VERIFIED AT 27744a28
+================================================================================
+2.1 ONE PATH BINDS
+    Every bind goes:
+      RE.apply_physical_pairing_decision (RE:307-428)
+      -> execute_physical_command (RE:207-305)
+      -> WM.apply_physical_rescue_command, action "assign" (WM:4897-5015;
+         the [Dispatch] line is printed at WM:5002-5005)
+    The unit is always chosen by select_rescue_assignment (RP:567-710):
+    - the nearest available unit by Manhattan (L1) distance, ties to the smaller
+      id STRING (RP:690-696);
+    - no path test and no fire term;
+    - "available" is RP:626-642 over WM:3584-3596.
+    With reason "initial" and an empty pool, select returns "delay", never
+    mark_unreachable (RP:433-437, 647-661).
+
+2.2 WHERE A WAITING VICTIM CAN GET A UNIT
+    (a) DETECTION DRAINS, pre-move (AM:101-102) and post-move (AM:171-172)
+        - victim_confirmed is enqueued once per victim (WM:1490-1498) and drained
+          FIFO (WM:4024-4031).
+        - Each incident dispatches ONLY its own victim (RP:590-591).
+        - With no unit free the result is "delay": a no-op with no pending record
+          (RE:346-347).
+        - So a new detection takes a free unit ahead of OLDER waiting victims.
+    (b) THE KICKS: _try_dispatch_unresolved_confirmed_victims (WM:3045-3065)
+        - Walks managed_victims in VICTIM-INDEX order (WM:3051).
+        - Per victim it checks, in order: needs rescue (3053), detected
+          (3055-3062), no ACTIVE binder (3063).
+        - Calls _dispatch_firefighter_to_victim(vid, marker, "initial")
+          (WM:5584-5599) with a fresh snapshot each time: sequential greedy. A
+          victim with no unit left gets a no-op delay.
+        - It is called ONLY from:
+            K1  the post-move removals, when a unit recycled or returned
+                (WM:3366-3367; AM:144);
+            K2  the route_blocked revalidation, when a unit's route reopened
+                (WM:3216-3217; AM:184).
+        - A unit freed by a victim's death, by the escape sweep or by a stale
+          clear triggers NO kick (DP1 1.5(a)).
+    (c) THE ROUTE_BLOCKED REPLACEMENT
+        - Runs mid-advance: AG:3737/3743 -> AG:3591-3596 -> WM:5601-5634 ->
+          WM:3960-3991.
+        - Serves only the blocked unit's own victim.
+    (d) THE CASUALTY REPLACEMENT (WM:5823-5836 -> WM:3982-4005)
+        - Serves only the dead unit's victim.
+        - If the pool is empty and no unit is off-grid, it calls
+          mark_unreachable: a PERMANENT write-off (RP:666-667).
+    (e) DISABLED: the MAPE RescuePlanner.plan options carry no victim id and bind
+        nothing (RP:67-135, RE:94); the sync fallback is off (WM:441).
+    PAPER: the baseline is "event-driven, sequential, greedy nearest-unit dispatch
+    on grid (L1) distance, blind to fire".
+    - Waiting victims are re-offered units only when a unit returns or a route
+      reopens, and then in victim-index order.
+    - A new detection goes ahead of the waiting queue.
+
+2.3 WHAT ENDS OR SPLITS A BINDING (all at 27744a28)
+    None of these paths consults a dispatch order.
+    | Event                  | What happens                                    |
+    |------------------------|-------------------------------------------------|
+    | route_blocked FIRST    | unassign + reset (WM:3967-3980); the victim can |
+    |   raise                |   be bound again                                |
+    | REPEATED raise (latch) | the unit stays bound, hidden from _find_active  |
+    |                        |   (WM:3967-3969, 4044-4046). A kick can add a   |
+    |                        |   SECOND claimant (WM:3063); the latched unit   |
+    |                        |   re-activates on its next path-found move      |
+    |                        |   (AG:3785-3788)                                |
+    | firefighter death      | unassign + reset (WM:5769-5791)                 |
+    | victim death           | _release_other_claimants (WM:3886-3900,         |
+    |                        |   4055-4228); NO kick                           |
+    | rescue completion      | releases non-carrier claimants (WM:3936-3956);  |
+    |                        |   the carrier recycles or leaves for 3-5 steps, |
+    |                        |   then K1                                       |
+    | escape sweep           | after 30 steps unserved and geo-unreachable     |
+    |                        |   (RP:469-564; "served" = an assigned unit whose|
+    |                        |   distance fell, WM:5476-5490): unassign, then  |
+    |                        |   mark_unreachable (WM:5391-5582); NO kick      |
+    | stale clear            | ROUTE_BLOCK_STALE_CLEAR ships 1 (CFV:979);      |
+    |                        |   mode 1 clears flags only (WM:4305-4391)       |
+    | casualty write-off     | see 2.2(d)                                      |
+    PAPER: "assignments are never reconsidered for progress or placement; bindings
+    end only on fire, death, rescue, isolation-timer and route_blocked events".
+    This table is the basis of the proof in section 10.
+
+2.4 FIREFIGHTER AND VICTIM FACTS THE DESIGN RESTS ON
+    FIREFIGHTER DEATH
+    - A firefighter dies only if its own cell burns at the post-move casualty
+      sweep (WM:5747-5793).
+    - Fire changes only in Fire.advance, first in the activation order
+      (AG:2526-2532). So a unit that moved this step cannot die.
+    - A death therefore needs one of: an enclosed unit with no non-burning
+      neighbour (AG:3729-3738); an idle unit with no retreat candidate
+      (AG:3326-3334, 3389-3440); or a return from absence placed on its exit
+      cell (WM:2952-2955).
+    ROUTE TEST: _path_exists_avoiding_fire (AG:3554-3589)
+    - a 4-connected BFS; only burning cells are impassable;
+    - returns a bool. NO function returns a firefighter path LENGTH.
+    UNCLEAN CELLS
+    - A cell is unclean when it burns, carries active Fire-agent smoke
+      (_cell_has_active_smoke, AG:3160-3174), or is 4-adjacent to a burning cell
+      (AG:3176-3181).
+    - The mover's risk weights: fire 1e6, fire-adjacent 100, smoke 10
+      (AG:3184-3192).
+    - Approach tiers 1-3 use only clean cells (AG:3746-3760). An unclean cell is
+      entered only when no other neighbour exists (tier 4, AG:3770-3779).
+    SURVIVAL RETREAT
+    - An assigned unit retreats when its cell burns, is smoky, or lies within
+      Manhattan 1 of fire (AG:3203-3225).
+    - Pickup is tested only after the survival check (AG:3005-3007). So no pickup
+      happens on an unclean victim cell.
+    VICTIMS
+    - A victim dies only when her own cell burns at the sweep (WM:5674-5745).
+    - She flees when a burning cell is within Manhattan 3 (CFV:369):
+        - leash 6 cells, re-anchored when safe (CFV:370);
+        - at most 1 cell per step;
+        - never while in custody (AG:2523-2643).
+    - A DETECTED victim is tracked at her true live cell (assumption A7;
+      snapshot WM:3629-3632; the bound unit re-targets every step,
+      AG:2904-2943).
+    FIRE, WIND, GRID
+    - The burning set is a fresh scan by TRUTHINESS (WM._active_burning_cells,
+      WM:5255-5269; Firefighter._fire_cells, AG:3136-3146). It is identical
+      across P3-P6.
+    - A cell burns for 21-30 steps, and units remove fuel. So the burning set can
+      be EMPTY later in a run.
+    - The wind is constant (FIXED_WIND, CFV:10). Its vector is
+      cfv.wind_vector_from_direction (CFV:47-58).
+    - The grid is MultiGrid(HEIGHT, WIDTH) (WM:195). grid.width IS model.HEIGHT,
+      the x extent (WM:201-205), which is what FAE expects as its first argument
+      (FAE:75-99).
+    PAPER: a firefighter dies only when the fire encloses it (or in two edge
+    cases). An urgency guard must therefore bound ROUTE-CLOSURE EXPOSURE, not
+    "stepping into fire", which never happens.
+
+================================================================================
+3. WHAT THE M8 DEATHS SAY - FORENSICS OF THE MOTIVATING EVIDENCE
+================================================================================
+Two read-only passes, m8deaths and choicepts (A.4), covered the 64 dp0 records
+(and the 64 dp1 records). Both reproduced the analyzer exactly:
+- M8: 5 deaths / 4 FC in set 1; 8 deaths / 7 FC in set 2;
+- bias medians +155.0 / +163.6;
+- M3 = 13;
+- firefighter deaths 26 (dp0) and 20 (dp1).
+The probe's waiting set W matched the reconstruction at 23 034 of 23 040 step ends.
+The 6 mismatches are silent latch recoveries, none of them on a bind step.
+Detection steps come from the stdout "[Victim Detection]" lines (never rows_vic).
+
+The mechanism per death (3.1) comes from ONE pass (m8deaths). Review R2 re-checked
+it against the records.
+
+3.1 THE 13 DEATHS (dp0)
+    "Units at detection": d = route length; L1 = Manhattan distance.
+    #1 s1 ring B_N (9605), v1. Detected 16, died 186, T_fire 98.0.
+       u2 FREE, d36, bound; u0 and u1 BUSY.
+       M8 FC. Mechanism L3: a stall reassignment saved her in dp1.
+    #2 s1 ring B_S (9606), v3. Detected 14, died 57, T_fire 59.5.
+       All units FREE; u0 bound at d51.
+       M8 FUT. Mechanism FUT.
+    #3 s1 ring B_W (9608), v3. Detected 15, died 72, T_fire 60.4.
+       All units FREE; u1 bound at d51.
+       M8 FC. Mechanism MOV (possibly FUT).
+    #4 s1 unif B_E (9607), v0. Detected 31, died 96, T_fire 56.7.
+       All units FREE; u1 bound at d25.
+       M8 FC. Mechanism MOV, carrying leg: picked up at 70, then the carrier
+       livelocked.
+    #5 s1 unif C_E (9611), v0. Detected 2, died 78, T_fire 104.0.
+       All units FREE; u0 bound at d72.
+       M8 FC. Mechanism FUT in practice (3 steps of slack).
+    #6 s2 ring B_N (9625), v0. Detected 43, died 165, T_fire 234.2.
+       u1 FREE, d41, bound; u0 BUSY.
+       M8 FC. Mechanism MOV: 107 steps bound, 49 of them oscillating.
+    #7 s2 ring B_N (9625), v1. Detected 16, died 39, T_fire 38.6.
+       u2 FREE, d18, bound.
+       M8 FC. Mechanism FUT in practice (4 steps of slack).
+    #8 s2 ring B_S (9626), v0. Detected 29, died 93, T_fire 56.7.
+       u1 FREE, d40, bound.
+       M8 FC. Mechanism MOV; dp1's L3 tried twice and failed.
+    #9 s2 ring B_W (9628), v2. Detected 13, died 33, T_fire 9.45.
+       All units FREE; u0 bound at d12.
+       M8 FC. Mechanism MOV: the unit sat at L1 1-2 for 6 steps (retreat before
+       pickup).
+    #10 s2 ring D_N (9633), v1. Detected 16, died 162, T_fire 85.1.
+        Both units BUSY.
+        M8 FC. Mechanism MOV (PRE secondary).
+    #11 s2 ring D_W (9636), v2. Detected 49, died 270, T_fire 18.9.
+        u0 route_blocked; u1 BUSY.
+        M8 FC. Mechanism MOV: 207 steps bound, 93 of them oscillating.
+    #12 s2 unif A_N (9621), v1. Detected 59, died 123, T_fire 78.4.
+        u2 FREE, d29, bound.
+        M8 FC. Mechanism MOV.
+    #13 s2 unif D_N (9633), v3. Detected 76, died 162, T_fire 56.7.
+        Both units DEAD (min_d None).
+        M8 FUT. Mechanism FUT.
+
+    The 11 FC deaths by mechanism:
+      U1 ordering              0
+      RP route-aware pairing   0
+      L3 stall reassignment    1
+      PRE pre-emption only     0 (1 secondary)
+      MOV movement layer       8 (one possibly FUT)
+      FUT in practice          2
+
+    State at death:
+      a latched unit                           4
+      a unit still en route                    2
+      unbound after replacements also closed   5
+      in custody with her carrier              1
+      never bound                              1
+
+    Steps each victim waited unbound:
+      set 1: 6, 0, 22, 1, 17
+      set 2: 5, 0, 11, 8, 52, 14, 4, 30
+
+    WAITING WITH A FREE, REACHABLE UNIT (dp0, today's dispatch): 0 steps for all 13.
+    This combines two checks:
+      (i)  the per-step samples (dp.waiting, dp.m3a), which are taken AFTER the
+           post-move cycle and so cannot see a unit that is free only at a kick;
+      (ii) the bind-time reconstruction of every kick (choicepts), which covers
+           that blind spot.
+    The only two dying victims passed over at a kick had no viable route then:
+    - s1 ring B_W step 59: no finite route from the free unit (dp1's record), and
+      L1 54 + 1 > her 13 remaining steps;
+    - s2 ring D_W step 261: every unit's route was closed (M9; dp1 equals dp0 row
+      for row in that cell).
+    DPR's M3(b) 0 -> 0 uses the same post-cycle sample and is NOT an independent
+    confirmation.
+    In dp1 (the joint dispatcher) there is ONE exception: s2 ring D_N step 63.
+    - J served victim_0 while victim_1 had a 55-step route and died 99 steps
+      later.
+    - In dp0 she was the one served at step 63, and she died at 162 anyway.
+
+    PAPER: on the recorded baseline, detected victims died AFTER assignment,
+    because the assigned unit did not get through. The causes were greedy-mover
+    loops while a fire-free path existed, the survival retreat before pickup,
+    route closure and stranding, and one carrying-leg livelock.
+    - Service order did not decide these deaths.
+    - The movement layer is the binding constraint; DP1 2.1 / 6.10 put it out of
+      scope.
+    - The paper may say this of today's dispatch.
+
+3.2 CHOICE POINTS IN TODAY'S DISPATCH (dp0, 64 runs, 285 binds)
+    Each entry below is (|W| waiting, |F| free): number of binds.
+      detection drain   204 binds   (1,1) 50, (1,2) 79, (1,3) 68, (2,2) 4,
+                                    (2,3) 3
+      route_blocked      28 binds   (1,1) 20, (1,2) 8
+        replacement
+      K1 kick            32 binds   (1,1) 24, (2,1) 7, (3,1) 1
+      K2 kick            21 binds   (1,1) 11, (1,2) 2, (1,3) 2, (2,1) 6
+      casualty            0 binds   (2 casualty write-offs instead)
+    - A choice (|W| >= 2) existed at 21 binds. A SCARCE choice (|W| > |F|)
+      existed at 14, in 10 of the 64 cells.
+    - ALL 14 scarce choices were at kicks: K1 8, K2 6.
+    - All 14 had exactly ONE free unit, and all went to the lowest index.
+    - No detection drain was ever scarce. The 7 non-scarce choices were same-step
+      detections.
+    - The passed-over victims:
+        - 13 pass-overs of 10 victims who were all rescued later. The median
+          time from pass-over to rescue was 92 steps (range 64-208).
+        - 2 died (see 3.1).
+    - M3 = 13 unit-steps in 2 episodes, each beside a latch-held, fire-enclosed
+      victim. No bind follows either episode.
+    PAPER: today's dispatch faces a scarce choice about once per 4.6 runs, always
+    when a unit returns or a route reopens, always with one free unit, and always
+    serves the lowest index. On the recorded data, every victim whose fate this
+    order could have changed survived.
+
+3.3 WHAT THE JOINT DISPATCHER (dp1) TESTED ON THESE DEATHS
+    - L3 reassignment: applied to 5 of the deaths, saved 1 (s1 ring B_N v1).
+    - Route-aware pairing: applied to 1, saved 0.
+    - A REVERSED order (the 3.1 exception at s2 ring D_N step 63): no change; she
+      died at the same step.
+    - dp1's one new death (s1 ring B_S v0) came from the fresh-pair key (DPR 5.3),
+      not from ordering.
+    PAPER: "where the urgency-blind joint objective served the less threatened
+    victim first, the threatened victim's outcome did not change".
+
+3.4 THE KICKS U1 WOULD LIKELY CHANGE (an expectation, UNCERTAIN)
+    The records hold T_fire only at the DETECTION cell and keep no fire map. So
+    neither current-cell estimates nor clean routes can be rebuilt.
+    The 14 scarce kicks were ranked with:
+    - STALE remaining time = detection step + T_fire - current step;
+    - Manhattan distance as the route bound;
+    - the in-time cut of section 8.
+    Under that rule, U1 differs from today at 6 kicks in 5 cells. Values below are
+    the STALE remaining times.
+      s1 ring D_W 51    v2 deferred (stale 9 vs L1 21): judged NOT in time. Today
+                        she was served and was rescued at 205. NAMED RISK, 18.2.
+      s1 ring D_W 57    v3 (561) before v0 (563)
+      s2 ring B_W 70    v3 (444) before v0 (678); v3's cell actually burned 68
+                        steps later
+      s1 unif B_W 68    v1 (180) before v0 (337)
+      s2 unif B_W 94    v3 (528) before v2 (685); v3's cell actually burned 50
+                        steps later
+      s2 unif D_W 78    v2 (308) before v0 (536)
+    A second proxy (m8deaths: order by T at detection, no cut) also gives 6
+    reversals in 5 cells. The two proxies share 4 kicks; their union covers 6
+    cells. At most 10 cells had any scarce kick.
+    In 2 of the 5 re-orderings, the promoted victim was in fact the more
+    threatened. One decision defers a threatened victim who survived under
+    today's order.
+    PAPER: on recorded data the rule mostly re-orders survivors. Its one
+    threatened-victim decision is a deferral that the clock may misjudge.
+
+================================================================================
+4. THE ESTIMATOR - A GOOD RANKER, A POOR CLOCK
+================================================================================
+4.1 WHAT IT IS (FAE:1-117; bayesprep_part1.txt 2.2-2.3)
+      T(c) = min over burning b of ( |v| - e (v . u) ) / ( R_H (1 - e) ),
+      where v = c - b and u is the downwind unit vector.
+    This is an elliptical Huygens envelope built from published rates:
+    - R_H = 10 % of U10 (Cruz & Alexander 2019), divided by a walking speed of
+      1.34 m/s (Weidmann 1993), giving 0.4146 cells/step;
+    - length-to-width z = 1 + 0.25 U_mf (Andrews 2018, after Anderson 1983),
+      giving z = 2.081 and e = 0.877;
+    - U10 = 20 km/h.
+    It reads no simulator fire constant, draws no random number and keeps no
+    cache. At these values it predicts about 2.4 steps per cell downwind, 19.6 on
+    the flank and 36.8 upwind.
+
+4.2 MEASURED ON dp0
+    Harrell C is computed within runs. Intervals come from a SEED-level bootstrap:
+    the ring and uniform runs of a seed share the fire, so there are 32
+    independent fires.
+      Predictor -> target                              C      95 %
+      T_fire -> first burn of the detection cell       0.861  [0.82, 0.90]
+        (205 comparable pairs)
+      victim index (today's order) -> first burn       0.459  [0.36, 0.55]  chance
+      T_fire -> the victim's death (13 pairs)          0.846  [0.54, 1.00]
+    - dp1 gives the same values. That agrees with dp0 but is not a replication:
+      same seeds, and 32 identical cells.
+    - CLOCK ERROR, BOTH WAYS:
+        - late in 100 of the 101 detection cells that burned by step 360, by a
+          median of +91.3 steps (set 1, n 54) and +74.2 (set 2, n 47);
+        - early in 24 of the 126 cells with a finite estimate that did NOT burn by
+          360 although detection + T_fire < 360. The error there was at least 8
+          steps, with a median of at least 95.
+      DPR's "+155 / +164 including censored cases" treats step 360 as the burn
+      step. It bounds the lateness; it does not estimate it.
+    - FLIGHT: the 13 dying victims died 3-42 cells from their detection cell, and
+      6-204 steps after that cell burned (median 36).
+    - The test "min_d + 1 <= T_fire" at detection passes 220 of 225 victims,
+      including 10 of the 12 deaths that had a living unit.
+
+4.3 CONSEQUENCES FOR THE DESIGN
+    (a) T is a sound ORDERING key, far better than the index order it replaces.
+        Its validation against deaths is thin (13 pairs).
+    (b) An absolute "in time" test errs both ways:
+        - the clock is mostly late (too generous) and sometimes early;
+        - a fleeing victim outlives the estimate at her current cell (too harsh).
+        So an "unreachable in time" verdict must never write a victim off (8.4).
+    (c) T must be re-evaluated at the victim's CURRENT cell at every decision
+        (7.2).
+    (d) The estimator knows nothing about fireproof depots (case 4d: victim_1
+        sheltered in the NW depot) or about fuel. This is stated as a limitation,
+        not patched: patching it would mean using simulator knowledge.
+    PAPER: "the dispatcher ranks by a published-rate fire-arrival estimate that
+    orders victims well (C = 0.86) but is a poor clock (late by a median of 74-91
+    steps where the fire arrived, and sometimes early). No victim is ever written
+    off on it."
+
+================================================================================
+5. U1 VERSUS U2 - COMPARISON AND RECOMMENDATION
+================================================================================
+5.1 U1, MINIMAL
+    Keep today's dispatch. Change only WHICH waiting victim a newly free unit
+    takes at a kick (WM:3051), by urgency instead of victim index, and only
+    when exactly one unit is free. Pairing, timing, binders, releases,
+    write-offs and movement do not change.
+
+5.2 U2, FULL
+    Port J (JD plus about 509 WM lines; switches DISPATCH_JOINT and
+    DISPATCH_REASSIGN), fix the three causes of its FAIL (DPR 9 M-3), and add an
+    urgency key to J's objective.
+    THE THREE FIXES (u2assess, at cc8d653c)
+    (a) L2, the fresh-pair preference that picked routes 68 and 70 over 48 and 40
+        (JD:234, 244-246).
+        - L2 is a PREFERENCE ONLY. No step of the no-flip-flop theorem uses it
+          (DP1 6.9; DP1:602-605).
+        - Fix: drop it, or prefer a fresh pair only within M = 5 steps. Either way
+          the theorem and I1-I7 still hold.
+        - Tests T-J11(ii) and T-FLIP-b phase 3 change, and ruling D-5 must be
+          re-ruled.
+    (b) LATCH-FILL replacing a unit two steps before it recovers
+        (WM:6053-6055, 6171-6175).
+        - Fix: a grace of G = P = 3 J-posts, or a proximity rule with a timeout.
+          Proximity without a timeout can leave a run that never finishes
+          (DP1 5.6).
+        - Both only remove binds, so the theorem holds. I4's "allowed" must
+          include the new predicate.
+        - Tests T-R8, T-R10, T-INV and the T-FLIP-a simulator change.
+    (c) K13: about 216 idle unit-steps beside victims with no finite route.
+        - Recommended: keep it as a recorded cost.
+        - Binding into closed routes would break DP1 5.3's equivalence and spend
+          each pair's single o1.
+    FINDING (5.2(c)): the dispatch round's firefighter-death drop 26 -> 20 is NOT
+    explained by avoiding closed-route binds.
+    - M6's 20 -> 0 accounts for at most 1 death.
+    - The net -6 is divergence across 11 cells, with changes of both signs
+      (+4 / -10).
+    PAPER: the dispatch round's firefighter-death drop must not be credited to
+    route-aware feasibility (correcting the reading of DPR P.3).
+    WHERE URGENCY WOULD ENTER J
+    - As a victim-SET key below L1 (maximise on-time served, then earliest
+      deadlines), above L3.
+    - It must stay out of PROGRESS, REPLACE, LATCH-FILL and the W_L ranking.
+    - New proof obligations PO1-PO9 (u2assess 4).
+
+5.3 COMPARISON
+    FC deaths reachable on sets 1-2
+      U1: 0 of 11.
+      U2: 1 of 11, by L3. Its urgency term reaches 0.
+    Decisions changed
+      U1: at most 14 scarce kicks per 64 runs, about 6 of them differing (3.4).
+      U2: 14 scarce of 491 fills; J by itself changed 32 of 64 cells.
+    Arms needed to attribute an effect to urgency
+      U1: 2 (C, U); the first divergence must be a U1 decision (Z1).
+      U2: 4 (R, 0, J-fixed, J+U).
+    No-flip-flop proof
+      U1: short; U1 adds no unbind (section 10).
+      U2: J's theorem, plus urgency PO1-PO9, plus a re-proof of the fixes.
+    Code
+      U1: one loop's order plus one pure module (about 300 lines); about 20
+          tests.
+      U2: 3 121 lines carried (2 096 of them tests; 58 test functions; 56
+          mutants), plus the 3 fixes, plus urgency; about 8 tests changed and
+          10-14 new.
+    Switch-off identity
+      U1: today's loop verbatim.
+      U2: as in the dispatch round (S1 passed there).
+    Firefighter safety
+      U1: a time-expanded clean route (section 12).
+      U2: route-aware feasibility plus a PO8 guard, not yet designed.
+    Screen runs on two fresh sets
+      U1: about 278 runs (16.12).
+      U2: about 305 runs (4 arms, gate shards, evidence); 9.5-12 h at the
+          measured 25.5-32 runs/h, comparable to U1.
+    What the paper can say
+      U1: a critical-first triage rule under scarcity, measured in isolation.
+      U2: joint dispatch with urgency, measurable only with 4 arms.
+    (Case 2 with J on lost a unit on a long leg to a critical victim. That bind was
+    NOT an urgency choice: she was the only waiting victim. It illustrates the
+    exposure of such legs (12.1), not a cost of urgency.)
+
+5.4 RECOMMENDATION: U1
+    - It is the only form whose effect is attributable with the brief's two arms.
+    - Its proof and its identity are cheap.
+    - The forensic evidence says that neither form's URGENCY term reaches the
+      recorded deaths. U2's extra structure would buy reassignment (Limit 3) and
+      joint pairing, not urgency.
+    - If the maintainer wants Limit 3 back, that is its own round: the fixes are
+      in 5.2, and the movement layer comes first (section 3).
+    PAPER: "the urgency rule is a one-point change to the baseline's re-dispatch
+    order", described, proved and measured in isolation.
+
+================================================================================
+6. THE DESIGN (U1) IN ONE PAGE
+================================================================================
+WHERE
+- Only inside _try_dispatch_unresolved_confirmed_victims (WM:3045-3065):
+    K1  a unit returned or recycled;
+    K2  a unit's route reopened.
+- These are exactly where today's dispatch made all its scarce choices (3.2).
+- Untouched: detection drains, route_blocked replacements and casualty
+  replacements (U-2).
+
+WHEN - only if ALL of these hold:
+  (i)   DISPATCH_URGENCY is on;
+  (ii)  exactly ONE unit is free at the kick: |F| = 1, which was the case at all
+        14 recorded scarce kicks;
+  (iii) two or more victims wait: |W| >= 2;
+  (iv)  at least one cell burns.
+- W is the set of victims today's loop would consider, by today's three
+  predicates.
+- F is the set of units passing _firefighter_available_for_dispatch
+  (WM:3584-3596). That predicate includes select's availability filter.
+- Otherwise the kick runs today's loop verbatim (U-3).
+
+WHAT
+- The loop body is unchanged: one _dispatch_firefighter_to_victim(vid, marker,
+  "initial") per victim, as today. With one free unit, exactly the first victim
+  in the order gets it.
+- Only the ORDER of W changes:
+  1) PROMOTABLE victims first. A victim is promotable when the free unit f can
+     reach her along a SAFE-IN-TIME ROUTE (8.2) and arrive before the fire is
+     estimated to reach her current cell:  c(f, v) + 1 <= T(v).
+     The safe-in-time route:
+       - runs over CLEAN cells only: not burning, not smoky, not 4-adjacent to
+         fire. The victim's own cell must be clean too.
+       - never enters a cell that the fire is estimated to reach, or to make
+         fire-adjacent, before the unit gets there.
+     Promotable victims are ordered by T ascending (the fire reaches her soonest),
+     then by c ascending, then by integer victim index.
+  2) Every other waiting victim follows, in TODAY'S victim-index order.
+
+NOT CHANGED
+- Which unit is sent (the only free one), how many victims a kick binds, and the
+  reason string "initial".
+- Every release, write-off and timer; movement; firefighting.
+- The stage order, and stdout when the switch is off.
+
+NOBODY IS ABANDONED. A non-promotable victim:
+- stays waiting;
+- is served at the next kick at which no promotable victim competes;
+- is re-judged at every kick;
+- is logged ([UrgencyTriage], 13.3).
+U1 issues no unassign, no release and no mark_unreachable (8.4).
+
+NO FLIP-FLOP, BY CONSTRUCTION. U1 adds no unbind. Every change of a victim's
+binder goes through an outside event (fire, latch, death, rescue, isolation timer),
+so the urgency key can never send a unit back (section 10).
+
+SWITCH: DISPATCH_URGENCY ships 0 and is on only on an exact 1.
+
+PAPER, in four sentences:
+  (1) "When firefighters are scarce, a newly free firefighter is sent to the
+      waiting victim that the fire is expected to reach soonest, among those it
+      can reach first along a route that stays clear of the fire's estimated edge."
+  (2) "Every other waiting victim keeps the baseline's order and is never written
+      off by this rule."
+  (3) "Nothing else in dispatch changes."
+  (4) "A bound firefighter is never redirected."
+
+================================================================================
+7. URGENCY
+================================================================================
+7.1 DEFINITION
+    At a qualifying kick at step t, compute T(.) = FAE.arrival_time over the
+    whole grid. The inputs:
+    - x size model.HEIGHT and y size model.WIDTH (WM:195, 201-205: grid.width is
+      HEIGHT, which is FAE's first argument);
+    - the TRUE current burning set, read by truthiness exactly as the units read
+      it (A3);
+    - the downwind unit vector of the constant wind,
+      cfv.wind_vector_from_direction(model.wind.wind_direction) (A4);
+    - the published parameter values FrontPriorityParams(): U10 20, ROS fraction
+      0.1, walk 1.34, WAF 0.4, 1.15, LW 0.25 / 8 (FAE:35-45).
+    The parameters are FROZEN IN CODE. They are NOT read from the SEARCHER_FP_*
+    knobs, so the measurement round's FP sensitivity points cannot move dispatch
+    (U-6). kappa and tau are not used.
+    T(v) = T at v's CURRENT true cell. T is also used on route cells (8.2).
+    NEVER READ: the simulator's spread constants (FIRE_SPREAD_*, MU, fuel), the
+    flee rule, undetected victims.
+    If NO cell burns, the kick runs verbatim. U1 makes no claim without a fire.
+    PAPER: "urgency is the estimated fire arrival time at the victim's cell, from
+    published spread rates, the current fire perimeter and the wind".
+
+7.2 A FLEEING VICTIM'S CHANGING CELL
+    - T and the route are recomputed from her current true cell at EVERY
+      qualifying kick (A7: a detected victim is tracked).
+    - There is no memory, no smoothing and no prediction of her flight.
+    - The flee rule is the simulator's and is unknown to the team. The search
+      belief's flee model is an operator assumption (A8) for search probability,
+      not for deadlines.
+    - U1 decides only when a free unit is offered and never revisits a binding.
+      So a moving T cannot reverse anything. The bound unit re-targets to her live
+      cell every step, as today (AG:2904-2943).
+    KNOWN BIAS
+    - A fleeing victim stands within about 3 cells of the fire. So T at her cell
+      is small, especially downwind (3 cells is about 7 steps), and she often
+      stands on or next to an unclean cell.
+    - Flight often keeps her alive far longer than that (4.2: 6-204 steps after
+      her detection cell burned).
+    - The rule therefore tends to DEFER threatened downwind victims (3.4: s1 ring
+      D_W 51). That is why "deferred" never means "abandoned" (8.4), and why
+      every verdict is recorded with its outcome (MU3).
+    PAPER: "urgency is re-estimated from the victim's current cell at each
+    decision; the estimate does not model her flight, which tends to make a
+    fleeing victim look less reachable than she is".
+
+7.3 TIES
+    - T is a float from a deterministic formula with no RNG.
+    - Exact ties fall to c, then to the integer index.
+    - No tolerance band is used: any band would be a tuned constant. 18.4 records
+      the cost (re-orderings between victims whose estimates are hundreds of
+      steps away).
+    PAPER: "the order uses the estimate as computed, with deterministic
+    tie-breaks; no tuned constant".
+
+================================================================================
+8. REACHABLE IN TIME
+================================================================================
+8.1 THE UNIT
+    - U1 acts only when |F| = 1. The unit judged is the unit that will be sent:
+      the only free unit, f.
+    - Two or more free units under scarcity never occurred in 64 runs. If it
+      happens, the kick runs verbatim and is counted (MU1).
+    PAPER: "the reachability test is about the firefighter that is actually sent".
+
+8.2 THE SAFE-IN-TIME ROUTE c(f, v)
+    CLEAN CELL: a cell where an assigned unit does not trigger its survival
+    retreat (AG:3203-3225). It is:
+      - not burning (truthiness);
+      - not smoky (active Fire-agent smoke: the units' own predicate,
+        AG:3160-3174, and NOT _fix3b_true_fire's wider visibility smoke);
+      - not 4-adjacent to a burning cell.
+    T*(x) = the minimum of T over x and its in-grid 4-neighbours.
+    BFS FROM f's cell (hop 0; f's own cell is exempt):
+      - a cell x is entered at hop k >= 1 iff x is CLEAN now AND T*(x) > k;
+      - "T*(x) > k" means the fire is not estimated to reach x, or to make x
+        fire-adjacent, before the unit stands on it.
+      - c(f, v) = the hop at which v's cell is entered. v's own cell must
+        satisfy the same test, so a victim standing on an unclean cell is
+        unreachable now.
+      - c = infinity if no such route exists.
+    Correctness:
+      - Passability only tightens as k grows. Arriving earlier is therefore never
+        worse, and BFS gives the exact earliest arrival under these constraints.
+      - The unit's own cell may be unclean (it retreats anyway).
+    Cost: one BFS from the single free unit gives c to every waiting victim.
+    WHY THIS ROUTE, AND NOT DP1's NON-BURNING ROUTE d
+    - d is an admissible lower bound, so an in-time test built on it is
+      optimistic.
+    - The units' own survival rule retreats from unclean cells. The mover ranks
+      fire-adjacent cells 100 times worse than clean ones, and picks up only on a
+      clean cell.
+    - 22 of 26 dp0 firefighter deaths followed ROUTE CLOSURE: the fire reached a
+      unit's route, and the unit was stranded (12.1).
+    - The time-expanded condition is the parameter-free way to require "a route
+      the fire is not expected to close before the unit has passed".
+    - It uses the same frozen estimator. No new constant is introduced.
+    LIMITS, stated:
+    - The shipped mover is L1-greedy with risk tiers and does NOT follow paths
+      (AG:3686-3779). So c is a LOWER BOUND on its travel time along that route,
+      and "in time" is optimistic in exactly the MOV cases of 3.1.
+    - T is mostly late, so "T*(x) > k" is permissive.
+    - The non-burning d is still recorded for every victim (instrument), which
+      keeps M8 comparable.
+    Ruling U-5 offers simpler variants.
+    PAPER: "travel time is measured along a route that the fire is not expected
+    to close before the firefighter passes; for the greedy mover it is a lower
+    bound".
+
+8.3 THE TEST
+    v is PROMOTABLE iff c(f, v) is finite AND c(f, v) + 1 <= T(v). The "+1" is
+    the pickup step, as in M8 (DP1 11.6).
+    Otherwise v is DEFERRED, because either:
+      - no safe-in-time route exists (including: her own cell is unclean now); or
+      - the route is too slow for the estimate.
+
+8.4 A DEFERRED VICTIM IS NOT ABANDONED, AND NOT SILENTLY DEPRIORITISED
+    (a) She stays in W. There is no state change, no flag and no write-off of any
+        kind. U1 has no code path to unassign, release or mark_unreachable (T-SRC).
+    (b) With one free unit, only the first victim in the order is served at a
+        kick. A deferred victim is served at a kick where she comes first, which
+        happens when:
+          - no victim is promotable (the kick is then exactly today's); or
+          - she is the lowest-index waiting victim and no promotable victim
+            competes.
+    (c) She is re-judged at every later kick, from her new cell, the new fire and
+        the newly free unit. She becomes promotable as soon as the estimate admits
+        it.
+    (d) Every deferral is printed on the ON path ([UrgencyTriage], 13.3), with T,
+        c and the victim served instead. The instrument records it with its
+        outcome (MU2, MU3). It is never silent.
+    (e) The ESCAPE SWEEP is unchanged. It can write her off only after 30
+        consecutive steps in which she is both:
+          - not productively served (no assigned unit got closer, WM:5476-5490);
+            and
+          - unreachable by a fire-free path from EVERY living, on-grid,
+            non-exiting unit (RP:447-459, 527-528).
+        Deferral can contribute to a write-off only by leaving her unbound during
+        such a stretch, while she is unreachable in any case. This is gated:
+          - escape-sweep write-offs of detected victims must not rise (F8);
+          - every write-off of a victim who had been deferred is diagnosed (DIAG).
+    JUSTIFICATION
+    (1) The verdict rests on a poor clock (4.2) and on a current-cell estimate
+        that ignores flight. In the evidence cases, victims whom an in-time test
+        would have judged hopeless survived 99 to 200+ more steps (u2assess:
+        cases 2, 3, x and 4g). Writing victims off on such a verdict would kill
+        victims that today's dispatch saves.
+    (2) Deferring only changes WHO GOES FIRST when one unit is free. Serving a
+        deferred victim is what today's dispatch would do.
+    (3) Dispatch in this project writes nobody off (the dispatch round's D-6
+        principle). A triage rule that gives people up would need an ethical
+        statement the paper cannot support with this estimator.
+    PAPER: "a victim the dispatcher judges unreachable in time is deprioritised,
+    never abandoned: she keeps her place in the baseline's order, is re-judged at
+    every decision, every deferral is logged, and write-offs were a gated outcome".
+
+================================================================================
+9. THE TRIAGE RULE, WITH TIE-BREAKS, AND WHY
+================================================================================
+9.1 THE RULE
+    At a kick with DISPATCH_URGENCY = 1, |F| = 1, |W| >= 2 and at least one
+    burning cell:
+      key(v) = (0, T(v), c(f, v), idx(v))   if v is promotable
+               (1, idx(v))                  otherwise
+    - idx(v) is the INTEGER victim index ("victim_10" after "victim_2").
+    - Sort W ascending by key, then run today's loop body over the sorted W.
+    - The other managed victims are skipped by today's predicates, as now.
+    Any other kick: today's loop verbatim.
+
+9.2 WHY EACH PART
+    - |F| = 1 (U-3).
+        - Under scarcity the kick then binds exactly one victim, so urgency
+          decides only WHO goes first. It never re-pairs.
+        - "The unit judged is the unit sent" is exact.
+        - The divergence definition (Z1) is exact.
+        - It covers all 14 recorded scarce kicks.
+    - PROMOTABLE FIRST. This is the brief's "AND that can still be reached in
+      time": the one free unit is not spent on a victim it is not expected to
+      reach before the fire if another victim can be reached.
+    - T ASCENDING. This is earliest-deadline-first ("the fire will reach
+      soonest").
+        - EDF is the classic rule for meeting deadlines on one resource
+          (Jackson's rule: it minimises maximum lateness).
+        - T is the best-validated ordering information the team has: C 0.86,
+          against 0.46 for the index.
+    - c, THEN INDEX, AS TIE-BREAKS.
+        - Of two equally urgent victims, the quicker rescue frees the unit sooner
+          (shortest-processing-time).
+        - The index is today's own order, and it makes the order total and
+          deterministic.
+    - DEFERRED VICTIMS IN TODAY'S ORDER.
+        - The estimate says the unit cannot be expected to reach any of them
+          safely before the fire, so it gives no basis to rank them.
+        - Ordering them by T would send the unit toward the front where the
+          chance of a pickup is lowest, which is the safety concern of section 12.
+        - Keeping today's order is the minimal choice. Test T-U10 enforces it.
+    PAPER: "critical-first among the reachable, the baseline order for the rest,
+    only when one firefighter is free and others are needed".
+
+9.3 WORKED CASES (one free unit; c is the safe-in-time route)
+    (a) v0: T 400, c 30; v2: T 60, c 40. Both promotable; U1 serves v2, today
+        serves v0.
+    (b) v0: T 400, c 30; v2: T 20, c 40. v2 is deferred; U1 serves v0, as today.
+    (c) v1: no safe route; v3: T 25, c 15. v3 is promotable; U1 serves v3, today
+        serves v1.
+    (d) v0 and v1 both deferred: U1 serves v0, as today.
+    (e) Nothing burns: the kick runs verbatim.
+
+9.4 WHAT THE RULE DOES NOT DO
+    - It does not pre-empt or cross-swap.
+    - It does not act at a detection.
+    - It does not act at a route_blocked or casualty replacement. This is
+      deliberate. If the casualty replacement's free unit went elsewhere, the
+      dead unit's victim would meet an empty pool and be WRITTEN OFF permanently
+      (RP:661-667). T-CAS enforces this.
+    - It does not decide for units freed by a victim's death, the escape sweep or
+      a stale clear: these trigger no kick (2.2(b)). In dp0, those units' idle time
+      (13 unit-steps) never preceded a bind. Recorded as risk 18.10 and offered
+      in U-2.
+    PAPER: "the rule applies only when a firefighter becomes free through a
+    return or a reopened route".
+
+================================================================================
+10. NO FLIP-FLOP - PROOF
+================================================================================
+SETTING
+- DISPATCH_URGENCY = 1; the scenario teams as shipped.
+- A victim's BINDER SEQUENCE lists the units bound to her in order. A unit's
+  VICTIM SEQUENCE likewise.
+- OUTSIDE EVENTS are those dispatch does not choose:
+    o1  the unit's FIRST route_blocked raise on that pair (handler unassign)
+    o2  its REPEATED raise: the unit stays bound but latched, hidden from
+        _find_active; observed as route_blocked while bound
+    o3  its death
+    o4  the victim becomes terminal: rescued, dead, or unreachable (escape sweep
+        or casualty write-off)
+    o5  the completer's recycle or absence, after an o4 rescue
+    o6  a stale clear (mode 1 clears flags only; reached only when no detected
+        live victim remains)
+
+LEMMA 1 (U1 adds no unbind)
+- U1's code is: the ordering function (pure, reads only), the qualifying-kick
+  predicate, and the [UrgencyTriage] print.
+- It changes only the iteration order of the loop at WM:3051. The loop body
+  either binds through the executor or returns a no-op delay. With reason
+  "initial", select never returns mark_unreachable (2.1).
+- So every unassign, release and write-off in a run with U1 on comes from a path
+  in 2.3, each triggered by o1-o6.
+- Tests: T-FLIP-U, T-SRC and the reason mutant in T-U5.
+
+LEMMA 2 (U1 binds only waiting victims, and exactly as many as today)
+- W is formed by today's three predicates, unchanged. The executor's guards are
+  unchanged (RE:380-398; WM:4914-4924).
+- So U1 binds the free unit only to a detected, needy victim with no ACTIVE
+  binder. It never creates a second ACTIVE binder.
+- A latch-held victim can receive a second claimant exactly as today, because
+  the latched unit is invisible to _find_active (WM:4044-4046).
+- At a qualifying kick, exactly one victim is bound in either order: the
+  selected assign always succeeds, and binding one victim does not change
+  another victim's predicates.
+- Elsewhere the kick is today's loop.
+- So the number of binds per kick is identical (Z8).
+
+THEOREM (no reversal by an urgency comparison)
+- Suppose a victim's binder sequence is A ... X ... A, or a unit's victim
+  sequence is v ... w ... v.
+- A new binder joins a victim only when her previous binder was:
+    - REMOVED by an unbind: o1, o3, or an escape-sweep unassign, which ends her
+      sequence (o4); or
+    - LATCHED (o2): a second claimant joins beside the latched unit, as today.
+- By Lemma 1, U1 issues no unbind. Hence every return of a unit to a victim, and
+  every return of a victim to a unit, is preceded by an outside event (o1-o6) on
+  the intermediate binder, or on the unit while it served w.
+- The urgency key moves every step with the fire and the victim's flight. But it
+  is consulted only when a FREE unit is offered to WAITING victims.
+- It cannot send a unit back: that would need an unbind or a latch, which only
+  the fire, a death, a rescue or the isolation timer can cause.
+
+BOUNDS: binds per victim are bounded as today.
+- o1 happens at most once per pair (the permanent _blocked_replacement_attempted,
+  WM:425-426).
+- There are at most N_ff deaths.
+- A qualifying kick binds one victim.
+- U1 adds no bind opportunity: kicks happen at the same events.
+
+STILL POSSIBLE, AS TODAY (none chosen by urgency)
+  R1  A raises (o1); later its route reopens; K2 offers A to the waiting victims,
+      possibly v again.
+  R2  A dies (o3); B takes v; B raises; and so on.
+  R3  A latches (o2); a kick binds B as a second claimant; A recovers, giving two
+      active binders. This is today's double claim (DP1 1.3).
+
+IMPOSSIBLE UNDER U1
+- any unbind, release or write-off issued by the urgency code;
+- a return whose intermediate binder was neither removed nor latched by an
+  outside event;
+- a kick binding a different NUMBER of victims than today's loop would on the
+  same state.
+Under DISPATCH_URGENCY = 0, today's dispatch runs verbatim.
+
+GATED IN PART 3: Z2 (U1-issued unbinds = 0) and Z5 (returns without an outside
+event = 0) are structural zeros.
+- Z5 uses the outside-event set above. A post-phase return whose intermediate
+  binder X is route_blocked in rows_ff at the return step counts as a same-frame
+  latch (o2), WHATEVER the bind's reason.
+- DPR's G-T(a) counted that only for J's joint_replace_latched reason. Under DPR's
+  definition, today's code shows 1 such return (set 2 uniform A_N, step 118, a K2
+  kick after a same-frame latch).
+- Under the amended definition there are 0 returns without an outside event in
+  all 64 dpR, 64 dp0 and 64 dp1 records (checked in Part 1, read-only:
+  scratchpad z5_check.py, importing _dp_analyze.gt_returns unchanged).
+
+PAPER: "the urgency rule cannot make a firefighter oscillate between victims. It
+never unbinds anyone, so every change of assignment follows a fire event, a
+latch, a death, a rescue or the isolation timer. The proof needs no tuned
+constant."
+
+================================================================================
+11. INFORMATION - ONLY DETECTED VICTIMS, AND WHAT A REAL TEAM KNOWS
+================================================================================
+11.1 WHAT U1 READS
+    - The ids in W, formed by today's predicates, UNCHANGED. These already read
+      value-inert status flags of every victim: _victim_needs_rescue (marker and
+      state dead / rescued / unreachable, WM:3598-3615), then the confirmed flag
+      and the marker status (WM:3055-3062). U1 adds no read to them.
+    - For each v in W (all detected): her current true cell (A7).
+    - The team's own units: position, availability, id (own state).
+    - The TRUE current burning set and the TRUE active Fire-agent smoke (A3,
+      extended to smoke).
+    - The wind direction (A4).
+    - model.HEIGHT / WIDTH.
+    - The published constants frozen in code (7.1).
+11.2 WHAT U1 NEVER READS
+    - Any field of an undetected victim beyond today's predicates.
+    - From the new code: no iteration of victim_marker_agents, and no call to
+      get_rescue_operational_snapshot or _any_victim_needs_rescue.
+    - The visibility model's smoke.
+    - The simulator's fire constants, flee rule or fuel.
+    - Any RNG.
+11.3 THE TEAM-KNOWLEDGE ASSUMPTION
+    - U1 reads the fire perimeter AND smoke as the units' own survival and route
+      tests do. This is A3 ("fire perimeter known in near real time; today =
+      truth") extended to the dispatcher and to smoke.
+    - The dispatch round's ruling D-12 said exactly this: state A3 for the
+      firefighters and dispatch, including smoke, and correct
+      docs/04_clean_separation_table.md:101, which calls fire "beliefs". But D-12
+      lives on the UNMERGED dispatch branch. This round carries it: the paper
+      statement, plus the docs line as a Part 2 item.
+11.4 THE GUARD (tests, section 15)
+    - The urgency view is built AFTER W.
+    - T-INFO-a arms a read trap on undetected victims for the view and the
+      ordering only, not for today's predicates.
+    - T-INFO-b: a metamorphic test.
+    - T-INFO-c: a source check that the W builder calls only
+      _victim_needs_rescue and _find_active_firefighter_for_victim and reads only
+      state.confirmed and marker.status. The existing exactly-2 AST test of
+      _any_victim_needs_rescue (tests/test_searcher_untuned.py:842-850) must stay
+      green.
+    PAPER: "the dispatcher reads only today's value-inert status flags of an
+    undetected victim; it ranks detected victims using the fire perimeter and
+    smoke (A3), the wind (A4) and published spread rates".
+
+================================================================================
+12. FIREFIGHTER SAFETY - THE GUARD
+================================================================================
+12.1 THE RISK, MEASURED
+    dp0's 26 firefighter deaths, by leg:
+      approach                                      8
+      stranded after a route_blocked unassign      11   died a median 5 steps
+                                                        later (range 2-9)
+      idle                                          6   3 of them soon after
+                                                        their own route_blocked
+                                                        cleared
+      carry                                         1
+    - 22 of the 26 follow ROUTE CLOSURE: units die near the front when the fire
+      closes their route.
+    - Only 2 of the 26 died after a bind made at a scarce choice. One of these
+      died at the same cell and step in dp1, where the other victim was chosen.
+    - Urgency deliberately prefers victims the fire reaches first, which is where
+      routes close.
+    - Illustration of that exposure (not an urgency decision). Case 2 with J on,
+      at step 46, sent ff_unit_0 on a 64-step route (Manhattan 18) to victim_2,
+      the only waiting victim. The route closed at 63, the unit died unbound at
+      87, and the victim died at 144 (201 with J off).
+    PAPER: "most firefighter deaths follow route closure near the front; an
+    urgency rule must not add such legs".
+12.2 THE GUARD (each part structural, each with a test)
+    G1 SAFE-IN-TIME ROUTE (8.2)
+       - Urgency may move a victim ahead of today's order only if the free unit
+         has a route to her over clean cells that the fire is not estimated to
+         reach, or to make fire-adjacent, before the unit passes. The unit must
+         also be estimated to pick her up before the fire reaches her cell.
+       - Urgency never prefers a victim who can be approached only along, or
+         through, the fire's present or estimated edge, or who stands on an
+         unclean cell.
+       - At case 2's OFF-arm kick (step 51), victim_2's route was 55 or more,
+         against a stale remaining estimate of about 2: G1 refuses the
+         promotion.
+       - Tests T-U2 and T-U3. Mutants: the cut removed; a static clean route; the
+         victim's cell exempt.
+    G2 NO NEW KIND OF LEG
+       - U1 sends the one free unit to a victim in today's W, through today's
+         pairing and reason.
+       - Its DESTINATION can differ from today's, so its exposure can differ:
+         this is measured by G4 and MU4.
+       - U1 never redirects a bound unit, never pre-empts, and never acts on a
+         route_blocked or casualty replacement.
+       - Tests T-U4, T-U5, T-FLIP-U, T-CAS, T-DRN.
+    G3 THE SAFETY LAYERS STAY: movement, the survival retreat, the route_blocked
+       raise and handler, the casualty sweep, idle firefighting and its retreat.
+       Test T-NT (NOT-TOUCHED source hashes).
+    G4 MEASURED, AS A GATE
+       - Firefighter deaths must not rise, pooled (F1).
+       - Reported: per set and placement; by leg; unit-steps on unclean cells;
+         route_blocked raises; strandings (an o1 unassign followed by that unit's
+         death within 15 steps). Each is split into legs bound at a U1-divergent
+         kick versus all others (MU4).
+       - Every firefighter death in a diverged cell is diagnosed.
+12.3 WHAT THE GUARD DOES NOT GUARANTEE
+    - G1 judges the route with an estimate that is mostly late (4.2), so
+      "not estimated to close" is optimistic.
+    - The greedy mover may leave the route (8.2).
+    - The guard bounds the DECISION, not the outcome. That is why firefighter
+      deaths are a gate.
+    PAPER: "the urgency rule may prefer a victim only along a route the fire is
+    not expected to close before the firefighter passes, and only when the
+    firefighter is expected to arrive first; firefighter deaths were a
+    pre-registered guard".
+
+================================================================================
+13. SWITCH, PARAMETERS, LOGGING, IDENTITY WHEN OFF
+================================================================================
+13.1 THE SWITCH
+    - DISPATCH_URGENCY lives in CFV, in a new round block after the isTrue block
+      (CFV:278-292). It ships 0.
+    - Accessor: dispatch_urgency() in AG, following the ships-0 pattern of
+      searcher_targeting_rw_gated (AG:2318-2321):
+        _exact_integer(getattr(cfv, NAME, 0)) == 1
+      read at call time from the cfv module (never the star import;
+      LAG:532-535 sets both modules).
+    - It is independent of every other switch. If the dispatch branch ever merges
+      with DISPATCH_JOINT = 1, J closes the legacy kick (dispatch:WM:3051-3053)
+      and U1 becomes inert. The CFV comment says so.
+    | DISPATCH_URGENCY           | Behaviour                                     |
+    |----------------------------|-----------------------------------------------|
+    | 0, missing, or anything    | today's kick loop verbatim: no new state      |
+    | that is not an exact 1     | read, no print, no RNG; the ordering function |
+    |                            | is never entered. THE KILL SWITCH.            |
+    | 1                          | qualifying kicks (9.1) are ordered; every     |
+    |                            | other kick runs verbatim; one [UrgencyTriage] |
+    |                            | line per qualifying kick.                     |
+    PAPER: "one switch; off = the baseline exactly (measured on 64 cells)".
+13.2 PARAMETERS
+    - None new. The estimator's published values are frozen in the module (7.1;
+      U-6).
+    - There is no tolerance, horizon, margin or weight.
+    - The clean-cell rule is the units' own survival predicate.
+    - Nothing is tuned, now or on Part 3.
+    PAPER: "no fitted constant".
+13.3 LOGGING (ON path only)
+    - One stdout line per qualifying kick:
+        [UrgencyTriage] step=<t> unit=<ff> order=[<vid>(T=<x.x>,c=<n|inf>,<P|D>)...]
+          served=<vid>
+      P = promotable, D = deferred. The kick site (K1 or K2) is recorded by the
+      instrument, not printed.
+    - The line follows [Dispatch] (WM:5002-5005). It is a new tag only in ON runs;
+      the probes count tags (_sd_probe.py:73, 337-341).
+    - The bind keeps the reason "initial". Any other reason on an empty pool would
+      hit the planner's mark_unreachable rule (RP:657-667), and event types map by
+      substring (WM:4443-4456). T-U5 kills a reason mutant.
+    - No new event type and no new dashboard map.
+    PAPER: "every deferral is visible to the operator".
+13.4 IDENTITY WHEN OFF
+    - The OFF path is the literal managed.items() loop. One accessor check is
+      made at entry, before and outside the loop.
+    - Nothing prints, and stdout is byte-identical.
+    - Gated by Z0 and tested by T-SW and T-ID.
+
+================================================================================
+14. COST
+================================================================================
+- Switch OFF: one accessor read per kick.
+- Switch ON, per kick: the qualifying test is O(units + victims).
+- Per qualifying kick:
+    - one FAE.arrival_time over the grid (DP1 21.1 C7: median 6-7 ms, p95
+      22-24 ms per call);
+    - one BFS from the free unit (at most 2 500 cells; JD's flat array);
+    - the scan for unclean cells.
+- Qualifying kicks: 14 in 64 runs (3.2).
+- Measured in Part 3 (M7): perf_counter around the ordering function.
+    R = (sum of ordering-function ms in a run) / (wall seconds x 1000).
+    S6 requires median R <= 2 % and p99 <= 50 ms per qualifying kick.
+PAPER: "the rule's cost is a few milliseconds per decision".
+
+================================================================================
+15. PART 2 (PRE-REGISTERED): IMPLEMENTATION, TESTS, TOOLING
+================================================================================
+15.1 ORDER
+    (0) This Part 1, with the maintainer's rulings appended as section 21, is
+        COMMITTED on branch urgency before any Part 2 code. A ruling other than a
+        recommended option means an amendment here first, and a STOP if any
+        pre-registered item changes (section 19 header).
+    (1) Merge main (a20a2ef5, text-only) into urgency (U-12). Re-check that no
+        file this design touches changed. If main has moved further, re-check
+        C1-C3 for every new commit, and write an amendment plus a STOP if any
+        pre-registered item changes:
+          C1  the line map re-derived;
+          C2  no change inside the touched functions;
+          C3  the location of test_shipped_defaults.
+    (2) Build the source (15.2).
+    (3) Build the tests (15.3) and run the mutation check (15.4).
+    (4) Build the Part 3 TOOLING (15.5), and run its self-tests.
+    (5) At most 3 review agents:
+          R1  rule, proof and information;
+          R2  tooling and identity;
+          R3  pre-registration compliance.
+    (6) Run the full suite detached on an idle machine. The expected failing set
+        is exactly {T5} = tests/test_uav_sector_assignment.py::
+        test_fire_tracker_uavs_receive_different_target_sets.
+    (7) Instrument smoke on 2 cells, plus a Z0 smoke: ud0 vs dpR on the same 2
+        cells.
+    (8) Commit. That commit is Part 3's head. The sha256 of every tooling file
+        and of the frozen queues are recorded in the Part 2 notes.
+    From the start of W1 to the end of W4, NO commit is made and no run-loaded
+    file is edited in this worktree (bayesprep hazard; the head check, 16.6).
+
+15.2 SOURCE FILES AND FUNCTIONS (nothing else changes)
+    NEW: src_extension/planning/urgency_dispatch.py. Pure: no model, grid or RNG
+      access; plain tuples and dicts in.
+        unclean_cells(burning, smoky, x_size, y_size)
+        t_star(T, x_size, y_size)
+            the min of T over a cell and its 4-neighbours
+        safe_route_hops(source, x_size, y_size, unclean, t_star)
+            the time-expanded BFS of 8.2, built from JD:48-170's flat-array
+            BFS; attributed to the dispatch branch
+        urgency_order(waiting, unit, burning, smoky, wind, x_size, y_size)
+            -> (ordered ids, per-victim records: T, c, d, promotable, key)
+        qualifies(n_waiting, n_free, any_burning)
+      T itself comes from FAE.arrival_time with FrontPriorityParams() defaults.
+    CHANGED: wildfire_model.py
+      - _try_dispatch_unresolved_confirmed_victims (WM:3045-3065), under the
+        accessor:
+          - build W with today's predicates, evaluated in the same order;
+          - build F with _firefighter_available_for_dispatch;
+          - if the kick qualifies: order W by urgency_order and print the
+            [UrgencyTriage] line;
+          - run the UNCHANGED body over the ordered W.
+        Without the accessor: the loop exactly as it is (no refactor of the OFF
+        path).
+      - _urgency_dispatch_view(W, unit) (NEW): the reads of 11.1, made after W
+        is built.
+    CHANGED: agents.py - accessor dispatch_urgency().
+    CHANGED: common_fixed_variables.py - DISPATCH_URGENCY = 0, with its
+      documentation.
+    CHANGED: docs/04_clean_separation_table.md:101 - the A3 wording (11.3).
+    CHANGED: tests/test_base_station.py::test_shipped_defaults (lines 119-179) -
+      pin DISPATCH_URGENCY == 0.
+    NOT TOUCHED:
+      - select_rescue_assignment, the executor, apply_physical_rescue_command;
+      - the detection drains and the incident handler's tail;
+      - the route_blocked and casualty replacements, _release_other_claimants;
+      - the revalidation (including the K2 call site), the stale clear, the
+        removals (including the K1 call site), the escape sweep, the casualty
+        sweep;
+      - movement, firefighting, the fire, victims, UAVs and searchers;
+      - FAE itself, and the stage order.
+      T-NT pins this list.
+
+15.3 TESTS
+    New files: tests/test_urgency_dispatch.py (pure) and
+    tests/test_urgency_dispatch_model.py (model level).
+    - Every test is mutation-checked against the NAMED MUTANT listed with it and
+      must fail on it. Results are recorded per test in the Part 2 notes.
+    - Real-model tests pin the team (A 3/5/3 on cfv AND wf, SYSTEM_RANDOM,
+      agents.random) and stay short (about 9 s per real step).
+    RULE
+      T-U1   ONE free unit, two promotable victims: the smaller T is served, even
+             at the higher index.
+             MUTANT: index order kept.
+      T-U2   In-time cut: an urgent victim with c + 1 > T is deferred, and a
+             promotable, less urgent victim is served. Boundary: c + 1 = T is
+             promotable; c + 1 = T + 1 is not.
+             MUTANT: the cut removed.
+      T-U3   Safe-in-time route. Cases:
+               - a victim reachable only through unclean cells (fire-adjacent,
+                 smoky, burning) is deferred;
+               - a victim standing on an unclean cell is deferred;
+               - a route that is clean now but passes a cell with
+                 T*(x) <= its hop is refused, while a slower clean route that
+                 avoids it is used;
+               - the unit's own unclean cell is exempt.
+             MUTANTS: unclean = burning only; smoke ignored; the victim's cell
+             exempt; static clean route (no T* test).
+      T-U4   Not qualifying: |W| <= |F|, and |F| = 2 with |W| = 3. Both leave
+             today's order and the same assign log.
+             MUTANTS: the |F| = 1 gate replaced by |W| > |F| >= 1; the gate
+             removed.
+      T-U5   Deferred, not abandoned:
+               - the deferred victim is served at the next kick at which she
+                 comes first;
+               - no unassign, release or mark_unreachable is issued by U1 (spy
+                 on the executor and the model);
+               - the [UrgencyTriage] line marks her D.
+             MUTANTS: deferred victims dropped from the iteration; the reason
+             changed from "initial" at qualifying kicks (an empty pool then
+             writes her off).
+      T-U6   Flight: moving a waiting victim between two kicks changes T, c and
+             the order. A bound victim's binding is unchanged when her T drops.
+             MUTANT: T cached at the detection cell.
+      T-U7   Ties: equal T, then the smaller c, then the integer index
+             (victim_10 after victim_2).
+             MUTANTS: the c tie-break removed; string comparison of ids.
+      T-U8   Estimator:
+               - T comes from FAE.arrival_time with the defaults;
+               - numpy.bool_ burning is handled by truthiness;
+               - --set SEARCHER_FP_U10_KMH=40 changes the searcher's estimate
+                 but NOT U1's order;
+               - on a NON-SQUARE fixture, x is indexed by HEIGHT.
+             MUTANTS: parameters read from cfv; height and width swapped.
+      T-U9   The judged unit is the unit sent. At a qualifying kick, the unit
+             select_rescue_assignment binds is f, the one unit in F. Checked over
+             300 random states (status mixes: en_route, exiting,
+             rescue_completed, route_blocked, off-grid).
+             MUTANT: F built without the exiting / rescue_completed filters.
+      T-U10  All deferred: today's index order is kept even when T orders them
+             differently.
+             MUTANT: deferred victims sorted by T.
+      T-U11  Nothing burns: the kick runs verbatim.
+             MUTANT: the ordering applied with T = inf (that is, by c).
+      T-CAS  The casualty and route_blocked replacements still serve their own
+             victim when U1 is on and others wait; no new write-off.
+             MUTANT: U1 ordering applied at the incident tail (WM:3982).
+      T-DRN  The detection drain's order is unchanged when U1 is on.
+             MUTANT: the drain sorted by urgency.
+    FLIP-FLOP
+      T-FLIP-U  Property test: a small state simulator driving the real ordering
+             function over 500 seeded random sequences of kicks, fire changes,
+             victim flights, outside events (o1-o4) and recoveries. Asserts:
+               - U1 issues no unbind;
+               - every RETURN (A..X..A on a victim, v..w..v on a unit) is preceded
+                 by an outside event (o1, o2 or o3) on the intermediate binder;
+               - the number of binds per kick equals that of the index-order loop.
+             MUTANT: a "re-rank" step that releases a bound unit when a more
+             urgent victim appears (pre-emption).
+      T-SRC  AST check: the new module and the kick branch call no unassign,
+             release, mark_unreachable, _release_other_claimants or
+             apply_physical_rescue_command, except through the unchanged loop
+             body.
+             MUTANT: an unassign call added.
+      T-NT   The source of every NOT-TOUCHED function in 15.2 hashes equal to the
+             base 27744a28 (LF-normalised).
+             MUTANT: one line changed in _release_other_claimants.
+    INFORMATION
+      T-INFO-a  Read trap. After W is built, undetected victims' managed states
+             allow only `confirmed`, and their markers raise on any access, while
+             _urgency_dispatch_view and urgency_order run.
+             MUTANT: the view reads one undetected marker's cell.
+      T-INFO-b  Metamorphic. Perturbing undetected victims' cells, statuses and
+             fates, with the per-step detected-id sequence first asserted
+             identical, leaves the U1 orders and the assign log identical over a
+             short pinned real-model run.
+             MUTANT: as T-INFO-a.
+      T-INFO-c  Source check (11.4), and the exactly-2 AST test stays green.
+             MUTANT: the view calls get_rescue_operational_snapshot.
+    SWITCH AND IDENTITY
+      T-SW   The exact-1 table, in both directions:
+               ON:  1, True, 1.0, "1", " 1 ";
+               OFF: 0, 2, 0.5, "2.0", "on", "", None, missing.
+             The switch is read at call time. When OFF, the ordering function is
+             never entered (spy), nothing prints, and no model attribute is
+             added. The shipped 0 is pinned in test_shipped_defaults.
+             MUTANTS: truthiness instead of exact 1; the gate removed.
+      T-ID   A short pinned real-model run with the switch absent and with it at
+             0 gives an identical stdout and assign/unassign log, equal to the
+             base's.
+             MUTANT: an unconditional [UrgencyTriage] print.
+    EXISTING TESTS: unchanged except test_shipped_defaults, and all green. The one
+    existing test that drives the kick, tests/test_phantom_rescue_release.py:
+    209-227, has one waiting victim and is unaffected.
+
+15.4 MUTATION CHECK: outputs/_ud_mutants.py (adapted from _dp_mutants.py)
+    - applies each named mutant to a temporary copy;
+    - runs exactly the listed tests;
+    - records killed or survived per test.
+    Every listed test must fail on its mutant. A surviving mutant blocks the
+    commit.
+    PAPER: "every behavioural claim of the rule has a test that fails without it".
+
+15.5 PART 3 TOOLING (built, self-tested and committed at the Part 2 commit,
+    before W1)
+    - outputs/_ud_probe.py: the instrument (16.5).
+    - outputs/_ud_analyze.py and outputs/_ud_analyze_selftest.py: the analyzer
+      and a synthetic self-test, which must pass.
+    - outputs/_ud_queue.py and the FROZEN queues outputs/_ud_q_w{1,2,3,4}.jsonl:
+      one line per run, with the exact argv. The analyzer's extra_params check
+      reads them.
+    - outputs/_ud_mutants.py (15.4).
+    - outputs/_ud_dpR/: the 64 dpR records (.json, .stdout.txt, .json.argv),
+      taken by `git show cc8d653c:...`, with outputs/_ud_dpR_sha256.txt.
+    The analyzer refuses to run if the text of sections 16.5-16.11 or 17 differs
+    from the Part 1 commit (hash), or if any tooling file's sha256 differs from
+    the Part 2 notes.
+
+================================================================================
+16. PART 3 (PRE-REGISTERED): THE SCREEN
+================================================================================
+16.1 BASE AND FILES
+    - Both arms run at the Part 2 commit, in this worktree.
+    - Every --out is an absolute path into E:/Projects/SAS_wt/urgency/outputs.
+    - --repo E:/Projects/SAS_wt/urgency is on EVERY line; the probes default to
+      the main checkout.
+    - Identity reference: the dispatch round's dpR corpus at exactly 27744a28,
+      in outputs/_ud_dpR/ (15.5). No new reference arm is run (U-8).
+
+16.2 SEEDS, FROZEN NOW (outputs/_ud_seeds.txt, committed with this document)
+    RULE: seed = base + 4*s + w, with s = A0 B1 C2 D3 and w = N0 S1 E2 W3
+    (cells A_N..D_W). This is the rule of sets 1-2 (_dp_seeds.txt;
+    _fb3_queue.cells).
+      set 3 (FRESH)      573001 ... 573016
+      set 4 (FRESH)      780001 ... 780016
+      set 1 (in-sample)  9601-9616
+      set 2 (in-sample)  9621-9636
+    FRESHNESS: ZERO whole-token occurrences of any of the 32 fresh seeds, or of
+    their +-20 margins, in either of these:
+    - every SCANNED file: 116 349 files, 24.8 GB, UTF-16 decoded, covering the
+      outputs/ of main, dispatch, zealous and urgency; docs/; tests/;
+      src_extension/; the root *.py/*.md/*.txt; and the memory directory. The
+      quarantine directory is excluded by rule.
+    - git history: a -G search over all refs gives 0 commits, against 85 for
+      9601-9616 as a positive control; 0 commit messages.
+    Both blocks lie outside the measurement round's reserved 30001-30256
+    (fix3b_part1.txt 10.3 and 19.1; 19.13 on main a20a2ef5) and outside its
+    29000-32000 check window.
+    WHY SIX DIGITS:
+    - No literal-zero 16-block of 4 or 5 digits exists in this project. Every
+      4-digit value occurs somewhere.
+    - The "natural next" blocks were already USED as seeds: 9651-9654,
+      9661-9664 and 9671-9674 (fix3a fx3B0); 9701-9716 (fix2 Part 3, called
+      "fresh 9701-9716"); 52001-52124.
+    Record: outputs/_ud_seedscan.py (a record of the check, not a selector) and
+    outputs/_ud_seedscan_summary.txt.
+    The analyzer recomputes the rule from _ud_seeds.txt and STOPS on any
+    mismatch. It never re-runs a scan.
+    PAPER: "the screen used two seed sets never used before in the project,
+    absent from every scanned file and from git history".
+
+16.3 ARMS AND CELLS
+    C = ud0   the switch absent (= 0).
+    U = ud1   --set DISPATCH_URGENCY=1.
+    Cells: scenarios A, B, C, D x winds N, S, E, W x placements ring
+    (VICTIM_SPAWN_MODE 0) and uniform (VICTIM_SPAWN_MODE 1).
+    - FRESH sets 3 and 4: 64 cells per arm. THE SCREEN.
+    - IN-SAMPLE sets 1 and 2: 64 cells per arm. Used for identity and a
+      mechanism replay.
+    Tags: ud0r3 ud0u3 ud0r4 ud0u4 ud1r3 ud1u3 ud1r4 ud1u4 (fresh), and ud0r1
+    ud0u1 ud0r2 ud0u2 ud1r1 ud1u1 ud1r2 ud1u2 (in-sample).
+    Files: outputs/_sd_<tag>_<S>_<W>.json, plus .argv, .poollog and .stdout.txt.
+    WHAT GATES WHAT
+    - STRUCTURAL items (Z0-Z8) are properties of the code. They are checked on
+      EVERY run of the round: all four sets and the evidence runs.
+    - OUTCOME items (S3, S4, S5) are computed on the FRESH sets only.
+    - In-sample and evidence OUTCOMES are reported, never gated.
+
+16.4 RUN LINE (the dispatch round's line with the new probe; CRN on; 360 steps)
+      <py> outputs/_ud_probe.py --crn --hazard -- --repo E:\Projects\SAS_wt\urgency
+        --scenario S --wind W --seed N --set GLOBAL_PLANNER_MODE=0
+        --set VICTIM_SPAWN_MODE=<0|1> [--set DISPATCH_URGENCY=1] --steps 360
+        --set BATCH_SIZE=360 --out <absolute> --tag <tag>_<S>_<W>
+    - CRN = the --crn flag (never --set FM2P_CRN, which _fb3_probe refuses).
+    - A run with 0 crn_draws is INVALID.
+
+16.5 THE INSTRUMENT: outputs/_ud_probe.py
+    A port of dispatch:outputs/_dp_probe.py v2. It is record-only: it wraps, draws
+    no RNG, prints nothing and adds no model attribute. It writes d["dp"] and
+    d["ud"] whatever the return code.
+    KEPT, with the same meaning (all of it works at 27744a28 without J: 0 dp
+    errors in 64 / 64 dpR records):
+    - commands with reasons, and the instrument's BFS verdict at every assign;
+    - binders per victim per step;
+    - waiting, including each waiting victim's d to each unit;
+    - the invariant capture;
+    - m3a;
+    - m8 with T_fire;
+    - write-offs.
+    The arrival_time call is unchanged, (grid.width, grid.height) = (HEIGHT,
+    WIDTH).
+    NEW: d["ud"]["kicks"], recorded at every call of the kick loop. It wraps the
+    two call sites to record K1 / K2. Per kick:
+    - step, site, W (ids, current cells), F (ids, cells), and whether it
+      qualifies;
+    - per v: T, c, d, the verdict;
+    - the U1 order, the index order, the victim bound, and the ordering
+      function's time.
+    In the C arm the U1 order is computed in SHADOW (record-only, the same pure
+    function), so every arm carries the counterfactual.
+    A kick is U1-DIVERGENT iff it qualifies and the victim bound under the U1
+    order differs from the one the index order would bind.
+    NEW: d["ud"]["decisions"]: per waiting detected victim at every qualifying
+    kick, her T, c, d and verdict, and her later fate (pickup step, death step,
+    the first burn of that cell).
+    SHA_FILES adds urgency_dispatch.py and FAE. The effective DISPATCH_URGENCY is
+    recorded.
+
+16.6 THE ANALYZER: outputs/_ud_analyze.py (a port of _dp_analyze.py)
+    - Prints the Part 1 and Part 2 commit hashes. Refuses on a text or tooling
+      hash mismatch (15.5).
+    - Reads _ud_seeds.txt and STOPS on any mismatch.
+    - INVALID (a tooling defect; the wave is re-run after the fix) is any run
+      whose:
+        - repo, head or extra_params differ from its queue line; or
+        - CRN draws are 0; or
+        - instrument recorded an error. An error is fixed in the instrument, its
+          hash recorded, and the wave re-run.
+    - A U crash, or a U run that stops neither terminal nor at 360, is a GATE
+      FAILURE (Z6). It is not re-run.
+    - A C crash is a defect of the base code: STOP and diagnose before any
+      outcome is read.
+    - Detection steps come from stdout.
+    - It calls _sd_analyze.analyze() on loaded dicts (never main()).
+    - It reuses DPR's G-OS / G-OF / G-L / G-N functions unchanged. Those depend
+      on _fb3_analyze, _fx3r_analyze, _fx3_pockets, _ut_analyze, _ut_analyze2 and
+      _sd_analyze, which are byte-identical between the two worktrees.
+    - G-T uses gt_returns with the AMENDED outside_events (10; Z5).
+    - Its synthetic self-test must pass before any real run is read.
+
+16.7 STRUCTURAL ZEROS (exact; on EVERY run of the round)
+    Z0 G-ID.
+       - C == dpR on 64 / 64 cells of sets 1-2.
+       - Compared: _fx3r_analyze FIELDS; every mf2 section; the console output's
+         sha256; and every dp field that exists without J. Excluded, as
+         _dp_analyze excludes them: probe, switches, src_sha, timing (J_ONLY).
+       - ud0 must also reproduce dp0's M8 exactly (13 deaths, 11 FC).
+       - The evidence OFF runs (16.11) reproduce the dispatch round's dpE..0..
+         records. Those ran at ea737eb4, whose OFF path is value-identical to
+         27744a28 (DPR S1).
+           - probe cases: the same fields;
+           - harness case 1: eval, the assign/unassign lists, terminal step.
+    Z1 G-DIV.
+       - In every cell of every set, U and C are value-identical up to the first
+         U1-divergent kick, and the first difference is at that kick's step.
+         (Rows are captured after model.step(), which includes the post-move
+         kicks.)
+       - A cell with no divergent kick is identical from end to end.
+       - Compared: every per-step row, the commands, eval, and stdout with the
+         [UrgencyTriage] lines removed.
+       - The C arm's shadow verdict at that kick equals the U arm's.
+    Z2 Unbinds, releases and write-offs issued from U1 code: 0 (by instrument call
+       site).
+    Z3 At every NON-qualifying kick, U's binds equal the index-order
+       counterfactual's binds (the same victim and unit, in the same order).
+    Z4 Promotions without a finite safe-in-time route, or with c + 1 > T at the
+       decision: 0. The instrument recomputes both independently, and they must
+       agree with the logged verdict.
+    Z5 G-T(a) with the amended outside events of section 10: 0 in U.
+       (Pre-checked: 0 in all 192 dpR / dp0 / dp1 records.)
+    Z6 U crashes, and U runs that stop neither terminal nor at 360: 0.
+    Z7 At every qualifying kick, U binds exactly one victim (the first in its
+       order) to the unit f.
+    Z8 Binds per kick in U equal the index-order counterfactual's count, at every
+       kick.
+    PAPER: "the structural properties (identity when off, divergence only at the
+    rule's decisions, no unbind, no oscillation) held on every run" - or the
+    failing instance is reported.
+
+16.8 MUST NOT RISE (U vs C, pooled over the 64 FRESH cells; also reported per set
+    and placement; target 0)
+      F1  firefighter deaths.
+      F2  never-detected victims (stdout; eval never_detected).
+      F3  runs that never finish (terminal_step None; G-N).
+      F4  searcher oscillation, each kind separately (4):
+            broad (O) before the last detection; broad (O) after it;
+            pocket near a depot (r 5); pocket anywhere (r 500).
+      F5  firefighter oscillation, each kind separately (6):
+            broad positional (10-step window, <= 2 cells, >= 4 changes);
+            _sd_analyze I2 stuck approach and stuck carry (one cell >= 20
+            steps);
+            livelock approach and livelock carry (30-step window, <= 3 cells,
+            >= 8 changes);
+            no-progress approach (30-step window).
+      F6  latched units: LATCH EPISODES. An episode is a maximal run of
+          consecutive dp.binders samples in which the pair (unit, victim)
+          appears with status route_blocked. Also reported: DPR's run-end G-L.
+      F8  escape-sweep write-offs of DETECTED victims (mark_unreachable commands
+          from the sweep; 8.4(e)).
+    And per seed set:
+      F7  rescued, in set 3 AND in set 4: U >= C in EACH (the brief: "rescued
+          must not fall in either seed set").
+    That is 17 counts (F1-F3, F6, F8: 5; F4: 4; F5: 6; F7: 2), plus S4's pooled
+    detected-victim deaths, for 18 in all.
+    REPORTED, NOT GATED (U1 does not touch binding mechanics):
+    - G-B (a)/(b)/(d) double binders and invariant lines;
+    - G-T(b), all returns;
+    - M6 closed-route assigns and casualty write-offs;
+    - M3 idle-while-waiting.
+    PAPER: "the safety and quality counts the brief named were required not to
+    rise".
+
+16.9 MEASURES (reported)
+    M1/M1c  detection-to-rescue time, paired, as in DPR 14.7. Urgency may lengthen
+            some times. That is expected and is not a guard.
+    M2      rescued, dead, detected-victim deaths (FC / futile / M8-D),
+            firefighter deaths, never-detected, unreachable by cause; per set,
+            placement and scenario.
+    MU1     decisions: kicks, qualifying kicks, U1-divergent kicks, promotions,
+            deferrals, scarce kicks with |F| >= 2 (run verbatim); per set and
+            placement. Also the T class of each divergence: both T beyond
+            (360 - t), or not.
+    MU2     fates: promoted vs deferred victims (rescued, died, wait), and the
+            victims served LATER because of a promotion (the cost side).
+    MU3     verdict quality: each verdict against her outcome (picked up before
+            her cell burned; died). Also the estimator's bias and Harrell C at
+            the decisions, from the CURRENT-cell T, with a seed-level bootstrap.
+    MU4     firefighter exposure: unit-steps on unclean cells, route_blocked
+            raises, strandings, deaths by leg; each split by legs bound at
+            U1-divergent kicks vs the rest.
+    M7      cost: R per run, ms per qualifying kick (p50, p99), wall ratio U / C.
+    DIAG    every cell where U and C differ in rescued, detected deaths,
+            firefighter deaths or write-offs: the first divergent kick, its
+            verdicts, and what followed (as DPR 3.3 / 5.3). Also every write-off
+            of a previously deferred victim.
+    PAPER: the mechanism measures say how the rule acted, whatever the verdict.
+
+16.10 M8 ON BOTH ARMS (the brief)
+    - M8 exactly as DP1 11.6 / _dp_analyze m8_classify, in each arm on its own
+      runs: a detected-victim death is FC if, at detection, some living unit had
+      d + 1 <= death - detection; otherwise it is futile. Reported per set and
+      arm, with the value of the 25 % rule.
+    - Added, because section 3 showed that M8 counts BUSY units: M8-D,
+      DISPATCH-feasible. A death is M8-D if, at some step t while she waited
+      unbound (no ACTIVE binder, not in custody), a FREE unit had
+      d + 1 <= death - t. The step can be either:
+        - a sampled step end (dp.waiting carries each unit's d); or
+        - a kick (d["ud"]["kicks"]).
+      Only M8-D deaths can be reached by any re-ordering rule.
+    - The mechanism tally of 3.1 (U1 / RP / L3 / PRE / MOV / FUT) is reported for
+      every detected-victim death in a diverged cell. It is a descriptive
+      diagnosis by the forensic rules of 3.1, stated as such.
+    - INTERPRETATION of the brief's "PRIMARY: deaths of detected victims (the M8
+      classes)": S3 gates the TOTAL of detected-victim deaths (FC + futile). The
+      classes are reported, not gated separately (U-14).
+
+16.11 THE DISPATCH ROUND'S EVIDENCE CASES (outcomes reported, not gated)
+    - Each case runs OFF (C) and ON (U), in its ORIGINAL configuration as
+      recorded in dispatch:outputs/_dp_q_evidence.jsonl (22 lines).
+    - Only --repo, --out, --tag and the ON switch change.
+    - The OFF runs are part of Z0 and run in W1.
+    - U1 acts only at QUALIFYING KICKS. The expectations below are CONDITIONAL on
+      the current-cell T and the safe-in-time route, which are not recorded; the
+      ON instrument shows which branch occurred.
+    - "stale" = detection step + T_fire - step; "T" = T_fire at the detection
+      cell.
+    CASE 1 (D south 505, half roles; harness; CRN off and on)
+      No qualifying kick is known: the step-16 and step-75 choices are a
+      detection drain and a route_blocked replacement.
+      EXPECT: ON == OFF in both CRN modes.
+    CASE 2 (ring 9636 D_W, ST 2, pre-untune switches; CRN off and on)
+      CRN off, step 51 (a K2 kick): victim_0 (T 423, route 42) vs victim_2 (T 7.2
+      at detection 46; her cell burns at 54; stale about 2; route 55 or more).
+      EXPECT: victim_2 deferred; victim_0 served = OFF.
+      CRN on: no kick decision.
+      EXPECT: ON == OFF.
+    CASE 2f (ST 3): as case 2.
+    CASE x (ring 9633 D_N, ST 2; CRN off and on)
+      CRN off, step 48: victim_1 (T 75 at detection 18, route 59) vs victim_3
+      (T 826, route 47).
+      EXPECT, if step 48 qualifies: victim_1 deferred, victim_3 served. This is a
+      DIVERGENCE TOWARD THE LESS THREATENED victim, caused by the in-time cut.
+      victim_1 died at 177 in the OFF record.
+      CRN on, step 63: victim_0 (T 390) vs victim_1 (stale about 40, route 55).
+      EXPECT: = OFF.
+    CASE 3 (ring 9633 D_N, the ut0r2 configuration, CRN on)
+      Step 63: victim_0 (T 370, route 41) vs victim_1 (stale about 38, route 55).
+      EXPECT: = OFF (victim_0).
+    CASE 4d (ring 9613 D_N, BD, CRN on)
+      Step 183: victim_1 (route 69; she shelters in the fireproof NW depot, and
+      her T is small because the estimator does not know the depot) vs victim_3
+      (T 518, route 48).
+      EXPECT: victim_1 deferred, victim_3 served. A DIVERGENCE: the OFF run never
+      finishes because victim_3 is never picked up.
+    CASE 4g (GP, CRN on)
+      Step 55: victim_0 (route 52, T 191) vs victim_1 (route 36, T 12 at
+      detection 35, her cell burns at 42).
+      EXPECT: victim_1 deferred unless she has fled to a cell the estimate
+      admits; most likely = OFF. J (L3) served victim_1, who was rescued at 85;
+      U1 is not expected to.
+    SCREEN CELLS 21.2(a) and (b), and the never-finishing set 2 uniform D_W: these
+      are in the in-sample sets.
+      EXPECT:
+        - (a) = OFF;
+        - (b) = OFF at steps 82 and 129 (victim_3 deferred);
+        - the never-finishing cell: a divergence at step 78 (victim_2 before
+          victim_0; T at detection 341 vs 557; stale 308 vs 536).
+    IN-SAMPLE REPLAY: expect divergent kicks at about the six of 3.4, and no change
+      to the 13 deaths except through divergence. s1 ring D_W step 51 is the
+      named risk.
+    RUNS: cases 1, 2, 2f and x in 2 CRN modes x 2 arms (16), plus cases 3, 4d and
+      4g x 2 arms (6): 22 runs.
+      Tags: udE1, udE2, udE2f, udEx, udE3, udE4d, udE4g, each + <0|1><c|n>.
+    PAPER: the evidence cases are mechanism checks (what each decision became),
+    never effect sizes.
+
+16.12 WAVES
+    - The pool is outputs/_mf2_pool.py (--maxpar 12 --min-free-gb 3). About 8
+      runs run at once; free commit memory is the limit.
+    - One wave at a time. Tags are re-checked unused (all trees, tracked and
+      untracked) immediately before each wave.
+      W1 IDENTITY: ud0 on sets 1-2 (64) and the 11 evidence OFF runs (11).
+         Z0 is read as runs finish. If Z0 fails, STOP before W2.
+      W2 SCREEN: ud0 and ud1 on sets 3-4 (128).
+      W3 IN-SAMPLE ON: ud1 on sets 1-2 (64).
+      W4 EVIDENCE ON: 11 runs.
+    - Total: 278 runs. At the dispatch round's measured 25.5-32 runs/h that is
+      about 9-11 h, plus the full suite (about 2 h, detached).
+    - WAVE CHECKS EVERY 20-30 MINUTES, covering:
+        - completed / running / failed counts;
+        - per-run validity: repo, head, extra_params, crn_draws > 0, steps, the
+          crash flag, d["ud"] present;
+        - every expected file present;
+        - disk space;
+        - from the first finished pair on, a Z0 / Z1 spot check.
+      Any INVALID run stops the wave.
+    - From W1 to W4: no commit, and no edit of a run-loaded file (15.1).
+
+16.13 REPORT to outputs/urgency_report.txt. STOP before merging.
+
+================================================================================
+17. DECISION RULE (PRE-REGISTERED)
+================================================================================
+17.1 NOTATION
+    - Arms: C (ud0) and U (ud1).
+    - FRESH cells: sets 3 and 4 x 2 placements x 16 = 64.
+    - DD(arm, c) = detected-victim deaths in cell c: victims with a [Victim
+      Detection] line who die by step 360.
+    - Sums run over the 64 fresh cells unless a set is named.
+
+17.2 SHIP ON (DISPATCH_URGENCY = 1) IF AND ONLY IF ALL OF THESE HOLD:
+    S1 IDENTITY: Z0 holds.
+    S2 STRUCTURE: Z1-Z8 hold exactly, on every run of the round.
+    S3 PRIMARY:
+       - sum DD(U) < sum DD(C), pooled; and
+       - sum DD(U) <= sum DD(C) in set 3 AND in set 4; and
+       - the pooled difference stays < 0 after removing the single cell with the
+         most negative DD(U) - DD(C).
+       No one-cell result counts: a canonical-set gain has evaporated three times
+       in this project.
+    S4 HARM GUARDS: rescued(U) >= rescued(C) in set 3 AND in set 4 (F7); and
+       sum DD(U) <= sum DD(C) pooled. A RISE in the primary is harm, not a null.
+    S5 MUST NOT RISE: F1-F6 and F8 (16.8), each with U <= C pooled.
+    S6 COST: median R <= 2 % and p99 <= 50 ms per qualifying kick (14).
+
+17.3 OUTCOMES (exhaustive and mutually exclusive, applied in this order)
+    1. S1 fails: STOP. The identity defect is fixed and W1 is re-run. Nothing else
+       is read.
+    2. S2, S4 or S5 fails: verdict FAIL.
+         - The switch ships 0.
+         - The code is NOT merged; the branch is kept with the report.
+         - Each failing instance is diagnosed.
+    3. Otherwise, S3 fails (whatever S6 shows): verdict NOT SHOWN.
+         - The switch ships 0.
+         - The code may merge with the switch at 0, as a tested option, if the
+           maintainer wants it.
+         - S6 is recorded.
+    4. Otherwise, S6 fails: verdict NOT READY.
+         - The code is optimised, and the cost re-measured on 8 cells with value
+           identity to the U runs.
+    5. Otherwise: verdict PASS. Recommend shipping ON, then STOP for the
+       maintainer's confirmation before the flip.
+    Two further rules:
+    - Any scenario whose pooled fresh rescued count falls by 2 or more: STOP for a
+      ruling, even if S1-S6 pass.
+    - Nothing is retuned on these runs: not the key, the cut, the safe-route rule,
+      the tie-breaks, the qualifying rule or the parameters. Any revision is a new
+      pre-registration on fresh, frozen seeds.
+    THE FLIP (only after a PASS and the maintainer's yes):
+    - DISPATCH_URGENCY = 1 in CFV. The accessor changes to "off only on an exact
+      0" (the housekeeping rule), and T-SW is rewritten for it.
+    - test_shipped_defaults is updated.
+    - T-U4, T-U11 and T-DRN are pinned to 0 explicitly, each with an ON
+      counterpart. No existing test pins today's order with two waiting victims
+      (15.3); Part 2 re-checks this.
+    - Flip identity: the flipped default == ud1 on 4 + 4 cells.
+    - The full suite: exactly the base's failing set.
+    - The isTrue round's 19.12(c) identity check at the merged head, before the
+      measurement round (a dispatch switch would then ship ON; fix3b_part1
+      19.12(c)).
+    PAPER: whatever the verdict, the paper reports the rule, this decision rule and
+    the outcome. A NOT SHOWN is reported as a null, not omitted.
+
+17.4 EXPECTED OUTCOME AND POWER (stated before any run)
+    - Section 3 predicts that U1 changes about 6 decisions per 64 runs, in about 5
+      cells (in-sample proxies: 5-6 cells; at most 10 cells had any scarce kick).
+      Most of these re-order survivors, one defers a threatened victim, and none
+      reaches the motivating deaths. On the fresh seeds the count is a new draw.
+    - With about 13 detected-victim deaths per 64 runs per arm, S3's strict,
+      per-set and one-cell-robust reduction is UNLIKELY. The expected verdict is
+      NOT SHOWN.
+    - The 18 guard counts (16.8) can move only in cells that diverge (Z1). Rare
+      events of either sign in a few diverged cells can make one of them rise by
+      chance, giving a FAIL. That risk is not quantified here. As an anchor, the
+      dispatch screen had 32 diverged cells, and 1 of its must-not-rise counts
+      rose by chaotic coupling (DPR 3.3).
+    - Under FAIL or NOT SHOWN the switch ships 0. The difference is only whether
+      the code may merge as an option (U-9).
+    - What the screen CAN show:
+        - a large effect, if the forensic reading is wrong on fresh seeds;
+        - the absence of harm (the guards);
+        - the mechanism (MU1-MU4, M8-D, the evidence cases).
+    PAPER: "a pre-registered screen of the critical-first rule", with its verdict
+    and the reason a null was expected: deaths were decided by movement and route
+    closure after assignment, not by order.
+
+================================================================================
+18. RISKS
+================================================================================
+Each risk is followed by what it means for the paper.
+
+18.1 NULL BY MECHANISM (section 3)
+     A null is the expected outcome, not an execution failure. It is stated now
+     (17.4), and MU1-MU4 and M8-D are reported.
+     PAPER: report the null with its mechanism.
+18.2 THE IN-TIME CUT MISJUDGES FLEEING VICTIMS (7.2, 4.2)
+     - A threatened victim can be deferred and then die where today's order would
+       have served her (3.4: s1 ring D_W 51, rescued at 205 today).
+     - Guarded by S4 (detected deaths must not rise; rescued per set) and F8.
+     - Measured by MU2 / MU3.
+     - Alternative: U-4(b).
+     PAPER: state the cut's known bias.
+18.3 SAFETY
+     Promoted legs head toward the front (12.1). Guarded by G1-G3; gated by F1, F5
+     and F6; MU4 reports exposure by leg type.
+     PAPER: firefighter deaths are a primary guard.
+18.4 SPURIOUS PRECISION
+     - Re-orderings between victims hundreds of steps from the fire BY THE
+       ESTIMATE (3.4: stale 561 vs 563) rest on differences far inside the
+       estimator's error. In 2 of 5 recorded re-orderings, though, the promoted
+       victim's cell did burn within 50-68 steps.
+     - Such re-orderings add divergence and guard noise.
+     - No tolerance is used, because none is justified (7.3).
+     - MU1 reports both-T-beyond-horizon divergences. U-4(c) offers a horizon.
+     PAPER: report how many decisions turned on far-future estimates.
+18.5 TWO OR MORE FREE UNITS UNDER SCARCITY
+     The kick runs verbatim (8.1); never observed. Counted in MU1.
+     PAPER: none unless it occurs.
+18.6 CUSTODY GAP (today's code)
+     - A carrier labelled route_blocked hides its carried victim from _find_active,
+       so she reads as waiting (codemap 4). At HOLD 0 a carrier raises only when
+       enclosed (AG:3729-3738).
+     - U1 can promote her only via a safe-in-time route to an enclosed cell,
+       which is impossible.
+     - Recorded in d["ud"].
+     PAPER: a baseline quirk; no claim.
+18.7 CHAOTIC COUPLING
+     - CRN pins the fire's draws, not its trajectory: units change fuel by
+       firefighting. So per-cell signs after the first divergence are partly
+       chaotic (DPR 3.3).
+     - Z1 locates every divergence exactly; DIAG reports each changed cell.
+     PAPER: per-cell outcomes after a divergence are not attributed one by one.
+18.8 MAIN MOVED (1.2)
+     Text-only; merged at Part 2 step (1) (U-12).
+     PAPER: none.
+18.9 THE DISPATCH BRANCH
+     If it ever merges with DISPATCH_JOINT = 1, U1 is inert (13.1). The two
+     rounds' switches never combine untested.
+     PAPER: the two dispatch changes are reported separately.
+18.10 MISSING KICKS
+     U1 never decides for units freed by a victim's death, the escape sweep or a
+     stale clear, because these trigger no kick (2.2(b)). In dp0 that idle time
+     (13 unit-steps) never preceded a bind. U-2(c) offers kicks for them; that
+     would not be minimal.
+     PAPER: state the rule's trigger points.
+18.11 THE ESTIMATOR'S VALIDATION AGAINST DEATHS IS THIN
+     C 0.846 on 13 pairs, 95 % [0.54, 1.00]. MU3 extends it on the fresh sets.
+     PAPER: report the estimator's validation with its interval.
+
+================================================================================
+19. DECISIONS FOR THE MAINTAINER - STOP
+================================================================================
+Recommendation first, then what it means for the paper.
+
+A ruling for any NON-recommended option is written into this document as an
+amendment before Part 2. Every gate, test and count it touches is rewritten, and
+the round STOPS again if a pre-registered item changes.
+
+U-0 PROCEED? (Section 3 predicts a null on the primary.)
+    (a) RECOMMENDED: build U1 and run the screen as pre-registered.
+        - It follows the maintainer's decision to build before the measurement
+          round.
+        - It costs about one day.
+        - It gives a measured, pre-registered answer to the supervisor's
+          question.
+    (b) Stop here and open a movement-layer round first: 8 of the 11 FC deaths
+        were greedy loops while a fire-free path existed, the retreat before
+        pickup, or the carrying leg.
+    (c) Re-scope the primary to something U1 can move (for example the wait of
+        threatened victims). This changes the question.
+    PAPER: (a) "critical-first triage, screened; a null expected and why".
+    (b) "the binding constraint is the movement layer".
+
+U-1 FORM
+    (a) RECOMMENDED: U1 (section 5).
+    (b) U2. It needs 4 arms and the fixes of 5.2 re-ruled (D-5 etc.).
+    PAPER: (a) a one-point change with an isolated effect.
+
+U-2 WHERE
+    (a) RECOMMENDED: the kicks only, WM:3051. All 14 recorded scarce choices
+        were there, and it matches the brief's "newly free firefighter".
+    (b) Also scarce detection drains. None occurred in 64 runs; this would
+        re-order victim_confirmed incidents inside the incident handler.
+    (c) Also add kicks for units freed by a victim's death or the escape sweep
+        (18.10). Not minimal.
+    PAPER: (a) "applies when a firefighter becomes free through a return or a
+    reopened route".
+
+U-3 QUALIFYING KICK
+    (a) RECOMMENDED: |F| = 1 and |W| >= 2. It covers all 14 recorded scarce
+        kicks; it is exact and never re-pairs.
+    (b) |W| > |F| >= 1, re-ranking after each bind, with divergence defined on
+        the ordered (victim, unit) list.
+    (c) Every kick.
+    PAPER: (a) "only when one firefighter is free and several victims wait".
+
+U-4 THE TIME CUT
+    (a) RECOMMENDED: as the brief, c + 1 <= T. It is the brief's goal and the core
+        of the safety guard.
+    (b) No time cut: EDF over victims with a safe route; the in-time verdict is
+        recorded only.
+    (c) (a) plus a horizon: victims with T > the remaining mission time keep
+        today's order. This cuts the re-orderings of 18.4, but ties the rule to
+        the mission length (the 480-step point would differ).
+    PAPER: (a) "reachable before the fire, by the estimate".
+
+U-5 THE ROUTE IN THE TIME TEST
+    (a) RECOMMENDED: the time-expanded clean route (8.2).
+    (b) A static clean route: clean now, no T on route cells.
+    (c) The non-burning route d (an admissible lower bound) for time, plus a
+        static clean route as an existence condition.
+    PAPER: (a) "a route the fire is not expected to close before the firefighter
+    passes".
+
+U-6 ESTIMATOR PARAMETERS
+    (a) RECOMMENDED: the published defaults, frozen in the dispatch module and
+        independent of the SEARCHER_FP_* knobs. The measurement round's FP
+        sensitivity points then cannot move dispatch.
+    (b) Shared knobs.
+    PAPER: (a) "the same published-rate estimator as front priority, at its base
+    values".
+
+U-7 SEED SETS
+    (a) RECOMMENDED: two FRESH sets, 3 (573001-) and 4 (780001-). "Either seed
+        set" needs two, and per-set replication is this project's rule.
+    (b) One fresh set (set 3; 32 cells per arm), with set 4 held in reserve.
+        S3's and F7's per-set clauses would then be replaced by per-PLACEMENT
+        clauses (ring AND uniform), and 17.4's power is halved.
+    PAPER: (a) "two never-used seed sets".
+
+U-8 IDENTITY AND IN-SAMPLE REPLAY
+    (a) RECOMMENDED (128 runs):
+        - ud0 on sets 1-2 against the existing dpR records at 27744a28 (Z0,
+          64 / 64; no new reference arm);
+        - ud1 on sets 1-2 as a reported mechanism replay on the motivating
+          cells.
+    (b) A detached base-worktree reference on the fresh sets instead (+64 runs),
+        and no replay.
+    PAPER: (a) "the switch-off code reproduces the base on 64 cells; the rule was
+    also replayed on the cells that motivated it".
+
+U-9 GUARDS
+    (a) RECOMMENDED: the literal must-not-rise of 16.8, as the brief says. A
+        chance rise costs only the option to merge.
+    (b) Adjudicated: a rise is excused only if every extra event is diagnosed as
+        not on a leg bound at a U1-divergent kick.
+    PAPER: (a) "every safety count was required not to rise".
+
+U-10 THE route_blocked GATE SHARDS (DP1 G-RB)
+    (a) RECOMMENDED: drop them. U1 touches neither the route_blocked replacement
+        nor the latch mechanics. Latched units are gated by F6 on fresh CRN
+        seeds, while the shards are CRN-off and use canonical seeds.
+    (b) Run them as report-only (8 shard jobs).
+    PAPER: (a) none.
+
+U-11 LOGGING
+    (a) RECOMMENDED: one [UrgencyTriage] line per qualifying kick on the ON path,
+        plus the instrument records. This is the "not silently" requirement.
+    (b) Records only.
+    PAPER: (a) "every deferral is visible to the operator".
+
+U-12 MAIN
+    (a) RECOMMENDED: merge a20a2ef5 (text-only) into urgency at Part 2 step (1).
+    (b) Leave it until merge time.
+    PAPER: none (a text-only commit; the measurement prereg text stays
+    consistent).
+
+U-13 THE MEASUREMENT ROUND
+    Its 19.4 ("DISPATCH: LEFT OPEN until the dispatch round merges") is outdated:
+    dispatch FAILED and is not merged.
+    (a) RECOMMENDED: record an amendment after THIS round's verdict, naming the
+        dispatch configuration the measurement runs at.
+    (b) Amend now.
+    PAPER: the measurement round states the dispatch it ran with.
+
+U-14 THE PRIMARY
+    (a) RECOMMENDED: total detected-victim deaths (FC + futile), with the M8
+        classes and M8-D reported (16.10). A futile death can still change with
+        divergence, and the total is what the paper reports.
+    (b) FC deaths only.
+    PAPER: (a) "deaths of detected victims", with the classes beside it.
+
+================================================================================
+20. WHAT THIS MEANS FOR THE PAPER - SUMMARY
+================================================================================
+TODAY
+- Dispatch has no notion of urgency.
+- Waiting victims are re-offered units only when a unit returns or a route
+  reopens, and then in victim-index order. That order is a hidden function of
+  ring geometry, and it ranks victims at chance against the fire (C 0.46).
+- A new detection goes ahead of the waiting queue.
+
+THE SUPERVISOR'S QUESTION, MEASURED
+- Today's system treats easy and critical rescues the same.
+- On the recorded data, scarce choices are rare (14 in 64 runs, always with one
+  free unit), and none of them decided a death.
+- Detected victims died after assignment, because the assigned unit did not get
+  through: loops, the retreat before pickup, route closure and stranding, and the
+  carrying leg.
+- The 80 % / 88 % "feasible-critical" share counts busy units and lower-bound
+  routes. It means "reachable in principle".
+
+THE DISPATCH ROUND, CORRECTED
+- Its firefighter-death drop (26 -> 20) is divergence. It is not attributable to
+  route-aware feasibility (5.2).
+
+THE RULE, IF BUILT
+- Critical-first among the victims the one free firefighter can reach before the
+  fire, along a route the fire is not expected to close; today's order for the
+  rest.
+- Only when one firefighter is free and several victims wait.
+- It never redirects a bound unit and never writes anyone off.
+- Properties with proofs and tests: no oscillation (no unbind), detected-only
+  reads, and one switch whose off state is the baseline.
+
+THE ESTIMATOR
+- Published rates, no simulator constants.
+- A good ranker (C 0.86) and a poor clock (late by a median of 74-91 steps where
+  the fire arrived; sometimes early).
+- Its limits are stated: flight, depots, fuel.
+
+ASSUMPTIONS: A3, extended to the dispatcher and to smoke; A4; A7.
+
+THE SCREEN
+- Two never-used seed sets, CRN, 360 steps, both placements, two arms, and the
+  decision rule of section 17.
+- The expected null, and the reason for it, are stated in advance.
+
+IF THE SWITCH EVER FLIPS, every dispatch-dependent number measured before then
+becomes a reference only, as at every earlier flip.
+
+================================================================================
+APPENDIX A - SOURCES, AGENTS, CONTACT
+================================================================================
+A.1 READ
+    - Source at 27744a28: WM, AG, RP, RE, AM, CFV, FAE, LAG,
+      searcher_targeting.py and tests/.
+    - The dispatch branch at cc8d653c:
+        - DP1, DPR, dispatch_part2_notes.txt and dispatch_analysis.txt;
+        - JD;
+        - _dp_probe.py, _dp_analyze.py, _dp_queue.py, _dp_seeds.txt and
+          _dp_q_evidence.jsonl;
+        - the 192 dpR / dp0 / dp1 run records (.json, .stdout.txt, .argv) and the
+          evidence records.
+    - outputs/bayesprep_part1.txt (section 2) and outputs/fix3b_part1.txt (10.3,
+      13, 19); main's a20a2ef5 for 19.13.
+
+A.2 RAN, by the orchestrator
+    - git: rev-parse, log, describe, worktree, branch, diff --stat, reflog, and
+      ls-files on named paths, in the main checkout and the dispatch worktree.
+    - git log --all -G (seed check, with the quarantine excluded from the
+      pathspec, plus a positive control).
+    - git worktree add for this branch, and the .venv junction.
+    - sed / grep on named files, and a non-recursive ls of dispatch/outputs.
+    - Python (read-only, named files):
+        - the agents' JSON;
+        - the seed histogram;
+        - scratchpad z5_check.py, importing _dp_analyze.gt_returns;
+        - scratchpad choicepts/cp_concord_seed.py, the seed-level bootstrap;
+        - make_ud_seeds.py, which wrote _ud_seeds.txt.
+    - py_compile of _ud_seedscan.py.
+    - No simulation, probe, pool, model analyzer or test.
+
+A.3 QUARANTINE CONTACT (outputs/_firemech_rewound_20260914)
+    - Orchestrator: none. No recursive filesystem search was run. git status was
+      not run in the main checkout. The git -G search excluded the directory.
+    - codemap: recursive greps rooted at src_extension/ and tests/. One grep ran
+      from the urgency worktree root with a *.py glob that expanded to root-level
+      files only, recursing into src_extension/. The worktree is a fresh checkout
+      without the directory. No contact.
+    - choicepts: one `grep -rnE ... src_extension/ wildfire_model.py` in the
+      urgency worktree; otherwise named files. No contact.
+    - m8deaths and u2assess: none (named files; git object reads).
+    - seedstools: os.walk over the outputs of main, dispatch, zealous and urgency,
+      plus docs, tests, src_extension and the memory directory. The quarantine
+      name and .git were removed from dirs BEFORE descending. So the directory's
+      NAME was seen in the listing of E:/Projects/SAS/outputs; nothing in it was
+      opened or listed. Disclosed as LISTING contact. Its git commands carried
+      ':(exclude)outputs/_firemech_rewound_20260914'.
+    - Reviewers R1 and R3: one recursive grep each, rooted at src_extension/ in
+      the urgency worktree. R2: no recursive operation. No contact.
+
+A.4 AGENTS. Five read-only readers, run as one parallel fan-out:
+      codemap      the dispatch path at 27744a28
+      m8deaths     forensics of the 13 deaths
+      choicepts    choice points, estimator ranking, firefighter deaths
+      u2assess     J, the theorem, the three fixes, the evidence cases
+      seedstools   fresh seeds, the tag prefix, the tooling inventory
+    Their scripts and outputs are in the session scratchpad (not committed),
+    except the seed scanner and its summary (16.2).
+
+A.5 REVIEW - 3 of the allowed 3 agents (design and proof; evidence and numbers;
+    brief and pre-registration). They reported 51 findings in all: 3 BLOCKER
+    (2 distinct), 11 MAJOR, about 25 MINOR. All were addressed in this revision:
+    BLOCKERS
+    - Z5 failed on today's code under DPR's definition (one same-frame latch
+      return, set 2 uniform A_N step 118).
+      FIX: the outside-event definition was amended; 0 returns without an outside
+      event in 192 records (10, 16.7).
+    - The in-sample sets were both "gated" and "never gated".
+      FIX: structural items gate every run; outcomes gate the fresh sets only
+      (16.3, 17.2).
+    MAJOR
+    - The clean-route rule exempted the victim's cell and ignored smoke.
+      FIX: the units' own clean predicate, with no victim exemption (8.2).
+    - With |F| >= 2, the order could re-pair units and break the divergence
+      definition.
+      FIX: the rule acts only at |F| = 1 (6, 8.1, U-3).
+    - No part of the guard bounded route closure.
+      FIX: the time-expanded clean route (8.2, 12.2).
+    - The "no free reachable unit" claim was overstated (it holds in dp0 only, and
+      M3 shares the blind spot).
+      FIX: restricted, and the method named (3.1).
+    - The clock's error was one-sided.
+      FIX: early errors added (4.2).
+    - A deferred victim's possible escape-sweep write-off was not gated.
+      FIX: F8 and DIAG (8.4(e)).
+    - Claims without tests.
+      FIX: T-U10, T-U11, T-NT, the reason mutant, and mutants for T-INFO-c and
+      T-ID (15.3).
+    - Part 3 tooling was not built or frozen in Part 2.
+      FIX: 15.5.
+    - Ambiguous gate definitions (F6, M8-D, Z3, Z7).
+      FIX: 16.6-16.10.
+    - Missing PAPER lines.
+      FIX: added throughout.
+    MINOR, among others
+    - A false axis "defect" (deleted).
+    - The no-fire order contradiction (now verbatim).
+    - c is a lower bound (stated).
+    - G3 wording; the information wording; the K1/K2 site in the instrument.
+    - Pass-over counts (10 victims); row 13's T_fire.
+    - The seed-level bootstrap and C against death.
+    - Case 2 ON is not an urgency choice.
+    - The U2 run cost (about 305 runs).
+    - Divergent cells (about 5) and the guard count (18).
+    - The 3.4 qualifier; the 16.2 wording.
+    - Evidence OFF runs moved into W1.
+    - Outcomes made exhaustive.
+    - The flip accessor; the accessor citation.
+    - No commit from W1 to W4; a C crash means STOP.
+    - Standing quarantine rules; the agent contact attribution.
+    Reviewer scratch: the session scratchpad, review_design / review_evidence /
+    review_prereg.
