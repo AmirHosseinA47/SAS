@@ -1,0 +1,396 @@
+================================================================================
+DISPATCH ROUND - PART 3 REPORT: THE SCREEN                outputs/dispatch_report.txt
+Pre-registration: outputs/dispatch_part1.txt (Part 1 2f0509dc; amendments A1
+1cf70598 / 9b219455 and A2 695fa4b1). Build record: outputs/dispatch_part2_notes.txt
+(Part 2 sections 1-11; A2's build at the post-audit main, section 12).
+The analyzer's full output is outputs/dispatch_analysis.txt; every number below
+is read from it unless a section says otherwise.
+STOP: nothing is merged (section 10).
+================================================================================
+
+0. RESULT
+--------------------------------------------------------------------------------
+VERDICT (section 15, as pre-registered): FAIL.
+  S1 IDENTITY  PASS - dp0 == dpR on 64 / 64 cells (every non-J dp field
+               compared) and the 4 / 4 gate shards.
+  S2 GATES     FAIL - one gate: G-N (runs that never finish) rises 1 -> 2.
+               Every structural zero holds and every other gate passes,
+               G-RB included.
+  S3 PRIMARY   FAIL - T(set 1) -1.41, T(set 2) -1.17 steps, but set 2 turns
+               +1.39 when its most negative cell is removed.
+  S4 HARD-VICTIM TRADE PASS - M1c T -1.75 / -5.27 / -3.51 (set 1 / 2 / pooled).
+  S5 OUTCOME GUARDS FAIL - rescued in set 1 falls 109 -> 108 (set 2 107 ->
+               110; dead pooled 36 -> 36; firefighter deaths pooled 26 -> 20).
+  S6 COST      PASS - median R 0.080 %, p99 J 7.65 ms per J point.
+  Per-scenario STOP: none (A 72 -> 72, B 50 -> 51, C 39 -> 39, D 55 -> 56).
+  Section 15's outcome: "S2 or S5 fails: verdict FAIL - both switches ship 0,
+  the code is NOT merged (the branch is kept with the report); each failing
+  instance is diagnosed."  Both switches stay 0; nothing is merged.
+
+WHAT FAILS, IN ONE PARAGRAPH.  Both failing guards trace to three cells of
+set 1 (section 3): uniform B_S, where a victim that dp0 found at step 277 is
+never detected in dp1 (G-N +1 and one rescue lost - a search outcome reached
+through the chaotic coupling 14.7 warns about); ring B_S, where the ledger's
+"fresh pair first" key (D-2's L2) twice sent a farther unit instead of the
+nearest one and the victim died (a design-attributable loss); and ring B_N,
+where dp1 rescues a victim dp0 lost.  Net set 1: -1.
+
+WHAT THE DISPATCHER DID (reported, not gated; dp0 -> dp1, 64 cells):
+  - firefighter deaths 26 -> 20;
+  - assigns into a route the instrument sees as closed 20 -> 0 (M6);
+  - victim-steps with two living binders 5 -> 0 (G-B(a)); captured
+    RescueInvariant lines 56 -> 2 (G-B(d)); assignment returns of any cause
+    7 -> 2 (G-T(b)); escape-sweep write-offs 2 -> 0;
+  - firefighter oscillation (broad) 36 -> 29 episodes, 497 -> 383
+    episode-steps;
+  - BUT unit-steps idle while a detected victim waits with NO finite route
+    13 -> 216 (M3(a)): J does not send a unit into a closed route, so it waits
+    (K13, the recorded cost of route-aware feasibility).
+  32 of the 64 cells are identical in dp0 and dp1 (J made legacy's decisions
+  throughout); every effect comes from the other 32.
+
+M8 (D-11 / R-C): THE URGENCY TRIGGER IS MET on dp0 - feasible-critical deaths
+are 4 of 5 detected-victim deaths in set 1 (80 %) and 7 of 8 in set 2 (88 %).
+11.6 / D-11: "propose an urgency round".  (dp1, reported, not the trigger: 4 / 5
+and 8 / 8.)
+
+PAPER: the joint, route-aware dispatcher with reassignment does NOT pass its
+pre-registered screen: it keeps every safety invariant and cuts firefighter
+deaths, but one seed set loses a rescue (one of the two cells involved is a
+direct consequence of the ledger's fresh-pair preference) and the primary
+time-to-rescue effect is not robust to one cell.  It ships off.
+
+================================================================================
+1. WHAT RAN
+================================================================================
+1.1 BASE AND BUILD.  B' = main 27744a28 (tag istrue-fix), merged into dispatch as
+  5f4c121d; the 22.5(2) re-check changed no pre-registered item; A2 built and
+  verified at ea737eb4 (notes section 12: dispatch tests 589 passed; 56 / 56
+  mutants killed; full suite exactly {T5} on an idle machine; instrument smoke
+  on two cells; analyzer self-test 20 / 20).
+  dpR ran at B' in the detached worktree E:/Projects/SAS_wt/base27744a28
+  (head 27744a28 in all 64 records); dp0 and dp1 at ea737eb4 in the dispatch
+  worktree (head ea737eb4 in all 128 records; one source record per arm).  No
+  commit was made in either worktree while a wave ran.
+1.2 WAVES (outputs/_mf2_pool.py, --maxpar 12 --min-free-gb 3; about 8 runs ran at
+  once - free commit memory was the limit, as in the is-True round):
+      identity  dpR 64 + dp0 64 + dpGR 4 + dpG0 4  22:46 - 03:37  136 / 136  0 FAIL
+      on        dp1 64                             03:38 - 05:38   64 /  64  0 FAIL
+      gate      dpG1 4                             05:38 - 06:48    4 /   4  0 FAIL
+      evidence  dpE 22                             06:49 - 07:38   22 /  22  0 FAIL
+  226 runs, 8 h 52 min (2026-10-05 22:46 to 2026-10-06 07:38).  Tags re-checked
+  unused (queue tag check) immediately before each wave.  Wave checks every 25
+  minutes (completed / running / failed, per-run validity - repo, extra_params,
+  CRN draws, steps, crash, dp section, init / sweep assigns - files, disk):
+  0 invalid runs, 0 crashes, 503 GB free throughout.  A G-ID spot check ran
+  at every check from the first finished dp0 run on (0 differences at every
+  check).
+1.3 VALIDITY (14.5, analyzer section 1): 64 / 64 present in every arm; 0 INVALID;
+  0 crash or early stop; 0 instrument errors; CRN on with draws > 0 in every
+  screen run; the frozen seeds (outputs/_dp_seeds.txt) equal the fx3mS / fx3mS2
+  cells; section 15 identical to 2f0509dc (sha256 a1c19c6bcdbd404f).
+1.4 THE dpGR GATE FILES were copied from the B' worktree with their sha256
+  before it was removed (outputs/_dp_dpGR_copy.txt; every copy identical).
+
+================================================================================
+2. S1 - IDENTITY
+================================================================================
+  - Probe arms: dp0 == dpR on 64 / 64 cells - _fx3r_analyze.FIELDS, every mf2
+    section, the console output's sha256, and every dp field that exists without
+    J (binders, waiting, m3a with its free-unit ids, the invariant capture,
+    commands with the instrument's route verdicts, m8, m9, write-offs).
+  - Gate shards: dpG0 == dpGR on 4 / 4.
+  - R-B tooling checks (A2 22.2) over every run: (i) 0 failures (0 comparisons
+    - expected, notes 12.5), (ii) 0 (1 542 dp1 n_ok comparisons), (iii) 0
+    failures over 12 639 (dpR), 12 639 (dp0) and 12 647 (dp1) binder pairs; 0
+    init / sweep assigns; 0 duplicate samples.  The R-B figures are therefore
+    read.
+  PAPER: the dispatch code, shipped off, leaves the simulator's behaviour
+  value-identical to the post-audit base on all 64 screen cells and the
+  route_blocked gate shards.
+
+================================================================================
+3. S2 - THE GATES (14.6), AND THE FAILING INSTANCES DIAGNOSED
+================================================================================
+3.1 STRUCTURAL ZEROS (exactly 0 in dp1): G-ID mismatches 0; G-B(b) 0; G-B(c) 0;
+  G-B(f) ledger-allowed 0 (its W / W_L split 0 / 0); G-T(a) 0; G-T(c) 0; dp1
+  crashes 0; latched units at the end of the gate shards 0.  ALL HOLD.
+3.2 MUST-NOT-RISE ITEMS (pooled dp0 -> dp1):
+    G-N   runs that never finish        1 -> 2   FAIL (set 1 0 -> 1)
+    G-OS  broad (O) before / after the last detection 7 -> 6 / 0 -> 0; pocket
+          near a depot 0 -> 0; pocket anywhere 7 -> 6               PASS
+    G-OF  broad positional 36 -> 29; I2 stuck approach 0 -> 0, stuck carry
+          0 -> 0, livelock approach 1 -> 0, livelock carry 0 -> 0, no-progress
+          approach 12 -> 12 (set 2 5 -> 6 and uniform 6 -> 8 rise; pooled
+          gate passes)                                                PASS
+    G-L   new latched units at run end: none                         PASS
+    G-B   (a) 5 -> 0; (d) 56 -> 2; (e) 0 -> 0; (f) ledger-blocked 0 -> 0 (both
+          arms counted with the latch cap; dp0 with its rebuilt ledger) PASS
+    G-T   (b) all returns 7 -> 2                                     PASS
+    G-RB  section 4                                                  PASS
+    G-S   full suite at ea737eb4: exactly {T5} (1 failed / 2 290 passed) PASS
+    G-INV T-INV and the dispatch tests green                         PASS
+3.3 THE FAILING INSTANCE OF G-N - set 1 uniform B_S (scenario B, south, seed 9606,
+  4 victims, 3 units).  dp0: 4 rescued, terminal 298.  dp1: 3 rescued, never
+  finishes - victim_1 is never detected.
+  - The arms are identical to step 45.  At J-post 46 J makes a margin REPLACE
+    (ff_unit_1 takes victim_2 from ff_unit_0); legacy unassigns ff_unit_0 on a
+    route_blocked raise at 51 instead.  Unit and victim rows diverge at 46, the
+    UAV rows at 53 (the fire responds to the firefighters - ungated
+    firefighting is on - and the fire-tracking UAVs to the fire; the runs keep
+    no per-step fire digest, so the fire's own first divergence is not
+    resolvable; burnt cells at the end 1 638 vs 1 632).
+  - victim_1 spawned at (42, 47), in the north-east corner, and was undetected
+    in BOTH arms until step 277.  In dp0 she drifted to (44, 47) and UAV-2503
+    detected her there at 277 (she was rescued).  In dp1 she fled further to
+    (49, 49), the grid corner, by step 270; at step 277 UAV-2503 was at (28, 43)
+    on an escape search, and no UAV saw her before step 360.
+  - Reading: a detection loss reached through the chaotic coupling 14.7's CRN
+    caveat names ("per-cell signs remain partly chaotic after the first
+    divergence"), not a dispatch decision about this victim - J never saw her.
+    The rule counts it all the same: G-N must not rise, and it rose by one.
+  PAPER: one of 64 paired runs stopped finishing because a corner victim went
+  undetected; dispatch acted on her only through its effect on the fire.
+3.4 ROBUSTNESS NOTE (not a rule): G-N's dp0 count is 1 (set 2 uniform D_W, the
+  pre-registered never-finishing cell, unchanged in dp1); the rise is one run
+  in 64.
+
+================================================================================
+4. G-RB - THE ROUTE_BLOCKED GATE (D-15, CRN OFF, scenario D, 240 steps)
+================================================================================
+  shard a east  rescued 16 -> 16 | dead 3 -> 3 | ff deaths 1 -> 1 | latched 0 -> 0
+  shard b east  rescued 14 -> 14 | dead 1 -> 1 | ff deaths 0 -> 0 | latched 0 -> 0
+  shard c east  rescued 15 -> 15 | dead 1 -> 1 | ff deaths 0 -> 0 | latched 0 -> 0
+  shard s south rescued 13 -> 14 | dead 3 -> 2 | ff deaths 1 -> 1 | latched 0 -> 0
+  POOLED 18 runs: rescued 58 -> 59, 0 latched, one per-seed loss  => PASS
+  THE LOSS, DIAGNOSED (D-15: every per-seed loss) - shard s, south, seed 202
+  (2 units): 4 -> 3 rescued.  ff_unit_0, bound to victim_0 at (42, 25), raised
+  route_blocked for the second time on her at step 166 at (45, 27) - 5 cells
+  away; the repeated raise latched it.  In dpGR it recovered onto her at 168 and
+  she was rescued (terminal 235).  In dpG1, J-post 166 made a LATCH-FILL
+  (ff_unit_1 took victim_0, joint_replace_latched; ff_unit_0 released), and
+  ff_unit_1 had not reached her by step 240.  The victim saw a dispatch
+  decision differing from dpGR before any recorded divergence, so this is NOT
+  noise: it is the pre-registered LATCH-FILL rule (D-7) replacing a latched
+  unit two steps before it would have recovered.  It is the only LATCH-FILL
+  in all the dp1 runs of this round (screen: 0).
+  PAPER: the route_blocked regression gate passes (pooled 59 vs 58, no latched
+  unit); its one per-seed loss is a latch-fill that replaced a unit about to
+  recover.
+
+================================================================================
+5. MEASURES (14.7)
+================================================================================
+5.1 M1 PRIMARY (S3).  Every cell contributes (32 / 32 per set; 214 victims
+  rescued in both arms).  T(set 1) -1.41, T(set 2) -1.17, T(pooled) -1.29 steps
+  detection-to-rescue.  After removing each set's most negative m_c: set 1
+  -0.40, set 2 +1.39 (the removed cell is set 2 uniform D_W, -80.3), pooled
+  -0.04.  S3 FAILS (set 2 does not stay < 0).  40 of the 64 m_c are exactly 0
+  (32 identical cells and 8 where J differed without changing any shared
+  rescue time); Wilcoxon on the m_c: pooled p = 0.49 (n 24), set 1 p = 0.36,
+  set 2 p = 0.95.  Per placement: ring +1.32, uniform -3.90; per scenario A
+  -0.55, B -1.95, C -2.01, D -0.66.  Victim-pooled mean -1.47, median 0.00.
+  PAPER: no robust change in detection-to-rescue time; the mean gain is carried
+  by a few cells.
+5.2 M1c CENSORED (S4).  T -1.75 / -5.27 / -3.51 (set 1 / set 2 / pooled): no
+  trade of hard victims for easy ones.  One victim detected in one arm only
+  (set 1 uniform B_S victim_1, section 3.3), excluded as pre-registered.
+5.3 M2 OUTCOMES (S5).
+                 rescued     dead      ff deaths  never det.  unreachable
+     pooled      216 -> 218  36 -> 36  26 -> 20   1 -> 2      4 -> 2
+     set 1       109 -> 108  19 -> 19  11 -> 11   0 -> 1      0 -> 1
+     set 2       107 -> 110  17 -> 17  15 -> 9    1 -> 1      4 -> 1
+     ring        107 -> 107  21 -> 21  11 -> 11
+     uniform     109 -> 111  15 -> 15  15 -> 9
+  S5 FAILS on "rescued does not fall in either seed set" (set 1 -1).
+  SET 1'S -1 IS THE NET OF THREE CELLS (each diagnosed):
+  - uniform B_S 4 -> 3: section 3.3 (a detection loss, chaotic coupling).
+  - ring B_S 3 -> 2 (victim_0 rescued at 135 in dp0, dead at 192 in dp1):
+    identical to step 56; victim_0 detected at 78 at (49, 24) on the east
+    edge, fire at her cell from step 84.  Both arms bind ff_unit_1 (route 49)
+    at 78; it raises at 81.  dp0 (legacy) re-binds the NEAREST unit, ff_unit_1
+    (route 48), at 84 and she is rescued at 135.  dp1: at J-post 84 J sees
+    ff_unit_0 (route 88), ff_unit_1 (48, pair bound once) and ff_unit_2 (68,
+    fresh) and binds ff_unit_2 - the L2 key (fewest re-used pairs, D-2) ranks
+    above route time; ff_unit_2 raises at 98; at J-post 99 J binds ff_unit_0
+    (route 70, fresh) over ff_unit_2 (40) and ff_unit_1 (41), both re-used;
+    ff_unit_0 raises at 189 and she dies at 192.  A DESIGN-ATTRIBUTABLE loss:
+    the coverage-before-reuse key (D-2 L2 / D-5) twice traded 20-30 route
+    steps for a fresh pair.
+  - ring B_N 2 -> 3 (dp0's victim_1 died at 186; dp1 rescues her after two
+    stall replacements, 46 and 79).
+  PAPER: the joint dispatcher rescued 218 vs 216 victims with the same 36
+  deaths and 6 fewer firefighter deaths, but one seed set lost a rescue; one
+  loss is a direct cost of preferring a never-used unit-victim pair over a
+  nearer re-used one.
+5.4 M3 IDLE WHILE A DETECTED VICTIM WAITS (R-B: both arms with the latch cap,
+  dp0's ledger rebuilt).  (a) unit-steps free while a detected needy victim has
+  no active binder: 13 -> 216, all ledger-allowed (blocked 0 -> 0); (b) the same
+  with a finite route: 0 -> 0.  So every idle unit-step in dp1 is beside a
+  victim no unit can reach by a fire-free route.  Cells: set 2 ring B_S 48,
+  set 2 uniform B_S 42, set 1 uniform B_S 36, set 1 uniform C_E 34, set 1 ring
+  B_S 14, then 12 or fewer.  dp0 instead sends a unit into the closed route
+  (M6: 20 -> 0 such assigns).  This is K13 (21.2(h)) at scale; M9 records one
+  bind of a unit freed by an o1 raise to another victim while its own was
+  enclosed (set 2 ring D_W, step 261: the first victim's route reopened within
+  3 frames; she died).
+  PAPER: route-aware feasibility replaces 20 assignments into closed routes by
+  about 200 unit-steps of waiting beside unreachable victims; neither changed
+  the death count.
+5.5 M4 REASSIGNMENTS (dp1).  REPLACEs: 40 (stall 24, margin 16); LATCH-FILLs 0;
+  second-fill binds (stage 4) 0 - A2's step 4 never fired in the screen; fills
+  256; refused 0, aborted 0.  J's fills differed from the legacy rule's
+  counterfactual at 252 of 491 decision points.  Re-used-pair binds: dp0 16, dp1
+  6.  Ledger-blocked victim-steps: dp0 0, dp1 0.  What J saw: 7 984 PRE points,
+  10 441 progress evaluations, 599 FROZEN, 20 bindings left unevaluated (d or
+  x infinite - P2-3).
+  By scenario (dp1): A stall 8 / margin 6; B 6 / 5; C 9 / 1; D 1 / 4.
+5.6 M5 LATENCY (rescued victims): detection -> assignment median 0 both arms
+  (mean 3.7 -> 3.4); assignment -> pickup median 35 both (mean 48.9 -> 50.2);
+  pickup -> rescue median 7 both.  Realised steps to pickup minus the route at
+  binding: mean 9.2 -> 6.7; bindings ending without pickup 47 -> 76 (more
+  bindings are replaced); bindings into a closed route 20 -> 0.
+5.7 M6 WRITE-OFFS: escape sweep 2 -> 0; dispatch write-offs 2 -> 0;
+  would-have-been casualty write-offs counted in dp1: 0; assigns into a closed
+  route 20 -> 0.
+5.8 M7 COST (S6): R = J time / wall time per dp1 run: median 0.080 %, max
+  0.244 %; J per J point over 46 080 points: p50 0.03 ms, p99 7.65 ms, max
+  10.9 ms; wall time dp1 / dp0 1.019 pooled.  S6 PASSES by a wide margin.
+5.9 M8 URGENCY (D-11; R-C: dp0 drives the trigger, read after S1 passed).
+  dp0, all 64 valid runs: set 1 - 5 detected-victim deaths, 4 feasible-critical
+  (80 %); set 2 - 8 deaths, 7 feasible-critical (88 %).  BOTH SETS >= 25 % with
+  at least one death => THE TRIGGER IS MET: PROPOSE AN URGENCY ROUND (11.6).
+  dp1 (reported, not the trigger): 4 / 5 and 8 / 8.
+  The estimator's bias (21.2(g), reported only): T_fire at detection vs the
+  first burn of the detection cell - median +155 (set 1) / +164 (set 2) steps,
+  IQR about [40, 320-420], with 59 / 67 censored at 360; vs death step -
+  detection, median +3.4 / -8.9 steps (n 5 / 8).
+  PAPER: on today's dispatcher, most detected victims who die could have been
+  reached in time by the nearest living unit - the case for an urgency-aware
+  dispatcher (section 11's design question) is made by the baseline itself.
+5.10 M9 (K13): one event (5.4).
+
+================================================================================
+6. EVIDENCE CASES (14.8, 21.2(a)) - described, not gated
+================================================================================
+Every case's OFF arm in its original configuration REPRODUCES the recorded first
+detections and first dispatches (cases 1, 2, 2f, x, 3, 4d, 4g).  The is-True kill
+switches were not added (notes 12.2 C6) and nothing failed to reproduce, so F-2
+needed no post-hoc check.
+  CASE 1 (D south 505, half roles; harness).  CRN off: first divergence at step
+    103 - a MARGIN replacement (ff_unit_0 takes victim_0 from ff_unit_1) - the
+    expected Limit 3 mechanism (14.8 expected a margin replacement near 122 or a
+    stall one); terminal 149 vs 266 (expected < 266); rescued 3 / dead 1 in both
+    (expected unchanged).  CRN on: no divergence (both 4 / 0, terminal 149).
+  CASE 2 (ring set 2 D_W 9636; BD-R, ST 2).  CRN off: first divergence at J-post
+    44, earlier than 14.8's frame - a margin REPLACE of victim_3 (ff_unit_1 takes
+    it from ff_unit_0); at 46 J sends ff_unit_0 to victim_2 (route 64); victim_2
+    is served early as expected; outcome 3 / 1 in both, 1 firefighter death in
+    dp1 (0 in dp0), terminal 288 vs 257.  No double claim on victim_3 (expected).
+    CRN on: no divergence (2 / 1, never finishes, in both).
+  CASE 2f (BF-R, ST 3): the same mechanism and outcomes as case 2.
+  EXTRA x (ring set 2 D_N 9633, ST 2).  At step 18 J makes the same pairing as
+    legacy (victim_1's route was open - 14.8's "if open ... nothing changes");
+    first divergence at 48 (J sends ff_unit_1 to victim_3, route 47, over
+    victim_1, route 59); 3 / 1 and 1 firefighter death in both arms, terminal
+    177 vs 295.  CRN on: divergence at 69; 3 / 1 in both, firefighter deaths
+    1 -> 0, terminal 236 vs 336.
+  CASE 3 (ut0r2 configuration): J's step-63 decision equals ut0r2's own pairing,
+    as expected; the runs are identical.  (Its screen cell, set 2 ring D_N, is
+    the one where dp1 loses both firefighters - 0 -> 2 - the K3 risk 14.8
+    pre-registered: "firefighter deaths possibly HIGHER in this cell".)
+  CASE 4d (BD).  First divergence at J-post 156, EXACTLY as expected: J binds
+    ff_unit_0 to victim_3 (route 36) where legacy re-bound it to victim_0 at
+    Manhattan 8 into her enclosure (route infinite); dp1 rescues victim_3 at 209
+    (expected about 195-215) and victim_0 survives unpicked at 360 (outcome A
+    of 21.2(a), the run not finishing); dp0 rescues victim_0 at 180 and leaves
+    victim_3.  Both arms: 3 rescued / 0 dead / 1 firefighter death, never finish.
+  CASE 4g (GP).  First divergence at J-post 55, EXACTLY as expected: J sends
+    ff_unit_0 to victim_1 (route 36) where legacy sent it to victim_0 (52);
+    victim_1 rescued at 85 (expected about 95; legacy 255); dp1 rescues 4 and
+    finishes at 269; dp0 rescues 3 and never finishes.
+  SCREEN CELLS 21.2(a) (ring set 1 D_N) and (b) (uniform set 1 B_N): dp1 == dp0
+    in every row and in eval, as expected.
+  NEVER-FINISHING CELL (uniform set 2 D_W): still never finishes (expected);
+    two margin replacements; the firefighter death at 231 does not occur in dp1.
+  PAPER: the mechanism checks behave as pre-registered - J's route-aware choices
+  appear exactly at the predicted decision points (cases 4d and 4g), Limit 3
+  replaces looping or distant units (cases 1, 2), and the known risk (case 3's
+  cell) occurs.
+
+================================================================================
+7. THE DECISION (section 15) AND WHAT IT MEANS
+================================================================================
+  S1 PASS, S2 FAIL (G-N), S3 FAIL, S4 PASS, S5 FAIL (rescued set 1), S6 PASS
+  => VERDICT FAIL.  Both switches ship 0; the code is not merged; the branch is
+  kept with this report; each failing instance is diagnosed (3.3, 4, 5.3).
+  S, M, P and the objective are not retuned on these runs (section 15); any
+  revision is a new pre-registration validated on a fresh, frozen third seed
+  set.
+  PAPER (section 15: "a NOT SHOWN is reported as a null, not omitted" - a FAIL
+  likewise): the paper reports the joint dispatcher, its pre-registered rule
+  and this outcome: invariants kept, firefighter deaths 26 -> 20, but a
+  rescue lost in one seed set and no robust time-to-rescue gain - it ships off.
+
+================================================================================
+8. FOR THE PAPER (collected)
+================================================================================
+  P.1 The dispatch code shipped off is value-identical to the post-audit base on
+      all 64 screen cells and the gate shards (S1).
+  P.2 Verdict FAIL by the pre-registered rule; reported with the rule.
+  P.3 Safety: every structural invariant holds in dp1 (no victim with two
+      active binders, no dispatch abandonment, no ledger violation, no
+      flip-flop without an outside event, no idle unit beside a victim it may
+      serve); firefighter deaths 26 -> 20; no assignment into a closed route.
+  P.4 Cost of route-aware feasibility: about 200 unit-steps idle beside
+      unreachable victims (K13), with no change in deaths.
+  P.5 A design finding: the ledger's fresh-pair-first key (D-2 L2) cost one
+      rescue in set 1 (ring B_S).
+  P.6 The latch-fill rule (D-7) cost one rescue in the CRN-off route_blocked
+      gate (south 202), a unit about to recover being replaced.
+  P.7 Cost of the dispatcher itself: 0.08 % of run time, p99 7.7 ms per call.
+  P.8 Urgency: on the baseline dispatcher 11 of 13 detected-victim deaths were
+      feasible-critical (both sets >= 25 %) - the urgency question is answered
+      "yes" on today's dispatcher.
+  P.9 Evidence cases: J's choices appear at the predicted decision points.
+  P.10 The second fill's step 4 (A2) never fired in the screen; the amended I4
+      held structurally (G-B(f) ledger-allowed 0).
+
+================================================================================
+9. FOR THE MAINTAINER (recommendation first)
+================================================================================
+  M-1 THE VERDICT.  (a) RECOMMENDED: accept FAIL as pre-registered - both
+      switches stay 0, the dispatch branch is NOT merged and is kept with this
+      report.  (b) Merge the code with both switches at 0 as a tested option
+      (what section 15 allows only for NOT SHOWN, not for FAIL) - would need an
+      explicit ruling against the pre-registered rule.
+  M-2 THE URGENCY ROUND (M8 MET).  (a) RECOMMENDED: open it as its own round
+      (design question section 11; the estimator is late by a median of about
+      155 steps at detection - its bias is part of that round's design).
+      (b) Defer it.
+  M-3 IF THE DISPATCHER IS PURSUED, a new pre-registration on a fresh third seed
+      set would address, at least: the L2 fresh-pair key in FILLs (5.3, ring
+      B_S - e.g. reuse only when no fresh pair is within a route margin); the
+      latch-fill of a unit near its victim (4 - e.g. wait while it is within a
+      few cells); and K13's idle units (5.4).  None of these is a retune of S,
+      M or P.
+  M-4 RECORDED: the is-True round's 19.12(c) identity check is NOT triggered
+      (dispatch ships 0 / 0).
+
+================================================================================
+10. MERGE (NOT DONE) AND HOUSEKEEPING
+================================================================================
+  - Nothing is merged and nothing is pushed.  Branch dispatch, worktree
+    E:/Projects/SAS_wt/dispatch, head = the commit adding this report.
+  - The B' worktree E:/Projects/SAS_wt/base27744a28 was removed after its dpGR
+    files were copied with their sha256 (its .venv junction removed first with
+    `cmd /c rmdir`; the shared E:/Projects/SAS/.venv checked intact).
+  - Quarantine: outputs/_firemech_rewound_20260914 is absent from this worktree
+    and was never contacted; every search was scoped to named files, src_extension/
+    or tests/; git status ran only with -uno and a pathspec.
+  - Files added by Part 3: this report; outputs/dispatch_analysis.txt (the
+    analyzer's output); outputs/_dp_dpGR_copy.txt; the four queues
+    outputs/_dp_q_{identity,on,gate,evidence}.jsonl and their pool logs
+    outputs/_dp_pool_*.log; the run records outputs/_sd_{dpR,dp0,dp1}*_*.json,
+    outputs/_sd_dpE*_*.json, outputs/_ffr_dpE1*_*.json (+ .argv, .poollog,
+    .stdout.txt) and outputs/_rblatch_camp2_dpG*_D_*.json (+ .argv, .poollog).
