@@ -9,7 +9,15 @@ known-answer case outputs/urgency_part1d.txt names:
   - the rest of what this port adds: Zg-2, Zg-3, the guard record's bookkeeping, the shadow-mismatch routing with the
     guard, the outcomes and per-switch rule of 1d.6.3, the zero-to-comparison map of 1d.6.2, review 1.3's classes and
     route-closure chain, the W3 rule's knockout evidence, and an END-TO-END W3 check on synthetic files (the frozen
-    queue re-derived, R0 reproduction, a knockout that did not apply, a W2 record changed after generation).
+    queue re-derived, R0 reproduction, a knockout that did not apply, a W2 record changed after generation);
+  - the Part 2d review fixes: A-1 the 1d.13 hash bound (an appended '1d.14 ...' section leaves 1d.13 identical, an edit
+    inside it is still REFUSED: H-1, H-6); A-2 the head rule (a) on pinned commits of this branch (HR-1..HR-3); A-3 /
+    C-1 the queues and the mutation record in the notes (m-4) and the record bound to --head (MR-1); A-4 the W3
+    generator refusing on an INVALID W2 record through the analyzer's own check (W2G-1); A-5 a complete run whose rows
+    end before t (L4-13, W3-G2, W3-G3); A-6 S1 through sec_z0 (S1-1) and a W3 end-to-end case with a G veto (KO-GUARD
+    generated, validated, reported, never counted) and a (B) with both knockouts run (W3-G1, W3-G2); I-1 the repo
+    function's cross-check in Zg-1 (Zg-1 CROSS-CHECK, its routing, GB-2); I-9 the recorded instrument / replay shas
+    (PS-1, HR-3).
 Hand-built records only (no run, no model); a temporary directory for the file cases. One line per case; exit 1 if any
 fails.
 
@@ -105,9 +113,30 @@ def grow(step, unit, kind, admit, model_admit, took, c=5, T_v=20.0, **kw):
          "model_cell": None if model_admit is None else (5, 6), "took": took,
          "post": (5, 6) if took == "fix" else (4, 5), "tier": 7 if (took == "fix" and kind == "a") else
          10 if took == "fix" else 3, "raise": False, "pre_writes": None, "pred_writes": None, "post_writes": None,
-         "ms_guard": None if model_admit is None else 1.0, "ms_inst": 1.0, "row": 0}
+         "ms_guard": None if model_admit is None else 1.0, "ms_inst": 1.0, "row": 0,
+         # the repo function's cross-check tuple (review I-1): equal to the instrument's (frozen replica's) verdict
+         "mp_verdict": None if admit is None else [bool(admit), c if admit else None, T_v]}
     r.update(kw)
     return r
+
+
+def mini_record(sw, guard_rows=(), steps=360, units=3):
+    """A minimal record digest() reads (no outcome is asserted on it): rows for `steps` steps, the switches `sw` and the
+    guard rows (dicts as grow() builds them) in d['mvg']['guard']."""
+    rows_ff = [[ffrow("ff_unit_%d" % i, 1, 1) for i in range(units)] for _ in range(steps)]
+    return {"rows_ff": rows_ff,
+            "rows_vic": [[[V0, 5, 5, "candidate", "candidate", "", 0, 0, 0, 0]] for _ in range(steps)],
+            "rows_uav": [[["uav_1", 1, 1, "victim_searcher", 50.0, False, False, [0, 0], "x"]] for _ in range(steps)],
+            "rows_dec": [], "rows_trig": [], "params": {"NUM_FIREFIGHTERS": units, "NUM_VICTIMS": 1},
+            "eval": {"rescued": 0}, "terminal_step": None, "steps": steps, "steps_done": steps,
+            "depots": {"cells": [[0, 45]]}, "grid": [50, 50],
+            "dp": {"commands": [], "releases": [], "binders": [], "waiting": [], "m3a": [], "m8": []},
+            "ud": {"switches": dict(sw)},
+            "mvg": {"switches": dict(sw), "mp_mismatch": [],
+                    "guard": {"cols": list(UA.GUARD_COLS),
+                              "rows": [[list(r[c]) if isinstance(r.get(c), tuple) else r.get(c) for c in UA.GUARD_COLS]
+                                       for r in guard_rows]}},
+            "mv": {"cols": list(UA.MV_COLS), "rows": []}, "mv_events": []}
 
 
 def reported_cases():
@@ -308,10 +337,13 @@ def review_cases():
             "_ffr_harness.py", "_bp_inst.py", "_mvg_seeds.txt", "_mvg_ref/_MANIFEST.sha256", "_mvg_q_w1.jsonl",
             "_mvg_q_w2.jsonl", "_mvg_probe.py", "_mvg_u1_shadow.py", "_mvg_replay.py", "_mvg_w3_queue.py",
             "_mvg_queue.py", "_mvg_analyze.py", "_mvg_analyze_selftest.py", "_mvg_mutants.py", "_mvg_mutants_mv.py",
-            "_mvg_guard_diag.py")
-    case("m-4 the Part 2d notes must list the probe chain, the frozen seed / reference lists and queues, the instrument, "
-         "replay, W3 and analyzer tooling and the mutation / guard tooling", all("outputs/" + n in UA.NOTES_REQUIRED
-                                                                                for n in need))
+            "_mvg_guard_diag.py", "_mvg_q_port.jsonl", "_mvg_q_smoke.jsonl", "_mvg_q_structure.jsonl",
+            "_mvg_mutants_result.txt", "_mvg_mutants_result.json")
+    case("m-4 the Part 2d notes must list the probe chain, the frozen seed / reference lists and queues (W1, W2 and "
+         "Part 2d's own port / smoke / structure queues, review A-3), the instrument, replay, W3 and analyzer tooling, "
+         "the mutation / guard tooling and the mutation record (review C-1)",
+         all("outputs/" + n in UA.NOTES_REQUIRED for n in need), [n for n in need
+                                                                 if "outputs/" + n not in UA.NOTES_REQUIRED])
     sd_out = {"I2_uav_livelock": [[10, 39, "uav_1", [], "victim_searcher", []], [50, 79, "uav_2", [], "fire_tracker",
                                                                                    []]],
               "I2_uav_stuck": [[5, 30, "uav_1", [1, 1], "victim_searcher", 0, []], [5, 30, "uav_2", [1, 1],
@@ -593,6 +625,43 @@ def guard_cases():
          any("instrument verdict" in v for v in res_n["viol"]) and any("N has no ran" in v for v in res_m["viol"])
          and any("no veto in G" in v for v in res_i["viol"]) and not UA.zg3(digest(hx), digest(hx))["viol"],
          (res_n["viol"], res_m["viol"], res_i["viol"]))
+    # review I-1: the instrument's verdict is the FROZEN function's (a replica); the repo function's tuple is a
+    # cross-check (mp_verdict) and Zg-1 fails where they differ
+    mp_bad = dict(ok_a, mp_verdict=[False, None, 20.0])
+    mp_none = dict(ok_v, mp_verdict=None)
+    mp_inf = grow(13, U0, "a", False, False, "today", T_v=None)
+    case("Zg-1 CROSS-CHECK (review I-1): the repo function's tuple (mp_verdict) differing from the instrument's frozen-"
+         "function replica fails Zg-1 even where the model agrees with the instrument (an admitted step; a veto whose "
+         "cross-check is missing); equal tuples (an infinite T(v) as None on both sides) hold; a shadow row of a fix "
+         "that is off is not Zg-1 in G but mp_crosscheck still lists it",
+         any("repo function" in x[3] for x in UA.zg1([mp_bad], on))
+         and any("repo function" in x[3] for x in UA.zg1([mp_none], on)) and not UA.zg1([mp_inf], on)
+         and not UA.zg1([mp_bad], {"a": False, "b": True}) and len(UA.mp_crosscheck([mp_bad, ok_a, mp_none])) == 2
+         and UA.mp_crosscheck([dict(ok_a, admit=None, mp_verdict=None)]) == [],
+         (UA.zg1([mp_bad], on), UA.zg1([mp_inf], on)))
+    gi = [dict(gr[0], _gi=0)]
+    listed = [[10, U0, "a", 0, [True, 5, 20.0], [False, None, 20.0]]]
+    gi_bad = [dict(gi[0], mp_verdict=[False, None, 20.0])]
+    case("GB-2 the guard record's bookkeeping of the cross-check (review I-1): d['mvg']['mp_mismatch'] must name "
+         "exactly the guard rows whose mp_verdict differs - empty with none, the row listed with one; a difference the "
+         "probe did not list, or a listed row without one, is an INSTRUMENT problem (INVALID)",
+         not UA.guard_record_problems(gi, mv, ev, []) and not UA.guard_record_problems(gi_bad, mv, ev, listed)
+         and any("mp_mismatch" in p for p in UA.guard_record_problems(gi_bad, mv, ev, []))
+         and any("mp_mismatch" in p for p in UA.guard_record_problems(gi, mv, ev, listed)),
+         UA.guard_record_problems(gi_bad, mv, ev, []))
+    zd = {}
+    fixes = {"FF_APPROACH_PATH": True, "FF_RETREAT_KEEP_APPROACH": True}
+    for arm, sw_ in (("G", dict(fixes, FF_FIX_STRANDING_GUARD=True)), ("N", dict(fixes, FF_FIX_STRANDING_GUARD=False)),
+                     ("0", {})):
+        row = dict(mp_bad, model_admit=True if arm == "G" else None,
+                   model_verdict=[True, 5, 20.0] if arm == "G" else None, model_cell=(5, 6) if arm == "G" else None)
+        g_ = UA.digest(mini_record(sw_, [row]), arm, "t", os.path.join(HERE, "__no_such_run__.json"), "set5")
+        zd[arm] = [x for x in (g_["Z"].get("Zg-1") or []) if "repo function" in str(x[3])]
+    case("Zg-1 CROSS-CHECK routing (digest): a cross-check difference is a Zg-1 instance in G (owner GUARD: fails S2 "
+         "of FULL(0 -> G)) and in N and arm 0 too, where Zg-1 is REPORTED (the guard is not evaluated there; the "
+         "shadow rows still test the repo function on the screen's boards)",
+         all(len(zd[a]) == 1 for a in ("G", "N", "0")) and UA.zero_owners("Zg-1", "G") == {"GUARD"}
+         and UA.zero_owners("Zg-1", "N") == "REPORTED" and UA.zero_owners("Zg-1", "0") == "REPORTED", zd)
 
 
 def z1m_cases():
@@ -768,6 +837,58 @@ def l4_cases():
          UA.r0_reproduces(x, dict(x), "s", "s") == [] and UA.r0_reproduces(x, dict(x, eval={"rescued": 2}), "s", "s")
          == ["eval"] and UA.r0_reproduces(x, dict(x, mv_events=[]), "s", "t") == ["mv_events", "stdout"]
          and UA.r0_reproduces(x, dict(x, dp={"commands": []}), None, None) == ["dp.commands", "stdout"])
+    rows25 = [[ffrow(U0, 1, 1), ffrow(U2_, 1, 1, dead=int(t >= 20))] for t in range(1, 26)]
+    case("L4-13 (review A-5) alive_at: inside the rows the row decides; a COMPLETE run whose rows end before t (it "
+         "stopped at its terminal step 25) has a state at t = 30 - dead if the unit died within the rows (ff_unit_2 at "
+         "20), else alive (ff_unit_0); a crashed / incomplete run (complete False), or a unit absent from the rows, "
+         "gives None",
+         UA.alive_at(rows25, U2_, 19) is True and UA.alive_at(rows25, U2_, 20) is False
+         and UA.alive_at(rows25, U2_, 30, True) is False and UA.alive_at(rows25, U0, 30, True) is True
+         and UA.alive_at(rows25, U0, 30, False) is None and UA.alive_at(rows25, U2_, 30) is None
+         and UA.alive_at(rows25, U1_, 30, True) is None and UA.alive_at(rows25, U0, 0, True) is None,
+         [UA.alive_at(rows25, u, 30, c) for u in (U0, U2_) for c in (True, False)])
+
+
+def s1_cases():
+    """Review A-6 (1): the S1 decision of sec_z0 - the port identity (1d.8 (11)) FAILS on one differing cell, is
+    INCOMPLETE with one port run missing, and passes with all 8 identical (positive control); W1's 64 cells identical
+    and dp0's M8 reproduced throughout."""
+    fc = {"victim": V0, "detection_step": 10, "death_step": 30, "min_d": 5}
+    fu = dict(fc, min_d=40)
+
+    def w1(k, i):
+        m8 = []
+        if i == 0:
+            m8 = [fc] * UA.DP0_M8["set%d" % k][0] + [fu] * UA.DP0_M8["set%d" % k][1]
+        return {"cell": {"id": "set%d/ring/X%d" % (k, i), "set": "set%d" % k, "kind": "w1", "fresh": False},
+                "ident": ([], "", [], ""), "ref_bad": None, "g": {"0": {"usable": True, "m8": m8}}, "prov": {},
+                "crash": {}, "port": None}
+
+    def port(key, ident=True, missing=False):
+        return {"cell": {"id": "set3/ring/%s" % key, "set": "set3", "kind": "port", "fresh": False}, "ident": None,
+                "ref_bad": None, "g": {}, "prov": {}, "crash": {},
+                "port": None if missing else {"ident": ident, "D": None if ident else 17, "what": [] if ident
+                                              else ["rows_ff"]}}
+    w1s = [w1(k, i) for k in (1, 2) for i in range(32)]
+    res = {}
+    for name, ports in (("pass", [port(k) for k in UA.PORT_KEYS]),
+                        ("fail", [port(k, ident=(k != "B_S")) for k in UA.PORT_KEYS]),
+                        ("missing", [port(k, missing=(k == "C_W")) for k in UA.PORT_KEYS])):
+        n0 = len(UA._LINES)
+        with contextlib.redirect_stdout(io.StringIO()):
+            s1 = UA.sec_z0(w1s + ports, types.SimpleNamespace(smoke=None, zeros_only=False, smoke_files={}))
+        res[name] = (s1, [ln for ln in UA._LINES[n0:] if "PORT IDENTITY" in ln or "S1 IDENTITY" in ln])
+        del UA._LINES[n0:]
+    case("S1-1 (review A-6) S1 through sec_z0: W1 64 / 64 identical and M8 reproduced; the port identity 8 / 8 "
+         "identical -> PASS; one port cell differing from ud2 -> S1 FAIL (a STOP in main); one port run missing -> "
+         "INCOMPLETE (neither pass nor fail)",
+         res["pass"][0] == {"pass": True, "fail": False} and res["fail"][0] == {"pass": False, "fail": True}
+         and res["missing"][0] == {"pass": False, "fail": False}
+         and any("7 / 8 identical" in ln and "FAIL" in ln for ln in res["fail"][1])
+         and any("S1 IDENTITY => FAIL" in ln for ln in res["fail"][1])
+         and any("7 / 7 identical" in ln and "INCOMPLETE" in ln for ln in res["missing"][1])
+         and any("S1 IDENTITY => INCOMPLETE" in ln for ln in res["missing"][1])
+         and any("S1 IDENTITY => PASS" in ln for ln in res["pass"][1]), {k: v[1] for k, v in res.items()})
 
 
 def write_json(path, obj):
@@ -922,6 +1043,227 @@ def w3_end_to_end():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def w3_end_to_end_guard():
+    """Review A-6 (2) and A-5, end to end on synthetic files: a G record with a VETO - KO-GUARD is generated, its replay
+    validated, its evidence reported in section 7 and NEVER counted (U alive in KO-GUARD only: not CAUSED); a (B)
+    candidate whose KO-OWN and KO-OTHERS are both run, its KO-OWN replay a COMPLETE run that stopped AT its terminal
+    step before t (A-5: the unit died within its rows -> dead at t -> PREVENTED); the same replay crashed instead:
+    no state at t -> UNRESOLVED, not PREVENTED."""
+    tmp = tempfile.mkdtemp(prefix="mvg_w3_guard_")
+    saved = (UA.Q_W2, W3Q.Q_W3, W3Q.CANDS, Q.W3_DIR)
+    try:
+        UA.Q_W2 = os.path.join(tmp, "_mvg_q_w2.jsonl")
+        W3Q.Q_W3 = os.path.join(tmp, "_mvg_q_w3.jsonl")
+        W3Q.CANDS = os.path.join(tmp, "_mvg_w3_candidates.json")
+        Q.W3_DIR = tmp
+        w2 = []
+        for a in (0, 1, 2):
+            ln = Q.probe_line("mvg%dr5" % a, "A_N", "A", "north", "135961", Q.arm_sets(a, 0))
+            out = os.path.join(tmp, os.path.basename(ln["out"]))
+            ln["argv"][ln["argv"].index("--out") + 1] = out
+            ln["out"] = out
+            w2.append(ln)
+        with open(UA.Q_W2, "wb") as fh:
+            fh.write(Q.queue_bytes(w2))
+
+        def rows_for(deaths, steps=360):
+            return [[ffrow("ff_unit_%d" % i, 1, 1, dead=int(deaths.get("ff_unit_%d" % i) is not None
+                                                            and t >= deaths["ff_unit_%d" % i]))
+                     for i in range(3)] for t in range(1, steps + 1)]
+
+        def ev(step, kind, unit, ran, vetoed):
+            return {"step": step, "kind": kind, "unit": unit, "victim": V0, "live": True, "ran": ran,
+                    "vetoed": vetoed}
+        ev_g = [ev(10, "a", U0, True, False), ev(15, "a", U0, False, True), ev(12, "a", U1_, True, False),
+                ev(20, "b", U2_, True, False)]
+
+        def record(line, deaths, events, ko_applied=None, steps_done=360, terminal=None, crashed=None):
+            sd = UA.sd_args(line["argv"])
+            sets = UA.parse_sets(sd)
+            sw = UA.expected_switches(sets)
+            d = {"repo": UA.WT, "head": "x", "argv": sd, "steps": 360, "steps_done": steps_done,
+                 "terminal_step": terminal, "crashed": crashed, "scenario": "A", "wind": "north", "seed": 135961,
+                 "extra_params": sets, "fb3": {"crn": {"on": True, "crn_draws": 5}, "eff": {"victim_spawn_mode": 0}},
+                 "dp": {"probe": "dp_probe v2", "commands": [], "releases": [], "errors": []},
+                 "ud": {"probe": UA.MVG_PROBE, "errors": [], "shadow_mismatch": [], "cmd_ctx": [], "rel_ctx": [],
+                        "switches": dict(sw, DISPATCH_URGENCY=False, FF_CARRY_REPLAN=False)},
+                 "mvg": {"probe": UA.MVG_PROBE, "errors": [], "switches": dict(sw),
+                         "guard": {"cols": list(UA.GUARD_COLS), "rows": []}, "replica": {}},
+                 "mv": {"cols": list(UA.MV_COLS), "rows": []}, "mv_events": events,
+                 "rows_ff": rows_for(deaths, steps_done), "rows_vic": [], "rows_uav": [], "rows_dec": [],
+                 "rows_trig": [], "eval": {"rescued": 1}}
+            write_json(line["out"], d)
+            with open(line["out"][:-5] + ".stdout.txt", "w", encoding="utf-8", newline="\n") as fh:
+                fh.write("[Victim Detection] step=3 UAV-1 detected victim_0 at (1, 1)\n")
+            with open(line["out"] + ".argv", "w", encoding="utf-8") as fh:
+                fh.write(UA.POOL.signature(line))
+            if "--boards" in line["argv"]:
+                own = line["argv"][1:line["argv"].index("--")]
+                rules = json.loads(own[own.index("--ko") + 1]) if "--ko" in own else []
+                write_json(own[own.index("--boards") + 1], {"ko_rules": rules, "argv": line["argv"][1:],
+                                                            "ko_applied": ko_applied or [], "boards": {}})
+            return d
+        deaths = {"0": {U0: 60, U2_: 30}, "G": {U0: 40}, "N": {U0: 60, U2_: 30}}
+        raw = {}
+        for ln, arm in zip(w2, ("0", "G", "N")):
+            raw[arm] = record(ln, deaths[arm], ev_g if arm != "0" else [dict(e, live=False, ran=False, vetoed=False)
+                                                                        for e in ev_g])
+        rec = {"cell": {"id": "set5/ring/A_N", "set": "set5", "fresh": True, "scen": "A", "wind": "north",
+                        "seed": 135961, "key": "A_N"}, "prov": {}, "g": {}}
+        for arm, ln in zip(("0", "G", "N"), w2):
+            c_ = W3Q.compact(raw[arm])
+            rec["g"][arm] = {"w3c": c_, "w2_name": ln["name"], "ff_dead": c_["ff_dead"], "death_chain": {},
+                             "dead_unit_h": {u: ["h"] for u in c_["ff_dead"]}}
+        recs = [rec]
+        doc, lines = W3Q.build_plan(w2, {ln["name"]: rec["g"][a]["w3c"] for ln, a in zip(w2, ("0", "G", "N"))})
+        shas = {ln["name"]: W3Q.sha256_file(ln["out"]) for ln in w2}
+        with open(UA.Q_W2, "rb") as fh:
+            w2sha = hashlib.sha256(fh.read()).hexdigest()
+        with open(W3Q.Q_W3, "wb") as fh:
+            fh.write(Q.queue_bytes(lines))
+        with open(W3Q.CANDS, "wb") as fh:
+            fh.write(W3Q.doc_bytes(W3Q.full_doc(doc, shas, w2sha)))
+        names = [ln["name"] for ln in lines]
+        byn = {ln["name"]: ln for ln in lines}
+        e = doc["entries"][0]
+        p = "mvgrp_mvg1r5_A_N_"
+        record(byn[p + "R0"], deaths["G"], ev_g)
+        record(byn[p + "f0_KOown"], {U0: 40}, [], ko_applied=[[10, U0, "a", [1, 2]]])
+        record(byn[p + "f0_KOlast"], {U0: 40}, [], ko_applied=[[10, U0, "a", [1, 2]]])
+        record(byn[p + "f0_KOothers"], {U0: 40}, [], ko_applied=[[12, U1_, "a", [1, 2]]])
+        record(byn[p + "f0_KOguard"], {}, [], ko_applied=[[15, U0, "g", [1, 2]]])
+        # (B) KO-OWN: a complete run that stopped AT its terminal step 25 (before t = 30), ff_unit_2 dead at 20
+        record(byn[p + "f2_KOown"], {U2_: 20}, [], ko_applied=[[20, U2_, "b", [1, 2]]], steps_done=25, terminal=25)
+        record(byn[p + "f2_KOothers"], {}, [], ko_applied=[[10, U0, "a", [1, 2]]])
+        opts = types.SimpleNamespace(smoke=None, head=None, zeros_only=False, allow_incomplete=False)
+        with contextlib.redirect_stdout(io.StringIO()):
+            res = UA.w3_validity(recs, opts)
+        items = {(it["kind"], it["unit"]): it for it in res["items"]["G"]}
+        ia, ib = items.get(("A", U0)), items.get(("B", U2_))
+        n0 = len(UA._LINES)
+        with contextlib.redirect_stdout(io.StringIO()):
+            UA.sec_w3_report(recs, res)
+        rep = UA._LINES[n0:]
+        del UA._LINES[n0:]
+        a_line = [ln for ln in rep if ln.lstrip().startswith("(A)")]
+        case("W3-G1 (review A-6) a G veto: KO-GUARD is GENERATED (its own line, {unit, kinds g, 0..t}), VALIDATED (a "
+             "valid replay whose boards show X's first veto knocked out), REPORTED (section 7: 'KO-GUARD alive True') "
+             "and NEVER COUNTED: U is alive in KO-GUARD only (dead at t in KO-OWN / KO-LAST / KO-OTHERS) -> not CAUSED",
+             names == [p + "R0", p + "f0_KOown", p + "f0_KOlast", p + "f0_KOothers", p + "f0_KOguard", p + "f2_KOown",
+                       p + "f2_KOothers"]
+             and e["A"][0]["ko"]["KOguard"] == p + "f0_KOguard" and res["complete"] and not res["conflicts"]
+             and ia["resolved"] and ia["guard_run"] and ia["guard"] is True and ia["own"] is False
+             and ia["others"] is False and ia["last"] is False and res["l4"]["G"]["caused"] == 0
+             and any("KO-GUARD alive True" in ln and "not caused" in ln for ln in a_line),
+             (res.get("state"), ia, a_line))
+        case("W3-G2 (review A-6, A-5) a (B) candidate with BOTH knockouts run: KO-OWN a COMPLETE replay that stopped "
+             "at its terminal step 25 < t = 30 with ff_unit_2 dead at 20 -> dead at t (not UNRESOLVED) -> PREVENTED; "
+             "KO-OTHERS alive; L4(G) CAUSED 0 vs PREVENTED 1 -> holds",
+             ib["resolved"] and ib["own_run"] and ib["others_run"] and ib["own"] is False and ib["others"] is True
+             and ib["own_dies"] is True and res["l4"]["G"]["caused"] == 0 and res["l4"]["G"]["prevented"] == 1
+             and not res["l4"]["G"]["fail"], (ib, res.get("l4")))
+        record(byn[p + "f2_KOown"], {U2_: 20}, [], ko_applied=[[20, U2_, "b", [1, 2]]], steps_done=25,
+               crashed={"type": "ValueError", "step": 25})
+        with contextlib.redirect_stdout(io.StringIO()):
+            res = UA.w3_validity(recs, opts)
+        ib = {(it["kind"], it["unit"]): it for it in res["items"]["G"]}[("B", U2_)]
+        case("W3-G3 (review A-5) the same KO-OWN replay CRASHED at 25: no state at t = 30 (None) -> the (B) is "
+             "UNRESOLVED ('stopped before step 30') and not PREVENTED (a hard clause never passes on missing evidence)",
+             res["complete"] and ib["own"] is None and not ib["resolved"]
+             and any("stopped before step 30" in w for w in ib["why"]) and res["l4"]["G"]["prevented"] == 0,
+             (ib, res.get("l4")))
+    finally:
+        UA.Q_W2, W3Q.Q_W3, W3Q.CANDS, Q.W3_DIR = saved
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def w2_gate_cases():
+    """Review A-4: the W3 generator's precondition runs the analyzer's own section-1 validity on the W2 records
+    (w2_records_gate: process() + sec_prov against the frozen queue, the head rule and the shas at --head). One screen
+    cell's three W2 records in a temporary directory: all valid -> the gate passes (and outputs/_mvg_w3_queue.py build
+    gets past it, stopping only at its own 192-line check); one record INVALID (no pool .argv) -> the gate fails and
+    build REFUSES before reading the W2 records or writing anything."""
+    tmp = tempfile.mkdtemp(prefix="mvg_w2gate_")
+    saved = (UA.run_path, W3Q.Q_W2, W3Q.Q_W3, W3Q.CANDS, Q.W3_DIR)
+    try:
+        rc_, hd = UA.git("rev-parse", "HEAD")
+        head_sha = hd.decode().strip()
+        pick = lambda rel: sorted(UA.committed_shas(head_sha, rel) or ["missing"])[0]          # noqa: E731
+        src = {rel: pick(rel) for rel in UA.MVG_SRC_REQUIRED}
+        with contextlib.redirect_stdout(io.StringIO()):
+            frozen = UA.load_seeds()
+        cell = next(c for c in UA.screen_cells(frozen, types.SimpleNamespace(smoke=None))
+                    if c["id"] == "set5/ring/A_N")
+        UA.run_path = lambda arm, c, opts: os.path.join(tmp, "_sd_%s%s%d_%s.json" % (UA.ARM_TAG[arm], c["p"], c["k"],
+                                                                                    c["key"]))
+        W3Q.Q_W2 = os.path.join(tmp, "_mvg_q_w2.jsonl")
+        W3Q.Q_W3 = os.path.join(tmp, "_mvg_q_w3.jsonl")
+        W3Q.CANDS = os.path.join(tmp, "_mvg_w3_candidates.json")
+        Q.W3_DIR = tmp
+        queues, w2 = {}, []
+        for a in (0, 1, 2):
+            ln = Q.probe_line("mvg%dr5" % a, "A_N", "A", "north", str(cell["seed"]), Q.arm_sets(a, 0))
+            out = os.path.join(tmp, os.path.basename(ln["out"]))
+            ln["argv"][ln["argv"].index("--out") + 1] = out
+            ln["out"] = out
+            w2.append(ln)
+            queues[os.path.normcase(out)] = ("w2", ln)
+            sd = UA.sd_args(ln["argv"])
+            sets = UA.parse_sets(sd)
+            sw = UA.expected_switches(sets)
+            d = mini_record(sw)
+            d.update({"repo": UA.WT, "head": head_sha, "argv": sd, "scenario": "A", "wind": "north",
+                      "seed": cell["seed"], "extra_params": sets, "crashed": None,
+                      "fb3": {"crn": {"on": True, "crn_draws": 11}, "eff": {"victim_spawn_mode": 0}}})
+            d["dp"].update({"probe": "dp_probe v2", "errors": [], "src_sha": {"agents.py": pick("agents.py")}})
+            d["ud"] = {"probe": UA.MVG_PROBE, "errors": [], "shadow_mismatch": [], "cmd_ctx": [], "rel_ctx": [],
+                       "src_sha": src, "switches": dict(sw, DISPATCH_URGENCY=False, FF_CARRY_REPLAN=False)}
+            d["mvg"].update({"probe": UA.MVG_PROBE, "errors": [], "src_sha": src,
+                             "u1_shadow_sha": pick(UA.U1_SHADOW_REL), "probe_sha": UA.lf_sha_at(head_sha, UA.PROBE_REL),
+                             "replica": {"checked": 0, "mismatch": [], "fix_checked": 0, "fix_mismatch": [],
+                                         "cell_checked": 0, "cell_mismatch": []}})
+            write_json(out, d)
+            with open(out[:-5] + ".stdout.txt", "w", encoding="utf-8", newline="\n") as fh:
+                fh.write("[Victim Detection] step=3 UAV-1 detected victim_0 at (5, 5)\n")
+            with open(out + ".argv", "w", encoding="utf-8") as fh:
+                fh.write(UA.POOL.signature(ln))
+        with open(W3Q.Q_W2, "wb") as fh:
+            fh.write(Q.queue_bytes(w2))
+        opts = types.SimpleNamespace(smoke=None, head=head_sha[:8], zeros_only=True, allow_incomplete=False,
+                                     smoke_files={})
+
+        def gate(_h, _n):
+            return UA.w2_records_gate([cell], opts, queues)
+
+        def build():
+            try:
+                with contextlib.redirect_stdout(io.StringIO()):
+                    W3Q.build(head_sha[:8], "notes.txt", gate=gate)
+                return None
+            except SystemExit as exc:
+                return str(exc)
+        n0 = len(UA._LINES)
+        with contextlib.redirect_stdout(io.StringIO()):
+            ok, probs = gate(None, None)
+        stop_ok = build()
+        os.remove(w2[1]["out"] + ".argv")
+        with contextlib.redirect_stdout(io.StringIO()):
+            bad, bprobs = gate(None, None)
+        stop_bad = build()
+        written = [f for f in (W3Q.Q_W3, W3Q.CANDS) if os.path.exists(f)]
+        del UA._LINES[n0:]
+        case("W2G-1 (review A-4) the analyzer's W2 check (w2_records_gate): three valid W2 records pass, and "
+             "_mvg_w3_queue.py build gets past it (stopping only at its own 192-line check of this 3-line queue); one "
+             "W2 record INVALID (no pool .argv) fails it and build REFUSES - nothing written",
+             ok and not probs and stop_ok is not None and "192 expected" in stop_ok and not bad
+             and any("INVALID G set5/ring/A_N" in p_ and ".argv" in p_ for p_ in bprobs) and stop_bad is not None
+             and "provenance / validity check of the W2 records failed" in stop_bad and not written,
+             (probs, stop_ok, bprobs, stop_bad, written))
+    finally:
+        UA.run_path, W3Q.Q_W2, W3Q.Q_W3, W3Q.CANDS, Q.W3_DIR = saved
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def validity_cases():
     """16.6 as this round: validity against a queue line, provenance at --head, the shadow-mismatch ruling."""
     tmp = tempfile.mkdtemp(prefix="mvg_selftest_")
@@ -950,6 +1292,7 @@ def validity_cases():
                 "ud": {"probe": UA.MVG_PROBE, "errors": [], "shadow_mismatch": [], "cmd_ctx": [], "rel_ctx": [],
                        "src_sha": src, "switches": dict(sw, DISPATCH_URGENCY=False, FF_CARRY_REPLAN=False)},
                 "mvg": {"probe": UA.MVG_PROBE, "errors": [], "src_sha": src, "u1_shadow_sha": pick(UA.U1_SHADOW_REL),
+                        "probe_sha": UA.lf_sha_at(head_sha, UA.PROBE_REL),
                         "switches": dict(sw), "guard": {"cols": list(UA.GUARD_COLS), "rows": []},
                         "replica": {"checked": 0, "mismatch": [], "fix_checked": 0, "fix_mismatch": [],
                                     "cell_checked": 0, "cell_mismatch": []}},
@@ -1001,6 +1344,14 @@ def validity_cases():
              and not UA.src_check(good, head_sha)
              and any("not recorded" in w for w in UA.src_check(dict(good, dp=dict(good["dp"], src_sha={})), head_sha)),
              (w10, w11))
+        w_anc, _c, _s = UA.prov_run(dict(good, head=UA.git("rev-parse", "a20a2ef5")[1].decode().strip()), path, line,
+                                    cell, o2)
+        w_ps, _c, _s = UA.prov_run(dict(good, mvg=dict(good["mvg"], probe_sha="5" * 64)), path, line, cell, o2)
+        case("HR-3 prov_run applies the head rule and the instrument's sha (reviews A-2, I-9): a run recorded at the "
+             "base a20a2ef5 (an ancestor of --head whose run-loaded files differ) is INVALID; so is a run whose "
+             "mvg.probe_sha is not outputs/_mvg_probe.py at --head",
+             any("run-loaded files differ" in w for w in w_anc) and any("uncommitted instrument" in w for w in w_ps),
+             (w_anc, w_ps))
         beh = dict(good, ud=dict(good["ud"], shadow_mismatch=[[9, U0, "a", "shadow acted, model did not", "approach",
                                                                 [2, 1], [1, 2]]]),
                    mv_events=[{"step": 11, "kind": "b", "unit": U0, "victim": V0, "live": True, "agree": False}])
@@ -1017,6 +1368,100 @@ def validity_cases():
         case("Z6 / INVALID: a crash and an early stop are crashes (GATE FAILURE in G / N), never INVALID; 0 CRN draws is "
              "INVALID", crash is not None and "crashed ValueError" in crash and "stopped at step 200" in str(crash2)
              and crash3 is None and any("crn_draws 0" in w for w in why3), (crash, crash2, why3))
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def provenance_cases():
+    """Review A-2 (the head rule (a), on pinned commits of this branch's history), I-9 (the instrument's and the replay
+    tool's recorded shas) and C-1 (the mutation record bound to --head)."""
+    full = lambda c: UA.git("rev-parse", c)[1].decode().strip()                       # noqa: E731
+    base, b1, b2, b4 = full("a20a2ef5"), full("d17b80d7"), full("aaff76c0"), full("6ebeadc6")
+    # d17b80d7 (build 1/n) -> aaff76c0 (tests/data only) -> dbaf9f49 (tests only) -> 6ebeadc6 (analysis tooling only):
+    # no run-loaded file changes; a20a2ef5 (the base) -> d17b80d7 changes agents.py and adds the probe and replay tool
+    same = UA.head_rule(b4, "6ebeadc6")
+    anc = UA.head_rule(b2, "6ebeadc6")
+    anc_rp = UA.head_rule(b1, "6ebeadc6", replay=True)
+    chg = UA.head_rule(base, "6ebeadc6")
+    desc = UA.head_rule(b4, "aaff76c0")
+    junk = UA.head_rule("not-a-commit", "6ebeadc6")
+    ch_np = UA.run_loaded_changes(base, b1, False) or []
+    ch_rp = UA.run_loaded_changes(base, b1, True) or []
+    case("HR-1 (review A-2) the head rule (a): a run whose head starts with --head is valid; a run made at an ANCESTOR "
+         "of --head (aaff76c0, d17b80d7 -> 6ebeadc6: only tests/ and analysis tooling changed) is valid, a W3 replay "
+         "too; an ancestor with a changed RUN-LOADED file (a20a2ef5: agents.py) is INVALID and names it; a head that "
+         "is not an ancestor (a descendant), or no commit id, is INVALID",
+         same == [] and anc == [] and anc_rp == [] and any("run-loaded files differ" in w and "agents.py" in w
+                                                            for w in chg)
+         and any("not an ancestor" in w for w in desc) and any("no commit id" in w for w in junk),
+         (anc, anc_rp, chg, desc, junk))
+    case("HR-2 the run-loaded set: root *.py, src_extension/ and the probe chain's outputs/ tooling; "
+         "outputs/_mvg_replay.py only for a W3 replay; never tests/ or other outputs/ files",
+         "agents.py" in ch_np and "src_extension/planning/movement_paths.py" in ch_np
+         and "outputs/_mvg_probe.py" in ch_np and "outputs/_mvg_u1_shadow.py" in ch_np
+         and "outputs/_mvg_replay.py" not in ch_np and "outputs/_mvg_replay.py" in ch_rp
+         and not any(p.startswith("tests/") or p in ("outputs/_mvg_seeds.txt", "outputs/urgency_part1d.txt")
+                     for p in ch_rp), (ch_np, ch_rp))
+    rc_, hd = UA.git("rev-parse", "HEAD")
+    head_sha = hd.decode().strip()
+    psha = UA.lf_sha_at(head_sha, UA.PROBE_REL)
+    rsha = UA.lf_sha_at(head_sha, UA.REPLAY_REL)
+    _rc, blob = UA.git("show", "%s:%s" % (head_sha, UA.PROBE_REL))
+    i_ok = UA.instrument_check({"mvg": {"probe_sha": psha}}, head_sha[:8])
+    i_bad = UA.instrument_check({"mvg": {"probe_sha": "0" * 64}}, head_sha[:8])
+    i_none = UA.instrument_check({"mvg": {}}, head_sha[:8])
+    tmp = tempfile.mkdtemp(prefix="mvg_prov_")
+    try:
+        bpath = os.path.join(tmp, "_bd_x.json")
+        line = {"argv": [os.path.join(UA.OUT_DIR, "_mvg_replay.py"), "--boards", bpath, "--", UA.PROBE_REL, "--crn"]}
+        good_b = {"ko_rules": [], "argv": line["argv"][1:], "ko_applied": [], "replay_sha": rsha, "probe_sha": psha}
+        write_json(bpath, good_b)
+        b_ok, _b = UA.boards_problems(line, head_sha[:8])
+        write_json(bpath, dict(good_b, replay_sha="1" * 64))
+        b_bad, _b = UA.boards_problems(line, head_sha[:8])
+        b_nohead, _b = UA.boards_problems(line, None)
+        write_json(bpath, {k: v for k, v in good_b.items() if k != "probe_sha"})
+        b_miss, _b = UA.boards_problems(line, head_sha[:8])
+        case("PS-1 (review I-9) the instrument's recorded sha: mvg.probe_sha equal to outputs/_mvg_probe.py's LF "
+             "sha256 at --head passes, any other (or none) is INVALID; a W3 replay's boards file must carry "
+             "replay_sha / probe_sha of outputs/_mvg_replay.py / _mvg_probe.py at --head (one differing or missing: "
+             "INVALID; not checked without --head, as in --smoke); the LF sha is the blob's with CRLF read as LF",
+             not i_ok and any("uncommitted instrument" in w for w in i_bad) and i_none and not b_ok
+             and any("replay_sha" in w for w in b_bad) and not b_nohead and any("probe_sha" in w for w in b_miss)
+             and psha == hashlib.sha256(blob.replace(b"\r\n", b"\n")).hexdigest(), (i_bad, b_bad, b_miss))
+        pick = lambda rel: sorted(UA.committed_shas(head_sha, rel) or ["missing"])[0]          # noqa: E731
+        _rc, ag = UA.git("show", "%s:agents.py" % head_sha)
+        ag_lf = ag.replace(b"\r\n", b"\n")
+        spec_abs = os.path.join(UA.WT, "outputs", "_mvg_mutants_mv.py")
+        mdoc = {"clean": True, "sha256": {
+            "files": {"agents.py": hashlib.sha256(ag_lf.replace(b"\n", b"\r\n")).hexdigest(),
+                      "src_extension/planning/movement_paths.py": pick("src_extension/planning/movement_paths.py"),
+                      "wildfire_model.py": hashlib.sha256(UA.git("show", "%s:wildfire_model.py" % head_sha)[1].replace(
+                          b"\r\n", b"\n")).hexdigest()},
+            "specs": {spec_abs: pick("outputs/_mvg_mutants_mv.py")}, "engine": pick(UA.MUTANTS_ENGINE),
+            "changed_during_run": []}}
+        mpath = os.path.join(tmp, "_mvg_mutants_result.json")
+
+        def mcheck(doc):
+            write_json(mpath, doc)
+            return UA.mutants_check(head_sha[:8], mpath)
+
+        def with_sha(**kw):
+            return dict(mdoc, sha256=dict(mdoc["sha256"], **kw))
+        m_ok, m_lines = mcheck(mdoc)
+        m_file, l_file = mcheck(with_sha(files=dict(mdoc["sha256"]["files"], **{"agents.py": "2" * 64})))
+        m_moved, _l = mcheck(with_sha(changed_during_run=["tests/test_stranding_guard.py"]))
+        m_out, l_out = mcheck(with_sha(specs={r"C:\elsewhere\_mvg_mutants_mv.py": "3" * 64}))
+        m_noeng, _l = mcheck(with_sha(engine=None))
+        m_eng, l_eng = mcheck(with_sha(engine="4" * 64))
+        m_gone, _l = UA.mutants_check(head_sha[:8], os.path.join(tmp, "no_such.json"))
+        case("MR-1 (review C-1) the mutation record is bound to --head: every bound file / spec / engine sha equal to "
+             "that file at --head (the CRLF or the LF form of the committed blob) passes; a bound file, spec or engine "
+             "sha that is not the committed file's, a spec outside the worktree, a missing engine binding, a file "
+             "changed during the check, or an unreadable record REFUSES",
+             m_ok and not m_file and any("agents.py" in ln for ln in l_file) and not m_moved and not m_out
+             and any("outside the worktree" in ln for ln in l_out) and not m_noeng and not m_eng
+             and any("outputs/_mvg_mutants.py" in ln for ln in l_eng) and not m_gone, (m_lines, l_file, l_out))
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
@@ -1126,10 +1571,36 @@ def header_cases():
          "the urgency round's frozen file", frozen is not None and all(len(frozen[s]) == 16 for s in UA.EXPECTED_BASES)
          and ["A_N", "A", "north", "135961"] in frozen["set5"] and ["D_W", "D", "west", "287056"] in frozen["set6"])
     txt = "x\n1d.2 THE STRANDING GUARD\n  a\n\n1d.10 WHAT THIS MEANS\ny\n====\n1d.13 AMENDMENT C1\n b\n\n"
-    case("H-1 hashed-section extraction (verbatim): up to the next named header; trailing blank / '=' lines dropped; "
-         "1d.13 runs to the end of the document",
+    app = txt + "=====\n1d.14 AMENDMENT C2 - READINGS\n=====\n c\n"
+    sub = "x\n1d.13 AMENDMENT C1\n b\n1d.13.1 RULING\n d\n1d.6 is cited here\n"
+    r13 = UA.ROUND_SECTION_RE
+    case("H-1 hashed-section extraction: up to the next named header (extract_section verbatim); trailing blank / '=' "
+         "lines dropped; 1d.13 (extract_hashed, review A-1) runs to the next round-section header '1d.<n> <Capital>' "
+         "or EOF - an appended '1d.14 ...' section and its '=' banner are not part of it; a '1d.13.1' sub-header or a "
+         "'1d.6 is' line is no boundary",
          UA.extract_section(txt, "1d.2 THE STRANDING GUARD", "1d.10 WHAT THIS MEANS") == "1d.2 THE STRANDING GUARD\n  a"
-         and UA.extract_section(txt, "1d.13 AMENDMENT C1", None) == "1d.13 AMENDMENT C1\n b")
+         and UA.extract_hashed(txt, "1d.2 THE STRANDING GUARD", "1d.10 WHAT THIS MEANS")
+         == "1d.2 THE STRANDING GUARD\n  a"
+         and UA.extract_section(txt, "1d.13 AMENDMENT C1", None) == "1d.13 AMENDMENT C1\n b"
+         and UA.extract_hashed(txt, "1d.13 AMENDMENT C1", r13) == "1d.13 AMENDMENT C1\n b"
+         and UA.extract_hashed(app, "1d.13 AMENDMENT C1", r13) == "1d.13 AMENDMENT C1\n b"
+         and UA.extract_hashed(sub, "1d.13 AMENDMENT C1", r13) == "1d.13 AMENDMENT C1\n b\n1d.13.1 RULING\n d\n"
+                                                                  "1d.6 is cited here"
+         and UA.extract_hashed(app, "1d.99 NOT THERE", r13) is None,
+         repr(UA.extract_hashed(app, "1d.13 AMENDMENT C1", r13)))
+    amend = (text.rstrip("\n") + "\n\n" + "=" * 80 + "\n1d.14 AMENDMENT C2 - PART 2d READINGS\n" + "=" * 80
+             + "\n    a later amendment's text\n")
+    ok_app, l_app = UA.hash_checks(amend)
+    bad_app, l_bad = UA.hash_checks(amend.replace("FAIL iff CAUSED(G) > PREVENTED(G).",
+                                                  "FAIL iff CAUSED(G) >= PREVENTED(G)."))
+    old_rule = UA.extract_section(amend, "1d.13 AMENDMENT C1", None) != UA.extract_section(text, "1d.13 AMENDMENT C1",
+                                                                                            None)
+    case("H-6 (review A-1) an amendment section '1d.14 ...' appended to urgency_part1d.txt leaves 1d.13 IDENTICAL (the "
+         "hash checks pass; the whole document is reported as differing, info only), while an edit inside 1d.13 with "
+         "the amendment appended is still REFUSED; the old EOF rule would have swallowed the amendment (control)",
+         ok_app and any(ln.lstrip().startswith("section 1d.13 ") and "identical" in ln for ln in l_app)
+         and not bad_app and any(ln.lstrip().startswith("section 1d.13 ") and "DIFFERS" in ln for ln in l_bad)
+         and any("info" in ln and "DIFFERS" in ln for ln in l_app) and old_rule, (l_app, l_bad))
     cells = UA.screen_cells(frozen, types.SimpleNamespace(smoke=None))
     kinds = collections.Counter(c["kind"] for c in cells)
     case("H-5 the analysed cells: W1 64 (arm 0, sets 1-2), the screen 64 (arms 0 / G / N, sets 5-6, fresh), the port "
@@ -1215,7 +1686,11 @@ def main() -> int:
     l4_cases()
     count_cases()
     validity_cases()
+    provenance_cases()
+    w2_gate_cases()
     w3_end_to_end()
+    w3_end_to_end_guard()
+    s1_cases()
     reported_cases()
     smoke_case()
     review_cases()

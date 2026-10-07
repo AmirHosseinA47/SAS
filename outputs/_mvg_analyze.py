@@ -13,12 +13,29 @@ usage (mvg worktree root, E:/Projects/SAS/.venv/Scripts/python.exe):
   python outputs/_mvg_analyze.py --head SHA --part2-notes PATH [--out REPORT] [--allow-incomplete | --zeros-only]
   python outputs/_mvg_analyze.py --smoke DIR --smoke-files ARM=FILE[,ARM=FILE...] [--smoke-cell set1/ring/A_N]
                                  [--out REPORT] [--zeros-only]
-  --head SHA          the Part 2d commit: every run's recorded head must start with it, and every source sha it
-                      recorded (dp.src_sha, ud.src_sha, mvg.src_sha, and mvg.u1_shadow_sha of the instrument-only U1
-                      copy) must equal the file at SHA, LF or CRLF form (INVALID otherwise: 'ran uncommitted source');
-                      SHA must descend from the base a20a2ef5 (1d.7)
+  --head SHA          the Part 2d commit. THE HEAD RULE (review A-2, rule (a); head_rule): a run is valid when its
+                      recorded head starts with SHA, OR its recorded head is an ANCESTOR of SHA (git merge-base
+                      --is-ancestor) and every RUN-LOADED file is byte-identical (LF-normalised) between the two commits
+                      (run_loaded_changes): every tracked *.py at the repository root, everything under src_extension/,
+                      and the outputs/ tooling the probe chain loads, RUN_LOADED_TOOLING (derived from the code:
+                      _mvg_probe.py runpy-runs _ut_probe.py -> _fb3_probe.py -> _fx3_probe.py -> _mf2_probe.py ->
+                      _sd_probe.py; _fb3_probe.py loads _fm2_probe_harness.py (which runpy-runs _ffr_harness.py) and
+                      _bp_inst.py by path; _mvg_probe.py loads the U1 copy _mvg_u1_shadow.py by path; _ffr_harness.py
+                      imports _dim_hooks.py with a --dim-* option only - no frozen line passes one; listed
+                      conservatively), plus outputs/_mvg_replay.py for a W3 replay. INVALID otherwise. Every source
+                      sha the run recorded (dp.src_sha, ud.src_sha, mvg.src_sha, and mvg.u1_shadow_sha of the
+                      instrument-only U1 copy) must equal the file at SHA, LF or CRLF form (INVALID otherwise: 'ran
+                      uncommitted source'), and so must the instrument itself (review I-9): mvg.probe_sha is the
+                      LF-normalised sha256 of outputs/_mvg_probe.py at SHA, and a W3 replay's boards file carries
+                      replay_sha / probe_sha = those of outputs/_mvg_replay.py / outputs/_mvg_probe.py at SHA. SHA must
+                      descend from the base a20a2ef5 (1d.7)
   --part2-notes PATH  the Part 2d notes: every '<sha256> <outputs/...>' line is verified against the file on disk; the
-                      tooling files and the frozen W1 / W2 queues must be listed. REFUSED on any mismatch.
+                      tooling files, the frozen queues (W1, W2, port, smoke, structure) and the mutation record
+                      (outputs/_mvg_mutants_result.txt / .json) must be listed. REFUSED on any mismatch. The mutation
+                      record is then checked against SHA (review C-1; mutants_check): every file sha its JSON binds
+                      (sha256.files, sha256.specs, sha256.engine) must be that file at SHA (LF or CRLF form of the
+                      committed blob) and no bound file may have changed during the check - REFUSED otherwise (a
+                      record computed on another tree is no evidence for this one).
   --zeros-only        the wave check (1d.9; 1d.13.3: every 20-30 minutes during W1-W3): sections 0-3 and the W3
                       validity, then stop - no outcome section, no verdict, and no outcome VALUE in a zero failure line
                       (field paths only, numbers masked)
@@ -33,9 +50,16 @@ usage (mvg worktree root, E:/Projects/SAS/.venv/Scripts/python.exe):
                       the STRUCTURE counts of 1d.8 (9) (admitted and vetoed (a) / (b) decisions, the guard's and the
                       probe's in-run cost) and each comparison's S6 cost line; every outcome section is suppressed.
 exit: 0 report written; 1 STOP (S1 identity failed, an arm-0 failure - 1d.6.2; nothing else is read); 2 REFUSED (a
-hashed text differs, a reused function or module is not the committed one, the Part 2d notes differ, the seeds file is
-unusable, a run's scenario / wind / seed is not its frozen cell, or the W3 queue is not what the frozen rule gives on
-the W2 records).
+hashed text differs, a reused function or module is not the committed one, the Part 2d notes differ, the mutation record
+is not bound to --head, the seeds file is unusable, a run's scenario / wind / seed is not its frozen cell, or the W3
+queue is not what the frozen rule gives on the W2 records).
+HASHED SECTIONS (1d.8 (6); hash_checks): 1d.2-1d.9 run to the '1d.10 WHAT THIS MEANS' header; 1d.13 runs to the next
+round-section header - the first later line matching '^1d\\.\\d+ [A-Z]' (a later amendment, e.g. '1d.14 ...') - or EOF,
+trailing blank and '=' banner lines dropped (review A-1): an appended amendment leaves 1d.13's text unchanged, an edit
+inside it is REFUSED.
+W3 GENERATION (review A-4): outputs/_mvg_w3_queue.py build calls w2_gate() with its own --head and --part2-notes - the
+header checks of section 0 and section 1's validity of all 192 W2 records exactly as here - and refuses unless every
+W2 record is present and valid.
 
 SECTIONS
   0 HEADER        commits 74039c54 (Part 1d; 1d.0-1d.12 frozen), 0d5358e3 (amendment C1, 1d.13), a20a2ef5 (the base),
@@ -113,14 +137,22 @@ DISPATCH = "cc8d653c4a5740c0f04a9e94d6ff48e92a0ca027"
 REUSED_MODULES = ("_fx3r_analyze.py", "_fb3_analyze.py", "_sd_analyze.py", "_ut_analyze.py", "_ut_analyze2.py",
                   "_fx3_pockets.py", "_mf2_p3_analyze.py", "_fb3_queue.py", "_mf2_pool.py")
 # 1d.8 (6): the sections of this round's pre-registration whose text must not change after data - 1d.2-1d.9 as frozen
-# at 74039c54 (and as carried by the amendment commit 0d5358e3), 1d.13 as committed at 0d5358e3
+# at 74039c54 (and as carried by the amendment commit 0d5358e3), 1d.13 as committed at 0d5358e3. 1d.13 ends at the next
+# ROUND-section header ('1d.14 ...' of a later amendment; review A-1), else EOF - never at a top-level 'N. ' header,
+# which this document does not use
+ROUND_SECTION_RE = re.compile(r"^1d\.\d+ [A-Z]")
 HASHED = (("1d.2-1d.9", PART1D, "1d.2 THE STRANDING GUARD", "1d.10 WHAT THIS MEANS"),
           ("1d.2-1d.9", AMEND_C1, "1d.2 THE STRANDING GUARD", "1d.10 WHAT THIS MEANS"),
-          ("1d.13", AMEND_C1, "1d.13 AMENDMENT C1", None))
+          ("1d.13", AMEND_C1, "1d.13 AMENDMENT C1", ROUND_SECTION_RE))
 NOTES_REQUIRED = ("outputs/_mvg_probe.py", "outputs/_mvg_u1_shadow.py", "outputs/_mvg_replay.py",
                   "outputs/_mvg_probe_check.py", "outputs/_mvg_analyze.py", "outputs/_mvg_analyze_selftest.py",
                   "outputs/_mvg_queue.py", "outputs/_mvg_w3_queue.py", "outputs/_mvg_q_w1.jsonl",
                   "outputs/_mvg_q_w2.jsonl",
+                  # Part 2d's own frozen queues (review A-3): the port identity runs are validated against
+                  # _mvg_q_port.jsonl; the smoke and the structure check are frozen the same way
+                  "outputs/_mvg_q_port.jsonl", "outputs/_mvg_q_smoke.jsonl", "outputs/_mvg_q_structure.jsonl",
+                  # the mutation record (review C-1): its bound shas are checked against --head (mutants_check)
+                  "outputs/_mvg_mutants_result.txt", "outputs/_mvg_mutants_result.json",
                   # the chain _mvg_probe.py loads (runpy: _ut_probe -> _fb3_probe -> _fx3_probe -> _mf2_probe ->
                   # _sd_probe; _fb3_probe -> _fm2_probe_harness (-> _ffr_harness) and _bp_inst), the frozen seed and
                   # reference lists, the pool, and the mutation / guard tooling
@@ -129,6 +161,22 @@ NOTES_REQUIRED = ("outputs/_mvg_probe.py", "outputs/_mvg_u1_shadow.py", "outputs
                   "outputs/_bp_inst.py", "outputs/_mf2_pool.py", "outputs/_mvg_seeds.txt",
                   "outputs/_mvg_ref/_MANIFEST.sha256", "outputs/_mvg_mutants.py", "outputs/_mvg_mutants_mv.py",
                   "outputs/_mvg_guard_diag.py", "outputs/_mvg_make_guard_corpus.py")
+MUTANTS_JSON = "outputs/_mvg_mutants_result.json"
+MUTANTS_ENGINE = "outputs/_mvg_mutants.py"
+# THE HEAD RULE's run-loaded files (review A-2, rule (a)): a run made at an ANCESTOR of --head is valid only when these
+# are byte-identical (LF-normalised) between its head and --head. Derived from the code of the probe chain:
+# _mvg_probe.py loads _mvg_u1_shadow.py by path and runpy-runs _ut_probe.py, which runs _fb3_probe.py, which loads
+# _fm2_probe_harness.py (it runpy-runs _ffr_harness.py) and _bp_inst.py by path and runs _fx3_probe.py -> _mf2_probe.py
+# -> _sd_probe.py; _ffr_harness.py imports _dim_hooks.py only with a --dim-* option (no frozen line passes one: listed
+# conservatively). The repository side: every tracked *.py at the root (agents, wildfire_model, common_fixed_variables,
+# evaluate_scenarios, serve_dashboard, ...) and everything under src_extension/ (git pathspecs).
+RUN_LOADED_REPO = (":(glob)*.py", "src_extension")
+RUN_LOADED_TOOLING = ("outputs/_mvg_probe.py", "outputs/_mvg_u1_shadow.py", "outputs/_ut_probe.py",
+                      "outputs/_fb3_probe.py", "outputs/_fx3_probe.py", "outputs/_mf2_probe.py", "outputs/_sd_probe.py",
+                      "outputs/_fm2_probe_harness.py", "outputs/_ffr_harness.py", "outputs/_bp_inst.py",
+                      "outputs/_dim_hooks.py")
+RUN_LOADED_REPLAY = ("outputs/_mvg_replay.py",)          # a W3 replay line wraps the probe in the replay tool
+PROBE_REL, REPLAY_REL = "outputs/_mvg_probe.py", "outputs/_mvg_replay.py"
 # the instrument version the SCREEN reads; a urgency ud_probe v2 record is readable in --smoke only (DRY: no guard)
 MVG_PROBE = "mvg_probe v1"
 UD_PROBE_DRY = "ud_probe v2"
@@ -170,9 +218,12 @@ MV_COLS = ("step", "unit", "victim", "leg", "branch", "pre", "post", "target", "
            "fix_ms", "inst_ms", "dcb",
            "gA", "gB", "veto", "acted_g")
 MV_COLS_DRY = MV_COLS[:38]                 # a ud_probe v2 record (smoke DRY mode only)
+# d["mvg"]["guard"] columns (mvg_probe v1, MVG_SCHEMA): c / T_v / admit = the INSTRUMENT's verdict, the frozen-function
+# replica's (review I-1); mp_verdict = [admit, c, T_v] of the repo function movement_paths.stranding_guard on the same
+# arguments, a cross-check that must equal them (Zg-1 fails on a difference)
 GUARD_COLS = ("step", "unit", "victim", "kind", "u", "n", "v", "today", "today_kind", "today_tier", "today_raise",
               "c", "T_v", "admit", "model_admit", "model_verdict", "model_cell", "took", "post", "tier", "raise",
-              "pre_writes", "pred_writes", "post_writes", "ms_guard", "ms_inst", "row")
+              "pre_writes", "pred_writes", "post_writes", "ms_guard", "ms_inst", "row", "mp_verdict")
 # the pre-advance (decision-time) fields of a d["mv"] row: the shadow agreement of Z1-M (iii) and Zg-3, the instrument's
 # guard verdicts included
 SHADOW_FIELDS = ("step", "unit", "victim", "leg", "pre", "target", "digest", "st_pre", "trig", "zrb", "today", "fa",
@@ -1100,16 +1151,36 @@ def guard_dicts(d):
     return cols, rows
 
 
+def mp_crosscheck(grows):
+    """NEW (review I-1) - the instrument's CROSS-CHECK at every guard row: the repo function the model calls
+    (movement_paths.stranding_guard, the row's mp_verdict = [admit, c, T_v] on the instrument's arguments) against the
+    instrument's own verdict (the frozen-function replica: [admit, c, T_v], None when it raised), exactly the probe's
+    rule for d['mvg']['mp_mismatch'] (mp_verdict != that). A difference is a defect of the guard function or of the
+    instrument: Zg-1 fails on it in G; elsewhere it is reported (Zg-1 outside G). Returns [[step, unit, kind, text,
+    guard row index]]."""
+    bad = []
+    for r in grows:
+        adm = r.get("admit")
+        inst = None if adm is None else [bool(adm), r.get("c"), r.get("T_v")]
+        mp = r.get("mp_verdict")
+        if (None if mp is None else list(mp)) != inst:
+            bad.append([r.get("step"), r.get("unit"), r.get("kind"),
+                        "the repo function movement_paths.stranding_guard (mp_verdict %s) != the instrument's frozen-"
+                        "function replica %s" % (mp, inst), r.get("_gi")])
+    return bad
+
+
 def zg1(grows, sw):
-    """NEW - Zg-1 TWO-SIDED (1d.6.2) in a run whose guard is on: at every decision where a LIVE fix (a) / (b) would act
-    (one guard row each), the MODEL's verdict - the step taken (took: 'fix' or 'today') and its guard call's verdict
-    (model_admit) - equals the instrument's independently recomputed ADMIT(n) (admit: movement_paths.stranding_guard
-    on the decision board, equal to the frozen _mvg_guard_diag.guard by T-G7). An admitted step where ADMIT is false
-    (UNDER-VETO) fails, and so does a veto where ADMIT is true (OVER-VETO). Also failing: no instrument verdict; a
-    verdict inconsistent with 1d.2.2 (ADMIT iff c finite and c + 1 <= T(v)); the guard not evaluated by the model where
-    a live fix would act; the model's (admit, c_n, T_v) or the cell it judged differing from the instrument's.
-    sw {"a", "b"}: the fixes' effective switches (a fix that is off has a shadow row only). Returns [[step, unit, kind,
-    text]]."""
+    """CHANGED (review I-1) - Zg-1 TWO-SIDED (1d.6.2) in a run whose guard is on: at every decision where a LIVE fix
+    (a) / (b) would act (one guard row each), the MODEL's verdict - the step taken (took: 'fix' or 'today') and its
+    guard call's verdict (model_admit) - equals the instrument's independently recomputed ADMIT(n) (admit: the FROZEN
+    function's verdict - the probe's local replica of _mvg_guard_diag.guard on the U1 copy's helpers, sharing no code
+    with the model's guard). An admitted step where ADMIT is false (UNDER-VETO) fails, and so does a veto where ADMIT is
+    true (OVER-VETO). Also failing: no instrument verdict; a verdict inconsistent with 1d.2.2 (ADMIT iff c finite and c
+    + 1 <= T(v)); the guard not evaluated by the model where a live fix would act; the model's (admit, c_n, T_v) or the
+    cell it judged differing from the instrument's; and the repo function's cross-check tuple (mp_verdict) differing
+    from the instrument's (mp_crosscheck). sw {"a", "b"}: the fixes' effective switches (a fix that is off has a shadow
+    row only). Returns [[step, unit, kind, text]]."""
     bad = []
     for r in grows:
         k = r.get("kind")
@@ -1117,6 +1188,7 @@ def zg1(grows, sw):
             continue
         where = [r.get("step"), r.get("unit"), k]
         adm, m, took = r.get("admit"), r.get("model_admit"), r.get("took")
+        bad += [x[:4] for x in mp_crosscheck([r])]
         if adm is None:
             bad.append(where + ["no instrument verdict (the instrument's guard raised)"])
             continue
@@ -1176,13 +1248,21 @@ def zg2(grows, sw):
     return bad
 
 
-def guard_record_problems(grows, mv_rows, events):
+def guard_record_problems(grows, mv_rows, events, mp_listed=None):
     """NEW - the guard record's own BOOKKEEPING (an instrument error, INVALID - 16.6 as this round): every acting fix of
     every d['mv'] row has exactly one guard row and one ACTED event; each guard row points at its row (step, unit, pre =
     u, target = v, f<k> = n, today's cell, k in acted, g<K> = admit); its event carries the row's guard verdict and
     live / vetoed / ran consistent with the model's verdict (vetoed iff live and model_admit is False; ran iff live and
-    not vetoed); n is a 4-neighbour of u. (Model behaviour - verdicts, steps taken - is Zg-1 / Zg-2 / Z1-M, not here.)"""
+    not vetoed); n is a 4-neighbour of u; and (review I-1, mp_listed = d['mvg']['mp_mismatch'] when given) the probe's
+    own list of cross-check differences names exactly the guard rows mp_crosscheck finds. (Model behaviour - verdicts,
+    steps taken - is Zg-1 / Zg-2 / Z1-M, not here; a cross-check difference itself is Zg-1.)"""
     probs = []
+    if mp_listed is not None:
+        listed = sorted([x[0], x[1], x[2], x[3]] for x in mp_listed if isinstance(x, (list, tuple)) and len(x) >= 4)
+        found = sorted([x[0], x[1], x[2], x[4]] for x in mp_crosscheck(grows))
+        if len(listed) != len(mp_listed or ()) or listed != found:
+            probs.append("guard: d['mvg']['mp_mismatch'] lists %d row(s), the guard rows hold %d cross-check "
+                         "difference(s) (mp_verdict != [admit, c, T_v])" % (len(mp_listed or ()), len(found)))
     by_row, ev = {}, {}
     for r in grows:
         key = (r.get("row"), r.get("kind"))
@@ -1808,11 +1888,18 @@ def death_chain(unit, t, cmds, mv_rows, ffs, events):
 
 
 # ================================================================================================ W3 / L4 (pure)
-def alive_at(rows_ff, unit, t):
-    """NEW: True / False = the unit is alive / dead in rows_ff at step t (index t - 1); None = not recorded (the run
-    stopped before t, or the unit is absent)."""
-    if t is None or t < 1 or t > len(rows_ff or ()):
+def alive_at(rows_ff, unit, t, complete=False):
+    """CHANGED (review A-5): True / False = the unit is alive / dead in rows_ff at step t (index t - 1). A COMPLETE run
+    (complete: not a crash and its rows are the whole run - it stopped at its --steps or AT its terminal step) whose
+    rows end before t has a defined state at t: dead if the unit died within the rows, else alive (it survived the
+    run). None = not recorded: the unit is absent, or a crashed / incomplete run stopped before t."""
+    rows_ff = rows_ff or []
+    if t is None or t < 1:
         return None
+    if t > len(rows_ff):
+        if not complete or not any(x[0] == unit for row in rows_ff for x in row):
+            return None
+        return first_death(rows_ff, unit) is None
     r = next((x for x in rows_ff[t - 1] if x[0] == unit), None)
     return None if r is None else not bool(r[6])
 
@@ -2257,6 +2344,24 @@ def extract_section(text, start, end):
     return "\n".join(lines[i:j])
 
 
+def extract_hashed(text, start, end):
+    """NEW (review A-1): a hashed section. `end` a string: extract_section's rule (verbatim, up to the line before the
+    first later one starting with it). `end` a compiled pattern (ROUND_SECTION_RE for 1d.13): the lines from the first
+    one starting with `start` to the line before the first LATER line the pattern matches (the next round-section
+    header, e.g. a later amendment '1d.14 ...'), or EOF; trailing blank and '=====' banner lines dropped (so a banner
+    before an appended section is not part of 1d.13); LF-normalised. None when `start` is absent."""
+    if end is None or isinstance(end, str):
+        return extract_section(text, start, end)
+    lines = lf(text).split("\n")
+    i = next((k for k, ln in enumerate(lines) if ln.startswith(start)), None)
+    if i is None:
+        return None
+    j = next((k for k in range(i + 1, len(lines)) if end.match(lines[k])), len(lines))
+    while j > i + 1 and (not lines[j - 1].strip() or set(lines[j - 1].strip()) == {"="}):
+        j -= 1
+    return "\n".join(lines[i:j])
+
+
 def show_blob(commit, rel):
     rc, blob = git("show", "%s:%s" % (commit, rel))
     return blob.decode("utf-8", "replace") if rc == 0 else None
@@ -2265,8 +2370,9 @@ def show_blob(commit, rel):
 def hash_checks(current_text=None):
     """CHANGED (1d.8 (6)): each hashed section of the working outputs/urgency_part1d.txt equals its reference commit's -
     1d.2-1d.9 at 74039c54 (where 1d.0-1d.12 were frozen) and at 0d5358e3, and 1d.13 at 0d5358e3 (the rulings amendment
-    C1); the whole document against 0d5358e3 is reported (info: a later amendment section may follow). Returns (ok,
-    lines)."""
+    C1), 1d.13 bounded by the next round-section header or EOF (extract_hashed, review A-1: a later amendment section
+    appended after it leaves it unchanged); the whole document against 0d5358e3 is reported (info: a later amendment
+    section may follow). Returns (ok, lines)."""
     lines, ok = [], True
     if current_text is None:
         try:
@@ -2278,8 +2384,8 @@ def hash_checks(current_text=None):
     for name, commit, start, end in HASHED:
         if commit not in blobs:
             blobs[commit] = show_blob(commit, "outputs/urgency_part1d.txt")
-        ref = extract_section(blobs[commit], start, end) if blobs[commit] else None
-        cur = extract_section(current_text, start, end)
+        ref = extract_hashed(blobs[commit], start, end) if blobs[commit] else None
+        cur = extract_hashed(current_text, start, end)
         same = ref is not None and cur is not None and ref == cur
         ok = ok and same
         lines.append("  section %-10s vs %s: %s (sha256 %s, %d lines)" % (
@@ -2358,6 +2464,67 @@ def notes_check(path):
     return ok, lines
 
 
+def repo_rel(path):
+    """NEW: a path as a worktree-relative POSIX path ('outputs/x.py'), None when it lies outside the worktree."""
+    p = str(path or "")
+    if not p:
+        return None
+    full = os.path.normpath(p if os.path.isabs(p) else os.path.join(WT, p))
+    try:
+        rel = os.path.relpath(full, WT)
+    except ValueError:                       # another drive
+        return None
+    if rel == os.pardir or rel.startswith(os.pardir + os.sep) or os.path.isabs(rel):
+        return None
+    return rel.replace(os.sep, "/")
+
+
+def mutants_check(head, path=None):
+    """NEW (review C-1): the mutation record outputs/_mvg_mutants_result.json (listed in the Part 2d notes, so the file
+    read here is the frozen one) must be evidence for THIS tree: every file sha it binds - sha256.files (worktree-
+    relative paths), sha256.specs (the spec files, absolute paths inside the worktree) and sha256.engine
+    (outputs/_mvg_mutants.py) - equals that file at --head (the committed blob, LF or CRLF form: the engine hashes the
+    copied file's bytes, whose line endings core.autocrlf decides), and sha256.changed_during_run is empty. Any
+    mismatch, a missing binding or an unreadable record REFUSES (the record must be re-run on the tree at --head).
+    Returns (ok, lines)."""
+    path = path or os.path.join(WT, MUTANTS_JSON.replace("/", os.sep))
+    try:
+        doc = load_json(path)
+    except Exception as exc:                 # noqa: BLE001
+        return False, ["  mutation record %s unreadable: %r" % (path, exc)]
+    sha = doc.get("sha256") if isinstance(doc, dict) else None
+    sha = sha if isinstance(sha, dict) else {}
+    bound, bad = [], []
+    files = sha.get("files") if isinstance(sha.get("files"), dict) else {}
+    specs = sha.get("specs") if isinstance(sha.get("specs"), dict) else {}
+    for rel, s in sorted(files.items()):
+        bound.append(("file", repo_rel(rel), rel, s))
+    for p, s in sorted(specs.items()):
+        bound.append(("spec", repo_rel(p), p, s))
+    if sha.get("engine"):
+        bound.append(("engine", MUTANTS_ENGINE, MUTANTS_ENGINE, sha["engine"]))
+    if not files or not specs or not sha.get("engine"):
+        bad.append("the record binds no %s" % "/".join(k for k, v in (("files", files), ("specs", specs),
+                                                                       ("engine", sha.get("engine"))) if not v))
+    if sha.get("changed_during_run"):
+        bad.append("bound files changed during the check: %s" % list(sha["changed_during_run"])[:4])
+    for what, rel, given, s in bound:
+        if rel is None:
+            bad.append("%s %s lies outside the worktree" % (what, given))
+            continue
+        forms = committed_shas(head, rel)
+        if forms is None:
+            bad.append("%s %s is not in %s" % (what, rel, head[:10]))
+        elif s not in forms:
+            bad.append("%s %s: bound sha256 %s is not the file at %s" % (what, rel, str(s)[:16], head[:10]))
+    ok = not bad
+    lines = ["  mutation record %s: %d bound shas (files %d, specs %d, engine %d) vs --head %s => %s" % (
+        MUTANTS_JSON, len(bound), len(files), len(specs), int(bool(sha.get("engine"))), head[:10],
+        "PASS" if ok else "FAIL")]
+    lines += ["    %s" % b for b in bad[:12]]
+    return ok, lines
+
+
 def load_seeds():
     """CHANGED (1d.4): outputs/_mvg_seeds.txt with the rule RECOMPUTED for sets 1-6 (seed = base + 4*s + w); STOP (None)
     on any mismatch. Sets 1-4 must equal the urgency round's frozen outputs/_ud_seeds.txt at 5dba5bcb, and sets 1-2 the
@@ -2412,7 +2579,8 @@ def load_seeds():
 
 
 def sec_header(opts):
-    """CHANGED: the round's commits, the hash checks, the verbatim and module checks, the Part 2d notes."""
+    """CHANGED: the round's commits, the hash checks, the verbatim and module checks, the Part 2d notes, and (with
+    --head) the mutation record's binding to the tree at --head (mutants_check, review C-1)."""
     head("MVG ROUND - THE GUARDED MOVEMENT SCREEN'S ANALYZER (outputs/urgency_part1d.txt 1d.2-1d.9; amendment C1 1d.13: "
          "F1 read as R2, the causal clause L4, W3 before the verdict)")
     if opts.smoke:
@@ -2456,6 +2624,16 @@ def sec_header(opts):
             return False
     else:
         out("  Part 2d notes: NOT CHECKED (smoke)")
+    if opts.head:
+        mok, lines = mutants_check(opts.head)
+        for ln in lines:
+            out(ln)
+        if not mok:
+            out("REFUSED: the mutation record is not bound to the tree at --head (review C-1): re-run "
+                "outputs/_mvg_mutants.py on it and re-freeze the notes")
+            return False
+    else:
+        out("  mutation record: NOT CHECKED (smoke)")
     return True
 
 
@@ -2565,6 +2743,89 @@ def src_check(d, head):
     return why
 
 
+_LF_SHAS: dict = {}
+_RUN_LOADED: dict = {}
+
+
+def lf_sha_at(head, rel):
+    """NEW (review I-9): the sha256 of `rel`'s LF-normalised blob at commit `head` (git show); None when the file is not
+    in that commit. The instrument records its own file's sha the same way (mvg.probe_sha; the replay tool's boards
+    replay_sha / probe_sha)."""
+    key = (head, rel)
+    if key not in _LF_SHAS:
+        rc, blob = git("show", "%s:%s" % (head, rel))
+        _LF_SHAS[key] = hashlib.sha256(blob.replace(b"\r\n", b"\n")).hexdigest() if rc == 0 else None
+    return _LF_SHAS[key]
+
+
+def run_loaded_changes(a, b, replay=False):
+    """NEW (review A-2): the RUN-LOADED files that differ between commits a and b, LF-normalised - the repository's
+    RUN_LOADED_REPO (every tracked *.py at the root, everything under src_extension/), the probe chain's
+    RUN_LOADED_TOOLING and, for a W3 replay, RUN_LOADED_REPLAY. git diff --name-only --no-renames lists the candidates
+    (any byte differing, a file added or deleted); a candidate whose LF-normalised content is the same at both commits
+    is not a change, one missing at either commit is. Returns the sorted list ([] = identical), None when git cannot
+    compare the two commits."""
+    key = (a, b, bool(replay))
+    if key not in _RUN_LOADED:
+        specs = list(RUN_LOADED_REPO) + list(RUN_LOADED_TOOLING) + (list(RUN_LOADED_REPLAY) if replay else [])
+        rc, outb = git("diff", "--name-only", "--no-renames", "--no-ext-diff", a, b, "--", *specs)
+        res = None
+        if rc == 0:
+            res = []
+            for rel in outb.decode("utf-8", "replace").splitlines():
+                rel = rel.strip()
+                if not rel:
+                    continue
+                ra, xa = git("show", "%s:%s" % (a, rel))
+                rb, xb = git("show", "%s:%s" % (b, rel))
+                if ra != 0 or rb != 0 or xa.replace(b"\r\n", b"\n") != xb.replace(b"\r\n", b"\n"):
+                    res.append(rel)
+            res.sort()
+        _RUN_LOADED[key] = res
+    return _RUN_LOADED[key]
+
+
+def head_rule(run_head, head, replay=False):
+    """NEW (review A-2) - THE HEAD RULE, rule (a): a run is valid when its recorded head starts with --head, OR its
+    recorded head is an ANCESTOR of --head (git merge-base --is-ancestor) and every RUN-LOADED file is byte-identical,
+    LF-normalised, between the two commits (run_loaded_changes; replay: a W3 replay line, outputs/_mvg_replay.py
+    included). So a run made at a build commit stays valid across a later commit that changes no run-loaded file (the
+    Part 2d notes commit, a report), and is INVALID when any file it loaded changed. Returns [] (valid) or the INVALID
+    reasons. src_check and instrument_check still compare the run's recorded shas with the files at --head."""
+    rh = str(run_head or "")
+    if rh.startswith(head):
+        return []
+    if not re.fullmatch(r"[0-9a-f]{7,40}", rh):
+        return ["head %s != %s (no commit id recorded)" % (rh[:10] or None, head)]
+    rc, _o = git("merge-base", "--is-ancestor", rh, head)
+    if rc != 0:
+        return ["head %s != %s and is not an ancestor of it (git merge-base --is-ancestor rc %s)" % (rh[:10], head, rc)]
+    changed = run_loaded_changes(rh, head, replay)
+    if changed is None:
+        return ["head %s (an ancestor of %s): its run-loaded files cannot be compared" % (rh[:10], head)]
+    if changed:
+        return ["head %s is an ancestor of %s but run-loaded files differ (LF-normalised): %s" % (rh[:10], head,
+                                                                                             changed[:6])]
+    return []
+
+
+def instrument_check(d, head):
+    """NEW (review I-9): the instrument that wrote the run is the committed one - mvg.probe_sha (the probe's sha256 of
+    its own LF-normalised bytes, read when the run started) equals outputs/_mvg_probe.py's LF sha256 at --head (by the
+    head rule, the same file as at the run's own head). INVALID otherwise. A record without an mvg section is reported
+    by prov_run itself."""
+    mvg = d.get("mvg") if isinstance(d.get("mvg"), dict) else None
+    if mvg is None:
+        return []
+    want, got = lf_sha_at(head, PROBE_REL), mvg.get("probe_sha")
+    if want is None:
+        return ["%s is not in %s" % (PROBE_REL, head[:10])]
+    if got != want:
+        return ["ran an uncommitted instrument: mvg.probe_sha %s is not %s at %s (LF %s)" % (
+            str(got)[:16], PROBE_REL, head[:10], want[:16])]
+    return []
+
+
 def run_crash(d, exp_steps):
     """Z6 material of one run: a crash flag, a non-zero chain exit code, or a stop neither terminal nor at the expected
     last step. Returns the text or None."""
@@ -2595,7 +2856,9 @@ def prov_run(d, path, line, cell, opts):
     STOP reason or None). A crashed run (crash flag, chain exit code != 0, or an early stop) is Z6 material - a GATE
     FAILURE in G / N, a STOP in arm 0 - so the CRN-draw and stdout reasons a crash itself causes are NOT added. INVALID
     (a tooling defect: the run is re-run after the fix): no frozen queue line; repo / argv / .argv signature / steps /
-    head / extra_params differing from the line; uncommitted source; 0 CRN draws; a dp section that is not dp_probe v2
+    extra_params differing from the line; a head the HEAD RULE rejects (head_rule: neither --head nor an ancestor of it
+    with every run-loaded file identical); uncommitted source; an instrument that is not outputs/_mvg_probe.py at --head
+    (instrument_check, mvg.probe_sha); 0 CRN draws; a dp section that is not dp_probe v2
     or holds errors; ud or mvg not mvg_probe v1 (a urgency ud_probe v2 record only in --smoke DRY mode); instrument
     errors (dp / ud / mvg); effective switches differing from the line's (1d.7); the guard table's columns; the
     _survival_move replica disagreeing with the model where today's survival move ran (d['mvg']['replica'] mismatch /
@@ -2630,10 +2893,12 @@ def prov_run(d, path, line, cell, opts):
                     why.append("no .argv (not a pool run of this line)")
             if d.get("steps") != int(arg_of(sd_argv, "--steps") or H):
                 why.append("steps %s != %s" % (d.get("steps"), arg_of(sd_argv, "--steps")))
-        if opts.head and not str(d.get("head") or "").startswith(opts.head):
-            why.append("head %s != %s" % (str(d.get("head"))[:10], opts.head))
+        if opts.head:
+            replay = bool(argv_l) and os.path.basename(str(argv_l[0])) == "_mvg_replay.py"
+            why += head_rule(d.get("head"), opts.head, replay)
     if opts.head:
         why += src_check(d, opts.head)
+        why += instrument_check(d, opts.head)
     if d.get("extra_params") != sets:
         why.append("extra_params %s != the queue line's %s" % (json.dumps(d.get("extra_params"), sort_keys=True),
                                                               json.dumps(sets, sort_keys=True)))
@@ -2897,7 +3162,13 @@ def digest(d, arm, label, path, cell_set=None, censor=H + 1):
     fix_sw = {"a": g["sw"]["a"], "b": g["sw"]["b"]}
     if g["sw"]["g"] and (g["sw"]["a"] or g["sw"]["b"]):
         Z["Zg-1"] = zg1(grows, fix_sw)
+        # the cross-check on the shadow rows of a fix that is off (zg1 checks the live ones)
+        Z["Zg-1"] += [x[:4] for x in mp_crosscheck(grows) if not fix_sw.get(x[2])]
         Z["Zg-2"] = zg2(grows, fix_sw)
+    elif mvg is not None:
+        # review I-1: outside G (arm 0, arm N) the repo function is still cross-checked against the frozen-function
+        # replica on every decision board (shadow rows); a difference is REPORTED there (Zg-1's owner outside G)
+        Z["Zg-1"] = [x[:4] for x in mp_crosscheck(grows)]
     # the guard evaluated where it must not be (fix off, or guard off): an identity breach of the arm
     ran_guard = [[r["step"], r["unit"], r["kind"], "the model evaluated the guard although %s" % (
         "the fix is off" if not fix_sw.get(r["kind"]) else "FF_FIX_STRANDING_GUARD is 0")]
@@ -2911,7 +3182,7 @@ def digest(d, arm, label, path, cell_set=None, censor=H + 1):
                                             ("G" if g["sw"]["g"] else "N")))
     g["Z"] = Z
     if mvg is not None:
-        g["inst_problems"] = guard_record_problems(grows, mv_rows, g["mv_events"])
+        g["inst_problems"] = guard_record_problems(grows, mv_rows, g["mv_events"], mvg.get("mp_mismatch") or [])
     # ---- ACTED footprint (would-act shadows, live, ran, vetoed) and the guard's decisions
     for e in g["mv_events"]:
         k = e.get("kind")
@@ -3350,6 +3621,48 @@ def sec_prov(recs, opts):
     return st
 
 
+def w2_records_gate(cells, opts, queues):
+    """NEW (review A-4): section 1's validity of the W2 records of `cells` exactly as the analysis reads them -
+    process() (prov_run against the frozen queues: the run line, the .argv signature, the head rule, the recorded
+    source and instrument shas at --head, CRN, the instrument's errors and schemas, the guard bookkeeping, the
+    _survival_move replica) and sec_prov(); printed in the masked mode of --zeros-only (no outcome value). OK iff all 3
+    arms of every cell are present and readable, none is INVALID and no run's scenario / wind / seed differs from its
+    frozen cell. A crash is not a refusal (Z6 material: the W3 rule makes its cell-arm UNCOMPUTABLE). Returns (ok,
+    problems)."""
+    recs = process(cells, opts, queues)
+    st = sec_prov(recs, opts)
+    want = 3 * len(cells)
+    present = sum(1 for r in recs for arm in ARMS if arm in r["g"])
+    probs = []
+    if present != want:
+        probs.append("%d of %d W2 records present and readable" % (present, want))
+    probs += ["MISSING %s %s" % (a, c) for a, c in st["missing"]]
+    probs += ["INVALID %s %s: %s" % (a, c, "; ".join(str(w) for w in why[:4])) for a, c, why in st["invalid"]]
+    probs += ["SEED MISMATCH %s %s: %s" % x for x in st["seed"]]
+    return not probs, probs
+
+
+def w2_gate(head, notes):
+    """NEW (review A-4) - the W3 generator's precondition (outputs/_mvg_w3_queue.py build): the analyzer's own header
+    checks (section 0 with --head and --part2-notes: the hashed sections, the verbatim / module checks, the Part 2d
+    notes, the mutation record at --head; --head must descend from the base) and section 1's validity of all 192 W2
+    records (w2_records_gate on the 64 screen cells). Prints sections 0-1 only, masked; never an outcome. Returns (ok,
+    problems)."""
+    opts = argparse.Namespace(head=head, part2_notes=notes, smoke=None, smoke_cell=None, smoke_files={},
+                              zeros_only=True, allow_incomplete=False, out=None)
+    if not head or not notes:
+        return False, ["--head and --part2-notes are both required"]
+    if not sec_header(opts):
+        return False, ["the analyzer's header checks REFUSED (section 0 above)"]
+    frozen = load_seeds()
+    if frozen is None:
+        return False, ["outputs/_mvg_seeds.txt is unusable"]
+    cells = [c for c in screen_cells(frozen, opts) if c["kind"] == "screen"]
+    if len(cells) != 64:
+        return False, ["%d screen cells, 64 expected" % len(cells)]
+    return w2_records_gate(cells, opts, load_queues())
+
+
 def sec_z0(recs, opts):
     """CHANGED (1d.6.1 S1 = Z0 on W1 + the port identity of 1d.8 (11)); no value of sets 1-4 is printed."""
     head("2 S1 IDENTITY (1d.6.1 S1) - Z0 (W1, 1d.9): mvg0 on sets 1-2 == the urgency round's ud0 records "
@@ -3459,6 +3772,8 @@ def sec_zeros(recs, st, opts):
     out("  (ud.shadow_mismatch is behaviour, never INVALID: in G a guard-text row is a Zg-1 instance and any other "
         "(a) / (b) row or live disagreement a Z1-M item (v) instance; in N every such row is Z1-M; SM = any row in arm 0 "
         "(STOP) or a kick / unknown row elsewhere (reported); the guard evaluated where it is off: Z1-M (N) / SM (0))")
+    out("  (Zg-1 also holds the cross-check of every guard row: the repo function movement_paths.stranding_guard's "
+        "tuple (mp_verdict) against the instrument's frozen-function replica - a Zg-1 failure in G, reported in 0 / N)")
     mask = masked(opts)
     for zero, arm, where, owners, it in fails:
         out("    %s %-5s %-30s owner %s: %s" % ("STOP" if owners == "STOP" else "FAIL" if owners != "REPORTED"
@@ -3528,8 +3843,10 @@ def r0_reproduces(x, r0, x_stdout, r0_stdout):
     return diff
 
 
-def boards_problems(line):
-    """NEW: a W3 replay's boards file exists, carries the line's knockout rules and argv, and recorded no error."""
+def boards_problems(line, head=None):
+    """NEW: a W3 replay's boards file exists, carries the line's knockout rules and argv, and recorded no error; with
+    head (--head; review I-9) it names the committed tools: replay_sha / probe_sha (the sha256 of outputs/_mvg_replay.py
+    / outputs/_mvg_probe.py's LF-normalised bytes, as the replay tool read them) equal those files' at --head."""
     argv = line["argv"]
     own = argv[1:argv.index("--")] if "--" in argv else []
     bpath = own[own.index("--boards") + 1] if "--boards" in own else None
@@ -3547,6 +3864,12 @@ def boards_problems(line):
         probs.append("boards argv differs from the line")
     if b.get("errors"):
         probs.append("boards recorder errors %s" % b["errors"][:2])
+    if head:
+        for key, rel in (("replay_sha", REPLAY_REL), ("probe_sha", PROBE_REL)):
+            want = lf_sha_at(head, rel)
+            if want is None or b.get(key) != want:
+                probs.append("ran an uncommitted tool: boards %s %s is not %s at %s (LF %s)" % (
+                    key, str(b.get(key))[:16], rel, head[:10], str(want)[:16]))
     return probs, b
 
 
@@ -3645,12 +3968,15 @@ def w3_validity(recs, opts):
             invalid.append((name, ["unreadable JSON %r" % (exc,)]))
             return None
         why, crash, stop = prov_run(d, p, line, cells[owner[name]["cell"]]["cell"], opts)
-        bprobs, b = boards_problems(line)
+        bprobs, b = boards_problems(line, getattr(opts, "head", None))
         if why or bprobs or stop:
             invalid.append((name, why + bprobs + ([stop] if stop else [])))
             return None
         is_r0 = name.endswith("_R0")
-        loaded[name] = {"rows_ff": d.get("rows_ff") or [], "complete": crash is None,
+        rows = d.get("rows_ff") or []
+        # COMPLETE (review A-5): not a crash by run_crash (not crashed, chain exit 0, stopped at its --steps or AT its
+        # terminal step) and its rows are the whole run (one per step done): its rows end where the run ended
+        loaded[name] = {"rows_ff": rows, "complete": crash is None and len(rows) == d.get("steps_done"),
                         "ko_applied": (b or {}).get("ko_applied") or [], "d": d if is_r0 else None,
                         "stdout": _text(stdout_path(p)) if is_r0 else None}
         return loaded[name]
@@ -3713,7 +4039,7 @@ def w3_validity(recs, opts):
                             it["resolved"] = False
                             it["why"].append("%s missing or INVALID" % ko)
                         continue
-                    it[key] = alive_at(rec["rows_ff"], u, t)
+                    it[key] = alive_at(rec["rows_ff"], u, t, rec["complete"])
                     dth = first_death(rec["rows_ff"], u)
                     it[key + "_dies"] = True if dth is not None else (False if rec["complete"] else None)
                     first = ko_first(events, rules_of[name])

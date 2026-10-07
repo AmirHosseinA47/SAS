@@ -56,6 +56,10 @@ MUTANT KEY (the new mutants; the (a) / (b) and switch mutants of the urgency rou
   g_switch_first   _guarded reads ff_fix_stranding_guard() before it tests for a missing step
   g_eval_off       the (a) site evaluates the guard on (a)'s pure choice whatever FF_APPROACH_PATH says, the result
                    discarded when the switch is off
+  g_eval_off_b     the same at the (b) site: the guard evaluated on (b)'s pure choice whatever
+                   FF_RETREAT_KEEP_APPROACH says, the result discarded when the switch is off (added by the Part 2d
+                   review fix C-3 with the (b) accessor's switch mirrors sw_strict_b, sw_import_b and sw_shipped_b,
+                   which are in test_movement_fixes.py)
 
 Coordinates are (x, y); x indexes the FIRST extent (grid.width, FAE's first argument); neighbour order (+x, -x, +y, -y).
 """
@@ -927,7 +931,8 @@ def test_tg6_with_both_fixes_at_0_the_guard_is_never_evaluated(monkeypatch, fixe
     if called). Each unit takes today's step. (The real-run identity - switches absent, zero and shipped equal the
     base digest - is test_movement_fixes.py T-ID-M.)
     MUTANTS: g_switch_first (_guarded reads the switch before testing for a missing step); g_eval_off (the (a)
-    site evaluates the guard on (a)'s choice whatever FF_APPROACH_PATH says)."""
+    site evaluates the guard on (a)'s choice whatever FF_APPROACH_PATH says); g_eval_off_b (the (b) site evaluates
+    the guard on (b)'s choice whatever FF_RETREAT_KEEP_APPROACH says - failed on the two (b) boards)."""
 
     def boom(*args, **kwargs):
         raise AssertionError("the stranding guard was evaluated with both fixes off")

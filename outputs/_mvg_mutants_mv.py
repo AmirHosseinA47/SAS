@@ -30,9 +30,19 @@ WHERE THE MUTANTS COME FROM (a port of urgency:outputs/_ud_mutants_mv.py at 0d53
   - DROPPED, 16: fix (c) (mc1_len, mc1_comb, mc_greedy, mc2_greedy, mc2_order_only, mc2_burning_hold, mc2_smoky,
     mc3_hold, mc4_removed, mc4_approach, mc5_hold, mc6_dep, mc7_c1, mc8_relabel, sw_truthy_c, sw_enter_c): fix (c)
     and U1 are not carried into this round (ruling, urgency report 11; W-9 (a)) and their tests are not ported.
-  - NEW, 29: the guard's 28 (1d.8 (4)), each paired with the T-G case that kills it (tests/test_stranding_guard.py,
-    whose module docstring holds the MUTANT KEY), plus nt_toplevel for T-NT's new top-level-statement pin.
-  61 in all. Every edit is the one builder T pre-checked (scratch tmut.py / tmut_ported.py), byte for byte.
+  - NEW, 33: the guard's 28 (1d.8 (4)), each paired with the T-G case that kills it (tests/test_stranding_guard.py,
+    whose module docstring holds the MUTANT KEY), plus nt_toplevel for T-NT's new top-level-statement pin, plus the
+    four (b) MIRRORS (Part 2d review C-3: the urgency set had these only for (a), while 1d.8 (4) asks for an
+    accessor-semantics check of both fixes): sw_strict_b, sw_import_b and sw_shipped_b - sw_strict_a / sw_import_a /
+    sw_shipped_a's edits on the (b) accessor, killed by T-SW-M (test_tswm_on_only_on_an_exact_one's two (b) string
+    cases; test_tswm_read_at_call_time_and_shipped_zero) - and g_eval_off_b, g_eval_off at the (b) call site (the
+    guard evaluated on (b)'s choice while FF_RETREAT_KEEP_APPROACH is off), killed by T-G6's (b) boards.
+  65 in all. Every edit of the first 61 is the one builder T pre-checked (scratch tmut.py / tmut_ported.py), byte for
+  byte. The four mirrors were first measured (KILLED, control passing) in builder M's informational scratch
+  mirror_spec.py; sw_strict_b and sw_shipped_b are its edits byte for byte, sw_import_b names its import-time copy
+  _FF_RETREAT_KEEP_APPROACH_AT_IMPORT (as sw_import_a does) where the scratch named it _FF_RKA_AT_IMPORT, and
+  g_eval_off_b here edits only the `else None` arm (the form of sw_enter_b) where the scratch edit also
+  parenthesised the whole conditional - the same behaviour. Their kills are in this check's record.
 
 GUARD-MASKED CASE (measured 2026-10-07 with every case of the four guard-parametrized nodes listed on its own):
 mb4_exempt SURVIVES T-Mb4 [next_to_her-guard1]. The mutant roots the fix's clean field at her unclean (smoky) cell,
@@ -117,6 +127,7 @@ _TG5_OFF = "test_tg5_the_guard_is_off_only_on_an_exact_zero"
 _TG5_SHIP = _g("test_tg5_shipped_one_and_read_at_call_time")
 _TG6 = _g("test_tg6_with_both_fixes_at_0_the_guard_is_never_evaluated")
 _TG8 = _g("test_tg8_searcher_fp_knobs_do_not_change_any_verdict")
+_TSWM_ON = "test_tswm_on_only_on_an_exact_one"
 _MA8 = "test_ma8_z_rb_the_raise_is_todays_predicate_and_never_on_an_a_step"
 _MB4 = "test_mb4_an_unclean_victim_cell_is_never_entered_nor_a_pickup_made"
 _TSAFEM = "test_tsafem_property_no_fix_enters_fire_and_a_b_land_clean_in_a_gesc_region"
@@ -293,6 +304,27 @@ MUTANTS_MV: dict[str, tuple[str, list[tuple[str, str, str]], list[str]]] = {
     "sw_shipped_a": (
         "FF_APPROACH_PATH shipped 1",
         [(CFV, "\nFF_APPROACH_PATH = 0\n", "\nFF_APPROACH_PATH = 1\n")],
+        [_t("test_tswm_read_at_call_time_and_shipped_zero")],
+    ),
+    # (b) mirrors of the three (a)-only switch mutants above (new in this round, Part 2d review C-3): the same edits on
+    # the (b) accessor _ACC_B. sw_strict_b names its two failing cases (the (b) accessor's "1" and " 1 "), so each
+    # must fail itself; sw_strict_a's whole-function node is the urgency round's and is kept as it was.
+    "sw_strict_b": (
+        "FF_RETREAT_KEEP_APPROACH compared with 1 without the exact-integer parsing (\"1\" and \" 1 \" read off)",
+        [(AG, _ACC_B, "    return getattr(cfv, \"FF_RETREAT_KEEP_APPROACH\", 0) == 1")],
+        [_t(f"{_TSWM_ON}[str1-FF_RETREAT_KEEP_APPROACH]"), _t(f"{_TSWM_ON}[str_1_-FF_RETREAT_KEEP_APPROACH]")],
+    ),
+    "sw_import_b": (
+        "FF_RETREAT_KEEP_APPROACH read once at import time (an import-time copy, not a call-time read)",
+        [(AG, "def ff_retreat_keep_approach() -> bool:",
+          "_FF_RETREAT_KEEP_APPROACH_AT_IMPORT = getattr(cfv, \"FF_RETREAT_KEEP_APPROACH\", 0)\n\n\n"
+          "def ff_retreat_keep_approach() -> bool:"),
+         (AG, _ACC_B, "    return _exact_integer(_FF_RETREAT_KEEP_APPROACH_AT_IMPORT) == 1")],
+        [_t("test_tswm_read_at_call_time_and_shipped_zero")],
+    ),
+    "sw_shipped_b": (
+        "FF_RETREAT_KEEP_APPROACH shipped 1",
+        [(CFV, "\nFF_RETREAT_KEEP_APPROACH = 0\n", "\nFF_RETREAT_KEEP_APPROACH = 1\n")],
         [_t("test_tswm_read_at_call_time_and_shipped_zero")],
     ),
     "sw_truthy_a": (
@@ -485,6 +517,14 @@ MUTANTS_MV: dict[str, tuple[str, list[tuple[str, str, str]], list[str]]] = {
         "when the switch is off)",
         [(AG, _A_CALL, "                path_step = (self._guarded(self._approach_path_choice()) if ff_approach_path() "
                        "else (self._guarded(self._approach_path_choice()) and None))")],
+        [_TG6],
+    ),
+    "g_eval_off_b": (
+        "the (b) site evaluates the guard on (b)'s pure choice whatever FF_RETREAT_KEEP_APPROACH says (the result "
+        "discarded when the switch is off; the mirror of g_eval_off, new in this round, Part 2d review C-3)",
+        [(AG, _B_CALL, _B_CALL.replace(
+            "                else None",
+            "                else (self._guarded(self._retreat_on_route_choice()) and None)"))],
         [_TG6],
     ),
     # ------------------------------------------------------------------ the guard's switch FF_FIX_STRANDING_GUARD

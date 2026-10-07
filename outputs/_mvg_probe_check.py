@@ -18,20 +18,27 @@ usage (mvg worktree root, the parent .venv):
       Zg-1 TWO-SIDED (an admitted step where the instrument vetoes, and a veto where it admits, both fail; the model's
       verdict equals the instrument's), Zg-2 at every veto (the cell, the raise, today's tier where today's
       _move_toward writes one, and for (b) the _idle_retreat_* writes against the pure replica), the same today-step
-      identities on every non-live (shadow) row; the cross-links with d["mv"] (gA / gB / veto / acted_g / branch) and
-      d["mv_events"] (guard, vetoed, ran, agree); the replica's in-run checks; the U1 shadow's sha; every error list.
+      identities on every non-live (shadow) row; the CROSS-CHECK on every row: mp_verdict (the repo function
+      movement_paths.stranding_guard) == [admit, c, T_v] (the instrument's frozen-function replica), and
+      d["mvg"]["mp_mismatch"] empty and consistent with the rows; the cross-links with d["mv"] (gA / gB / veto /
+      acted_g / branch) and d["mv_events"] (guard, vetoed, ran, agree); the replica's in-run checks; the U1 shadow's sha
+      (LF form); the instrument's own sha (d["mvg"]["probe_sha"] == outputs/_mvg_probe.py's LF sha256 now); every error
+      list.
   python outputs/_mvg_probe_check.py frozen X.json BOARDS.json
       every guard row's verdict recomputed with the FROZEN guard (urgency:outputs/_mvg_guard_diag.guard, sha256
       70eeba78... of its LF form, imported in the URGENCY checkout's context so it reads U1's own helpers) on the
-      replay's recorded decision board, wind and grid; (admit, c_n, T_v) must be equal on every row. Run in a fresh
-      process (it must import the urgency checkout's src_extension, not this one's).
+      replay's recorded decision board, wind and grid; (admit, c_n, T_v) must be equal on every row, for the
+      instrument's verdict AND for the cross-check column mp_verdict. Run in a fresh process (it must import the
+      urgency checkout's src_extension, not this one's).
   python outputs/_mvg_probe_check.py val R0|KOown|KOothers MVG.json REF.json [MVG_BOARDS REF_BOARDS]
       the W3 tooling validation (1d.13.4): rows_ff / rows_vic / rows_uav / rows_dec / rows_trig, eval, dp.commands,
       the mv rows' first 23 columns (normalised for fix (c), which this round does not carry: a REF carry row's
       branch c0 - fix (c)'s MODE-2 path kind - reads as path, and the fc column is not compared; any other (c)
       branch or a "c" in acted REFUSES), the v2 fields of every mv_event, stdout (the .stdout.txt files and
       stdout_sha); also compared and required: steps_done / terminal_step / complete / crashed, the remaining mv
-      columns but timing, and with boards: decisions, boards, wind, grid, ko_rules, ko_applied.
+      columns but timing, and with boards: decisions, boards, wind, grid, ko_rules, ko_applied; the MVG boards'
+      replay_sha / probe_sha equal the LF sha256 of outputs/_mvg_replay.py / _mvg_probe.py now, and probe_sha equals
+      the record's d["mvg"]["probe_sha"].
   python outputs/_mvg_probe_check.py zg3 N.json G.json
       Zg-3 on one cell: G (the guard on) and N (the guard off) identical up to G's first veto (rows_*, commands and
       mv rows before it); the first per-step difference at the veto step when it is an (a) veto or a (b) veto whose
@@ -47,11 +54,17 @@ usage (mvg worktree root, the parent .venv):
       columns at s* (incl. the instrument's guard verdicts).
   python outputs/_mvg_probe_check.py synthetic
       in-process, NO model step: the probe's install() and the replay's install_ko() on a real WildFireModel with
-      hand-built boards, through the REAL Firefighter.advance: fix (a) and fix (b) boards whose guard admits / vetoes,
-      in arms 0 / G / N (branch labels, guard rows, events, Zg-1 / Zg-2 by guard_problems, the replica); the replica
-      in five _idle_retreat_* states; positive controls (veto acts -> under-veto; an inverted model verdict ->
-      over-veto; a wrong today's step and wrong writes at a veto -> Zg-2; an impure shadow -> mv_purity; deep-snapshot
-      controls); the replay's knockouts a / b / g and its rule parser; the U1 SHADOW self-check (loaded by path; a
+      hand-built boards, through the REAL Firefighter.advance: the instrument's guard is the frozen function's (its
+      replica's AST and source text equal guard() of outputs/_mvg_guard_diag.py, sha-checked; its guard helpers are
+      the U1 shadow copy's, never movement_paths', and FAE is common by design); fix (a) and fix (b) boards whose
+      guard admits / vetoes,
+      in arms 0 / G / N (branch labels, guard rows, events, Zg-1 / Zg-2 by guard_problems, the replica, mp_verdict);
+      the replica in five _idle_retreat_* states; positive controls (veto acts -> under-veto; an inverted model verdict
+      -> over-veto; a defect INSIDE the repo guard function, seen by the model and the cross-check alike -> Zg-1 and
+      the cross-check fail; a wrong today's step, a wrong tier and wrong writes at a veto -> Zg-2; an impure shadow ->
+      mv_purity; deep-snapshot controls); the replay's knockouts a / b / g, its rule parser (20 malformed --ko values,
+      each also refused by main with exit 2) and its TypeError refusal; the LF-normalised shas (a CRLF copy of the U1
+      shadow loads with the LF sha; the record's probe_sha); the U1 SHADOW self-check (loaded by path; a
       synthetic qualifying kick yields a non-None U1 order with Z4's recomputation equal; a crafted estimate yields a
       divergent shadow order while the model binds the index order); deep purity of mv_shadow and kick_shadow.
   python outputs/_mvg_probe_check.py purity STEPS SCENARIO WIND SEED [KEY=VALUE ...]
@@ -62,6 +75,7 @@ usage (mvg worktree root, the parent .venv):
 from __future__ import annotations
 
 import argparse
+import ast
 import collections
 import contextlib
 import hashlib
@@ -73,7 +87,10 @@ import os
 import random
 import runpy
 import sys
+import tempfile
+import textwrap
 import time
+import types
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
@@ -95,6 +112,12 @@ class Refused(Exception):
 
 def refuse(msg):
     raise Refused(msg)
+
+
+def lf_sha256(path):
+    """sha256 of a file's LF-normalised bytes (CRLF read as LF): the checker's own copy of the probe's rule."""
+    with open(path, "rb") as fh:
+        return hashlib.sha256(fh.read().replace(b"\r\n", b"\n")).hexdigest()
 
 
 def load(path):
@@ -144,6 +167,11 @@ def summary(path):
     print("mvg switches", json.dumps(mvg.get("switches")))
     print("u1 shadow sha", mvg.get("u1_shadow_sha"), "(frozen copy %s)" % (
         "OK" if mvg.get("u1_shadow_sha") == U1_SHADOW_SHA else "DIFFERS"), "error", mvg.get("u1_shadow_error"))
+    psha = lf_sha256(os.path.join(HERE, "_mvg_probe.py"))
+    print("probe sha", mvg.get("probe_sha"), "(outputs/_mvg_probe.py now: %s)" % (
+        "SAME" if mvg.get("probe_sha") == psha else "DIFFERS, %s" % psha[:16]))
+    print("mp_mismatch (repo guard function != the instrument's frozen-function verdict):",
+          len(mvg.get("mp_mismatch")) if isinstance(mvg.get("mp_mismatch"), list) else "NOT RECORDED")
     print("src_sha", json.dumps(mvg.get("src_sha")))
     print("ud errors", ud.get("errors"), "| mvg errors", mvg.get("errors"), "| dp errors", (d.get("dp") or {}).get("errors"))
     print("shadow_mismatch", ud.get("shadow_mismatch"))
@@ -361,6 +389,14 @@ def guard_problems(d, label="", errors=True, scope=None):
             probs.append(tag + ": n %r is not a 4-neighbour of u %r" % (n, u))
         if r["today"] is not None and r["today"] == n:
             probs.append(tag + ": n == today's cell (the fix would not act)")
+        # the CROSS-CHECK (I-1): the repo function the model calls must agree with the instrument's frozen-function
+        # replica on every row (a difference is a guard-function or instrument problem; the analyzer's Zg-1 fails on it)
+        if "mp_verdict" not in r or r["mp_verdict"] != [r["admit"], r["c"], r["T_v"]]:
+            st["mp_verdict differs"] += 1
+            probs.append(tag + ": CROSS-CHECK: movement_paths.stranding_guard %r != the instrument's frozen-function "
+                         "verdict %r" % (r.get("mp_verdict", "<no column>"), [r["admit"], r["c"], r["T_v"]]))
+        else:
+            st["mp_verdict equal"] += 1
         if r["admit"] is None:
             probs.append(tag + ": no instrument verdict")
             continue
@@ -475,8 +511,27 @@ def guard_problems(d, label="", errors=True, scope=None):
             if lst:
                 probs.append("%s: %s: %d %r" % (label, name, len(lst), lst[:3]))
         if mvg.get("u1_shadow_sha") != U1_SHADOW_SHA or mvg.get("u1_shadow_error"):
-            probs.append("%s: the U1 shadow copy: sha %r error %r" % (label, mvg.get("u1_shadow_sha"),
-                                                                      mvg.get("u1_shadow_error")))
+            probs.append("%s: the U1 shadow copy: sha %r (LF form) error %r" % (label, mvg.get("u1_shadow_sha"),
+                                                                                mvg.get("u1_shadow_error")))
+        # the cross-check list: present, empty, and exactly the rows whose mp_verdict differs
+        mm = mvg.get("mp_mismatch")
+        n_diff = 0
+        for raw in (mvg.get("guard") or {}).get("rows") or []:
+            g = dict(zip(gcols, raw))
+            if len(raw) == len(gcols) and g["mp_verdict"] != [g["admit"], g["c"], g["T_v"]]:
+                n_diff += 1
+        if not isinstance(mm, list):
+            probs.append("%s: no d['mvg']['mp_mismatch'] list (not an instrument with the cross-check)" % label)
+        else:
+            if mm:
+                probs.append("%s: mp_mismatch: %d %r" % (label, len(mm), mm[:3]))
+            if len(mm) != n_diff:
+                probs.append("%s: mp_mismatch lists %d rows, %d guard rows differ" % (label, len(mm), n_diff))
+        # the instrument that wrote the record (I-9): the probe on disk now
+        want = lf_sha256(os.path.join(HERE, "_mvg_probe.py"))
+        if mvg.get("probe_sha") != want:
+            probs.append("%s: d['mvg']['probe_sha'] %r is not outputs/_mvg_probe.py's LF sha256 %s" % (
+                label, mvg.get("probe_sha"), want[:16]))
         t = mvg.get("timing") or {}
         n_model = sum(1 for raw in (mvg.get("guard") or {}).get("rows") or []
                       if dict(zip(gcols, raw))["model_admit"] is not None)
@@ -591,9 +646,12 @@ def frozen(path, boards_path):
         stats[("admit" if adm else "veto") + " " + r["kind"]] += 1
         if got != want:
             probs.append(tag + ": frozen %r != recorded %r" % (got, want))
-    print("frozen guard on %d guard rows (%s): %d equal, %d problems" % (n, json.dumps(dict(stats)),
-                                                                        n - sum(1 for p in probs if "frozen" in p),
-                                                                        len(probs)))
+        if got != r["mp_verdict"]:
+            probs.append(tag + ": frozen %r != the cross-check mp_verdict %r" % (got, r["mp_verdict"]))
+        else:
+            stats["mp_verdict == frozen"] += 1
+    print("frozen guard on %d guard rows (%s): %d equal (instrument verdict), %d problems" % (
+        n, json.dumps(dict(stats)), n - sum(1 for p in probs if "!= recorded" in p), len(probs)))
     for p in probs[:20]:
         print("   ", p)
     return 1 if (probs or n == 0) else 0
@@ -719,6 +777,14 @@ def val(kind, mvg_path, ref_path, mvg_boards=None, ref_boards=None):
             check("boards." + f, x == y and (f != "ko_applied" or kind == "R0" or x), detail)
         if ba.get("errors"):
             check("boards.errors", False, repr(ba.get("errors")[:3]))
+        # the tools that wrote the boards and the record (I-9): the files on disk now, and the record's own probe_sha
+        rsha = lf_sha256(os.path.join(HERE, "_mvg_replay.py"))
+        psha = lf_sha256(os.path.join(HERE, "_mvg_probe.py"))
+        check("boards.replay_sha == outputs/_mvg_replay.py (LF) now", ba.get("replay_sha") == rsha,
+              "%r vs %s" % (ba.get("replay_sha"), rsha[:16]))
+        check("boards.probe_sha == outputs/_mvg_probe.py (LF) now == d['mvg']['probe_sha']",
+              ba.get("probe_sha") == psha == (d.get("mvg") or {}).get("probe_sha"),
+              "%r / %s / %r" % (ba.get("probe_sha"), psha[:16], (d.get("mvg") or {}).get("probe_sha")))
     # the MVG record's own instrument state
     probs, st = guard_problems(d, label="MVG")
     check("MVG guard record (guard_problems)", not probs, "; ".join(probs[:5]))
@@ -969,6 +1035,7 @@ def purity(steps, scenario, wind, seed, sets):
 
     probe = probe_module()
     udm, _sha = probe["load_u1_shadow"]()
+    gfn = probe["frozen_guard_replica"](udm, fae)
     fn = probe["shadow_funcs"](am)
     ns = argparse.Namespace(scenario=scenario, wind=wind, uavs=None, victims=None, firefighters=None,
                             fire_trackers=None, victim_searchers=None, batch_size=300, fire_spread=0.75,
@@ -1014,12 +1081,19 @@ def purity(steps, scenario, wind, seed, sets):
             state = am.random.getstate()
             check("control_rng", lambda: am.random.random(), self.model)
             am.random.setstate(state)
-        S = check("mv_shadow", lambda: probe["mv_shadow"](self, self.model, am, fn, mpm.stranding_guard, cfv),
+        S = check("mv_shadow", lambda: probe["mv_shadow"](self, self.model, am, fn, gfn, cfv, mpm.stranding_guard),
                   self.model)
         if S is not None:
             stats["mv_row:%s" % S["kind"]] += 1
             if S["acted"]:
                 stats["acted:%s" % S["acted"]] += 1
+                f = S["acted"]
+                gs, gm = S.get("g" + f), S.get("g" + f + "_mp")
+                if gs is None or gm != gs[:3] or S.get("gerr"):
+                    failures.append(("guard verdict missing / the cross-check differs",
+                                     int(self.model.evaluation_timesteps_counter or 0), [gs, gm, S.get("gerr")]))
+                else:
+                    stats["guard: frozen replica == movement_paths"] += 1
         return r
 
     o_kick = wf.WildFireModel._try_dispatch_unresolved_confirmed_victims
@@ -1051,6 +1125,23 @@ def purity(steps, scenario, wind, seed, sets):
 
 
 # ------------------------------------------------------------------------------------------- synthetic
+# CONTROL CODE of the synthetic set's repo-guard-defect controls. Never called directly: its __code__ is swapped into
+# movement_paths.stranding_guard for one advance, so it runs with movement_paths' globals, where the control has set
+# _mvg_ctl_sg_orig to a copy of the original function (hence the names unknown here).
+def _ctl_sg_inverted(unit_cell, step_cell, victim_cell, burning, smoky, wind, x_size, y_size, params=None):
+    """The repo guard with its verdict inverted."""
+    admit, c_n, t_v = _mvg_ctl_sg_orig(unit_cell, step_cell, victim_cell, burning, smoky, wind,  # noqa: F821
+                                       x_size, y_size, params)
+    return (not admit), c_n, t_v
+
+
+def _ctl_sg_admit_inf(unit_cell, step_cell, victim_cell, burning, smoky, wind, x_size, y_size, params=None):
+    """The repo guard admitting when c_n is infinite (1d.8 (4)'s "admit when c infinite" guard mutant's rule)."""
+    _admit, c_n, t_v = _mvg_ctl_sg_orig(unit_cell, step_cell, victim_cell, burning, smoky, wind,  # noqa: F821
+                                        x_size, y_size, params)
+    return (c_n is None or c_n + 1 <= t_v), c_n, t_v
+
+
 V0, V1, V2 = "victim_0", "victim_1", "victim_2"
 FF_A = "ff_unit_0"
 
@@ -1214,6 +1305,65 @@ def synthetic():
     expect("u1/not importable from the repo", not os.path.exists(os.path.join(REPO, "src_extension", "planning",
                                                                               "urgency_dispatch.py"))
            and "src_extension.planning.urgency_dispatch" not in sys.modules)
+    # I-6: the sha is of the LF-normalised bytes - a CRLF checkout (core.autocrlf = true) records the same value
+    u1_path = os.path.join(HERE, "_mvg_u1_shadow.py")
+    with open(u1_path, "rb") as fh:
+        u1_lf = fh.read().replace(b"\r\n", b"\n")
+    expect("u1/the copy on disk, LF-normalised, is the frozen sha (checker's own hash)",
+           hashlib.sha256(u1_lf).hexdigest() == U1_SHADOW_SHA == probe["lf_sha256"](u1_path))
+    keep = sys.modules.get(probe["U1_SHADOW_MODULE"])
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            crlf_path = os.path.join(td, "_mvg_u1_shadow.py")
+            with open(crlf_path, "wb") as fh:
+                fh.write(u1_lf.replace(b"\n", b"\r\n"))
+            with open(crlf_path, "rb") as fh:
+                raw_crlf_sha = hashlib.sha256(fh.read()).hexdigest()
+            _mod2, crlf_sha = probe["load_u1_shadow"](crlf_path)
+    finally:
+        if keep is not None:
+            sys.modules[probe["U1_SHADOW_MODULE"]] = keep
+        else:
+            sys.modules.pop(probe["U1_SHADOW_MODULE"], None)
+    expect("u1/a CRLF copy of the U1 shadow loads with the LF sha (its raw-byte sha differs)",
+           crlf_sha == U1_SHADOW_SHA and raw_crlf_sha != U1_SHADOW_SHA, repr((crlf_sha, raw_crlf_sha)))
+
+    # ---- I-1: the instrument's guard IS the frozen function's (a verbatim replica on the frozen function's helpers)
+    frozen_path = os.path.join(HERE, "_mvg_guard_diag.py")
+    with open(frozen_path, "rb") as fh:
+        f_text = fh.read().replace(b"\r\n", b"\n").decode("utf-8")
+    expect("guard/outputs/_mvg_guard_diag.py is the frozen guard (sha256 %s... of its LF form)" % FROZEN_GUARD_SHA[:16],
+           hashlib.sha256(f_text.encode("utf-8")).hexdigest() == FROZEN_GUARD_SHA == probe["FROZEN_GUARD_SHA"])
+    with open(os.path.join(HERE, "_mvg_probe.py"), "rb") as fh:
+        p_text = fh.read().replace(b"\r\n", b"\n").decode("utf-8")
+    f_defs = [x for x in ast.parse(f_text).body if isinstance(x, ast.FunctionDef) and x.name == "guard"]
+    p_outer = [x for x in ast.parse(p_text).body if isinstance(x, ast.FunctionDef) and x.name == "frozen_guard_replica"]
+    p_defs = [x for x in (p_outer[0].body if p_outer else []) if isinstance(x, ast.FunctionDef) and x.name == "guard"]
+    same_ast = same_text = False
+    if len(f_defs) == 1 and len(p_defs) == 1:
+        same_ast = ast.dump(f_defs[0]) == ast.dump(p_defs[0])
+        f_src = "\n".join(f_text.split("\n")[f_defs[0].lineno - 1:f_defs[0].end_lineno])
+        p_src = textwrap.dedent("\n".join(p_text.split("\n")[p_defs[0].lineno - 1:p_defs[0].end_lineno]))
+        same_text = f_src == p_src
+    expect("guard/the replica's guard() has the frozen guard()'s AST (name, signature, docstring, body)", same_ast,
+           "%d frozen / %d replica definitions" % (len(f_defs), len(p_defs)))
+    expect("guard/the replica's guard() is the frozen guard()'s source text verbatim (dedented)", same_text)
+    rep = probe["frozen_guard_replica"](udm, fae)
+    bound = dict(zip(rep.__code__.co_freevars, (c.cell_contents for c in rep.__closure__ or ())))
+    want_bound = {"arrival_time": fae.arrival_time, "FrontPriorityParams": fae.FrontPriorityParams,
+                  "unclean_cells": udm.unclean_cells, "t_star": udm.t_star, "safe_route_hops": udm.safe_route_hops}
+    expect("guard/the replica's helpers are the U1 shadow copy's and FAE's (bound by identity)",
+           set(bound) == set(want_bound) and all(bound[k] is want_bound[k] for k in want_bound)
+           and all(getattr(bound[k], "__module__", None) == probe["U1_SHADOW_MODULE"]
+                   for k in ("unclean_cells", "t_star", "safe_route_hops")),
+           repr({k: getattr(v, "__module__", v) for k, v in bound.items()}))
+    # the FAE estimator (arrival_time, FrontPriorityParams) is common BY DESIGN: the frozen function reads it too (it is
+    # pinned by src_sha, and byte-identical to urgency 5dba5bcb's); the GUARD code - the body and its three helpers -
+    # shares nothing with movement_paths
+    expect("guard/the replica shares no guard code with movement_paths (its unclean_cells / t_star / safe_route_hops "
+           "are not movement_paths'; its body reads no global but builtins)",
+           all(bound[k] is not getattr(mpm, k, None) for k in ("unclean_cells", "t_star", "safe_route_hops"))
+           and set(rep.__code__.co_names) <= {"tuple", "list", "float"}, repr(rep.__code__.co_names))
 
     # ---- the replay's knockouts first (class level, BEFORE the probe, as _mvg_replay.main), then the probe
     rules, ko_log = [], {}
@@ -1289,6 +1439,9 @@ def synthetic():
                        repr({x: g[x] for x in ("admit", "c", "T_v", "model_admit", "took", "n", "today")}))
                 expect(label + " guard row ms", (g["ms_guard"] is not None) == (arm == "G") and g["ms_inst"] is not None,
                        repr((g["ms_guard"], g["ms_inst"])))
+                expect(label + " cross-check: mp_verdict (movement_paths) == the frozen-function verdict",
+                       g["mp_verdict"] == [g["admit"], g["c"], g["T_v"]], repr((g["mp_verdict"], g["admit"], g["c"],
+                                                                                g["T_v"])))
                 if arm == "G":
                     expect(label + " model verdict tuple == instrument's",
                            g["model_verdict"] == [g["admit"], g["c"], g["T_v"]] and g["model_cell"] == n,
@@ -1333,9 +1486,14 @@ def synthetic():
             expect("replica/%s: guard row pred_writes == post_writes" % name, g["pred_writes"] == g["post_writes"],
                    repr({x: g.get(x) for x in ("pre_writes", "pred_writes", "post_writes", "post", "today")}))
 
-    # ---- POSITIVE CONTROLS (each must be SEEN; its rows are removed after)
-    def control(label, board, arm, patch, unpatch, want_text, want_problem):
-        m0, x0 = len(rec["mismatch"]), len(rec["mvg_errors"])
+    # ---- POSITIVE CONTROLS (each must be SEEN; its mismatch / error / mp_mismatch entries are removed after)
+    mp_ctl_rows = set()
+
+    def control(label, board, arm, patch, unpatch, want_text, want_problem, want_mp=0):
+        """One positive control: `want_text` must be among the in-run shadow_mismatch texts (None: not required),
+        every text of `want_problem` (a str or a tuple) among guard_problems' problems, and exactly `want_mp` new
+        d["mvg"]["mp_mismatch"] entries. The control's mismatch / error / mp_mismatch entries are removed after."""
+        m0, x0, p0 = len(rec["mismatch"]), len(rec["mvg_errors"]), len(rec["mp_mismatch"])
         patch()
         try:
             row, grows, evs, mism, errs, rpd, (g0, e0, n0) = run(board, arm)
@@ -1345,9 +1503,16 @@ def synthetic():
         probs, _st = guard_problems(dd, label=label, errors=False, scope=scope)
         seen = [x for x in mism if want_text in str(x[3])] if want_text else []
         expect("control/" + label + " (mismatch detector)", (not want_text) or bool(seen), repr(mism))
-        expect("control/" + label + " (guard_problems)", any(want_problem in p for p in probs), repr(probs[:4]))
+        wants = (want_problem,) if isinstance(want_problem, str) else tuple(want_problem)
+        for w in wants:
+            expect("control/" + label + " (guard_problems: %s)" % w, any(w in p for p in probs), repr(probs[:4]))
+        expect("control/" + label + " (mp_mismatch entries: %d)" % want_mp, len(rec["mp_mismatch"]) - p0 == want_mp,
+               repr(rec["mp_mismatch"][p0:]))
+        if want_mp:
+            mp_ctl_rows.update(range(g0, len(rec["guard_rows"])))
         del rec["mismatch"][m0:]
         del rec["mvg_errors"][x0:]
+        del rec["mp_mismatch"][p0:]
         return row, grows, evs, rpd
 
     FF = ag.Firefighter
@@ -1399,6 +1564,54 @@ def synthetic():
     control("a veto whose step is not today's (Zg-2 cell)", "A_veto", "G",
             lambda: setattr(FF, "_move_toward", wrong_step), lambda: setattr(FF, "_move_toward", o_mt),
             "guard vetoes (instrument), model did not take today's step", "today's step: post")
+
+    # I-7: the tier at an (a) veto - today's _move_toward runs (the right cell, the right raise) but leaves a tier other
+    # than the one today's step writes; only Zg-2's tier identity can see it (the in-run agreement reads cells)
+    def wrong_tier(self, target):
+        out = o_mt(self, target)
+        self._last_move_tier = int(getattr(self, "_last_move_tier", 0) or 0) + 50
+        return out
+
+    _row, t_grows, _evs, _rpd = control("an (a) veto whose _move_toward writes a different tier (Zg-2 tier)", "A_veto",
+                                        "G", lambda: setattr(FF, "_move_toward", wrong_tier),
+                                        lambda: setattr(FF, "_move_toward", o_mt), None, "today's step: tier")
+    expect("control/the tier control is a veto that took today's cell (only the tier differs)",
+           len(t_grows) == 1 and t_grows[0]["model_admit"] is False and t_grows[0]["post"] == t_grows[0]["today"]
+           and t_grows[0]["tier"] != t_grows[0]["today_tier"],
+           repr([{x: g.get(x) for x in ("model_admit", "post", "today", "tier", "today_tier")} for g in t_grows]))
+
+    # I-1: a defect INSIDE the repo guard function - the function object the model calls AND the probe's cross-check
+    # calls (its code is swapped, so every reference sees it). Before the frozen-function replica both sides of Zg-1 ran
+    # this code and agreed; now the instrument's verdict is the frozen function's, so Zg-1 fails (the model's verdict
+    # differs, OVER-VETO on an admit board) and the cross-check fails (mp_verdict != the instrument's).
+    sg = mpm.stranding_guard
+    sg_code = sg.__code__
+
+    def defect_in(code):
+        def patch():
+            mpm._mvg_ctl_sg_orig = types.FunctionType(sg_code, sg.__globals__, "stranding_guard_orig",
+                                                      sg.__defaults__, sg.__closure__)
+            sg.__code__ = code
+        return patch
+
+    def defect_out():
+        sg.__code__ = sg_code
+        if hasattr(mpm, "_mvg_ctl_sg_orig"):
+            delattr(mpm, "_mvg_ctl_sg_orig")
+
+    control("a defect inside movement_paths.stranding_guard (verdict inverted), arm G", "A_admit", "G",
+            defect_in(_ctl_sg_inverted.__code__), defect_out, "model guard verdict != instrument verdict",
+            ("Zg-1 the model's verdict", "OVER-VETO", "CROSS-CHECK"), want_mp=1)
+    control("a defect inside movement_paths.stranding_guard (verdict inverted), arm 0 (shadow row)", "A_veto", "0",
+            defect_in(_ctl_sg_inverted.__code__), defect_out, None, "CROSS-CHECK", want_mp=1)
+    control("a defect inside movement_paths.stranding_guard (admit when c infinite), arm G", "A_veto", "G",
+            defect_in(_ctl_sg_admit_inf.__code__), defect_out, "model guard verdict != instrument verdict",
+            ("Zg-1 the model's verdict", "UNDER-VETO", "CROSS-CHECK"), want_mp=1)
+    control("a defect inside movement_paths.stranding_guard (admit when c infinite), arm G, fix (b)", "B_veto", "G",
+            defect_in(_ctl_sg_admit_inf.__code__), defect_out, "model guard verdict != instrument verdict",
+            ("Zg-1 the model's verdict", "UNDER-VETO", "CROSS-CHECK"), want_mp=1)
+    expect("control/the repo guard function is restored", mpm.stranding_guard is sg and sg.__code__ is sg_code
+           and not hasattr(mpm, "_mvg_ctl_sg_orig"))
     o_fbs = ag.fire_board_sets
 
     def dirty_board_sets(m):
@@ -1425,12 +1638,14 @@ def synthetic():
         before = snapshot(model, ag)
         rec["inst"] += 1
         try:
-            S = probe["mv_shadow"](u, model, ag, fn, mpm.stranding_guard, cfv)
+            S = probe["mv_shadow"](u, model, ag, fn, rep, cfv, mpm.stranding_guard)
         finally:
             rec["inst"] -= 1
-        expect("deep purity/mv_shadow on %s" % board, snapshot(model, ag) == before and S is not None
-               and S["g" + bd["kind"]] is not None and S["g" + bd["kind"]][0] is bd["admit"],
-               repr(S and S.get("g" + bd["kind"])))
+        k = bd["kind"]
+        expect("deep purity/mv_shadow (frozen replica + cross-check) on %s" % board, snapshot(model, ag) == before
+               and S is not None and S["g" + k] is not None and S["g" + k][0] is bd["admit"]
+               and S["g" + k + "_mp"] == S["g" + k][:3] and not S["gerr"],
+               repr(S and (S.get("g" + k), S.get("g" + k + "_mp"), S.get("gerr"))))
     before = snapshot(model, ag)
     u = W.unit()
     old = u._idle_retreat_steps
@@ -1484,17 +1699,67 @@ def synthetic():
                                                     "A_admit", "G")
     expect("ko/outside [from, to]: no knockout", row and row["branch"] == "approach_a" and not new, repr(new))
     parse = replay["parse_rules"]
-    bad = 0
-    for text in ('{"unit": "x"}', '[{"unit": "x", "kinds": "abx"}]', '[{"unit": "x", "kinds": ""}]',
-                 '[{"unit": "x", "from": 5, "to": 4}]', '[{"unit": "x", "kind": "a"}]', '[1]'):
+    r_main = replay["main"]
+
+    def main_refuses(own_args):
+        """replay main() on `own_args` + PROBE ARGUMENTS WITHOUT --repo: a rule the parser wrongly accepted is still
+        refused (by the probe-arguments test, with its own message) before anything runs - nothing is ever run here.
+        Returns (rc, the parser's refusal was the one printed)."""
+        argv0 = sys.argv
+        buf = io.StringIO()
+        sys.argv = ["_mvg_replay.py"] + list(own_args) + ["--", "--crn", "--", "--scenario", "B"]
+        try:
+            with contextlib.redirect_stderr(buf):
+                rc = r_main()
+        finally:
+            sys.argv = argv0
+        text = buf.getvalue()
+        return rc, text.startswith("MVG REPLAY REFUSED:") and "the probe arguments need" not in text
+
+    malformed = (
+        # the original six
+        '{"unit": "x"}', '[{"unit": "x", "kinds": "abx"}]', '[{"unit": "x", "kinds": ""}]',
+        '[{"unit": "x", "from": 5, "to": 4}]', '[{"unit": "x", "kind": "a"}]', '[1]',
+        # I-4: bounds of the wrong JSON type (no cast: a float was truncated, a bool / string accepted, null raised
+        # TypeError), and units that cannot name a unit ("!" matched every unit)
+        '[{"unit": "x", "to": 54.9}]', '[{"unit": "x", "from": 1.0}]', '[{"unit": "x", "from": true, "to": 54}]',
+        '[{"unit": "x", "to": "54"}]', '[{"unit": "x", "from": null}]', '[{"unit": "x", "to": null}]',
+        '[{"unit": "!"}]', '[{"unit": ""}]', '[{"unit": "!*"}]', '[{"unit": "!!x"}]', '[{"unit": " ff_unit_1"}]',
+        '[{"unit": 5}]', '[{"unit": null}]', 'not json',
+    )
+    n_value, n_type, n_main = 0, 0, 0
+    for text in malformed:
         try:
             parse(text)
-        except (ValueError, TypeError):
-            bad += 1
-    expect("ko/the rule parser refuses 6 malformed --ko values", bad == 6, "refused %d" % bad)
+        except ValueError:
+            n_value += 1
+        except TypeError:
+            n_type += 1
+        rc, own = main_refuses(["--boards", "unused.json", "--ko", text])
+        n_main += rc == 2 and own
+    expect("ko/the rule parser refuses %d malformed --ko values, each with ValueError" % len(malformed),
+           n_value == len(malformed) and n_type == 0, "ValueError %d, TypeError %d" % (n_value, n_type))
+    expect("ko/main refuses every malformed --ko with exit 2 and its own refusal", n_main == len(malformed),
+           "refused %d of %d" % (n_main, len(malformed)))
+    o_parse = r_main.__globals__["parse_rules"]
+
+    def raises_type_error(text):
+        raise TypeError("synthetic TypeError from the rule parser")
+
+    r_main.__globals__["parse_rules"] = raises_type_error
+    try:
+        rc, own = main_refuses(["--boards", "unused.json", "--ko", "[]"])
+    finally:
+        r_main.__globals__["parse_rules"] = o_parse
+    expect("ko/main turns a TypeError of the parser into the documented refusal (exit 2)", rc == 2 and own, repr(rc))
     expect("ko/the rule parser accepts the urgency review's rules",
            parse('[{"unit":"ff_unit_1","kinds":"ab","from":0,"to":54}]') == [
-               {"unit": "ff_unit_1", "kinds": "ab", "from": 0, "to": 54}])
+               {"unit": "ff_unit_1", "kinds": "ab", "from": 0, "to": 54}]
+           and parse('[{"unit":"!ff_unit_1","kinds":"ab","from":0,"to":54}]') == [
+               {"unit": "!ff_unit_1", "kinds": "ab", "from": 0, "to": 54}])
+    expect("ko/the rule parser accepts the defaults and the W3 generator's shapes",
+           parse('[]') == [] and parse('[{"unit": "*", "kinds": "g"}]') == [{"unit": "*", "kinds": "g"}]
+           and parse('[{"unit": "ff_unit_0", "kinds": "a", "from": 12, "to": 12}]')[0]["to"] == 12)
 
     # ---- the U1 SHADOW self-check: a synthetic qualifying kick
     W.switches(0, 0, 1)
@@ -1557,6 +1822,20 @@ def synthetic():
     expect("no instrument errors left", not rec["ud_errors"] and not rec["errors"] and not rec["mvg_errors"],
            repr(rec["ud_errors"] + rec["errors"] + rec["mvg_errors"]))
     expect("no shadow mismatch left", not rec["mismatch"], repr(rec["mismatch"]))
+    ia, ic, it = gcols.index("admit"), gcols.index("c"), gcols.index("T_v")
+    rest = [r for i, r in enumerate(rec["guard_rows"]) if i not in mp_ctl_rows]
+    expect("no cross-check mismatch left: on all %d guard rows but the %d of the repo-guard-defect controls, "
+           "mp_verdict (movement_paths) == the frozen-function verdict" % (len(rest), len(mp_ctl_rows)),
+           not rec["mp_mismatch"] and rest and all(r[-1] == [r[ia], r[ic], r[it]] for r in rest),
+           repr(rec["mp_mismatch"]))
+    # I-9 / the schema: the record's d["mvg"] carries probe_sha, mp_mismatch and the mp_verdict column (last)
+    psha = lf_sha256(os.path.join(HERE, "_mvg_probe.py"))
+    sec = probe["sections"](rec, ag, cfv, wf, REPO,
+                            probe_sha=probe["lf_sha256"](os.path.join(HERE, "_mvg_probe.py")))[4]
+    expect("record/d['mvg'] carries probe_sha (the probe's LF sha256), mp_mismatch, and mp_verdict as the last guard "
+           "column", sec.get("probe_sha") == psha and sec.get("mp_mismatch") == []
+           and sec["guard"]["cols"][-1] == "mp_verdict" and len(sec["guard"]["cols"]) == len(gcols),
+           repr((sec.get("probe_sha"), psha, sec.get("mp_mismatch"), sec["guard"]["cols"][-3:])))
     for label, ok, detail in results:
         print("%-4s %s %s" % ("OK" if ok else "FAIL", label, "" if ok else detail))
     bad = [r for r in results if not r[1]]

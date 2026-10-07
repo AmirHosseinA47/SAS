@@ -11,7 +11,9 @@ its logic). The safety and route_blocked properties that must also hold for GUAR
 run with the guard at 0 AND at 1.
 
 Every test names its MUTANT ("MUTANT: <id>"): the smallest exact-text source change that removes what the test
-guards, kept in outputs/_mvg_mutants_mv.py (MUTANTS_MV; the ids are the urgency round's, re-anchored to this branch).
+guards, kept in outputs/_mvg_mutants_mv.py (MUTANTS_MV; the ids are the urgency round's, re-anchored to this branch,
+plus sw_strict_b, sw_import_b and sw_shipped_b: the (b) accessor's mirrors of the (a)-only switch mutants, added by
+the Part 2d review fix C-3).
 Each listed test FAILS on its mutant and PASSES on the unmutated source (15.3 / 15.4); the per-mutant record is
 that script's output.
 
@@ -835,7 +837,9 @@ def _put(monkeypatch, name, value):
 @pytest.mark.parametrize("value", ON_VALUES, ids=["1", "True", "1.0", "str1", "str_1_"])
 def test_tswm_on_only_on_an_exact_one(monkeypatch, name, value):
     """T-SW-M (the ON half of the exact-1 table): each fix accessor is True for what denotes the integer 1.
-    MUTANT: sw_strict_a (FF_APPROACH_PATH compared with 1 without the exact-integer parsing: "1" and " 1 " off)."""
+    MUTANTS: sw_strict_a (FF_APPROACH_PATH compared with 1 without the exact-integer parsing: "1" and " 1 " off);
+    sw_strict_b (the same for FF_RETREAT_KEEP_APPROACH, listed on its two cases [str1-FF_RETREAT_KEEP_APPROACH] and
+    [str_1_-FF_RETREAT_KEEP_APPROACH])."""
     _put(monkeypatch, name, value)
     assert getattr(agents, ACCESSORS[name])() is True
 
@@ -861,7 +865,8 @@ def test_tswm_off_retreat_keep_approach(monkeypatch, value):
 
 def test_tswm_read_at_call_time_and_shipped_zero(monkeypatch):
     """T-SW-M. The fix switches ship 0, and each accessor reads the cfv module at CALL time (no import-time copy).
-    MUTANTS: sw_import_a (FF_APPROACH_PATH read once at import time); sw_shipped_a (FF_APPROACH_PATH shipped 1)."""
+    MUTANTS: sw_import_a (FF_APPROACH_PATH read once at import time); sw_shipped_a (FF_APPROACH_PATH shipped 1);
+    sw_import_b, sw_shipped_b (the same two for FF_RETREAT_KEEP_APPROACH)."""
     for name in ACCESSORS:
         assert getattr(cfv, name) == 0
     for name, accessor in ACCESSORS.items():

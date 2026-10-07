@@ -18,13 +18,30 @@ WHAT CHANGED FROM ud_probe v2, AND WHY (nothing else did):
     (importlib, module name "mvg_u1_shadow"), never from the repo; its sha256 is d["mvg"]["u1_shadow_sha"].
   - The repo SHA list (d["ud"]["src_sha"] and d["mvg"]["src_sha"]) is MVG_SHA_FILES (no urgency_dispatch.py).
 
+THE INSTRUMENT'S GUARD VERDICT IS THE FROZEN FUNCTION'S (Part 1d 1d.8 (5): "the instrument's own guard verdict (the
+frozen function)"; 1d.6.2 Zg-1: "independently recomputed ADMIT(n) ... the instrument's reference is the frozen
+function"). frozen_guard_replica() holds a VERBATIM copy of the body of guard() in outputs/_mvg_guard_diag.py (sha256
+70eeba7877dae617... of its LF form, FROZEN_GUARD_SHA) whose helpers are bound to the frozen function's own
+dependencies: unclean_cells / t_star / safe_route_hops of the U1 shadow copy outputs/_mvg_u1_shadow.py (loaded by
+path; byte-identical to urgency:src_extension/planning/urgency_dispatch.py at 5dba5bcb, the module the frozen file
+imports them from) and fire_arrival_estimate.arrival_time with FrontPriorityParams(). It shares NO guard code with
+the model's guard (agents.Firefighter._stranding_guard_verdict -> movement_paths.stranding_guard, a port, with its own
+unclean_cells / t_star / safe_route_hops); the FAE estimator is common by design (the frozen function reads it too; it
+is in src_sha and byte-identical to urgency 5dba5bcb's). A defect inside the repo guard function therefore shows as a
+model verdict that differs from the instrument's (Zg-1 fails). Its (admit, c, T_v) are
+the guard row's admit / c / T_v, the mv rows' gA / gB and the events' guard. The repo function
+movement_paths.stranding_guard is ALSO called on the same arguments, as a CROSS-CHECK only: its tuple is the guard row's
+"mp_verdict" column, and every row where it differs from the instrument's is listed in d["mvg"]["mp_mismatch"] (an
+instrument / guard-function problem: the check tool and the analyzer's Zg-1 fail on it).
+
 RECORD-ONLY. Every recorder only READS model state: no draw from any RNG, no print to stdout or stderr of its own (the
 invariant checker's own stderr lines are re-emitted, as _dp_probe does), no attribute set on the model or an agent.
 Every wrap is installed at CLASS level before the model is built. The shadows call the model's own PURE methods
 (agents.Firefighter._greedy_choice, _survival_choice, _approach_path_choice, _retreat_on_route_choice) through the class
-functions captured before any wrap, and the guard's pure function movement_paths.stranding_guard on arguments the
-instrument builds itself (the unit's cell, the fix's cell, target_pos after the refresh, fire_board_sets, the wind
-vector of the model's wind label, grid.width / grid.height); each shadow is guarded: the unit's __dict__, the model's
+functions captured before any wrap, and two PURE guard functions (the frozen-function replica, and the repo's
+movement_paths.stranding_guard as the cross-check) on arguments the instrument builds itself (the unit's cell, the
+fix's cell, target_pos after the refresh, fire_board_sets, the wind vector of the model's wind label, grid.width /
+grid.height); each shadow is guarded: the unit's __dict__, the model's
 attributes (names and shallow values) and the RNG states (agents.random, model.random, numpy) are compared before and
 after, and a difference is an instrument error. Observer exceptions are caught and listed (dp: d["dp"]["errors"], the
 v2 movement / kick recorders: d["ud"]["errors"], the guard material: d["mvg"]["errors"]); an observer never stops a
@@ -38,14 +55,18 @@ d["ud"]   probe, rc_chain, switches, src_sha, schema, kicks, decisions, fates, c
 d["mv"]   {"cols": MV_COLS, "rows": [...]}: v2's 38 columns + gA, gB, veto, acted_g (see MV_SCHEMA).
 d["mv_events"]  one dict per ACTED event (the UNGUARDED shadow acted, v2's definition, every arm) with v2's fields
           (step, kind, unit, victim, live, row, cell, today, taken, branch, detail, agree) plus guard {admit, c, T_v,
-          model_admit}, vetoed and ran. live = the fix's switch is effective (v2); vetoed = live, the guard is on and
-          the MODEL's verdict vetoed the step; ran = live and not vetoed (the fix's step was taken). agree (live only)
+          model_admit}, vetoed and ran. live = the fix's switch is effective (v2) - live is NOT guarded: it is True
+          on a decision the guard vetoed too; vetoed = live, the guard is on and the MODEL's verdict vetoed the step;
+          ran = live and not vetoed (the fix's step was taken). THE GUARDED FIELDS that Part 1d 1d.8 (5) calls "live"
+          and "acted" ("defined on the GUARDED choice") are ran (here) and acted_g (d["mv"]); "live" and "acted" keep
+          v2's unguarded meaning so that v2's consumers read the same values. agree (live only)
           = the model did what the GUARDED pre-advance shadow says: the fix's step (branch approach_a / retreat_b,
           post == the fix's cell) when the guard is off or the INSTRUMENT admits, today's step (branch approach_a_veto /
           retreat_b_veto, post == today's shadow cell, or the unit's cell when today's shadow does not move) when the
           guard is on and the instrument vetoes.
-d["mvg"]  probe, switches, src_sha, u1_shadow_sha, u1_shadow_path, u1_shadow_error, guard {cols, rows}, replica,
-          timing, errors (see MVG_SCHEMA).
+d["mvg"]  probe, probe_sha (sha256 of THIS file's LF-normalised bytes, read when the run starts: the instrument that
+          wrote the record), switches, src_sha, u1_shadow_sha (sha256 of the U1 copy's LF-normalised bytes),
+          u1_shadow_path, u1_shadow_error, guard {cols, rows}, mp_mismatch, replica, timing, errors (see MVG_SCHEMA).
 """
 from __future__ import annotations
 
@@ -65,6 +86,10 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 VERSION = "mvg_probe v1"
 U1_SHADOW = os.path.join(HERE, "_mvg_u1_shadow.py")
 U1_SHADOW_MODULE = "mvg_u1_shadow"
+# the frozen guard whose body frozen_guard_replica() copies verbatim: outputs/_mvg_guard_diag.py (urgency:outputs/
+# _mvg_guard_diag.py, Part 1d 1d.2.6), sha256 of its LF-normalised bytes
+FROZEN_GUARD_FILE = "outputs/_mvg_guard_diag.py"
+FROZEN_GUARD_SHA = "70eeba7877dae6174999ae2a00774bdeeb36ced08d35df407f27318cd3a313b2"
 _N4 = ((1, 0), (-1, 0), (0, 1), (0, -1))
 # _dp_probe v2's list, unchanged (d["dp"]["src_sha"])
 SHA_FILES = (
@@ -101,7 +126,7 @@ _INST_MS_I = MV_COLS.index("inst_ms")
 GUARD_COLS = (
     "step", "unit", "victim", "kind", "u", "n", "v", "today", "today_kind", "today_tier", "today_raise",
     "c", "T_v", "admit", "model_admit", "model_verdict", "model_cell", "took", "post", "tier", "raise",
-    "pre_writes", "pred_writes", "post_writes", "ms_guard", "ms_inst", "row",
+    "pre_writes", "pred_writes", "post_writes", "ms_guard", "ms_inst", "row", "mp_verdict",
 )
 FIX_BRANCH = {"a": "approach_a", "b": "retreat_b"}
 VETO_BRANCH = {"a": "approach_a_veto", "b": "retreat_b_veto"}
@@ -128,9 +153,11 @@ MV_SCHEMA = (
     "= fa not None and != today's cell; b = fb not None on a survival step); dc / dcx / df / dm / dr / gesc / cls_* / "
     "fd_* / c1_* / dcb as v2; fix_ms = ms in fix code during the advance (pure choices, _fix_move and the guard) when "
     "the model called it; inst_ms = the instrument's ms for the row. NEW: gA / gB = the INSTRUMENT's guard verdict "
-    "(movement_paths.stranding_guard on the decision board) for fa / fb when that fix would act, else None; veto = "
-    "letters of the fixes whose live step the MODEL's guard vetoed in this advance; acted_g = the letters of acted "
-    "whose instrument verdict admits (what the fixes do in arm G). None = not applicable / infinite."
+    "(the frozen-function replica, frozen_guard_replica, on the decision board) for fa / fb when that fix would act, "
+    "else None; veto = letters of the fixes whose live step the MODEL's guard vetoed in this advance; acted_g = the "
+    "letters of acted whose instrument verdict admits (what the fixes do in arm G). None = not applicable / infinite. "
+    "NOT GUARDED: acted (above) and mv_events 'live' (the fix's switch is effective) keep v2's unguarded meaning; the "
+    "GUARDED fields Part 1d 1d.8 (5) calls acted / live are acted_g (here) and mv_events 'ran'."
 )
 MVG_SCHEMA = (
     "guard rows (cols GUARD_COLS): one per decision at which fix (a) or (b) WOULD act (the pure choice returns a cell n "
@@ -139,8 +166,11 @@ MVG_SCHEMA = (
     "fallback greedy cell when survival would not move; None = today's step does not move), today_kind (greedy | "
     "survival | fallback), today_tier (the tier today's _move_toward writes; None for survival), today_raise (today's "
     "raise predicate), c = c_n (None = infinite), T_v = FAE T at v (None = infinite), admit = the INSTRUMENT's verdict "
-    "(movement_paths.stranding_guard on the decision board; equal to the frozen _mvg_guard_diag.guard by test T-G7; "
-    "None if it raised), model_admit = the MODEL's verdict (the return of _stranding_guard_verdict called inside "
+    "(c / T_v / admit are the FROZEN FUNCTION's: frozen_guard_replica, a verbatim copy of the body of "
+    "outputs/_mvg_guard_diag.guard - sha256 70eeba78... of its LF form - on the U1 shadow copy's unclean_cells / "
+    "t_star / safe_route_hops and fire_arrival_estimate.arrival_time with FrontPriorityParams(), on the decision "
+    "board; it shares no guard code with the model's guard - FAE is common by design; None if it raised), "
+    "model_admit = the MODEL's verdict (the return of _stranding_guard_verdict called inside "
     "_guarded) or None when the model did not evaluate the guard (fix off: arm 0; guard off: arm N; a knocked-out "
     "choice), model_verdict = [admit, c, T_v] of that call, model_cell = the cell it was evaluated on, took = 'fix' if "
     "post == n and _last_move_tier after the advance is the fix's tier (7 / 10), else 'today', post = the unit's cell "
@@ -148,12 +178,18 @@ MVG_SCHEMA = (
     "pre_writes / pred_writes / post_writes (kind b; else None) = the _idle_retreat_* state [origin, steps, stalled, "
     "last_cell] before the advance / as a PURE replica of today's _survival_move would leave it (survival_writes) / "
     "after the advance, ms_guard = the model's guard call ms (None if not evaluated), ms_inst = the instrument's guard "
-    "ms, row = the index of the advance's d['mv'] row. replica: the survival_writes replica checked at EVERY advance "
+    "ms, row = the index of the advance's d['mv'] row, mp_verdict = [admit, c, T_v] of the REPO function "
+    "movement_paths.stranding_guard (the function the model calls) on the same arguments - a CROSS-CHECK column; it "
+    "must equal [admit, c, T_v] (None if it raised); mp_mismatch = [step, unit, kind, row index in guard rows, "
+    "[admit, c, T_v] (instrument), mp_verdict] for every guard row where they differ (must be empty). "
+    "replica: the survival_writes replica checked at EVERY advance "
     "with the survival trigger: where today's _survival_move ran (branch retreat / retreat_fb / retreat_b_veto) the "
     "predicted writes must equal the unit's post-advance state (checked / mismatch), where fix (b)'s step ran "
     "(retreat_b) the state must be unchanged (fix_checked / fix_mismatch), and the replica's destination must be "
     "today's survival cell (_survival_choice; cell_checked / cell_mismatch). timing: guard_ms = every model guard call "
-    "(ms), guard_calls, inst_guard_ms = every instrument guard evaluation (ms)."
+    "(ms), guard_calls, inst_guard_ms = every instrument guard evaluation (ms; the frozen-function replica's). "
+    "probe_sha = sha256 of outputs/_mvg_probe.py's LF-normalised bytes, read when the run starts; u1_shadow_sha = "
+    "sha256 of the U1 shadow copy's LF-normalised bytes (both CRLF-checkout safe)."
 )
 UD_SCHEMA = (
     "ud_probe v2's kick schema, unchanged: kicks (W, F, index, qualifies, u1, rec, d, ms, div_shadow, nB, z4, z4_ok, "
@@ -358,12 +394,19 @@ def _safe_hops(src, x_size, y_size, unclean, t_grid):
     return hops
 
 
-def load_u1_shadow(path=U1_SHADOW):
-    """(module, sha256 of the file's bytes): the frozen instrument-only copy of urgency_dispatch.py, loaded BY PATH under
-    the module name "mvg_u1_shadow" (never as src_extension.planning.urgency_dispatch, never from the repo). It imports
-    only src_extension.planning.fire_arrival_estimate (the repo's FAE, the estimator U1 read)."""
+def lf_sha256(path):
+    """sha256 of a file's LF-normalised bytes (every CRLF read as LF): the same value for an LF and a CRLF checkout
+    (core.autocrlf = true writes CRLF on a re-checkout), as T-G4 / T-G7 and the check tool's frozen-guard load hash."""
     with open(path, "rb") as fh:
-        sha = hashlib.sha256(fh.read()).hexdigest()
+        return hashlib.sha256(fh.read().replace(b"\r\n", b"\n")).hexdigest()
+
+
+def load_u1_shadow(path=U1_SHADOW):
+    """(module, sha256 of the file's LF-normalised bytes - lf_sha256): the frozen instrument-only copy of
+    urgency_dispatch.py, loaded BY PATH under the module name "mvg_u1_shadow" (never as
+    src_extension.planning.urgency_dispatch, never from the repo). It imports only
+    src_extension.planning.fire_arrival_estimate (the repo's FAE, the estimator U1 read)."""
+    sha = lf_sha256(path)
     spec = importlib.util.spec_from_file_location(U1_SHADOW_MODULE, path)
     module = importlib.util.module_from_spec(spec)
     sys.modules[U1_SHADOW_MODULE] = module
@@ -390,13 +433,53 @@ def guard_inputs(model, cfv):
     return cfv.wind_vector_from_direction(label), int(model.grid.width), int(model.grid.height)
 
 
+def frozen_guard_replica(udm, fae):
+    """The INSTRUMENT's guard: a LOCAL REPLICA of the frozen function guard() of outputs/_mvg_guard_diag.py (sha256
+    70eeba7877dae617... of its LF form, FROZEN_GUARD_SHA; = urgency:outputs/_mvg_guard_diag.py, Part 1d 1d.2.6). The
+    inner function below is that guard() copied VERBATIM (name, signature, docstring and body; _mvg_probe_check.py
+    synthetic compares its AST and its dedented source text with the frozen file's). Its free names are bound here to
+    the frozen function's own dependencies, never to the model's guard code:
+        arrival_time, FrontPriorityParams      = fae.arrival_time, fae.FrontPriorityParams (the repo's FAE, the
+                                                 estimator the frozen file imports; byte-identical to urgency 5dba5bcb)
+        unclean_cells, t_star, safe_route_hops = udm.<same names>, udm = the U1 shadow copy outputs/_mvg_u1_shadow.py
+                                                 loaded by path (byte-identical to the urgency_dispatch.py the frozen
+                                                 file imports them from)
+    so the verdict shares no guard code with movement_paths.stranding_guard (the port the model runs; the FAE estimator
+    is common by design - the frozen function reads it too). PURE (no model, grid or RNG access)."""
+    arrival_time, FrontPriorityParams = fae.arrival_time, fae.FrontPriorityParams
+    unclean_cells, t_star, safe_route_hops = udm.unclean_cells, udm.t_star, udm.safe_route_hops
+
+    def guard(u, n, v, burning, smoky, wind, w, h):
+        """(admit, c_n, T(v)) - G-T with `wind` (a vector) or G-W with wind None."""
+        u, n, v = tuple(u), tuple(n), tuple(v)
+        T = arrival_time(w, h, list(burning), wind, FrontPriorityParams())
+        unclean = unclean_cells(burning, smoky, w, h)
+        t_v = float(T[v[0], v[1]])
+        if n in unclean or not t_star(T, n, w, h) > 1:
+            return False, None, t_v
+        hops = safe_route_hops(n, w, h, unclean | {u}, lambda x: t_star(T, x, w, h) - 1)
+        if v not in hops:
+            return False, None, t_v
+        c_n = 1 + hops[v]
+        return (c_n + 1) <= t_v, c_n, t_v
+
+    return guard
+
+
 def guard_shadow(gfn, u, n, v, burning, smoky, wind, x_size, y_size):
-    """The INSTRUMENT's guard verdict (1d.2.2) at one decision: [admit, c_n, T_v (None = infinite), ms]. gfn is
-    movement_paths.stranding_guard (pure; T-G7 pins it to the frozen _mvg_guard_diag.guard)."""
+    """The INSTRUMENT's guard verdict (1d.2.2) at one decision: [admit, c_n, T_v (None = infinite), ms]. gfn is the
+    frozen-function replica (frozen_guard_replica; pure)."""
     t0 = time.perf_counter()
     admit, c_n, t_v = gfn(u, n, v, burning, smoky, wind, x_size, y_size)
     ms = (time.perf_counter() - t0) * 1000.0
     return [bool(admit), None if c_n is None else int(c_n), _fin(t_v), ms]
+
+
+def mp_shadow(mpfn, u, n, v, burning, smoky, wind, x_size, y_size):
+    """The CROSS-CHECK at one decision: [admit, c_n, T_v (None = infinite)] of the repo function the model calls,
+    movement_paths.stranding_guard (pure), on the instrument's arguments - normalised exactly as guard_shadow's."""
+    admit, c_n, t_v = mpfn(u, n, v, burning, smoky, wind, x_size, y_size)
+    return [bool(admit), None if c_n is None else int(c_n), _fin(t_v)]
 
 
 def writes_of(unit):
@@ -537,11 +620,13 @@ def survival_writes(unit, ag):
     return out(target)
 
 
-def mv_shadow(unit, model, ag, fn, gfn=None, cfv=None):
+def mv_shadow(unit, model, ag, fn, gfn=None, cfv=None, mpfn=None):
     """PURE pre-advance shadow for one unit (after its target refresh). None = no row (idle / off-grid / dead).
     v2's shadow without fix (c), plus, at every decision where fix (a) or (b) would act, the instrument's guard verdict
-    (S["ga"] / S["gb"] = [admit, c, T_v, ms], None where the fix would not act or gfn is None), and on every survival
-    step the survival_writes replica (S["sv"] = {"pre", "pred", "cell"})."""
+    (gfn = frozen_guard_replica: S["ga"] / S["gb"] = [admit, c, T_v, ms], None where the fix would not act, gfn is
+    None or it raised) and the cross-check of the repo function (mpfn = movement_paths.stranding_guard: S["ga_mp"] /
+    S["gb_mp"] = [admit, c, T_v], None likewise), and on every survival step the survival_writes replica (S["sv"] =
+    {"pre", "pred", "cell"}). S["gerr"] = the list of guard exceptions (None: none)."""
     pos = getattr(unit, "pos", None)
     if pos is None or getattr(unit, "dead", False):
         return None
@@ -561,7 +646,7 @@ def mv_shadow(unit, model, ag, fn, gfn=None, cfv=None):
          "cls_pre": _cls(cell, burning, smoky), "fd_pre": _mfd(cell, burning), "kind": None, "target": None,
          "trig": None, "zrb": None, "today": None, "fa": None, "fb": None, "fbB": None, "fc": None, "acted": "",
          "dc": None, "dcx": None, "df": None, "dm": None, "dr": None, "gesc": None, "c1_pre": None,
-         "ga": None, "gb": None, "sv": None, "gerr": None}
+         "ga": None, "gb": None, "ga_mp": None, "gb_mp": None, "sv": None, "gerr": None}
     unclean = _unclean(burning, smoky, oob)
     # dcb (v2, R3 D-16): clean distance to the boundary on EVERY row, the unit's own cell exempt
     S["dcb"] = _dist_boundary(cell, lambda c: c not in unclean, oob)
@@ -608,14 +693,26 @@ def mv_shadow(unit, model, ag, fn, gfn=None, cfv=None):
             S.update(kind="approach", fa=a, acted="a" if (a is not None and a != g) else "")
         S.update(trig=trig, zrb=bool(zrb), today=today, dc=dc, dcx=dcx, df=df, dm=dm, gesc=bool(has_exit),
                  dr=dcx if dcx is not None else df if df is not None else dm)
-        if gfn is not None and S["acted"]:
+        if (gfn is not None or mpfn is not None) and S["acted"]:
             f = S["acted"]
             n = S["fa"] if f == "a" else S["fb"]
+            errs = []
             try:
                 wind, xs, ys = guard_inputs(model, cfv)
-                S["g" + f] = guard_shadow(gfn, cell, n, tgt, burning, smoky, wind, xs, ys)
-            except Exception as exc:  # recorded as a guard error; the verdict stays None
-                S["gerr"] = ("guard_shadow: %r" % (exc,))[:300]
+            except Exception as exc:  # recorded as a guard error; both verdicts stay None
+                errs.append(("guard_inputs: %r" % (exc,))[:300])
+            else:
+                if gfn is not None:
+                    try:
+                        S["g" + f] = guard_shadow(gfn, cell, n, tgt, burning, smoky, wind, xs, ys)
+                    except Exception as exc:  # recorded as a guard error; the verdict stays None
+                        errs.append(("guard_shadow (frozen replica): %r" % (exc,))[:300])
+                if mpfn is not None:
+                    try:
+                        S["g" + f + "_mp"] = mp_shadow(mpfn, cell, n, tgt, burning, smoky, wind, xs, ys)
+                    except Exception as exc:  # recorded as a guard error; the cross-check stays None
+                        errs.append(("mp_shadow (movement_paths.stranding_guard): %r" % (exc,))[:300])
+            S["gerr"] = errs or None
         return S
     # carry (no fix (c) in this round: today's carry step only)
     et = getattr(unit, "exit_target", None)
@@ -839,7 +936,10 @@ def dict_changed(before, after):
 # ------------------------------------------------------------------------------------------------- recorders
 def install(ag, cfv, wf, amod, gen, fae, udm, mpm=None):
     """Install every recorder (class-level wraps; call BEFORE the model is built). udm = the frozen U1 copy (or None:
-    no kick shadow), mpm = src_extension.planning.movement_paths (the guard's pure function; None: no guard shadow).
+    no kick shadow, and no instrument guard verdict - its frozen-function replica runs on udm's helpers; an mvg error
+    is then recorded), mpm = src_extension.planning.movement_paths (the round's guard is in the model; None: no guard
+    shadow at all). The instrument's verdict is frozen_guard_replica(udm, fae); movement_paths.stranding_guard,
+    captured here (before any test can rebind the module attribute), is the cross-check (mp_verdict).
     Returns the record dict `rec` that sections() turns into d["dp"], d["ud"], d["mv"], d["mv_events"], d["mvg"]."""
     WM = wf.WildFireModel
     FF = ag.Firefighter
@@ -855,13 +955,22 @@ def install(ag, cfv, wf, amod, gen, fae, udm, mpm=None):
         "u1_shadow_ms": 0.0, "mv_ms": 0.0,
         "kick_ms": 0.0, "fid": {}, "vid": {}, "pickups": {}, "completes": {}, "kick_att": [],
         # mvg
-        "mvg_errors": [], "guard_rows": [], "guard_ms": [], "inst_guard_ms": [],
+        "mvg_errors": [], "guard_rows": [], "guard_ms": [], "inst_guard_ms": [], "mp_mismatch": [],
         "replica": {"checked": 0, "mismatch": [], "fix_checked": 0, "fix_mismatch": [], "cell_checked": 0,
                     "cell_mismatch": []},
     }
     joint_on = getattr(ag, "dispatch_joint", None) or (lambda: False)
     fn = shadow_funcs(ag)
-    gfn = getattr(mpm, "stranding_guard", None) if mpm is not None else None
+    # the guard: the instrument's verdict = the frozen-function replica (on the U1 copy's helpers); the repo function
+    # the model calls = the cross-check only
+    mpfn = getattr(mpm, "stranding_guard", None) if mpm is not None else None
+    gfn = None
+    if mpm is not None:
+        if udm is None:
+            rec["mvg_errors"].append("install: no U1 shadow module - the instrument's guard verdict (the frozen-function "
+                                     "replica on its helpers) cannot be computed; admit stays None")
+        else:
+            gfn = frozen_guard_replica(udm, fae)
     o_uorder = getattr(udm, "urgency_order", None) if udm is not None else None
     fix_tier = {"a": getattr(ag, "APPROACH_PATH_TIER", 7), "b": getattr(ag, "RETREAT_ON_ROUTE_TIER", 10)}
     # v2: the planner function _dispatch_firefighter_to_victim calls, imported the way wildfire_model imports it - the
@@ -1390,7 +1499,7 @@ def install(ag, cfv, wf, amod, gen, fae, udm, mpm=None):
             rec["inst"] += 1
             try:
                 before = (dict(self.__dict__), dict(vars(model)), rng_states(ag, model))
-                S = mv_shadow(self, model, ag, fn, gfn, cfv)
+                S = mv_shadow(self, model, ag, fn, gfn, cfv, mpfn)
                 bad = dict_changed(before[0], self.__dict__)
                 bad_m = dict_changed(before[1], vars(model))
                 bad_r = before[2] != rng_states(ag, model)
@@ -1399,8 +1508,8 @@ def install(ag, cfv, wf, amod, gen, fae, udm, mpm=None):
                         bad[:5], bad_m[:5], bad_r))
                 ctx["S"] = S
                 if S is not None:
-                    if S.get("gerr"):
-                        gerr("guard_shadow step %s" % step_of(model), S["gerr"])
+                    for text in S.get("gerr") or ():
+                        gerr("guard step %s" % step_of(model), text)
                     for f in ("a", "b"):
                         if S.get("g" + f) is not None:
                             rec["inst_guard_ms"].append(round(S["g" + f][3], 3))
@@ -1591,6 +1700,11 @@ def install(ag, cfv, wf, amod, gen, fae, udm, mpm=None):
                                             [bool(call["verdict"][0]), call["verdict"][1], call["verdict"][2]],
                                             [gs[0], gs[1], gs[2]]])
             took = "fix" if (post == cell and tier == fix_tier[f]) else "today"
+            # the cross-check: the repo function's tuple against the instrument's (frozen-function replica's)
+            gm = S.get("g" + f + "_mp")
+            inst = None if gs is None else [gs[0], gs[1], gs[2]]
+            if gm != inst:
+                rec["mp_mismatch"].append([step, uid, f, len(rec["guard_rows"]), inst, gm])
             rec["guard_rows"].append([
                 step, uid, ctx["victim"], f, _jc(S["pre"]), _jc(cell), _jc(S["target"]),
                 _jc(S["today"][1]), S["today"][0], S["today"][2], bool(S["today"][3]),
@@ -1600,7 +1714,7 @@ def install(ag, cfv, wf, amod, gen, fae, udm, mpm=None):
                 sv["pre"] if (f == "b" and sv) else None, sv["pred"] if (f == "b" and sv) else None,
                 post_w if f == "b" else None,
                 None if call is None else round(call["ms"], 3), None if gs is None else round(gs[3], 3),
-                ctx["row_i"]])
+                ctx["row_i"], None if gm is None else list(gm)])
         for f in ("a", "b"):
             if f in mg and f not in S["acted"]:
                 # the model evaluated the guard on a fix the (unguarded) shadow says does not act
@@ -1728,9 +1842,9 @@ def _file_shas(repo, rels):
     return out
 
 
-def sections(rec, ag, cfv, wf, repo, rc=None, chain_exc=None, wall_s=None, process_s=None, u1=None):
+def sections(rec, ag, cfv, wf, repo, rc=None, chain_exc=None, wall_s=None, process_s=None, u1=None, probe_sha=None):
     """(d["dp"], d["ud"], d["mv"], d["mv_events"], d["mvg"]) from the record `install` filled. u1 = {"sha", "path",
-    "error"} of the U1 shadow load."""
+    "error"} of the U1 shadow load; probe_sha = lf_sha256 of this file, read when the run started."""
     m = rec["model"]
     ledger = getattr(m, "_dispatch_ledger", None) or {} if m is not None else {}
     dp = {
@@ -1834,6 +1948,7 @@ def sections(rec, ag, cfv, wf, repo, rc=None, chain_exc=None, wall_s=None, proce
     u1 = u1 or {}
     mvg = {
         "probe": VERSION,
+        "probe_sha": probe_sha,
         "switches": dict({
             "FF_APPROACH_PATH": bool(acc("ff_approach_path", False)),
             "FF_RETREAT_KEEP_APPROACH": bool(acc("ff_retreat_keep_approach", False)),
@@ -1845,6 +1960,7 @@ def sections(rec, ag, cfv, wf, repo, rc=None, chain_exc=None, wall_s=None, proce
         "u1_shadow_error": u1.get("error"),
         "schema": MVG_SCHEMA + " | " + MV_SCHEMA,
         "guard": {"cols": list(GUARD_COLS), "rows": rec["guard_rows"]},
+        "mp_mismatch": rec["mp_mismatch"],
         "replica": rec["replica"],
         "timing": {
             "guard_ms": rec["guard_ms"],
@@ -1870,6 +1986,8 @@ def main() -> int:
         return 3
     repo = probe_args[probe_args.index("--repo") + 1]
     out_path = probe_args[probe_args.index("--out") + 1]
+    # the instrument that writes this record (d["mvg"]["probe_sha"]), read before anything runs
+    probe_sha = lf_sha256(os.path.abspath(__file__))
     sys.path.insert(0, repo)
     os.environ.setdefault("MPLBACKEND", "Agg")
     t_process = time.perf_counter()
@@ -1917,7 +2035,7 @@ def main() -> int:
         else:
             d = {"dp_only": True, "crashed": True}
         d["dp"], d["ud"], d["mv"], d["mv_events"], d["mvg"] = sections(rec, ag, cfv, wf, repo, rc, chain_exc, wall_s,
-                                                                       process_s, u1)
+                                                                       process_s, u1, probe_sha)
         tmp = out_path + ".mvgtmp"
         with open(tmp, "w", encoding="utf-8", newline="\n") as fh:
             json.dump(d, fh, separators=(",", ":"), default=str)

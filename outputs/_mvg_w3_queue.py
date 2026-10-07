@@ -4,18 +4,28 @@ mechanically from the W2 records by a frozen script"). It GENERATES A QUEUE ONLY
 no outcome but the firefighters' death steps and the fixes' ACTED events of the W2 records.
 
 usage (from the mvg worktree root, with E:/Projects/SAS/.venv/Scripts/python.exe):
-  python outputs/_mvg_w3_queue.py build        read the frozen W2 queue (outputs/_mvg_q_w2.jsonl) and its 192 records,
-                                               compute 1d.13.2's candidates and knockout set, and write the FROZEN
-                                               outputs/_mvg_q_w3.jsonl and outputs/_mvg_w3_candidates.json (LF; creates
-                                               outputs/_mvg_w3/ for the replay records). Existing files must be
+  python outputs/_mvg_w3_queue.py build --head SHA --part2-notes PATH
+                                               the analyzer's provenance / validity check of the 192 W2 records first
+                                               (below; both arguments REQUIRED, the same values the analyzer is run
+                                               with), then read the frozen W2 queue (outputs/_mvg_q_w2.jsonl) and its
+                                               192 records, compute 1d.13.2's candidates and knockout set, and write the
+                                               FROZEN outputs/_mvg_q_w3.jsonl and outputs/_mvg_w3_candidates.json (LF;
+                                               creates outputs/_mvg_w3/ for the replay records). Existing files must be
                                                identical to the regenerated ones, else STOP (never re-frozen).
   python outputs/_mvg_w3_queue.py check [--resume]   regenerate, compare with the frozen files, run the tag check.
   python outputs/_mvg_w3_queue.py show         print the regenerated lines (no write).
   python outputs/_mvg_w3_queue.py selftest     the known-answer self-test on synthetic records (no file is read or
                                                written outside a temporary directory).
-Run `build` only after outputs/_mvg_analyze.py --zeros-only reports W2 complete and valid; this script re-checks the
-record-level validity itself (the run line, CRN draws, the instrument's version and error lists) and STOPs on any
-problem: W3 is never generated from a W2 that is missing or INVALID.
+W2 MUST BE VALID BEFORE W3 IS FROZEN (review A-4): build imports outputs/_mvg_analyze.py and runs its w2_gate(--head,
+--part2-notes) - the analyzer's section 0 (hashed sections, verbatim / module checks, the Part 2d notes, the mutation
+record at --head) and section 1's validity of all 192 W2 records exactly as the analysis will read them (the queue line,
+the .argv signature, the head rule, the recorded source and instrument shas at --head, CRN, the instrument's errors,
+schemas and guard bookkeeping), printed masked, no outcome. It REFUSES (STOP, nothing written) unless every W2 record is
+present and valid; a crashed record is not a refusal (its cell-arm becomes UNCOMPUTABLE below). Without this, a W3 built
+from a W2 record the analyzer later finds INVALID could never be re-derived (the frozen pair is never re-written). The
+script then re-checks the record-level validity itself (the run line, CRN draws, the instrument's version and error
+lists) and STOPs on any problem: W3 is never generated from a W2 that is missing or INVALID. `check` and `show` only
+regenerate and compare; they do not run the analyzer's check.
 
 THE RULE (1d.13.2, verbatim in substance). Per fresh cell (sets 5-6) and arm X in {G, N} against arm 0 (CRN; the unit
 ids are the same in every arm), from each record's rows_ff (a unit's death step = the first step whose row has the
@@ -327,8 +337,26 @@ def regenerate():
     return full_doc(doc, shas, w2_sha), lines
 
 
-def build() -> int:
+def analyzer_gate(head, notes):
+    """The analyzer's provenance / validity check of the 192 W2 records (outputs/_mvg_analyze.py w2_gate; imported
+    here, not at module level: the analyzer imports this module for the frozen rule). Returns (ok, problems)."""
+    import _mvg_analyze as UA  # noqa: E402
+    return UA.w2_gate(head, notes)
+
+
+def build(head=None, notes=None, gate=None) -> int:
+    """Freeze W3 (see the module docstring). REFUSES (STOP, nothing written) without --head and --part2-notes or when
+    the analyzer's W2 check fails. gate (head, notes) -> (ok, problems): the analyzer's w2_gate by default (the
+    analyzer self-test passes its section-1 check on synthetic records)."""
     Q._here_check()
+    if not head or not notes:
+        Q.stop("build needs --head <Part 2d commit> and --part2-notes <path> (the analyzer's W2 provenance / validity "
+               "check runs first, with the same values)")
+    ok, problems = (gate or analyzer_gate)(head, notes)
+    if not ok:
+        Q.stop("the analyzer's provenance / validity check of the W2 records failed - W3 is never generated from "
+               "it:\n  " + "\n  ".join(str(p) for p in list(problems)[:40]))
+    print("analyzer W2 check (--head %s, --part2-notes %s): every W2 record present and valid" % (head, notes))
     doc, lines = regenerate()
     qb, cb = Q.queue_bytes(lines), doc_bytes(doc)
     states = []
@@ -504,6 +532,19 @@ def selftest() -> int:
         with open(os.path.join(tmp, "q.jsonl"), "rb") as fh:
             back = [json.loads(x) for x in fh.read().decode("utf-8").splitlines()]
         case("W3-12 the queue bytes round-trip (LF JSON lines)", back == lines)
+        stops = []
+        for args in ((None, None, None), ("6ebeadc6", None, None),
+                     ("6ebeadc6", "notes.txt", lambda h, n: (False, ["INVALID G set5/ring/A_N: no .argv"]))):
+            try:
+                build(*args)
+                stops.append(None)
+            except SystemExit as exc:
+                stops.append(str(exc))
+        case("W3-13 build REFUSES without --head or --part2-notes, and when the analyzer's W2 check fails (STOP before "
+             "the W2 records are read or anything is written; the analyzer self-test runs the real check on an INVALID "
+             "W2 record)",
+             all(s is not None and "needs --head" in s for s in stops[:2]) and stops[2] is not None
+             and "provenance / validity check of the W2 records failed" in stops[2] and "no .argv" in stops[2], stops)
     finally:
         for f in os.listdir(tmp):
             os.remove(os.path.join(tmp, f))
@@ -521,7 +562,9 @@ def main() -> int:
         return 2
     cmd = sys.argv[1]
     if cmd == "build":
-        return build()
+        argv = sys.argv[2:]
+        opt = lambda flag: argv[argv.index(flag) + 1] if flag in argv[:-1] else None          # noqa: E731
+        return build(opt("--head"), opt("--part2-notes"))
     if cmd == "check":
         return check("--resume" in sys.argv)
     if cmd == "show":

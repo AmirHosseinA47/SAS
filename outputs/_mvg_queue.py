@@ -35,11 +35,17 @@ WAVES (1d.9, 1d.13.5):
   port      1d.8 (11) PORT IDENTITY: mvg2 on the set-3 ring cells PORT_KEYS (the first 8 set-3/4 cells, in
             outputs/_mvg_seeds.txt order, where ud2's fixes acted; `port-verify` re-derives them), tags
             mvg2r3_<S>_<W>, compared with outputs/_mvg_ref/_sd_ud2r3_<S>_<W>.json                               8
+            (the port runs may execute at a build commit before W1: the analyzer's HEAD RULE (a) accepts a run whose
+            head is an ancestor of --head when every run-loaded file is identical between the two - review A-2;
+            outputs/_mvg_q_port.jsonl, _mvg_q_smoke.jsonl and _mvg_q_structure.jsonl are frozen in the Part 2d notes)
   smoke     1d.8 (9): set 1 ring A_N and set 1 uniform A_N x the three arms, tags mvgs<a><p>1_A_N (neither cell
             holds a recorded death, urgency Part 1 3.1)                                                           6
   structure 1d.8 (9) STRUCTURE CHECK candidates: mvg1 on set-1/2 cells in the order of outputs/_mvg_seeds.txt (set 1
             ring, set 1 uniform, set 2 ring, set 2 uniform; rows in the file's order), skipping the 12 recorded-death
-            cells and the two smoke cells, tags mvgs1<p><k>_<S>_<W>; `write structure N` freezes the first N (N <= 16)
+            cells and the two smoke cells, tags mvgt1<p><k>_<S>_<W>; `write structure N` freezes the first N (N <= 16).
+            (Not mvgs1<p><k>: that is the smoke's arm-1 tag, and the structure check runs AFTER the smoke - its
+            pre-launch tag check would then find the smoke's files under its own tag and refuse. No two waves share a
+            tag: build and write STOP otherwise.)
   The W3 queue (the per-death attribution, 1d.13.2) is written by outputs/_mvg_w3_queue.py from the W2 records.
 SEEDS: outputs/_mvg_seeds.txt, the rule seed = base + 4*s + w (s A0 B1 C2 D3, w N0 S1 E2 W3; bases 9601 / 9621 /
   573001 / 780001 / 135961 / 287041) is RECOMPUTED and any mismatch STOPS; sets 1-4 must also equal the urgency round's
@@ -197,7 +203,9 @@ def screen(arms: tuple[int, ...], sets: tuple[int, ...], prefix: str = "mvg",
 
 def structure_lines() -> list[dict]:
     """1d.8 (9) STRUCTURE CHECK candidates, in order: mvg1 on set 1 ring, set 1 uniform, set 2 ring, set 2 uniform
-    (rows in outputs/_mvg_seeds.txt order), skipping the 12 recorded-death cells and the two smoke cells; at most 16."""
+    (rows in outputs/_mvg_seeds.txt order), skipping the 12 recorded-death cells and the two smoke cells; at most 16.
+    Tags mvgt1<p><k> (the smoke's arm-1 tags are mvgs1<p>1: a shared tag would fail this wave's tag check after the
+    smoke ran)."""
     table = seeds()
     lines = []
     for k in (1, 2):
@@ -205,8 +213,19 @@ def structure_lines() -> list[dict]:
             for key, scen, wind, seed in table[k]:
                 if (k, p, key) in DEATH_CELLS or (k, p, key) in SMOKE_CELLS:
                     continue
-                lines.append(probe_line("mvgs1%s%d" % (p, k), key, scen, wind, seed, arm_sets(1, mode)))
+                lines.append(probe_line("mvgt1%s%d" % (p, k), key, scen, wind, seed, arm_sets(1, mode)))
     return lines[:STRUCTURE_MAX]
+
+
+def shared_tags() -> dict[str, list[str]]:
+    """{tag: waves} for every tag used by more than one wave (w1, w2, port, smoke, structure): a wave's pre-launch tag
+    check refuses any file under its tags that is not one of its own lines' outputs, so a tag shared with a wave that
+    runs earlier would make it refuse. Must be empty."""
+    use: dict[str, set[str]] = {}
+    for wave in WAVES:
+        for line in wave_lines(wave):
+            use.setdefault(_tag_of(line["name"]), set()).add(wave)
+    return {t: sorted(w) for t, w in sorted(use.items()) if len(w) > 1}
 
 
 def wave_lines(wave: str, n: int | None = None) -> list[dict]:
@@ -427,6 +446,8 @@ def build() -> int:
     outs = [os.path.normcase(ln["out"]) for ln in every]
     if len(set(names)) != len(names) or len(set(outs)) != len(outs):
         stop("duplicate line names or outputs across the waves")
+    if shared_tags():
+        stop("tags shared by two waves: %s" % shared_tags())
     n = config_identity(per["w1"])
     print("Z0 configuration identity: %d W1 lines equal their ud0 reference's argv (probe, --repo, --out, --tag, cwd "
           "changed)" % n)
@@ -447,6 +468,8 @@ def write(wave: str, n: int | None) -> int:
         stop("%s: %d lines, expected %d" % (wave, len(lines), EXPECTED_COUNTS[wave]))
     if wave == "structure" and not lines:
         stop("structure: give N, 1 <= N <= %d" % STRUCTURE_MAX)
+    if shared_tags():
+        stop("tags shared by two waves: %s" % shared_tags())
     if wave in ("port", "smoke"):
         print("configuration identity: %d lines" % config_identity(lines))
     _freeze(wave, lines)
