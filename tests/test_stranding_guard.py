@@ -922,14 +922,15 @@ def test_tg5_shipped_one_and_read_at_call_time(monkeypatch):
 # ============================================================================ T-G6 never evaluated with both fixes at 0
 
 @pytest.mark.parametrize("guard", (1, 0, "missing"))
-@pytest.mark.parametrize("fixes", ("zero", "missing"))
+@pytest.mark.parametrize("fixes", ("zero", "false"))
 def test_tg6_with_both_fixes_at_0_the_guard_is_never_evaluated(monkeypatch, fixes, guard):
-    """T-G6 (identity). Both fix switches at 0 (or missing), the guard at 1, 0 or missing: on four boards where a fix
+    """T-G6 (identity). Both fix switches at an exact 0 (0, or False - since the flip a MISSING fix switch reads ON,
+    so it is no longer an off form), the guard at 1, 0 or missing: on four boards where a fix
     WOULD act and the guard would veto or admit - (a) on the barrier with the wind "north" (veto) and "east"
     (admit), (b) below a fire with the second fire at (26,26) (veto) and (26,25) (admit) - the guard is never
     evaluated: not its switch, not the verdict, not stranding_guard, FAE's call or the ported helpers (each raises
-    if called). Each unit takes today's step. (The real-run identity - switches absent, zero and shipped equal the
-    base digest - is test_movement_fixes.py T-ID-M.)
+    if called). Each unit takes today's step. (The real-run identity - the switches at 0, and the fixes at 0 with the
+    guard at 1, equal the base digest - is test_movement_fixes.py T-ID-M.)
     MUTANTS: g_switch_first (_guarded reads the switch before testing for a missing step); g_eval_off (the (a)
     site evaluates the guard on (a)'s choice whatever FF_APPROACH_PATH says); g_eval_off_b (the (b) site evaluates
     the guard on (b)'s choice whatever FF_RETREAT_KEEP_APPROACH says - failed on the two (b) boards)."""
@@ -945,10 +946,7 @@ def test_tg6_with_both_fixes_at_0_the_guard_is_never_evaluated(monkeypatch, fixe
     for kind, wind, closer in boards:
         model = _model(monkeypatch, wind=wind)
         for name in ("FF_APPROACH_PATH", "FF_RETREAT_KEEP_APPROACH"):
-            if fixes == "zero":
-                monkeypatch.setattr(cfv, name, 0, raising=False)
-            else:
-                monkeypatch.delattr(cfv, name, raising=False)
+            monkeypatch.setattr(cfv, name, 0 if fixes == "zero" else False, raising=False)
         if guard == "missing":
             monkeypatch.delattr(cfv, "FF_FIX_STRANDING_GUARD", raising=False)
         else:

@@ -17,6 +17,17 @@ the Part 2d review fix C-3).
 Each listed test FAILS on its mutant and PASSES on the unmutated source (15.3 / 15.4); the per-mutant record is
 that script's output.
 
+THE FLIP (Part 1d 1d.6.3; the screen's OUTCOME 6, outputs/mvg_report.txt; the maintainer's ruling 2026-10-07): both
+fix switches now SHIP 1 and are OFF only on an exact 0, like the guard. The tests that encoded the pre-flip
+semantics were rewritten:
+  - T-SW-M's exact-1 table became an exact-0 table;
+  - "off never enters new code" is pinned to the exact-0 forms, with an ON counterpart;
+  - T-ID-M was split into the fixes-off identity (pinned to 0, = the base digest) and its ON counterpart (absent =
+    shipped, pinned digest).
+Every other test here passes every switch it reads explicitly (fixes default 0 = today's movement, pinned). The Part
+2d mutation record binds the PRE-flip tree; the flip's own mutation record (the switch mutants re-anchored to the
+flipped accessors) is outputs/_mvg_flip_mutants_result.txt.
+
 Drives the REAL WildFireModel through tests/mvg_test_support.py: the map is quieted, fire and smoke are laid on
 chosen cells (burning as numpy.bool_, the simulator's own type), units and victims are parked, and one unit's
 advance() or one model method is called directly. Only T-ID-M runs model.step() (a short pinned run). Every
@@ -816,10 +827,14 @@ def test_tsafem_property_no_fix_enters_fire_and_a_b_land_clean_in_a_gesc_region(
     assert counts[TIER_A] >= floor[0] and counts[TIER_B] >= floor[1], counts
 
 
-ON_VALUES = [1, True, 1.0, "1", " 1 "]
+# T-SW-M after THE FLIP (Part 1d 1d.6.3; the screen's OUTCOME 6 and the maintainer's ruling): both fix switches SHIP 1
+# and, like the stranding guard (T-G5), are OFF ONLY ON AN EXACT 0 (agents._fix2_switch). The pre-flip exact-1 table
+# (on only on an exact 1, missing = off) is replaced by this exact-0 table.
 _MISSING = object()
-OFF_VALUES = [0, 2, 0.5, "2.0", "on", "", None, _MISSING]
-OFF_IDS = ["0", "2", "0.5", "str2.0", "on", "empty", "None", "missing"]
+ON_VALUES = [1, True, 1.0, "1", " 1 ", 2, 0.5, "2.0", "on", "", None, _MISSING]
+ON_IDS = ["1", "True", "1.0", "str1", "str_1_", "2", "0.5", "str2.0", "on", "empty", "None", "missing"]
+OFF_VALUES = [0, False, 0.0, "0", " 0 "]
+OFF_IDS = ["0", "False", "0.0", "str0", "str_0_"]
 ACCESSORS = {
     "FF_APPROACH_PATH": "ff_approach_path",
     "FF_RETREAT_KEEP_APPROACH": "ff_retreat_keep_approach",
@@ -834,43 +849,31 @@ def _put(monkeypatch, name, value):
 
 
 @pytest.mark.parametrize("name", sorted(ACCESSORS))
-@pytest.mark.parametrize("value", ON_VALUES, ids=["1", "True", "1.0", "str1", "str_1_"])
-def test_tswm_on_only_on_an_exact_one(monkeypatch, name, value):
-    """T-SW-M (the ON half of the exact-1 table): each fix accessor is True for what denotes the integer 1.
-    MUTANTS: sw_strict_a (FF_APPROACH_PATH compared with 1 without the exact-integer parsing: "1" and " 1 " off);
-    sw_strict_b (the same for FF_RETREAT_KEEP_APPROACH, listed on its two cases [str1-FF_RETREAT_KEEP_APPROACH] and
-    [str_1_-FF_RETREAT_KEEP_APPROACH])."""
+@pytest.mark.parametrize("value", ON_VALUES, ids=ON_IDS)
+def test_tswm_on_for_everything_but_an_exact_zero(monkeypatch, name, value):
+    """T-SW-M (the ON half of the exact-0 table): each fix accessor is True for everything that does not denote the
+    integer 0 - the integer 1 in any form, other integers, non-integral values, non-numeric strings, None and a
+    MISSING name (the shipped default)."""
     _put(monkeypatch, name, value)
     assert getattr(agents, ACCESSORS[name])() is True
 
 
-def _off_table(monkeypatch, name, value):
+@pytest.mark.parametrize("name", sorted(ACCESSORS))
+@pytest.mark.parametrize("value", OFF_VALUES, ids=OFF_IDS)
+def test_tswm_off_only_on_an_exact_zero(monkeypatch, name, value):
+    """T-SW-M (the OFF half): each fix accessor is False exactly for what denotes the integer 0 - 0, False, 0.0, "0"
+    and " 0 " (the kill switch)."""
     _put(monkeypatch, name, value)
     assert getattr(agents, ACCESSORS[name])() is False
 
 
-@pytest.mark.parametrize("value", OFF_VALUES, ids=OFF_IDS)
-def test_tswm_off_approach_path(monkeypatch, value):
-    """T-SW-M. FF_APPROACH_PATH is OFF for everything but an exact 1, missing included.
-    MUTANT: sw_truthy_a (the accessor reads truthiness instead of an exact 1)."""
-    _off_table(monkeypatch, "FF_APPROACH_PATH", value)
-
-
-@pytest.mark.parametrize("value", OFF_VALUES, ids=OFF_IDS)
-def test_tswm_off_retreat_keep_approach(monkeypatch, value):
-    """T-SW-M. FF_RETREAT_KEEP_APPROACH is OFF for everything but an exact 1, missing included.
-    MUTANT: sw_truthy_b (truthiness instead of an exact 1)."""
-    _off_table(monkeypatch, "FF_RETREAT_KEEP_APPROACH", value)
-
-
-def test_tswm_read_at_call_time_and_shipped_zero(monkeypatch):
-    """T-SW-M. The fix switches ship 0, and each accessor reads the cfv module at CALL time (no import-time copy).
-    MUTANTS: sw_import_a (FF_APPROACH_PATH read once at import time); sw_shipped_a (FF_APPROACH_PATH shipped 1);
-    sw_import_b, sw_shipped_b (the same two for FF_RETREAT_KEEP_APPROACH)."""
+def test_tswm_read_at_call_time_and_shipped_one(monkeypatch):
+    """T-SW-M. The fix switches SHIP 1 (the flip), and each accessor reads the cfv module at CALL time (no import-time
+    copy)."""
     for name in ACCESSORS:
-        assert getattr(cfv, name) == 0
+        assert getattr(cfv, name) == 1
     for name, accessor in ACCESSORS.items():
-        for value, expected in ((0, False), (1, True), (0, False), (" 1 ", True), (_MISSING, False)):
+        for value, expected in ((0, False), (1, True), (" 0 ", False), (_MISSING, True), (0.0, False), (1, True)):
             _put(monkeypatch, name, value)
             assert getattr(agents, accessor)() is expected, (name, value)
 
@@ -882,13 +885,16 @@ _NEW_FUNCTIONS = ("clean_distance_field", "region_has_exit", "approach_choice", 
                   "unclean_cells", "t_star", "safe_route_hops")
 
 
-@pytest.mark.parametrize("off", ("zero", "missing"))
+_OFF_FORMS = {"zero": 0, "false": False, "str0": "0"}
+
+
+@pytest.mark.parametrize("off", sorted(_OFF_FORMS))
 def test_tswm_off_never_enters_new_code(monkeypatch, off):
-    """T-SW-M. With the two fix switches at 0 (or missing) and the guard at its shipped 1, on boards where each fix
-    WOULD act - (a) on the barrier, (b) beside a fire cell - no new method (but _guarded, which is called with no
-    step and returns it at once), no movement_paths function and fire_board_sets is ever entered (each raises if
-    called), and each unit takes today's step.
-    MUTANTS: sw_enter_a, sw_enter_b (the fix's pure choice evaluated while its switch is off)."""
+    """T-SW-M (today's movement, pinned to 0). With the two fix switches at an exact 0 (0, False or "0" - the kill
+    switch; a MISSING switch reads ON since the flip) and the guard at its shipped 1, on boards where each fix WOULD
+    act - (a) on the barrier, (b) beside a fire cell - no new method (but _guarded, which is called with no step and
+    returns it at once), no movement_paths function and fire_board_sets is ever entered (each raises if called), and
+    each unit takes today's step. The ON counterpart is test_tswm_missing_switches_read_on_and_the_fixes_step."""
 
     def boom(*args, **kwargs):
         raise AssertionError("new movement code entered with its switch off")
@@ -896,7 +902,7 @@ def test_tswm_off_never_enters_new_code(monkeypatch, off):
     def setup(**kwargs):
         model = _model(monkeypatch, guard=1, **kwargs)
         for name in ACCESSORS:
-            _put(monkeypatch, name, 0 if off == "zero" else _MISSING)
+            _put(monkeypatch, name, _OFF_FORMS[off])
         return model
 
     for name in _NEW_METHODS:
@@ -918,6 +924,36 @@ def test_tswm_off_never_enters_new_code(monkeypatch, off):
     assert _cell(unit) == (26, 20)
 
 
+def test_tswm_missing_switches_read_on_and_the_fixes_step(monkeypatch):
+    """T-SW-M (the ON counterpart of test_tswm_off_never_enters_new_code). With the two fix switches MISSING from cfv
+    (they read ON since the flip) and the guard at 0 (so no veto can intervene), on the same two boards each fix acts:
+    the unit takes its fix's pure choice - the clean-path step for (a) on the barrier, the on-route retreat for (b)
+    beside the fire cell - and NOT today's step ((25, 23), resp. (26, 20))."""
+
+    def setup():
+        model = _model(monkeypatch, guard=0)
+        for name in ACCESSORS:
+            _put(monkeypatch, name, _MISSING)
+        assert agents.ff_approach_path() is True and agents.ff_retreat_keep_approach() is True
+        return model
+
+    model = setup()
+    unit = _approacher(model, (26, 23), BARRIER_VICTIM)
+    burn(model, WALL)
+    choice = unit._approach_path_choice()                              # pure: read before the advance
+    assert choice is not None and choice != (25, 23)
+    _advance(unit)
+    assert _cell(unit) == choice
+
+    model = setup()
+    unit = _approacher(model, (25, 20), BARRIER_VICTIM)
+    burn(model, [(25, 19)])
+    choice = unit._retreat_on_route_choice()                           # pure: read before the advance
+    assert choice is not None and choice != (26, 20)
+    _advance(unit)
+    assert _cell(unit) == choice
+
+
 # ---------------------------------------------------------------------------- T-ID-M
 
 ID_STEPS = 20
@@ -927,13 +963,17 @@ ID_STEPS = 20
 # PYTHONHASHSEED 0 and 12345 (equal). It equals the urgency round's ID_GOLDEN_BASE at 27744a28 (the two bases differ
 # only in two outputs/ documents).
 ID_GOLDEN_BASE = "cdfe27599df24b7176203ed06db41219933273ebc6a6d52120fb283297e47e94"
+# The digest of _identity_run(..., "shipped") at THE FLIP (all three switches 1), recorded by running this very function
+# on the flipped worktree under PYTHONHASHSEED 0 and 12345 (equal). It pins the shipped movement on this barrier.
+ID_GOLDEN_SHIPPED = "4119d854df33a02af892432681da555ad0e82dd1121dd53b9c1338620646c694"
 
 
 def _identity_run(monkeypatch, setting: str) -> str:
     """A short pinned REAL run: scenario A's team, every victim detected at step 0 (so the searchers idle), victim_2
     moved behind an 11-cell fire wall and bound to ff_unit_0 - the barrier on which today's mover 2-cycles and fix
-    (a) would act at the third step. `setting` "absent" deletes the round's three switches from cfv (the guard then
-    reads ON); "zero" sets all three 0; "shipped" sets the fixes 0 and the guard 1, as cfv ships them.
+    (a) would act at the third step. `setting` "absent" deletes the round's three switches from cfv (all three then
+    read ON, since the flip); "zero" sets all three 0; "fixes_off" sets the fixes 0 and the guard 1 (the kill switch:
+    the pre-flip shipped state); "shipped" sets all three 1, as cfv ships them since the flip.
     Returns one sha256 over stdout, the command audit, the rescue events, the movement transitions and every
     unit's (cell, status, tier) after each of ID_STEPS model steps. Base-safe: no name new in this round.
     Each run starts from the import-time configuration (the caller's monkeypatch.undo() also undoes the autouse
@@ -943,7 +983,7 @@ def _identity_run(monkeypatch, setting: str) -> str:
         if setting == "absent":
             monkeypatch.delattr(cfv, name, raising=False)
         else:
-            value = 1 if (setting == "shipped" and name == "FF_FIX_STRANDING_GUARD") else 0
+            value = {"zero": 0, "shipped": 1}.get(setting, 1 if name == "FF_FIX_STRANDING_GUARD" else 0)
             monkeypatch.setattr(cfv, name, value, raising=False)
     out = io.StringIO()
     with redirect_stdout(out):
@@ -973,18 +1013,30 @@ def _identity_run(monkeypatch, setting: str) -> str:
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
 
-def test_tidm_switches_absent_zero_and_shipped_are_identical_and_equal_the_base(monkeypatch):
-    """T-ID-M (and Part 1d T-G6's real-run identity). The pinned real run with the round's three switches ABSENT,
-    all at 0, and as SHIPPED (fixes 0, guard 1) gives one identical digest of stdout and the logs, and it equals the
-    base code's (a20a2ef5) digest: with both fixes off, neither the fixes nor the guard change anything.
+def test_tidm_fixes_off_and_zero_are_identical_and_equal_the_base(monkeypatch):
+    """T-ID-M (today's movement, pinned to 0; and Part 1d T-G6's real-run identity). The pinned real run with the
+    round's three switches all at 0, and with the fixes at 0 and the guard at 1 (the kill switch), gives one
+    identical digest of stdout and the logs, and it equals the base code's (a20a2ef5) digest: with both fixes off,
+    neither the fixes nor the guard change anything. The ON counterpart is
+    test_tidm_absent_equals_shipped_and_the_fixes_act.
     MUTANT: id_a_off (the (a) branch taken when its switch is off)."""
-    absent = _identity_run(monkeypatch, "absent")
-    monkeypatch.undo()
     zero = _identity_run(monkeypatch, "zero")
     monkeypatch.undo()
-    shipped = _identity_run(monkeypatch, "shipped")
-    assert absent == zero == shipped
+    fixes_off = _identity_run(monkeypatch, "fixes_off")
+    assert zero == fixes_off
     assert zero == ID_GOLDEN_BASE
+
+
+def test_tidm_absent_equals_shipped_and_the_fixes_act(monkeypatch):
+    """T-ID-M (the ON counterpart, after the flip). With the round's three switches ABSENT from cfv the run equals the
+    SHIPPED run (all three 1) - a missing switch reads ON - and it differs from the base digest: on this barrier the
+    fixes act, so the shipped code is not today's. Its digest is pinned (ID_GOLDEN_SHIPPED)."""
+    absent = _identity_run(monkeypatch, "absent")
+    monkeypatch.undo()
+    shipped = _identity_run(monkeypatch, "shipped")
+    assert absent == shipped
+    assert shipped != ID_GOLDEN_BASE
+    assert shipped == ID_GOLDEN_SHIPPED
 
 
 # ---------------------------------------------------------------------------- T-NT

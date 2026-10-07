@@ -177,11 +177,10 @@ def test_shipped_defaults() -> None:
     assert cfv.MR1_TRUTHINESS_FIX == 1
     # F-2 ships ON (off only on an exact 0, the pre-fix readers): numpy scalars in the utility layer read as Python.
     assert cfv.NUMPY_SCALAR_FLAGS == 1
-    # MVG round (outputs/urgency_part1d.txt, rulings 1d.13): fixes (a) and (b) ship OFF (each on only on an exact 1)
-    # until the screen of 1d.9 is read; their stranding guard ships ON (off only on an exact 0) and is inert while
-    # both fixes are 0.
-    assert cfv.FF_APPROACH_PATH == 0
-    assert cfv.FF_RETREAT_KEEP_APPROACH == 0
+    # MVG round (outputs/urgency_part1d.txt; the screen's OUTCOME 6, outputs/mvg_report.txt, and the maintainer's flip
+    # ruling): fixes (a) and (b) ship ON behind their stranding guard, also ON; each is off only on an exact 0.
+    assert cfv.FF_APPROACH_PATH == 1
+    assert cfv.FF_RETREAT_KEEP_APPROACH == 1
     assert cfv.FF_FIX_STRANDING_GUARD == 1
 
 

@@ -1680,18 +1680,19 @@ def ff_exit_leg_served() -> int:
 
 
 # ---- MVG round (outputs/urgency_part1d.txt; rulings and amendment C1 in its section 1d.13) ----------------------------
-# Movement fixes (a) and (b) of the urgency round (outputs/urgency_part1.txt 22.2-22.3): each SHIPS 0 and is ON only on
-# an exact 1. Their stranding guard SHIPS 1 and is OFF only on an exact 0; it is evaluated only where a fix would act.
-# Read at call time from the cfv module.
+# Movement fixes (a) and (b) of the urgency round (outputs/urgency_part1.txt 22.2-22.3) and their stranding guard. The
+# screen passed (outputs/mvg_report.txt, OUTCOME 6) and the maintainer confirmed the flip (1d.6.3 THE FLIP): all three
+# SHIP 1 and are OFF only on an exact 0. The guard is evaluated only where a fix would act. Read at call time from the
+# cfv module.
 
 def ff_approach_path() -> bool:
-    """FF_APPROACH_PATH - fix (a), the clean-path approach step. Ships 0; on only on an exact 1."""
-    return _exact_integer(getattr(cfv, "FF_APPROACH_PATH", 0)) == 1
+    """FF_APPROACH_PATH - fix (a), the clean-path approach step. SHIPS 1; off only on an exact 0."""
+    return _fix2_switch("FF_APPROACH_PATH")
 
 
 def ff_retreat_keep_approach() -> bool:
-    """FF_RETREAT_KEEP_APPROACH - fix (b), the on-route survival retreat. Ships 0; on only on an exact 1."""
-    return _exact_integer(getattr(cfv, "FF_RETREAT_KEEP_APPROACH", 0)) == 1
+    """FF_RETREAT_KEEP_APPROACH - fix (b), the on-route survival retreat. SHIPS 1; off only on an exact 0."""
+    return _fix2_switch("FF_RETREAT_KEEP_APPROACH")
 
 
 def ff_fix_stranding_guard() -> bool:

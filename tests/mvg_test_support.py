@@ -64,8 +64,9 @@ def restore_config(monkeypatch) -> None:
 
 
 def switches(monkeypatch, approach: object = 0, retreat: object = 0, guard: object = 1, **params: object) -> None:
-    """Set the MVG round's switches on the cfv MODULE (read at call time by the agents accessors): the two fixes
-    (shipped 0) and the stranding guard (shipped 1)."""
+    """Set the MVG round's switches on the cfv MODULE (read at call time by the agents accessors): the two fixes and
+    the stranding guard (all three shipped 1 since the flip; the fixes default to 0 here, so a test that does not name
+    them pins today's movement)."""
     monkeypatch.setattr(cfv, "FF_APPROACH_PATH", approach, raising=False)
     monkeypatch.setattr(cfv, "FF_RETREAT_KEEP_APPROACH", retreat, raising=False)
     monkeypatch.setattr(cfv, "FF_FIX_STRANDING_GUARD", guard, raising=False)
