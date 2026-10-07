@@ -13,6 +13,7 @@ os.environ.setdefault("MPLBACKEND", "Agg")
 import agents
 import common_fixed_variables as cfv
 import wildfire_model as wf
+from mvg_test_support import restore_config
 from src_extension.adaptation.local_adaptation_generator import apply_scenario_config
 from wildfire_model import WildFireModel
 
@@ -22,7 +23,12 @@ def movement(request, monkeypatch) -> str:
     """The MVG round's flip (outputs/urgency_part1d.txt 1d.6.3): the movement fixes (a) FF_APPROACH_PATH and (b)
     FF_RETREAT_KEEP_APPROACH ship ON behind their stranding guard. The en-route tests below run TWICE: "today" pins
     both fixes to 0 - today's fire avoidance, as these tests were written - and "shipped" runs the shipped defaults
-    (all three switches 1; the ON counterpart). Each test's assertions must hold under both."""
+    (all three switches 1; the ON counterpart). Each test's assertions must hold under both.
+    The whole configuration is first restored to its import-time values (tests/mvg_test_support.restore_config):
+    the stand-in model has no wind, so the guard reads cfv.WIND_DIRECTION, which other files of the full suite leave
+    set (an "east" wind makes the guard veto fix (b)'s step on these boards, correctly - and the test would then
+    measure the leaked scenario, not the shipped one)."""
+    restore_config(monkeypatch)
     if request.param == "today":
         monkeypatch.setattr(cfv, "FF_APPROACH_PATH", 0, raising=False)
         monkeypatch.setattr(cfv, "FF_RETREAT_KEEP_APPROACH", 0, raising=False)
