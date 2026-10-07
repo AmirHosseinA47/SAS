@@ -796,9 +796,9 @@ U1_SHA = "cfc97ebd6dcc4f3d2b3102468769b7396f78e86d5f93e342f25fe5370632b1cf"
 
 def _load_u1():
     """The frozen copy of the urgency round's U1 module (urgency_dispatch.py at 5dba5bcb, byte for byte), loaded BY
-    PATH as test data - this branch does not carry U1. Its sha256 is pinned, and checked against `git show` when git
-    can see the commit."""
-    raw = U1_COPY.read_bytes()
+    PATH as test data - this branch does not carry U1. Its sha256 (of the LF form: a checkout with autocrlf holds CRLF)
+    is pinned, and checked against `git show` when git can see the commit."""
+    raw = U1_COPY.read_bytes().replace(b"\r\n", b"\n")
     assert hashlib.sha256(raw).hexdigest() == U1_SHA
     try:
         proc = subprocess.run(["git", "-C", str(ROOT), "show", f"{U1_COMMIT}:{U1_PATH}"], capture_output=True,
