@@ -143,6 +143,8 @@ def test_shipped_defaults() -> None:
       - moving the agents.py accessor fallbacks with the constants
         (test_accessors_survive_junk_values).
     The assertions are deliberate.
+    MUTANTS (the MVG flip's record, outputs/_mvg_flip_mutants_result.txt): fl_shipped0_a, fl_shipped0_b (a movement
+    fix switch shipped 0).
     """
     assert cfv.BASE_STATION_MODE == 3
     assert cfv.BASE_STATION_RETURN_MECHANISM == 2

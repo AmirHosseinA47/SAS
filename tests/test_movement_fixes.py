@@ -307,7 +307,8 @@ def test_ma1_barrier_board_reaches_the_victim_in_d_steps(monkeypatch):
     """T-Ma1. The barrier board: a fire wall straight across the approach. Today's greedy mover 2-cycles in front of
     it forever; with (a) the unit reaches the victim in exactly D(start) = 34 advances, the clean distance falling
     by 1 per advance, on clean cells only, with no revisit.
-    MUTANTS: ma1_switch (the switch ignored: the accessor never reads it); ma1_pass (passable = non-burning)."""
+    MUTANTS: ma1_switch (the switch ignored: the accessor never reads it; Part 2d record), re-anchored at the flip as
+    fl_switch_a (the flip's record); ma1_pass (passable = non-burning)."""
     model = _model(monkeypatch, approach=1)
     unit = _approacher(model, BARRIER_UNIT, BARRIER_VICTIM)
     burn(model, WALL)
@@ -853,7 +854,11 @@ def _put(monkeypatch, name, value):
 def test_tswm_on_for_everything_but_an_exact_zero(monkeypatch, name, value):
     """T-SW-M (the ON half of the exact-0 table): each fix accessor is True for everything that does not denote the
     integer 0 - the integer 1 in any form, other integers, non-integral values, non-numeric strings, None and a
-    MISSING name (the shipped default)."""
+    MISSING name (the shipped default).
+    MUTANTS (the flip's record, outputs/_mvg_flip_mutants_result.txt): fl_switch_a (the accessor never reads the
+    switch); fl_missing_a, fl_missing_b (a missing switch read off); fl_truthy_a, fl_truthy_b (truthiness instead of
+    the exact-0 rule); fl_exact1_a, fl_exact1_b (on only on an exact 1); fl_revert_a, fl_revert_b (the pre-flip
+    accessor body)."""
     _put(monkeypatch, name, value)
     assert getattr(agents, ACCESSORS[name])() is True
 
@@ -862,14 +867,19 @@ def test_tswm_on_for_everything_but_an_exact_zero(monkeypatch, name, value):
 @pytest.mark.parametrize("value", OFF_VALUES, ids=OFF_IDS)
 def test_tswm_off_only_on_an_exact_zero(monkeypatch, name, value):
     """T-SW-M (the OFF half): each fix accessor is False exactly for what denotes the integer 0 - 0, False, 0.0, "0"
-    and " 0 " (the kill switch)."""
+    and " 0 " (the kill switch).
+    MUTANTS (the flip's record): fl_truthy_a, fl_truthy_b (truthiness: "0" read on); fl_strict_a, fl_strict_b
+    (compared with 0 without the exact-integer parsing); fl_import_a, fl_import_b (read once at import time)."""
     _put(monkeypatch, name, value)
     assert getattr(agents, ACCESSORS[name])() is False
 
 
 def test_tswm_read_at_call_time_and_shipped_one(monkeypatch):
     """T-SW-M. The fix switches SHIP 1 (the flip), and each accessor reads the cfv module at CALL time (no import-time
-    copy)."""
+    copy).
+    MUTANTS (the flip's record): fl_shipped0_a, fl_shipped0_b (shipped 0); fl_import_a, fl_import_b (read once at
+    import time); fl_switch_a; fl_missing_a, fl_missing_b; fl_revert_a, fl_revert_b; fl_truthy_a, fl_truthy_b;
+    fl_strict_a, fl_strict_b."""
     for name in ACCESSORS:
         assert getattr(cfv, name) == 1
     for name, accessor in ACCESSORS.items():
@@ -894,7 +904,10 @@ def test_tswm_off_never_enters_new_code(monkeypatch, off):
     switch; a MISSING switch reads ON since the flip) and the guard at its shipped 1, on boards where each fix WOULD
     act - (a) on the barrier, (b) beside a fire cell - no new method (but _guarded, which is called with no step and
     returns it at once), no movement_paths function and fire_board_sets is ever entered (each raises if called), and
-    each unit takes today's step. The ON counterpart is test_tswm_missing_switches_read_on_and_the_fixes_step."""
+    each unit takes today's step. The ON counterpart is test_tswm_missing_switches_read_on_and_the_fixes_step.
+    MUTANTS: sw_enter_a, sw_enter_b (the fix's pure choice evaluated while its switch is off); and in the flip's
+    record fl_truthy_a, fl_truthy_b, fl_strict_a, fl_strict_b ("0" read on) and fl_import_a, fl_import_b (an
+    import-time read: the 0 set here is never seen)."""
 
     def boom(*args, **kwargs):
         raise AssertionError("new movement code entered with its switch off")
@@ -928,7 +941,9 @@ def test_tswm_missing_switches_read_on_and_the_fixes_step(monkeypatch):
     """T-SW-M (the ON counterpart of test_tswm_off_never_enters_new_code). With the two fix switches MISSING from cfv
     (they read ON since the flip) and the guard at 0 (so no veto can intervene), on the same two boards each fix acts:
     the unit takes its fix's pure choice - the clean-path step for (a) on the barrier, the on-route retreat for (b)
-    beside the fire cell - and NOT today's step ((25, 23), resp. (26, 20))."""
+    beside the fire cell - and NOT today's step ((25, 23), resp. (26, 20)).
+    MUTANTS (the flip's record): fl_switch_a; fl_missing_a, fl_missing_b (a missing switch read off); fl_revert_a,
+    fl_revert_b (the pre-flip accessor body)."""
 
     def setup():
         model = _model(monkeypatch, guard=0)
@@ -1030,7 +1045,10 @@ def test_tidm_fixes_off_and_zero_are_identical_and_equal_the_base(monkeypatch):
 def test_tidm_absent_equals_shipped_and_the_fixes_act(monkeypatch):
     """T-ID-M (the ON counterpart, after the flip). With the round's three switches ABSENT from cfv the run equals the
     SHIPPED run (all three 1) - a missing switch reads ON - and it differs from the base digest: on this barrier the
-    fixes act, so the shipped code is not today's. Its digest is pinned (ID_GOLDEN_SHIPPED)."""
+    fixes act, so the shipped code is not today's. Its digest is pinned (ID_GOLDEN_SHIPPED). On this barrier only fix
+    (a) changes the run; (b)'s switch mutants are killed by T-SW-M.
+    MUTANTS (the flip's record): fl_switch_a; fl_missing_a (a missing switch read off); fl_revert_a (the pre-flip
+    accessor body)."""
     absent = _identity_run(monkeypatch, "absent")
     monkeypatch.undo()
     shipped = _identity_run(monkeypatch, "shipped")

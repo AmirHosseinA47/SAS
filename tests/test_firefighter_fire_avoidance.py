@@ -17,6 +17,21 @@ from src_extension.adaptation.local_adaptation_generator import apply_scenario_c
 from wildfire_model import WildFireModel
 
 
+@pytest.fixture(params=("today", "shipped"))
+def movement(request, monkeypatch) -> str:
+    """The MVG round's flip (outputs/urgency_part1d.txt 1d.6.3): the movement fixes (a) FF_APPROACH_PATH and (b)
+    FF_RETREAT_KEEP_APPROACH ship ON behind their stranding guard. The en-route tests below run TWICE: "today" pins
+    both fixes to 0 - today's fire avoidance, as these tests were written - and "shipped" runs the shipped defaults
+    (all three switches 1; the ON counterpart). Each test's assertions must hold under both."""
+    if request.param == "today":
+        monkeypatch.setattr(cfv, "FF_APPROACH_PATH", 0, raising=False)
+        monkeypatch.setattr(cfv, "FF_RETREAT_KEEP_APPROACH", 0, raising=False)
+    else:
+        for name in ("FF_APPROACH_PATH", "FF_RETREAT_KEEP_APPROACH", "FF_FIX_STRANDING_GUARD"):
+            monkeypatch.setattr(cfv, name, 1, raising=False)
+    return request.param
+
+
 def _ff_model(*, height: int = 20, width: int = 20) -> object:
     return type(
         "FFModel",
@@ -29,6 +44,9 @@ def _ff_model(*, height: int = 20, width: int = 20) -> object:
                 "Grid",
                 (),
                 {
+                    # mesa's grid extents; the stranding guard reads them (agents._stranding_guard_verdict)
+                    "width": width,
+                    "height": height,
                     "_cells": {},
                     "out_of_bounds": lambda self, cell: not (
                         0 <= cell[0] < height and 0 <= cell[1] < width
@@ -87,7 +105,7 @@ def _firefighter(
     return ff
 
 
-def test_firefighter_detours_around_active_fire_toward_goal() -> None:
+def test_firefighter_detours_around_active_fire_toward_goal(movement: str) -> None:
     model = _ff_model()
     ff = _firefighter(model, (5, 5), assigned=True, target_pos=(8, 5))
     _fire(model, (6, 5))
@@ -98,9 +116,12 @@ def test_firefighter_detours_around_active_fire_toward_goal() -> None:
     assert ff.pos in {(5, 4), (5, 6), (4, 5)}
     assert ff.assigned
     assert ff.target_pos == (8, 5)
+    if movement == "shipped":
+        # fix (b): the on-route clean retreat cell, admitted by the stranding guard
+        assert ff.pos == (5, 6)
 
 
-def test_firefighter_prefers_non_adjacent_fire_cell_when_available() -> None:
+def test_firefighter_prefers_non_adjacent_fire_cell_when_available(movement: str) -> None:
     model = _ff_model()
     ff = _firefighter(model, (6, 5), assigned=True, target_pos=(6, 8))
     _fire(model, (6, 6))
@@ -112,7 +133,7 @@ def test_firefighter_prefers_non_adjacent_fire_cell_when_available() -> None:
     assert not ff._cell_adjacent_to_fire(ff.pos)
 
 
-def test_firefighter_can_take_lateral_detour_without_abandoning_rescue() -> None:
+def test_firefighter_can_take_lateral_detour_without_abandoning_rescue(movement: str) -> None:
     model = _ff_model()
     ff = _firefighter(model, (5, 5), assigned=True, target_pos=(8, 5))
     _fire(model, (6, 5))
@@ -123,9 +144,12 @@ def test_firefighter_can_take_lateral_detour_without_abandoning_rescue() -> None
     assert ff.pos != (5, 5)
     assert ff.target_pos == (8, 5)
     assert ff.assigned
+    if movement == "shipped":
+        # fix (b): a lateral step that stays on the route to the victim, admitted by the stranding guard
+        assert ff.pos == (5, 6)
 
 
-def test_firefighter_holds_only_when_surrounded_by_active_fire() -> None:
+def test_firefighter_holds_only_when_surrounded_by_active_fire(movement: str) -> None:
     model = _ff_model()
     ff = _firefighter(model, (5, 5), assigned=True, target_pos=(8, 5))
     blocked: list[tuple[int, int]] = []
