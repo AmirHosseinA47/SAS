@@ -100,3 +100,1871 @@ PAPER: "Before any run, the maintainer fixed this as the only further dispatch
 attempt: a FAIL or NOT SHOWN leaves both dispatch switches off and the
 measurement round uses today's dispatch. The first round's runs only named the
 causes to fix; they are not the test."
+
+================================================================================
+1. RESULT IN ONE PAGE
+================================================================================
+Sections 1-18 below were written after section 0's commit (824c1de7), the merge
+of main (27714461) and the seed scan. Nothing has been built and nothing has run
+on the simulator.
+
+START (section 2).
+  - main = origin/main = 897e93b5 (tag movement-guard), confirmed. It is merged
+    into dispatch as 27714461: one conflict (test_shipped_defaults, both sides
+    kept); every code file's change set is exactly one side's.
+  - The re-check against the movement fixes finds that the merge leaves J's
+    feasibility notion exactly the units' own route test. It breaks three of
+    round 1's premises:
+      (i)   J's stall rule can fire on a unit that is walking a correct clean
+            detour (a FALSE STALL; worked example 2.2);
+      (ii)  the margin rule can replace a unit on a clean path by one with no
+            clean approach (2.3);
+      (iii) J ranks units by a fire-free distance d that the shipped mover no
+            longer walks: it walks the clean distance where one exists (2.4).
+  - Two consistency amendments follow, neither with a constant:
+      - R-1 ONE ROUTE METRIC d* (the clean distance when finite, else d) for
+        fills and margins, and progress measured against every cell the unit
+        has stood on since its last progress, on the current board;
+      - R-2 CLEAN APPROACH FIRST: every challenger needs a clean approach, and
+        the fill serves as many victims as it can with units that have one
+        before it compares lengths.
+    Rulings X-5 and X-6.
+
+THE THREE CAUSES, AS THE RECORDS SHOW THEM (section 3, diagnostics only).
+  - Cause 1: the fresh-pair key changed 5 of round 1's 491 fill decisions (256
+    fill binds), in 4 cells, 4 of them at the moment a closed route reopened;
+    one changed WHICH victim was served.
+  - Cause 2: the seed-202 latched unit was 10 cells from its victim at the
+    LATCH-FILL, not 5. The LATCH-FILL came 0 steps after the latch, before the
+    next fire update. The unit recovered at that update (168), and the ledger
+    then barred it from ever taking her back.
+  - Cause 3: the "13 -> 216 idle beside unreachable victims" is mostly a label.
+    Counted the same way in both arms the contrast is 310 -> 421. The units were
+    10-75 cells away (more than 50 on 144 of the 216 unit-steps), unbound and
+    running the shipped free-unit policy: fight the nearest fire front,
+    retreat, stand by. 7 of the 8 waiting victims who died in dp1 died at the
+    same step in dp0; the 8th is cause 1.
+  - Two of these correct round 1's report and one extends it (3.4).
+
+THE CORRECTIONS (sections 4-6; S = 10, M = 5, P = 3 unchanged; no new constant).
+  C1 NEAREST WINS. History never ranks a fill: the key is victims served, then
+    clean-approach pairs (R-2), then total and worst route time, with re-use
+    only as an exact-tie tie-break. In a replacement J takes the nearest
+    qualifying unit. If the proof's ledger bars every nearest one, J keeps the
+    incumbent rather than send a farther unit. The proof wins where the two
+    collide, as the brief's "while the proof still holds" allows (4.1).
+  C2 A LATCHED UNIT IS AN INCUMBENT. A bound unit whose route is closed is
+    credited with its grid distance, the fastest it could arrive for a
+    stationary victim. Its closed-route steps are counted apart from its
+    own-progress steps. It is replaced only by the stall or margin evidence that
+    replaces any incumbent. At seed 202 that withholds the LATCH-FILL by a wide
+    margin (10 against at least 63).
+  C3 NO UNIT IS HELD. A unit that can reach no waiting victim is left to the
+    shipped free-unit policy (fight, retreat or stand by) and is offered to
+    every waiting victim at every J point. No new behaviour is recommended; the
+    measure is corrected.
+  - The no-flip-flop theorem holds verbatim (section 7).
+
+THE SCREEN (sections 8-15).
+  - Seeds: two fresh sets, 7 = 575201-575216 and 8 = 741141-741156, by the rule
+    committed before the scan.
+  - Arms: dq0 = today's dispatch, dq1 = the corrected dispatch, both with the
+    shipped movement fixes ON. dqR (main 897e93b5) is the identity reference.
+  - Primary: detected-victim deaths (DD); time from detection to rescue is
+    reported beside it.
+  - Guards:
+      - rescued must not fall in set 7 or in set 8;
+      - firefighter deaths must not rise pooled, with the movement round's
+        per-set sign test (R2);
+      - DD must not rise pooled (carried from the movement round's S4, not in
+        the brief; under decision 0.2 it only relabels a pooled DD rise as FAIL
+        rather than NOT SHOWN);
+      - the causal clause L4: dispatch knockouts run before the verdict, and the
+        screen FAILS if dispatch decisions caused more firefighter deaths than
+        they prevented;
+      - 28 counts by the one-sided paired sign test with Holm;
+      - every structural zero stays zero.
+  - Runs: 232-288 before the verdict (W1 128, W2 64, W3 30-70, Part 2 10-26).
+      - About 4.6-5.8 h at the planning rate of 50 runs/h.
+      - 2.9-3.6 h at the movement round's 79 runs/h.
+      - 7.3-10.3 h at round 1's own 28-32 runs/h (about 8 concurrent).
+    The full suite (about 1.5-2.2 h) runs in its own worktree.
+  - EXPECTED, stated now: NOT SHOWN is the likeliest verdict (section 15). Under
+    decision 0.2 that ends the dispatch work: both switches stay 0 and the
+    measurement round follows.
+STOP for rulings X-0 to X-15 (section 18).
+
+================================================================================
+2. RE-CHECK AGAINST THE MOVEMENT FIXES (brief: START)
+================================================================================
+Code cited as AG (agents.py), WM (wildfire_model.py), AM (src_extension/
+adaptation_manager.py), JD (src_extension/planning/joint_dispatch.py) and MP
+(src_extension/planning/movement_paths.py), all at 27714461 in the dispatch
+worktree.
+
+2.1 WHAT THE MERGE CHANGED IN THE CODE, AND WHAT IT DID NOT
+    - 824c1de7..27714461 changes agents.py, common_fixed_variables.py, adds
+      movement_paths.py and tests. WM and JD are untouched. In AG the only
+      deleted line is the approach branch's bare _move_toward call, now behind
+      fix (a) (AG:3143-3150).
+    - _move_toward's two route_blocked raises (AG:4047-4085) and
+      _path_exists_avoiding_fire (AG:3675-3710) are unchanged, and neither fix
+      can suppress a raise. Where (a) acts a clean, hence fire-free, path
+      exists; where (b) acts a clean on-route neighbour connects to v over
+      non-burning cells. Round 1's equivalence (dispatch_part1.txt 5.3)
+          d(f, v) < infinity  <=>  _path_exists_avoiding_fire(f, v, B)
+      therefore still holds exactly, and J still never binds a pair the unit's
+      own route test would reject on J's board.
+    - WHO THE FIXES MOVE. Only BOUND units (target_pos set, not exiting):
+        - fix (a) on a clean cell, when today's greedy step is off every
+          shortest clean path and the victim's clean region has an exit (G-ESC);
+        - fix (b) in the survival branch, on an unclean cell.
+      Both are behind the stranding guard; a veto runs today's step verbatim.
+      FREE units: never (AG:3060-3064, 3119; target_pos is cleared at every
+      unassign, WM:5059-5063). The free-unit code is unchanged.
+    - STAGE ORDER (WM:6770-6830, AM:80-191): J-pre at the end of the pre-move
+      execution; schedule.step() (the fire ticks first, every
+      FIRE_SPREAD_SPEED = 3 steps; then victims; then firefighters, with the
+      fixes and the guard inside their advance); the post-move cycle; J-post
+      after the route_blocked revalidation. No firefighter moves between a J
+      point and the next firefighter advance; the victims (and the fire, on tick
+      steps) change in between. J-post(t) sees the board the last mover of t
+      saw; on tick steps the movers of t+1 see one more tick.
+    PAPER: "the dispatcher's feasibility notion is still exactly the units' own
+    route test; dispatch decides at two fixed points and the guarded movement
+    fixes act in between, on bound units only".
+
+2.2 STALL DETECTION - A FALSE STALL IS NOW POSSIBLE
+    Round 1's progress metric (6.3) is d, the BFS distance over non-burning
+    cells. Under fix (a) a bound unit on a clean cell walks a shortest CLEAN
+    path. On a static board along that path the clean distance D_c falls by
+    exactly 1 per step (the movement round's Zm-a), but d need not fall at all.
+    WORKED EXAMPLE (hand-derived from the code's tie-breaks, not simulated;
+    investigator report "move" Q3):
+      - Board: a burning wall at x = 10, y = 10..20, with a non-burning gap at
+        (10,15); victim v = (20,15); unit A bound at (8,15).
+      - Distances: d(A,v) = 12 through the gap. The gap and its row are unclean,
+        so D_c(A,v) = 26 around the wall's north end.
+      - A's d over steps 0-15: 12, 13, 14, 15, 16, 17, 18, 17, 18, 17, 16, 15,
+        14, 13, 12, 11.
+      - k reaches 10 at step 10, while A, at (11,22), has 16 clean steps left on
+        a path it is walking without error.
+      - The stall rule then accepts any fresh spare with a clean approach and
+        d(B) < 16 + 10 = 26. Example: B at (5,15), d = 15, D_c = 29, 13 steps
+        worse.
+    BOUND. After a progress event the no-progress span is at most
+    eps = D_c - d at that event. eps is limited only by geometry (the length of
+    a detour around a wall, a burnt band or a smoke patch). Board changes can
+    re-open the gap: smoke changes every step, fire adjacency at every tick.
+    Round 1's 6.4 lower-bound argument for S = 10 ("normal movement produces at
+    most about 5 no-progress steps in a row") therefore no longer holds under
+    fix (a).
+    Guard vetoes, by contrast, produce TRUE stalls. A veto runs today's greedy
+    step, and on an unchanged board admit/veto 2-cycles occur: the movement
+    screen's G arm had 36 static-board revisits holding a veto and 12 admit ->
+    veto alternations (mvg_report 4.2). The stall rule is still needed for them.
+    PAPER: with the shipped movement, "no progress in fire-free distance" is not
+    evidence of lost time; the stall rule must measure progress on a distance
+    the unit can actually walk.
+
+2.3 REASSIGNMENT - A MARGIN CHALLENGER NEED NOT BE ABLE TO WALK THERE
+    6.4's clean-approach requirement applies only to STALL challengers (JD:
+    388-397). Margin challengers are filtered by freshness and persistence only
+    (JD:399-410).
+    EXAMPLE (same board): A bound east of the wall on a straight clean column,
+    d = D_c = 20, 19, 18 over three J-posts; a free spare B west of the wall,
+    d(B) = 13 through the gap. 13 + 5 <= d(A) at all three evaluations, so B
+    replaces A while A has 18 steps left. B's clean route is 27. If the wall
+    spans the grid except the gap, B's clean route is infinite: on a static
+    board B never reaches v and never raises route_blocked (a fire-free path
+    exists).
+    Round 1 (fixes OFF, diagnostic): 8 of its 16 margin challengers never picked
+    up; 5 of those lost their binding on a route_blocked raise and 3 were
+    replaced in turn. 15 of its 24 stall challengers had a LONGER d than the
+    incumbent.
+    PAPER: round 1's margin rule did not guarantee that a unit was replaced only
+    by one that could walk to the victim.
+
+2.4 ROUTE TIMES - J RANKS BY A DISTANCE THE MOVER NO LONGER WALKS
+    - From a clean cell in v's clean component, on a static board with a
+      stationary victim, ANY mover needs at least D_c steps. Today's tiers T1-T3
+      are exactly the clean neighbours, T4 is used only when none exists, and
+      survival is not triggered on a clean cell. With every off-path decision
+      admitted and G-ESC true, the realised time is exactly D_c.
+    - So d underestimates by D_c - d >= 0, unbounded by any constant. J's L3,
+      ranking by d, systematically favours units behind clean detours. This is
+      the same failure shape as cause 1, through the metric instead of the
+      ledger.
+    - Shipped movement without J (mvg arm G): legs with a guard veto ended in
+      pickup 13 / 40 times; admitted-only legs 44 / 45.
+    PAPER: d remains a lower bound on travel time, but under the shipped
+    movement the attainable time is the clean distance where one exists; the
+    paper must not call d a travel-time estimate.
+
+2.5 THE STRANDING GUARD AND J
+    - J applies no time-safety test. A stall REPLACE needs a static clean
+      approach; a margin REPLACE (round 1) needs none; a fill needs a finite d.
+    - A challenger's own movement steps are guarded like any unit's, so J can
+      never admit a step the guard rejects. But where an incumbent stalls BECAUSE
+      its fix steps are vetoed, J can send a challenger whose clean routes the
+      guard's estimate also expects to close. That challenger's fix steps are
+      then vetoed too, and it approaches on today's greedy mover.
+    - Whether bringing the guard into J would help is not derivable from code.
+      It would bring the wind and the FAE estimator into the dispatcher's
+      information set, and would cost about one guard call (p99 40 ms in the
+      movement screen) per J-post with a candidate.
+    - NOT added (ruling X-15 offers it). The causal clause L4 is the
+      pre-registered check on what dispatch does to firefighter safety.
+    PAPER: "the stranding guard protects movement steps; the dispatcher does not
+    run it".
+
+2.6 LATCH RECOVERY HAS A NEW PATH
+    - Today a bound route_blocked unit is relabelled 'assigned' only in
+      _move_toward's tail, when its route test passes (AG:4127-4130). A survival
+      step moves it without a route test, so the label can stay route_blocked
+      after the route reopened ("label lag").
+    - Fix (b)'s on-route retreat and fix (a)'s step both relabel through
+      _fix_move (AG:3991-4001). A latched unit therefore recovers sooner under
+      the shipped movement, and W_L (latched-held victims) empties earlier than
+      in round 1.
+    - The fixes act for a latched unit only once its route is clean-open. While
+      its route is closed its behaviour is exactly today's: it keeps walking
+      greedily toward the victim and re-raises as a no-op (57 of 59 latched
+      unit-steps moved in round 1's dp0; 4 of 10 episodes were 2-cell
+      oscillations). It cannot firefight (AG:4155).
+    - Its own moves cannot reopen its route: on a fixed board every mover steps
+      only onto non-burning cells, so its fire-free component is fixed. Recovery
+      needs a fire update (a spread tick), another, idle unit's extinguish
+      (between ticks too), or the victim moving.
+    PAPER: "a route-blocked unit that keeps its victim keeps walking toward it;
+    whether it recovers is decided by the fire".
+
+2.7 ROUND 1'S PREMISES, RESTATED FOR THE MERGED CODE
+      2.1 "a memoryless greedy mover": false wherever (a) or (b) acts and is
+          admitted. 0 -> G: CYCLE approach legs 103 -> 58, OSCILLATION 24 -> 10,
+          LIVELOCK 3 -> 0, latch episodes 14 -> 9 (mvg_report 4.1).
+      2.2 "no function returns a firefighter path length": MP.
+          clean_distance_field does, and J's own clean map holds the same
+          distances (WM:6126-6139).
+      5.3 "the greedy mover can exceed d without limit; the stall rule is the
+          answer": the excess is now systematic and known (D_c - d) - 2.4.
+      6.4 S = 10's lower bound: false under fix (a) - 2.2; restored by R-1 (2.8).
+      6.5 M = 5's one-step argument: holds only while both units stand on clean
+          cells and neither crosses the clean-field boundary (2.8).
+      6.6 "a latched unit clears itself on the first move that finds a path":
+          plus the fix relabel (2.6); still clears only inside its own advance.
+      6.10 "cured only by a movement change (out of scope)": a movement change
+          now exists. A challenger with a clean approach, G-ESC and admitted
+          steps cannot circle on a static board; J's clean test omits G-ESC and
+          time-safety (a stated limit, 2.8).
+      8.1 raises unchanged; 8.2 the bound route_blocked population shrinks
+          through (b).
+      9   the movement layer reads the wind and runs FAE; J does not (2.5).
+    FOUND IN PASSING (not merge-related): FROZEN tests a clean approach for the
+    incumbent or ANY free unit, before the fill (WM:6160); 6.3's text says
+    "incumbent or spare". The code's reading (the free units at that J point,
+    a superset of the spares) is adopted as the definition (7.2).
+
+2.8 THE TWO CONSISTENCY AMENDMENTS (rulings X-5, X-6; no constant)
+    R-1 ONE ROUTE METRIC, AND PROGRESS AGAINST THE UNIT'S OWN HISTORY.
+      D_c(u, v) = the clean distance: a BFS from v's cell over CLEAN cells (in
+          bounds, not burning, not smoky, no burning 4-neighbour; J's existing
+          clean map, the same predicate as the fixes' _clean_predicate). It is
+          infinite if v's cell is unclean, and uses round 1's unit-cell
+          exemption: an unclean unit cell is 1 + the best clean neighbour.
+      d*(u, v) = D_c(u, v) if finite, else d(u, v).
+      USED FOR: the fill's length keys (L2' / L3', 4.2), margin comparisons and
+      the stall rule's lost-time charge. FEASIBILITY IS UNCHANGED: D_c finite
+      implies d finite (clean cells are non-burning, and a living unit stands on
+      a non-burning cell at a J point), so d* is finite iff d is finite iff the
+      route test passes. J's set of allowed pairs for W is exactly round 1's.
+      d* is ADMISSIBLE for units on clean cells (2.4). It is not a strict lower
+      bound for units on unclean cells: survival and T4 steps can cross unclean
+      cells. That is a stated limit.
+      d* is the movement round's ROUTE distance (urgency_part1.txt 22.8.3 F5)
+      without its Manhattan fallback.
+      PROGRESS (replaces 6.3's best / e-shift). Per binding (A, v), J keeps
+      H = the cells A has stood on at J-post evaluations since its last
+      progress (H = {A's cell} at the bind). At each J-post evaluation with A's
+      route OPEN (d(A_t, v) finite):
+        - PROGRESS iff A reached v, or
+              d(A_t) < min { d(h) : h in H, d(h) finite }, or
+              D_c(A_t) < min { D_c(h) : h in H, D_c(h) finite }
+          (D_c(A_t) finite; a minimum over an empty set is infinite). Every
+          distance is computed on the CURRENT board, to v's CURRENT cell.
+        - On progress: H <- {A_t}, k <- 0. Otherwise: H <- H + {A_t},
+          k <- k + 1 unless FROZEN.
+      A J-post at which A's route is CLOSED is C2's closed-route step (5.2):
+      H <- H + {A_t}, k unchanged.
+      WHY THIS FORM.
+        - Fire changes and victim motion are factored out by construction: every
+          comparison is made on one board to one victim cell. Round 1's e-shift
+          needed an anchor cell.
+        - Nothing is ever re-based, so a spell in which D_c or d is undefined
+          (smoke on v's cell, a closed route) cannot hand a loop a false
+          progress event (review finding design B2).
+        - A cell revisited by a loop never beats H's minimum.
+        - An admitted clean-path step lowers D_c by exactly 1 below every
+          earlier cell of the path, so correct fix movement never adds to k.
+        - Two-cell loops, veto cycles and pocket livelocks beat neither minimum
+          and still count.
+      CONSEQUENCE FOR S = 10. 6.4's argument holds again for admitted movement.
+      The residual no-progress spans of correct movement are:
+        - one survival out-and-back (2);
+        - one fix-(b) on-route retreat (at most +1 in d);
+        - the pickup step (1).
+      A fire change that lengthens the route from A's cell but not from H's
+      cells is no progress, correctly: A is not closer than it was. One that
+      shortens it from A's cell alone counts as progress: an exogenous credit,
+      stated as a limit.
+      M = 5 (6.5) is restated. One step of motion moves the gap
+      d*(A) - d*(B) by at most 4 only while both units stand on clean cells
+      and neither crosses the clean-field boundary. The unit-cell exemption and
+      a unit's own move between the clean and fallback regimes can move it by
+      more in one step. P = 3 filters only jumps that do not persist. The
+      instrument records how many margin decisions had either unit on an
+      unclean cell.
+      COST AND INFORMATION:
+        - one clean BFS per victim in W or in a contest at every J point where
+          PRE holds, so smoke is read at every such J point (round 1: only when
+          a contest existed);
+        - |H| map look-ups per contest per J-post;
+        - 9.1 / 9.2's information rule is amended accordingly, still within the
+          ruled assumption D-12 (fire perimeter AND smoke known to the team in
+          real time).
+    R-2 CLEAN APPROACH FIRST.
+      CLEAN APPROACH(u, v): D_c(u, v) is finite (J's existing clean_ok, with the
+      unit-cell exemption).
+      (a) EVERY CHALLENGER: a margin challenger, like a stall challenger, must
+          have a clean approach to v at the J-post of the replacement.
+          Persistence is still counted as in 6.5; the test is applied at the
+          decision.
+      (b) THE FILL: after "most victims served" the fill maximises the number of
+          its pairs that have a clean approach, before it compares lengths
+          (4.2, key L1b). Without this, d* would charge a unit that has no clean
+          route only its fire-free d. It would then prefer such a unit over a
+          unit on a clean detour, a unit the shipped mover cannot bring there on
+          a static board (review finding design M4).
+      A unit without a clean approach can still be bound when no unit with one
+      can serve that victim (coverage first). Its d* is then the fallback d, a
+      lower bound the mover may not attain.
+    NOT ADDED (stated limits; X-15):
+      - G-ESC in J's clean approach;
+      - the guard's time-safety.
+      J's "clean approach" therefore means "a clean path exists now", not "a
+      fix will walk it" and not "it stays clean".
+    PAPER: "route time is the shortest clean-path length when one exists, else
+    the shortest fire-free path. For clean pairs this is the distance the
+    shipped movement walks; for others it is a lower bound. A unit that can
+    walk cleanly to a victim is preferred to one that cannot, and is the only
+    kind that may replace an incumbent. A stall is measured as no gain over
+    every cell the unit has stood on since it last gained, on the current
+    fire."
+
+================================================================================
+3. THE THREE CAUSES, AS THE RECORDS SHOW THEM - DIAGNOSTICS ONLY
+================================================================================
+Source: round 1's records (dp0 / dp1 / dpR on seed sets 1-2, the dpG* gate
+shards). These are fixes-OFF, in-sample runs, read by six read-only
+investigators (section 17). Every replay below is an offline recomputation of
+J's recorded pure-function inputs, with 0 mismatches over 491 fill decisions,
+4 534 replacement plans and 10 441 progress updates. None of it is a test, and no
+correction below was chosen to make these runs come out differently (3.5).
+
+3.1 CAUSE 1 - THE FRESH-PAIR KEY (round 1's L2)
+    L2 changed J's choice at 5 of 491 fill decisions (249 of which bound a unit;
+    256 fill binds), in 4 cells, all scenario B. It added 151 route steps in
+    all:
+      - ring set 1 B_S step 84:   68 over 48 (+20);
+      - ring set 1 B_S step 99:   70 over 40 / 41 (+30);
+      - ring set 2 B_N step 153:  56 over 16 (+40);
+      - uniform set 2 B_S step 105: 123 over 71 (+52);
+      - uniform set 2 B_W step 63: one unit, two victims - L2 served victim_2
+        at 43 over victim_0 at 34 (+9). A VICTIM-side case.
+    - 4 of the 5 came at the end of a waiting spell, at the moment a closed
+      route reopened. There the nearest unit is typically the previous binder,
+      turned back by its first raise (b = 1) and just cleared by the
+      revalidation. In 5 of the 6 re-used options, b = 1 came from such a raise
+      (o1).
+    - Outcomes are mixed and mostly not attributable (the arms had diverged
+      earlier). Only ring set 1 B_S is design-attributable, as the report said:
+      dp1 lost victim_0, whom dp0 rescued at 135.
+    - Moving L2 after L3, after L4, or dropping it gives the same 5 differences
+      (no affected fill had a tie).
+    REPLACE FRESHNESS (the proof's rule): in 3 of round 1's 40 REPLACEs (all
+    stall) J sent a farther fresh spare while a nearer re-used spare met the
+    same rule:
+      - ring set 1 A_N 157: 51 over 50;
+      - ring set 2 B_S 72: 65 over 45;
+      - ring set 2 B_S 141: 80 over 77.
+
+3.2 CAUSE 2 - THE LATCH-FILL (gate shard s, scenario D south, seed 202, CRN off,
+    2 units, 240 steps)
+    - ff_unit_0's history with victim_0:
+        - bound at 68;
+        - first raise at 79 (unassigned);
+        - re-bound at 96 (b = 2);
+        - second raise at 166 at (45,27). The record keeps no per-step
+          positions, so whether the unit was enclosed on all four sides, or
+          raised and moved, is not known.
+    - dpG1 and dpGR are identical through J-post 166. At J-post 166 dpG1
+      LATCH-FILLed ff_unit_1, sent from (6,13) to victim_0 at (49,33), Manhattan
+      63.
+    - THE REPORT'S "5 CELLS AWAY" IS WRONG. At J-post 166 the victim was at
+      (49,33), Manhattan 10 from the latched unit. (42,25) was her cell at the
+      step-68 bind; she had fled since. 3.4 retracts it.
+    - At J-post 166 the latched unit's route was CLOSED on the current fire. A
+      "route open now" test alone would not have prevented this LATCH-FILL.
+    - The burning set changes at spread ticks (every 3 steps) and, between
+      ticks, only through idle units' extinguish writes, which remove the
+      cell's fuel for good. No unit could extinguish near (45,27) at 166-168:
+      ff_unit_0 was bound, and ff_unit_1 stood 53 cells away. The route
+      reopened at the first tick after the latch (168, in both arms):
+        - dpGR: the latched unit recovered, and she was rescued (terminal 235);
+        - dpG1: the released unit became 'available' at (45,27) and was never
+          re-bound - b = 2 bars it from REPLACE (b = 0) and from LATCH-FILL
+          (b <= 1). ff_unit_1 had not reached her by 240.
+      A LATCH-FILL is irreversible by design.
+    - Screen: dp1 made 0 LATCH-FILLs. dp0 had 10 latched-binder episodes (59
+      latched unit-steps; one custody case on the victim's cell excluded; 2 of
+      the 10 are a double binding on one victim). In none of them did a free
+      unit have a finite route at any latched sample, so a LATCH-FILL could not
+      have fired anyway.
+      - Every recovery and every death in them came at a spread tick.
+      - 3 of the 4 recoveries came at the first tick after the latch; the fourth
+        (ring set 1 B_S 94-98) came at the second.
+    - The fire is stochastic: at every tick a burning cell stops with
+      probability >= 0.25. It can relight unless extinguished, and it has no
+      deterministic remaining burn time (AG:54-126). No rule that draws no
+      random numbers can predict when a tick reopens a route. (An extinguish is
+      deterministic, but it is another unit's choice.)
+
+3.3 CAUSE 3 - "IDLE BESIDE UNREACHABLE VICTIMS"
+    - M3(a) = the sum, over end-of-J-post samples with at least one detected
+      needy victim without an ACTIVE binder, of the number of FREE units
+      (_firefighter_available_for_dispatch). It has no distance and no
+      reachability predicate on the unit, and no notion of what the unit did.
+    - dp1's 216 unit-steps are 16 waiting spells of 12 victims in 11 cells,
+      1-21 steps long. Every spell ended within the run:
+        - 8 at a route reopening, with a J fill - 4 of them L2's farther choices
+          (3.1);
+        - 6 with the victim's death the next step;
+        - 2 with the free unit taken by J for another, reachable victim.
+    - WHERE THE UNITS WERE: Manhattan 10-75 from the nearest waiting victim
+      (> 50 on 144 unit-steps, <= 10 on 3). Counting the move into the sample
+      step, 101 moved and 115 were stationary. 0 were at a depot. 104 of the
+      216 were beside victims sheltering in the fireproof SE depot, all rescued
+      eventually in dp1.
+    - WHAT THEY DID: a free unit runs the shipped free-unit policy. It fights
+      the nearest fire front (extinguish within 2, firebreak within 1, or a step
+      toward the nearest workable band cell), retreats when fire is close, or
+      stands by. Ungated firefighting ships ON for every available unit. The
+      records keep no per-step action, so firefighting cannot be told apart from
+      standby here.
+    - THE CONTRAST IS MOSTLY A LABEL. dp0's legacy dispatcher bound units INTO
+      closed routes: 20 binds, 0 pickups, 1 firefighter death, 15 undone within
+      0-2 steps. A unit bound into a closed route raises route_blocked and
+      becomes an UNBOUND route_blocked unit, which M3(a) does not count and
+      which cannot firefight.
+        - Counted on every unbound, living, on-grid, non-carrying unit, the
+          contrast is 310 -> 421 (dp0 13 available + 297 route_blocked; dp1
+          216 + 205).
+        - +104 of the +111 comes from cells in which dp0 had a firefighter
+          death: fewer living units leave fewer to count. dp0's own 13 were all
+          beside latched-held victims.
+    - DEATHS: 8 of the 12 waiting victims died in dp1. 7 of those 8 died at the
+      SAME step in dp0, and the 8th (ring set 1 B_S victim_0) is cause 1. For
+      the 6 victims who died at the end of a spell with no reopening, no free
+      unit had a fire-free route at any J point of the spell.
+    - Firefighter deaths: unbound units account for most of them (dp0 17 of 26;
+      dp1 13 of 20). None of the 216 unit-steps was followed by that unit's
+      death within 10 steps.
+
+3.4 CORRECTIONS TO ROUND 1'S REPORT TEXT (for the paper, in the report's terms)
+    - "ff_unit_0 ... raised route_blocked ... at (45, 27) - 5 cells away"
+      (dispatch_report.txt 4): the victim was at (49,33), 10 cells away, at the
+      LATCH-FILL; (42,25) was her step-68 cell.
+    - "unit-steps idle while a detected victim waits with NO finite route
+      13 -> 216 ... every idle unit-step in dp1 is beside a victim no unit can
+      reach" (5.4) and P.4 "about 200 unit-steps idle beside unreachable
+      victims":
+        - the units were unbound but not shown idle, and were more than 50
+          cells away on 144 of the 216 unit-steps;
+        - counted on every unbound unit in both arms the contrast is 310 -> 421;
+        - 13 -> 216 compares free units in one arm with free units in the other,
+          and legacy's closed-route binds turn its waiting units into unbound
+          route_blocked units that M3(a) does not count.
+    - EXTENSION, not a correction: P.5 ("the fresh-pair-first key cost one
+      rescue in set 1 (ring B_S)") stands. The same key changed 4 further fill
+      decisions in 3 other cells, including one victim choice, with mixed
+      outcomes.
+    PAPER: these two corrections and one extension are stated beside round 1's
+    verdict, which they do not change.
+
+3.5 THE READING OF "DIAGNOSTICS ONLY"
+    - The brief: "The last round's runs are DIAGNOSTICS ONLY: they show what to
+      fix and are never the test; do not adjust anything until those runs
+      change."
+    - Read here as follows. The records name the causes. No correction, no
+      variant choice and no constant is chosen to make them come out
+      differently. The offline recomputations above (and C1's / C2's mechanism
+      checks, 4.4 and 5.4) are reported, never used to choose between variants.
+      No round-1 cell is re-run as evidence.
+    - If the maintainer meant something else, ruling X-0 corrects the reading
+      before Part 2.
+
+================================================================================
+4. CORRECTION C1 - NEAREST WINS (cause 1)
+================================================================================
+4.1 PRINCIPLE. History never decides a choice between units.
+    - Wherever J ranks units it ranks them by route time, on both sides of a
+      matching (which unit, which victim).
+    - The ledger enters only as the no-flip-flop proof's two constraints: a
+      REPLACE only on a never-bound pair; a latched victim entered by a pair at
+      most twice.
+    - Where those constraints forbid the nearest challenger, J keeps the
+      incumbent rather than send a farther unit.
+    WHAT THE PRINCIPLE CANNOT DO, stated plainly. In that last case a nearer
+    unit still loses because of its history - to the incumbent, which may be
+    farther. The brief's "while the no-flip-flop proof still holds" decides it:
+    a REPLACE on a re-used pair would break step (i) of the proof
+    (dispatch_part1.txt 6.9). What C1 rules out is J SENDING a farther unit
+    because a nearer one has history. Ruling X-1 (b) offers the other
+    resolution.
+
+4.2 THE FILL (step 2 at J-pre and J-post; step 4). The matching of free units to
+    the victims of W is the lexicographically best by
+        L1  maximise the number of victims served     (coverage first, unchanged)
+        L1b maximise the number of its pairs with a CLEAN APPROACH  (R-2 (b))
+        L2' minimise the total route time  sum d*     (round 1's L3, on d*)
+        L3' minimise the worst route time  max d*     (round 1's L4)
+        L4' minimise the number of re-used pairs      (round 1's L2, now an
+                                                       EXACT-TIE tie-break)
+        L5  integer ids                               (unchanged)
+    - The ledger never enters L1-L3', so no fill - on the unit side or the
+      victim side, |W| > |F_free| included - can lose a nearer option to
+      history. This covers round 1's step-84 and step-99 cases (a nearer unit)
+      and the uniform set 2 B_W step-63 case (a nearer victim).
+    - Ruling X-2 offers dropping L4' altogether. On round 1's records the two are
+      indistinguishable: no affected fill had a tie.
+    - The fill has no ledger CAP for W victims, as in round 1 (5.6). The proof
+      never used L2 (7.3).
+    - Under Limit 2 alone (DISPATCH_JOINT = 1, DISPATCH_REASSIGN = 0) the fill
+      still offers W_L victims a second claimant, as ruling D-7 has it (5.2).
+
+4.3 THE REPLACEMENTS (step 3; both kinds, C2): NEAREST, OR THE INCUMBENT.
+    - For a contest (A, v) the QUALIFYING spares are those that meet the stall
+      or the margin rule with C2's delta for the incumbent (5.2), d* (R-1) and
+      a clean approach (R-2 (a)). The ledger is not consulted at this point.
+    - The persistence counter of 6.5 is kept for every spare, fresh or not,
+      reset as in 6.5.
+    - Let D = the least d*(B, v) over the qualifying spares not already used in
+      this frame. The new unit is the lowest-id ledger-ALLOWED spare among the
+      qualifying spares at d* = D. A REPLACE needs b = 0; a latched replacement
+      needs b <= 1.
+    - If every qualifying spare at d* = D is barred, there is NO replacement of
+      v in this frame. The incumbent keeps v; the spares stay available to
+      other contests.
+    - Contest order is round 1's: stalled contests first, by largest count,
+      then largest gain; then margin contests by largest gain; then victim id.
+      The gain is computed against D.
+    - Ruling X-1 (b) offers the alternative: C1 for the fill only. A
+      replacement then takes the nearest ALLOWED qualifying spare, which can be
+      farther than a barred one.
+
+4.4 MECHANISM CHECK (offline, round 1's recorded inputs; reported, decides
+    nothing).
+    - On the d values recorded, the corrected length keys choose 48 at ring
+      set 1 B_S step 84, 40 at step 99, 16 at ring set 2 B_N 153, 71 at uniform
+      set 2 B_S 105, and victim_0 (34) at uniform set 2 B_W 63.
+    - Round 1's 3 nearest-barred REPLACEs (3.1) would be withheld.
+    - L1b and d* cannot be recomputed from round 1's records, which hold no
+      clean distances for fills.
+
+4.5 WHAT IT COSTS, STATED NOW
+    - FILLS. Re-used pairs are now chosen when nearer. In round 1, 5 of 6 such
+      options came from a pair that had already raised once on v. Its next
+      raise therefore LATCHES (o2) instead of unbinding, and C2 governs it.
+      Expected direction:
+        - latch episodes (F6) and returns after an outside event (D2) RISE
+          wherever C1 acts;
+        - C2 acts more often than round 1's zero LATCH-FILLs suggest (5.7, 15).
+    - REPLACEMENTS. A barred spare that stays the nearest qualifying one blocks
+      every replacement of v - stall and margin - for as long as it stays
+      nearest. The block ends on any of:
+        - an outside event;
+        - the barred spare moving farther or being bound elsewhere;
+        - the incumbent's own progress or recovery.
+      Otherwise it is UNBOUNDED. Because the barred spare has a fire-free route,
+      v's isolation streak keeps resetting and the escape sweep never writes
+      her off, so the run may never finish.
+    - The instrument reports such NEAREST-BARRED victim-steps with their spell
+      durations and whether the run finished; they are counted inside D1
+      (10.6). Round 1's footprint: 3 of 40 REPLACEs.
+
+4.6 GUARANTEES (structural zeros in dq1, recomputed by the instrument at every
+    J point; section 10.3)
+    Z-C1a At every fill (J-pre step 2, J-post step 2, step 4, each over its own
+          candidate sets), the chosen matching attains the ledger-blind optimum
+          of (L1, L1b, L2', L3'). Among the matchings attaining it, it has the
+          fewest re-used pairs, then the smallest ids.
+    Z-C1b Every replacement's new unit is the lowest-id ALLOWED spare among the
+          unused qualifying spares at the least d* (D). No replacement uses a
+          spare farther than D, and none is made when every qualifying spare at
+          D is barred.
+    PAPER: "history never decides a choice between units: the dispatcher ranks
+    by route time, and where its anti-reversal proof forbids the nearest
+    challenger it keeps the incumbent rather than send a farther unit - the
+    one place where a unit's history still costs it, and the price of the
+    proof".
+
+================================================================================
+5. CORRECTION C2 - A LATCHED UNIT IS AN INCUMBENT (cause 2)
+================================================================================
+5.1 PRINCIPLE. A bound unit whose route is closed is still the victim's unit.
+    - It is credited with the fastest it could possibly arrive: its grid
+      distance, for a stationary victim.
+    - The time it spends blocked is counted apart from its own movement.
+    - It is replaced only on the evidence that replaces any incumbent: a unit
+      nearer by the margin M, held for P evaluations; or S counted steps
+      without progress, with the lost time charged.
+    Round 1 treated a latched unit as worthless: it was latch-filled at the
+    first J point at which any free unit had a finite route, at any distance.
+
+5.2 THE RULE (under Limit 3, i.e. DISPATCH_JOINT = DISPATCH_REASSIGN = 1)
+    - CONTESTS (6.2 amended): a binding (A, v) is contestable at J-post iff
+        - v is detected and needy and A is v's only living binder;
+        - A is alive, on grid, not exiting, not rescue_completed and not on v's
+          cell;
+        - A's status is en_route / assigned (ACTIVE) or route_blocked (LATCHED).
+      A bound unit's route_blocked label is written only by its own raise
+      (_mark_route_blocked, AG:3712-3719; called only from _move_toward's two
+      raise branches, AG:4079 / 4085), and a first raise unbinds
+      (WM:3974-3987).
+    - W_L victims leave the fill under Limit 3: steps 2 and 4 serve W only, and
+      a latched-held victim is a contest. Under Limit 2 alone (REASSIGN 0) there
+      are no contests, and ruling D-7 stands unchanged: the fill offers a W_L
+      victim a second claimant.
+    - OPEN OR CLOSED, read from the route, not the label: A's route is OPEN at a
+      J point iff d(A, v) is finite there.
+      - A latched unit whose label lags an open route (2.6) is treated as open.
+      - An ACTIVE unit whose route is closed - for example during a survival
+        excursion that postpones its raise (AG:3081-3087) - is treated as
+        closed. This replaces round 1's 6.3 "not evaluated this frame".
+    - THE INCUMBENT'S DISTANCE delta(A, v) at an evaluation:
+        - d*(A, v) if A's route is open;
+        - G(A, v) = |dx| + |dy| if it is closed. This is the grid distance, the
+          length of a shortest path through any cells (the grid has no
+          impassable cell other than burning ones and the bounds). For a
+          stationary victim it is the fastest A could arrive if the fire opened
+          now: an admissible lower bound. A victim fleeing toward A can be met
+          sooner, as for d.
+    - TWO COUNTS per binding, both reset at the bind; neither advances at a
+      FROZEN J-post (no unit - the incumbent or any free unit - has a clean
+      approach to v; nobody could pick v up then):
+        k   = J-posts with A's route OPEN and no progress (R-1's history rule,
+              2.8). Reset to 0 on progress. Unchanged while the route is closed.
+        k_L = consecutive J-posts with A's route CLOSED in the current closed
+              spell. Reset to 0 when the route opens. While the route is closed,
+              H keeps growing (A keeps walking), so on reopening R-1 credits
+              any ground A gained.
+      The blocked time is never charged against the open-route distance. A
+      recovered unit is judged on its open-route record alone (review finding
+      design B1).
+    - REPLACEMENT, by the unchanged rules with delta and the matching count:
+        STALL, route open:   k >= S and d*(B, v) < d*(A, v) + k;
+        STALL, route closed: k_L >= S and d*(B, v) < G(A, v) + k_L;
+        MARGIN: d*(B, v) + M <= delta(A, v) at P consecutive evaluations (delta
+                read at each evaluation).
+      Every challenger needs a clean approach at the decision (R-2 (a)). The
+      choice among qualifying spares is C1's (4.3).
+    - KIND BY LABEL. A latched incumbent's replacement is a LATCH-FILL: reason
+      joint_replace_latched, ledger cap b <= 1, atomic (bind B first, then
+      release A). An active incumbent's is a REPLACE (b = 0), whether its route
+      is open or closed, as round 1.
+    - PRE (5.8 restated):
+        - under Limit 3: (F_free and W non-empty) or a contest exists;
+        - under Limit 2 alone: (F_free and W or W_L non-empty).
+      Under (1, 1) no victim can have two living binders (I1 / I7: J is the only
+      binder and fills only W), so W_L holds exactly the latched contests.
+
+5.3 WHY THE GRID DISTANCE, AND NOT A FORECAST
+    - The fire is stochastic per cell (3.2). No remaining burn time exists to
+      read, and a fuel clock is not a bound: cells pause early and relight late.
+    - Reading Fire.fuel or the tick phase would also take J outside the
+      operator-side information rule (fire_arrival_estimate.py:4-7: the operator
+      side never reads FIRE_SPREAD_*, MU or fuel), a departure the paper would
+      have to state.
+    - G needs nothing but the two cells. It is an optimistic bound compared with
+      the challenger's walked distance d*, so the comparison favours the
+      incumbent. That is right for a decision the proof makes irreversible
+      (3.2).
+
+5.4 MECHANISM CHECK (offline, seed 202; reported, decides nothing)
+    - At J-post 166: G(ff_unit_0, victim_0) = 10; ff_unit_1's route was at least
+      63; k_L = 0 at the latch.
+    - MARGIN can never hold: 63 + 5 > 10.
+    - STALL needs k_L >= 10 and 63 < 10 + k_L, so k_L > 53 counted closed steps:
+      no LATCH-FILL before about step 220.
+    - The route reopened at 168, so the binding is kept. In dpGR (legacy, fixes
+      OFF) the unit recovered there and she was rescued.
+    - Round 1's 10 dp0 latched-binder episodes lasted 3-22 samples. No
+      challenger with a finite route existed in any of them. Had one existed,
+      k_L >= S alone would have kept all four that recovered (each within 5
+      steps).
+
+5.5 BOUNDS AND LIVENESS
+    - A blocked unit that never recovers holds v until k_L reaches both S and
+      d*(B, v) - G(A, v) + 1 for the nearest qualifying spare B. FROZEN steps do
+      not count: no unit could pick v up on them.
+    - Under X-1 (a) the hold is also subject to 4.5's barred-spare block: if the
+      nearest qualifying spare is ledger-barred, the hold is unbounded until
+      that changes.
+    - The escape sweep is unchanged. A latched-held victim counts as unserved,
+      and her isolation streak resets while any living unit has a fire-free
+      route to her.
+    - The instrument counts LATCH-HELD victim-steps (some free unit has a finite
+      route while v keeps her blocked incumbent) inside ABANDONED WAITING
+      (10.6 D1), with spell durations.
+    - TRADE-OFF, disclosed: when a route flickers open and closed, a closed
+      spell shorter than S never charges the unit.
+
+5.6 ALTERNATIVES (ruling X-3)
+    (b) ONE FIRE UPDATE OF PATIENCE: no LATCH-FILL until the burning set around
+        A or v has changed since the latch (a spread tick, or an extinguish
+        write) and A has advanced on the new board.
+        - No constant. Bounded at about one fire period (3 steps).
+        - Seed 202 would have been kept.
+        - Of the dp0 recoveries, it would have kept 3 of 4. It would have filled
+          the 94-98 latch at J-post 96, 3 steps before its recovery, had a
+          challenger existed.
+    (c) S LATCHED STEPS: a LATCH-FILL only after k_L >= S. Simple, and bounded
+        at 10 steps, but S's rationale is movement, not fire.
+
+5.7 PROOF AND FOOTPRINT
+    - C2 adds preconditions to the LATCH-FILL and moves it from step 2 to
+      step 3 under Limit 3. It adds no bind kind and no return path, and the
+      cap is unchanged. The theorem holds verbatim (7.3).
+    - EXPECTED FOOTPRINT, STATED NOW. Uncertain, in both directions:
+        - round 1 made 0 LATCH-FILLs on its screen and 1 in the gate shards,
+          and fix (b) now shortens latches;
+        - C1 now re-binds nearer units on pairs that have already raised once,
+          and their next raise latches (4.5), so latch episodes (F6) are
+          expected to RISE where C1 acts.
+      If C2 never acts on the fresh seeds it is reported NOT EXERCISED (10.8).
+      That changes no verdict, and the paper says so.
+    PAPER: "a unit blocked by fire keeps its victim until a clearly nearer unit,
+    or the time it has demonstrably been blocked, justifies replacing it. It is
+    credited with the shortest possible path, since the fire's reopening is
+    random, and its blocked time is never charged against it once its route
+    reopens."
+
+================================================================================
+6. CORRECTION C3 - NO UNIT IS HELD (cause 3)
+================================================================================
+6.1 WHAT IS TRUE OF CAUSE 3 (3.3)
+    - Round 1's J held no unit: it kept no reservation, target or state for a
+      free unit (WM:6109-6110, 6166-6182), and the unit ran the shipped
+      free-unit policy - fight the nearest workable fire front, retreat, or
+      stand by when it has no workable front.
+    - The idle contrast is mostly legacy's closed-route binds relabelling units.
+    - No in-sample death was lost to waiting: 7 of 8 died at the same step in
+      dp0, the 8th to cause 1. Waiting spells ended at reopenings, where cause 1
+      sent farther units.
+
+6.2 PRINCIPLE. A unit that no waiting victim can reach is never held for one. It
+    stays with the free-unit policy the supervisor ships, and it is offered to
+    every waiting victim at every J point, so the J point at which a route opens
+    binds it by the fill's key (C1).
+
+6.3 THE RULE (recommended, X-4 (a)): NO NEW BEHAVIOUR.
+    WHAT C3 (a) DOES NOT DO, stated plainly. It changes no behaviour and does
+    not guarantee "useful work" in the brief's sense:
+      - a free unit with a workable front fights it;
+      - one without a workable front stands by;
+      - nothing aims its work at the waiting victim.
+    What it guarantees:
+      - NOT HELD: J issues no command to a free unit other than a bind - no
+        target, no waypoint, no reservation. A non-binding task must never
+        travel through target_pos: that would turn an arrival into a phantom
+        exit, raise route_blocked and switch off firefighting
+        (AG:3119-3192, 4155).
+      - FULL FILL (I4, W leg): at the end of every J call no free unit and
+        unserved victim in W form an allowed pair with a finite route. So the
+        J point at which a route reopens binds a unit to her, the one C1's key
+        chooses.
+      - NO CLOSED-ROUTE BINDS: the corrected dispatcher makes no assignment into
+        a closed route (M6, a structural zero in dq1). Round 1's legacy made 20
+        such binds - 0 pickups, 1 firefighter death - and they turned waiting
+        units into route_blocked units that cannot firefight.
+    THE MEASURE IS CORRECTED (10.6 D3). IDLE-UNREACHABLE counts unbound units
+    under either status label (available or route_blocked) that did NO WORK in
+    the step (no move and no fire write). It is computed on an arm-independent
+    per-step sample (12.1). Round 1's M3(a) is reported beside it. The
+    instrument records the model's firefighting log per unit-step, so working,
+    retreating and standing by can be told apart.
+    Neither arm changes the free-unit policy.
+
+6.4 ALTERNATIVES (X-4 (b), (c); not recommended). Each is constant-free and
+    non-binding (the theorem is untouched).
+    (b) BREACH: while a detected victim waits with no fire-free route, a free
+        unit's extinguish target becomes the first burning cell on its shortest
+        through-fire path to her.
+        - It changes the shipped firefighting policy and the fire. With CRN off
+          it also re-rolls the fire's single random stream.
+        - It moves units toward the fire.
+    (c) STAGING: an unbound waypoint, on a separate movement channel, toward the
+        idle-safe cell nearest the victim's enclosure. It needs a new movement
+        channel and moves units toward fire.
+    AGAINST BOTH:
+      - unbound units account for most firefighter deaths (dp0 17 of 26, dp1 13
+        of 20);
+      - the units were mostly more than 50 cells away and the spells 1-21 steps
+        long, so neither could have reached a dying victim in time in round 1;
+      - both are movement or firefighting changes after the maintainer's "LAST
+        movement round" (urgency_part1d.txt 1d.14).
+
+6.5 CHECKS (dq1)
+    I4-W  a structural zero, as stated (10.3).
+    M6    a structural zero: no assign into a closed route.
+    Z-C3  a CODE-STRUCTURE regression check, not evidence for the principle:
+          every J command is the assign of a FILL / REPLACE / LATCH-FILL /
+          second fill, or the release inside an atomic replacement. Round 1
+          already had this property (5.9). Z-C3 fails only if a build adds a
+          new command.
+    PAPER: "a unit that cannot reach any waiting victim is not held for one. It
+    keeps the shipped free-unit policy - fight the nearest fire front, retreat,
+    or stand by - and is bound at the J point at which a route opens. The
+    dispatcher does not aim its work at the waiting victim. Round 1's 'idle'
+    count measured a label, not idleness."
+
+================================================================================
+7. THE CORRECTED DISPATCHER, AND THE NO-FLIP-FLOP THEOREM RE-VERIFIED
+================================================================================
+7.1 IN ONE PAGE (switches unchanged: DISPATCH_JOINT and DISPATCH_REASSIGN ship 0,
+    each ON only on an exact 1, REASSIGN only while JOINT is on; S = 10, M = 5,
+    P = 3). Under (1, 1):
+    J-pre   step 2 only.
+    J-post  1 PROGRESS - every contest, active or latched, open or closed:
+              R-1's history rule (count k), C2's closed-route count k_L,
+              FROZEN.
+            2 FILL - free units x W, key L1 / L1b / L2' / L3' / L4' / L5 (C1,
+              R-1, R-2).
+            3 REPLACE - spares (free units not bound in step 2) x contests,
+              stall first, then margin. delta (C2); d* (R-1); a clean approach
+              for every challenger (R-2 (a)); the nearest allowed spare or the
+              incumbent (C1). The kind is read from the label: LATCH-FILL
+              (b <= 1) or REPLACE (b = 0). Atomic: bind first, then release.
+            4 SECOND FILL - units released in step 3 x the victims of W still
+              unbound. W_L is no longer offered here: a latched-held victim is a
+              contest.
+    Under Limit 2 alone (1, 0): steps 2 and 4 as round 1, W_L included (D-7).
+    Unchanged from round 1:
+      - 5.7's closed legacy binders and 5.9's "dispatch writes no victim off";
+      - 7.1's atomic replacement and 7.3's fill binds;
+      - 5.10's reasons and event types, and the single-sink ledger.
+
+7.2 DEFINITIONS USED BY THE PROOF, RESTATED
+    - Bind kinds: FILL (v in W, steps 2 and 4); LATCH-FILL (v's only binder
+      latched; step 3); REPLACE (v's only binder active; step 3).
+    - Outside events, unchanged:
+        o1 a binder's first raise on the pair (the handler's unassign);
+        o2 its repeated raise (bound, status route_blocked);
+        o3 its death;
+        o4 the victim turning terminal.
+    - FROZEN uses the incumbent and every free unit at that J point (code
+      reading, 2.7).
+
+7.3 THE THEOREM (dispatch_part1.txt 6.9) HOLDS VERBATIM. Its dependencies are
+    (c), (d), (f), Invariant L and Lemmas 1-3 (investigator report "disp" Q5).
+    (c) A REPLACE uses only b = 0: unchanged. C1 only removes REPLACEs (it
+        withholds one when every nearest qualifying spare is barred).
+    (d) A FILL binds only a victim with no living binder: unchanged; under
+        Limit 3 W_L is no longer filled at all.
+        A LATCH-FILL needs v in W_L, with b <= 1 before it: unchanged. C2 only
+        adds preconditions and moves it to step 3.
+        The proof's step (ii) - "X had latched by its own repeated raise (o2)" -
+        needs only that the intermediate binder was latched by an OUTSIDE fire
+        event. A bound unit's route_blocked label is written only by its own
+        raise (_mark_route_blocked, AG:3712-3719, called only from
+        _move_toward's raise branches). A first raise unbinds (WM:3974-3987;
+        the executor's unassign cannot fail for a known unit, WM:5049-5118).
+        The handler's early return at WM:5658 fires only for a victim J's
+        stricter needy test also excludes. So step (ii) holds - for a
+        label-lagged unit whose route is open too - and the executor refuses to
+        bind a route_blocked unit (WM:4945-4947).
+    (f) J unbinds only through REPLACE and LATCH-FILL: unchanged.
+    Invariant L (every bind counted at the single sink): unchanged.
+    Lemma 1 (REPLACEs per victim <= N_ff - 1): unchanged.
+    Lemma 2 (FILLs per victim <= 1 + 2 N_ff; LATCH-FILLs <= 2 N_ff; binds
+        <= 5 N_ff): unchanged.
+    Lemma 3 (coverage: bind first, then release): unchanged.
+    NOT USED by the proof, and therefore free to change: round 1's L2 (now the
+    exact-tie L4'), the route metric and the progress rule (R-1), and R-2's
+    preconditions.
+    INVARIANTS I1-I7 (7.4) stand, with I4 restated for W only: "at the end of
+    each J call no free unit and victim of W form an allowed pair with a finite
+    route". W_L's leg (A2 22.1) is replaced, under Limit 3, by C2's rule and
+    Z-C2 (10.3).
+    PAPER: "the corrected dispatcher keeps the proved property: no unit returns
+    to a victim, nor a victim to a unit, except after a fire event removed or
+    blocked the unit in between".
+
+================================================================================
+8. SEEDS - TWO NEW FRESH SETS, FROZEN NOW
+================================================================================
+    - RULE: section 0.6, committed (824c1de7, 11:57) BEFORE the scan ran
+      (11:59-12:32).
+    - SCAN: outputs/_dq_seedscan.py over 122 767 files and 27.2 GB, 0 errors.
+      Record: outputs/_dq_seedscan_summary.txt.
+    - Only 4 six-digit bases qualify: 575201, 662481, 741141, 819941. None is
+      literal-zero, because the movement round's own records list the eight
+      bases of its scan.
+    - 474781 and 674101 fail on real data hits: 474803 in two _mvg_ist run
+      records, 674123 in an urgency replay record.
+    - THE RULE GIVES
+        set 7 (FRESH) = 575201 ... 575216
+        set 8 (FRESH) = 741141 ... 741156
+    - GIT HISTORY (all refs, quarantine excluded from the pathspec):
+        - the windows [575181, 575236] and [741121, 741176] occur in 3 commits
+          (824c1de7, d17b80d7, 74039c54);
+        - every added or removed line carrying a window token is a listing line
+          (7 lines; 0 non-listing);
+        - 0 commit messages;
+        - the positive control (sets 5-6) finds 7 commits.
+    - FROZEN: outputs/_dq_seeds.txt (sets 1-8; sets 1-6 re-generated by the rule
+      equal outputs/_mvg_seeds.txt). Analyzers read it, recompute the rule and
+      STOP on any mismatch, and never re-scan.
+    - Sets 1-6 are spent. They are never read in this round, except:
+        - round 1's set 1-2 records, as the diagnostics of section 3;
+        - set 1-2 seeds in the Part 2 smoke and structure check, structural
+          fields only.
+      The seed file's "roles" text is descriptive, not enforced.
+    - Before Part 2, only this document, the seed file and the scan summary
+      name 575201-575216 and 741141-741156 as this round's seed sets. Part 2
+      adds the frozen queues and the analyzer's expected bases. Earlier files
+      and commits name the two bases only in scan-candidate listings (0.6 (3)),
+      and no file uses any seed of either window.
+    PAPER: "the corrected dispatcher was screened on two further seed sets never
+    used before in the project, checked against every scanned file and git
+    history by a rule fixed before the check".
+
+================================================================================
+9. ARMS AND RUN LINES
+================================================================================
+    | Arm | Tag | Checkout                         | Dispatch switches        |
+    |-----|-----|----------------------------------|--------------------------|
+    | R   | dqR | main 897e93b5, detached worktree  | (absent at main)         |
+    |     |     | E:/Projects/SAS_wt/base897e93b5   |                          |
+    | 0   | dq0 | dispatch Part 2 head              | DISPATCH_JOINT = 0,      |
+    |     |     |                                  | DISPATCH_REASSIGN = 0    |
+    | 1   | dq1 | dispatch Part 2 head (the same)  | DISPATCH_JOINT = 1,      |
+    |     |     |                                  | DISPATCH_REASSIGN = 1    |
+    - Every arm runs the shipped movement: FF_APPROACH_PATH = 1,
+      FF_RETREAT_KEEP_APPROACH = 1 and FF_FIX_STRANDING_GUARD = 1 are PINNED on
+      every line. That keeps the "recorded switches equal the line's" check
+      meaningful after the flip (movement_flip_register.txt). dq0 and dq1 also
+      pin both dispatch switches. Every other setting is the shipped default,
+      recorded per run.
+    - THE DECISION is dq0 -> dq1 only. dqR is the identity reference (S1). It is
+      re-measured at the round's own base, as round 1 re-measured dpR (the
+      baseline-moved-under-comparison rule); ruling X-7 offers the movement
+      round's mvg1 records instead.
+    - Cells: scenarios A-D x winds N, S, E, W x placements ring
+      (VICTIM_SPAWN_MODE 0) and uniform (1) x sets 7 and 8 = 64 per arm.
+    - Tags: dq<a><p><k>_<S>_<W> (a = R / 0 / 1; p = r / u; k = 7 / 8); files
+      outputs/_sd_<tag>.json (+ .argv, .poollog, .stdout.txt). Every --out is an
+      absolute path into E:/Projects/SAS_wt/dispatch/outputs, dqR included.
+    - RUN LINE (CRN by the --crn flag, never --set FM2P_CRN; 0 crn_draws =
+      INVALID):
+        <py> outputs/_dq_probe.py --crn --hazard -- --repo <checkout>
+          --scenario S --wind W --seed N --set GLOBAL_PLANNER_MODE=0
+          --set VICTIM_SPAWN_MODE=<0|1> --set FF_APPROACH_PATH=1
+          --set FF_RETREAT_KEEP_APPROACH=1 --set FF_FIX_STRANDING_GUARD=1
+          [dq0: --set DISPATCH_JOINT=0 --set DISPATCH_REASSIGN=0]
+          [dq1: --set DISPATCH_JOINT=1 --set DISPATCH_REASSIGN=1]
+          --steps 360 --set BATCH_SIZE=360 --out <absolute> --tag <tag>_<S>_<W>
+      --repo is on EVERY line: the probes default to the main checkout.
+    - The corrections are made IN PLACE in J's code, with no sub-switches (X-14).
+      DISPATCH_JOINT = DISPATCH_REASSIGN = 1 therefore means the corrected
+      dispatcher; round 1's is preserved at cc8d653c and as a frozen shadow in
+      the instrument (12).
+    - No round-1 J arm is run (X-13 offers one, report-only).
+    PAPER: "today's dispatch against the corrected dispatch, both on the shipped
+    guarded movement; a re-measured reference proves the round's code inert with
+    its switches off".
+
+================================================================================
+10. GATES AND DECISION RULE (they replace dispatch_part1.txt 14.6-15 here)
+================================================================================
+10.1 NOTATION. For a fresh cell c (sets 7-8), arm a in {0, 1}, paired under CRN:
+    - DD = detected-victim deaths: victims with a stdout [Victim Detection] line
+      whose rows_vic status becomes 'dead' by step 360 (never rows_vic
+      "candidate");
+    - rescued = eval.rescued; firefighter deaths = eval.firefighter_deaths.
+    FULL(0 -> 1) = S1 to S6 below.
+    THE SAMPLE INSTANT used by D1, D3 and the binder checks: once per step,
+    right after _sync_firefighter_marker_status returns. That is after the
+    route_blocked revalidation and J-post (where J exists), and before the
+    victim sync, the invariant check and the escape sweep (round 1's binders
+    instant). It exists in every arm.
+
+10.2 S1 IDENTITY: dq0 == dqR value identity on 64 / 64 cells, on a FROZEN field
+    list. Every listed field must be present in both records; a listed field
+    missing from either is an S1 failure.
+    - Round 1's G-ID fields:
+        - _fx3r_analyze FIELDS;
+        - every mf2 section;
+        - stdout_sha;
+        - every non-J dp field: binders, waiting, waiting_custody, m3a with
+          ids, invariant, commands with the instrument's route verdicts,
+          releases, m8, m9, writeoffs_avoided.
+    - Plus:
+        - eval, rows_uav / rows_ff / rows_vic / rows_dec / rows_trig;
+        - fb3, mr and ut;
+        - the movement record (mv rows without fix_ms / inst_ms; mv_events;
+          the guard rows without ms_guard / ms_inst);
+        - the arm-independent per-step sample (12.1) and the firefighting log.
+    - Not compared:
+        - tag, repo, head, out, argv, extra_params and wall_s;
+        - the cfv parameter keys absent at main;
+        - the J-only fields: probe, switches, src_sha, j_calls, j_events,
+          ledger, j_detail, j_timing, timing, the round-1 J shadow and the
+          C-footprints.
+    - A failure is a defect: STOP.
+
+10.3 S2 STRUCTURAL ZEROS (exactly 0)
+    - IN EVERY ARM:
+        - movement-owned: Z1-M item (v) (a live fix action equals its guarded
+          pre-advance shadow), Z-RB, Zm-a, Zm-b, Z-S, Z2-M. Z1-M (i)-(iv) and
+          Zg-3 compare arms that do not exist here and are void;
+        - guard-owned: Zg-1 (two-sided), Zg-2 (the movement round's
+          definitions, 1d.6.2);
+        - shared: Z5 (returns, the amended reading), Z6 (a crash, or a run
+          ending neither terminal nor at 360);
+        - SM, every shadow-mismatch row except the U1 kick rows, which are
+          gated off in dq1 (12.1).
+    - DISPATCH-OWNED (dq1), each recomputed by the instrument at every J point
+      or every sample:
+        - G-B(a) / I7: a victim-step with >= 2 living binders of any status;
+        - G-B(b): a victim-step with >= 2 ACTIVE binders;
+        - G-B(c): dispatch abandonment (I3);
+        - I4-W: an end-of-J-call allowed pair of a free unit and a W victim with
+          a finite route;
+        - G-T(a): a return whose intermediate binder had no outside event (the
+          theorem; round 1's reading);
+        - G-T(c): ledger violations (a REPLACE on b >= 1, a LATCH-FILL on
+          b >= 2);
+        - M6: an assign into a closed route (the instrument's own BFS);
+        - Z-C1a, Z-C1b (4.6);
+        - Z-C2: every replacement met its stall or margin rule with the delta
+          and count of 5.2 (open: d*, k; closed: G, k_L), on the instrument's
+          own recomputation;
+        - Z-R1: at every J point, every d, D_c, d*, delta and progress verdict
+          that J passed to its pure functions (the _cap records) equals the
+          instrument's INDEPENDENT recomputation. That recomputation runs two
+          BFS: a clean BFS over cells in bounds, not burning, not smoky and with
+          no burning 4-neighbour, with the unit-cell exemption; and the
+          fire-free BFS;
+        - Z-R2: every challenger had a clean approach at its replacement;
+        - Z-C3 (6.5), a code-structure regression check.
+    - OWNERSHIP
+        - Any zero, SM row or crash in dq0 or dqR: STOP. It is a base or
+          instrument defect: fix it, re-run the wave, read nothing.
+        - A SHIPPED movement or guard zero failing in dq0 or dqR: STOP for a
+          maintainer ruling. It is a defect of main's code, and fixing it would
+          be a movement change after the last movement round (1d.14).
+        - A zero failing in dq1 only: an S2 failure of the comparison, FAIL
+          (X-11).
+
+10.4 S3 PRIMARY (as the movement round's 1d.6.1 S3)
+      - pooled DD(1) < DD(0); and
+      - DD(1) <= DD(0) in set 7 AND in set 8; and
+      - the pooled difference stays < 0 after removing the single cell with the
+        most negative DD(1) - DD(0).
+    Reported beside it, never gating: TIME FROM DETECTION TO RESCUE.
+      - M1: per cell, the mean over victims rescued in both arms of the paired
+        delta; T(set) = the unweighted mean over contributing cells; pooled;
+        median; per placement and scenario.
+      - M1c: the same, censored at 361 for every detected victim (the guard
+        against faster-on-easy-victims).
+      - The latency decomposition detection -> assignment -> pickup -> rescue.
+
+10.5 S4 HARM AND S5 MUST NOT RISE - THE GUARDS
+    L2  RESCUED (brief; literal, HARD): rescued(1) >= rescued(0) in set 7 AND in
+        set 8.
+    F1  FIREFIGHTER DEATHS (brief; the movement round's reading R2, 1d.3.3,
+        HARD). It FAILS iff either:
+        (i)  pooled firefighter deaths rise (sets 7 + 8, Y > X); or
+        (ii) in set 7 or in set 8, the one-sided exact paired sign test of that
+             set's per-cell deltas over its DIVERGED cells gives p <= 0.05:
+             p = P(Binomial(n+ + n-, 1/2) >= n+), with p = 1 when no cell
+             changed.
+        Reported beside it, never gating: n+ / n- by cell and by seed, and the
+        literal per-set reading R0. Its reach, disclosed: a set with 4 or fewer
+        changed cells can never fail (ii).
+    L3  DD (literal, HARD), CARRIED FROM THE MOVEMENT ROUND'S S4 (1d.6.1), NOT
+        IN THE BRIEF: pooled DD(1) <= DD(0). Under decision 0.2 it only
+        relabels a pooled DD rise as FAIL rather than NOT SHOWN; S3 already
+        requires a pooled fall.
+    L4  THE CAUSAL CLAUSE (brief; HARD; section 11): FAIL iff CAUSED >
+        PREVENTED, pooled over sets 7-8, by knockout replays run BEFORE the
+        verdict.
+    SIGN-TESTED (brief; 10.6): each count by the one-sided exact paired sign
+        test over the DIVERGED cells, Holm family-wise 0.05. As in the movement
+        round, the test treats diverged cells as independent, although a
+        seed's ring and uniform cells share the fire under CRN. Stated,
+        unchanged.
+    S4 = L2 and L3. S5 = F1, L4 and the sign-tested family.
+
+10.6 THE SIGN-TESTED FAMILY: m = 28
+    THE MOVEMENT ROUND'S 24 (urgency_part1.txt 23.2; _mvg_analyze SIGN_KEYS),
+    unchanged:
+      F2  never detected;
+      F3  never finish (terminal_step None): the brief's "never-finish";
+      F4  7 searcher kinds: broad (O) before / after the last detection; pocket
+          near a depot (r 5) / anywhere (r 500); I2 LIVELOCK; RTB no-progress;
+          I2 STUCK;
+      F5  13 firefighter kinds: broad positional; I2 STUCK approach / carry; I2
+          LIVELOCK approach / carry; I2 NO-PROGRESS approach; and the 7 leg
+          kinds (CYCLE approach / carry, OSCILLATION approach / carry, PROGRESS
+          approach / carry, carry NO-PROGRESS). With F4, the brief's
+          "oscillation of every kind";
+      F6  latch episodes (bound and route_blocked): the brief's "latched units".
+          Expected to RISE where C1 acts (4.5);
+      F8  escape-sweep write-offs of detected victims.
+    ADDED, the brief's dispatch counts, all read at the sample instant (10.1):
+      D1  ABANDONED WAITING: victim-steps at which a detected needy victim -
+          not in any binder's custody (exiting, rescue_completed or co-located
+          binder) - has no ACTIVE binder (none, or only a blocked one), while
+          some free unit has a finite route to her.
+          - Its W part is a structural zero in dq1 (I4-W). In dq1, D1 counts
+            C2's latch-held waits and C1's nearest-barred waits; in dq0,
+            legacy's waits.
+          - Reported split: W / latch-held / nearest-barred / other, with spell
+            durations.
+      D2  FLIP-FLOPS: returns of any cause (round 1's G-T(b): A..X..A on a
+          victim, v..w..v on a unit). Their outside-event-free part is
+          structural (G-T(a), Z5). DISCLOSED: C1's nearer re-used pairs add
+          returns after an outside event, so D2 is expected to rise where C1
+          acts.
+      D3  IDLE-UNREACHABLE: unit-steps of unbound, living, on-grid, non-exiting
+          units, of EITHER status label (available or route_blocked), that meet
+          three conditions:
+            - they have no fire-free route (instrument BFS, unit-cell
+              exemption) to any detected needy victim without an active binder
+              and not in custody;
+            - at least one such victim exists;
+            - they did no work in the advance of the step just sampled: the
+              unit's cell equals its cell at the previous sample, and the
+              firefighting log shows no extinguish or clearing write by it in
+              that advance.
+          Reported beside it, never gating: round 1's M3(a) and M3(b), the
+          action-blind count, and its rate per living unit.
+      D4  ROUTE_BLOCKED AT RUN END: units whose status is route_blocked at
+          their last recorded step, bound or not (round 1's G-L, read from the
+          label), as a count per cell. The bound / unbound split is reported.
+    HOLM'S REACH, disclosed. The smallest p of a count must be <= 0.05 / 28 =
+    0.00179.
+      - That needs at least 10 changed cells, all rising for 10-12 changed
+        cells; from 13 changed cells one fall is allowed (12 of 13), and so on.
+      - Adding D1-D4 raises the reach of the 24 inherited counts from 9 changed
+        cells (m = 24, 0.00208) to 10.
+    DIVERGED (used by F1 (ii) and by every sign test): a cell whose per-step
+    rows, eval or command sequence differ between arms.
+      - The command sequence is compared as (step, action, victim, unit, ok)
+        without the reason strings: J's reasons differ from legacy's even for
+        identical pairs.
+      - The analyzer asserts that every cell with a non-zero delta in any gated
+        count is DIVERGED; otherwise it STOPS.
+
+10.7 S6 COST: R = J net ms (the instrument's nested time removed) / wall ms per
+    dq1 run; median R <= 2 %; p99 <= 50 ms per J point.
+    - The guard runs in both arms and is not added cost.
+    - Round 1: 0.080 % and 7.65 ms at about 8-way concurrency. R-1 adds a clean
+      BFS per victim and the history look-ups.
+    - The suite never runs beside a screen wave: S6 is timing-sensitive.
+
+10.8 OUTCOMES (exhaustive, applied in this order)
+    1. STOP, nothing read:
+         - an INVALID or missing run in ANY arm (a tooling defect, re-run);
+         - any zero, SM row or crash in dq0 or dqR (10.3; a shipped movement or
+           guard zero there is a STOP for a maintainer ruling).
+    2. S1 fails: STOP; the identity defect is fixed and W1 re-run. W2 starts only
+       after S1 passes.
+    3. S2, S4 or S5 fails: FAIL.
+         - DISPATCH_JOINT and DISPATCH_REASSIGN stay 0, and the round's code is
+           NOT merged (decision 0.2).
+         - The measurement round follows with today's dispatch, and there is NO
+           further dispatch round.
+         - Every failing instance is diagnosed, as a report, not a design input.
+    4. Otherwise S3 fails: NOT SHOWN. Its consequences are those of 3 (decision
+       0.2): switches 0, code not merged, measurement round, no further
+       dispatch round.
+    5. Otherwise S6 fails: NOT READY. Optimise value-identically (for example by
+       caching J's maps), re-measure the cost on 8 value-identical cells, and
+       re-apply the rule.
+    6. Otherwise PASS: recommend shipping DISPATCH_JOINT = 1 and
+       DISPATCH_REASSIGN = 1, then STOP for the maintainer's confirmation before
+       the flip.
+    ONLY (1, 1) CAN SHIP (round 1's rule). The corrections are parts of one
+    dispatcher with no sub-switches (X-14).
+      - Each correction's ACTED footprint per set (12.1) is reported.
+      - A correction with no ACTED cell in a fresh set is reported NOT EXERCISED
+        there. That changes no verdict.
+      - DISCLOSED DEVIATION: the movement round's per-switch rule (1d.6.3)
+        shipped a fix only if it acted in a fresh cell of EACH set. Here a
+        correction cannot ship apart from the dispatcher. If C2 is NOT
+        EXERCISED in both sets, the paper says that the latch rule shipped
+        untested on the screen and is supported only by its tests, its zeros
+        and the offline mechanism check (5.4).
+    SCENARIO STOP: a pooled scenario rescued drop of 2 or more is reported with
+    its diagnosis (DIAGNOSTIC, as in the movement round).
+    Nothing is retuned on these runs: not S, M, P, the keys, the metrics or any
+    reading. Under decision 0.2 there is no later round to retune in.
+    THE FLIP (only after a PASS and the maintainer's yes):
+      - defaults 1 / 1 and test_shipped_defaults;
+      - every test pinning today's dispatch pinned to DISPATCH_JOINT = 0
+        explicitly, with its ON counterpart (round 1's 15 list, re-located);
+      - flip identity against dq1 on 4 + 4 cells;
+      - the full suite at the base's failing set ({T5});
+      - the is-True round's 19.12(c) identity check (triggered, as round 1's M-4
+        noted, if dispatch ships ON);
+      - the measurement round's references re-measured (19.14).
+    PAPER: "the rule, its stated chance rates and the verdict, whatever it is;
+    a dispatcher whose latch rule never acted on the screen is reported as
+    such".
+
+10.9 REPORTED, NEVER GATING
+    - M1 / M1c and latency (10.4).
+    - M4 replacements by kind, cause, scenario and set; fills differing from the
+      legacy counterfactual; re-used-pair binds; nearest-barred victim-steps
+      with spell durations and whether the run finished (4.5).
+    - The number of margin decisions with either unit on an unclean cell (2.8).
+    - The ACTED footprint of C1, C2, R-1 and R-2: J points where reverting that
+      one change alone changes J's decision (12.1).
+    - M6 write-offs; M8 / M8-D; the movement round's 22.9 death classes (frozen
+      code) for every DD.
+    - Latch episodes, with durations and endings.
+    - The firefighting action split of unbound units while victims wait.
+    - F1's R0 reading; L4 per set, its run-level variant, KO-LAST and the hybrid
+      diagnostic (11).
+    - DIAG of every cell where dq1 is worse than dq0 in DD, rescued or
+      firefighter deaths.
+    PAPER: every number above is reported beside the verdict, never as a gate.
+
+================================================================================
+11. THE CAUSAL CLAUSE L4 FOR DISPATCH (brief; frozen now)
+================================================================================
+11.1 CANDIDATES (as 1d.13.2), per fresh cell; the unit ids are the same in both
+    arms:
+      (A) dq1-DEATH: unit U dies at step t in dq1 and is ALIVE at t in dq0.
+      (B) dq0-DEATH: unit U dies at step t in dq0 and is ALIVE at t in dq1.
+    A death at the same step in both arms is neither; it is reported with the
+    C-NONE check. Every unit qualifies, whatever its state when it died: bound,
+    latched, unbound or carrying.
+
+11.2 WHAT A DISPATCH KNOCKOUT IS - OVERRIDE SEMANTICS (frozen)
+    THE COUNTERFACTUAL ("today's choice") at a J point, on J's own snapshot
+    (round 1's M4 counterfactual, legacy_pairs):
+      - for each detected needy victim without an active binder (W, and W_L as
+        legacy treats it, i.e. a second claimant), in victim-index order, the
+        Manhattan-nearest unchosen free unit, whatever its route (closed
+        included);
+      - no replacement of any kind.
+    It matches select_rescue_assignment's rule (Manhattan-nearest available
+    unit, ties to the smaller id; investigator and review checks).
+    A KNOCKOUT OF A UNIT SET K, at every J point <= t:
+      (0) J RUNS EXACTLY AS IN R0 on the knockout run's own state, with every
+          unit of K present in every candidate set: the fill, the spare lists,
+          the nearest-qualifying computation and the contest order.
+      (1) Every bind J made of a unit in K is dropped. Every release J made of
+          a unit in K is dropped, and so is the replacement it belonged to.
+      (2) A contest whose selected challenger is in K gets no replacement, as
+          when C1 finds every nearest spare barred.
+      (3) Each unit of K that the counterfactual binds is bound to its
+          counterfactual victim, before J's own binds are applied (reason
+          "ko_today"; distance = Manhattan, as the executor's fill path needs an
+          integer). Any J bind on that victim is dropped, and its unit stays
+          free until the next J point.
+      (4) Every other J decision is applied unchanged.
+    - KO-OWN(U, t): K = {U}.
+    - KO-OTHERS(U, t): K = every unit except U. No replacement can then occur
+      (every replacement involves a unit of K as challenger or as incumbent),
+      so U keeps only its FILL decisions. A death U met as a challenger is
+      reported with that label.
+    - KO-LAST(U, t) (reported): only U's last J decision before t that differs
+      from the counterfactual, under the same override.
+    - EMPTY KNOCKOUT. A knockout's decision set is empty when, at every J point
+      <= t, (1)-(3) change nothing: no unit of K was bound, released or
+      selected by J where the counterfactual differs, and no unit of K is bound
+      by the counterfactual where J did not bind it. By (0) and (4) an empty
+      knockout reproduces R0 exactly. It is not run, and R0's outcome stands.
+      Part 2's W3 tooling check runs one empty knockout anyway and requires
+      exact reproduction (13 (9)).
+    - R0: dq1's own run line through the replay tool. It must reproduce dq1's
+      record EXACTLY - every per-step row, the commands, the J events, the
+      movement events, eval and stdout. Otherwise the cell's candidates are
+      UNRESOLVED.
+    - UNRESOLVED also: a knockout replay that is missing, INVALID, or crashed or
+      stopped before t; and a knockout whose first changed J decision is absent
+      from its knockout log (the KO-evidence check).
+    - DISCLOSED: a dispatch knockout is today's CHOICE at J's decision times,
+      not today's code path. Legacy pairs mid-advance at events; J at J-pre /
+      J-post. The counterfactual can also create states J never produces (a
+      second claimant on a latched-held victim). The knockout is a hybrid.
+      Reported per candidate: whether the knockout's rows equal dq0's up to t.
+
+11.3 COUNTS for dq1, pooled over sets 7-8, and per set
+    CAUSED    = the (A) candidates for which U is ALIVE at t in KO-OWN or in
+                KO-OTHERS, plus every UNRESOLVED (A) candidate.
+    PREVENTED = the RESOLVED (B) candidates for which U is DEAD by t in KO-OWN
+                or in KO-OTHERS.
+    THE CLAUSE: FAIL iff CAUSED > PREVENTED. A tie passes. An uncomputable cell
+    counts against: its (A) candidates are CAUSED, its (B) candidates not
+    PREVENTED.
+    - Same-step deaths, the run-level variant, KO-LAST and every candidate's
+      class are reported, never counted.
+    - The chance rate is not computable in advance (a mechanistic clause, as the
+      movement round said).
+    - W3 runs after W2 and BEFORE the verdict. Its queue is generated
+      mechanically from the W2 records by a frozen script; the analyzer prints
+      no verdict until W3 is complete and every R0 is checked.
+    PAPER: "every firefighter death that differed between today's and the
+    corrected dispatch was attributed with knockout replays, fixed before the
+    screen and run before the verdict. A knockout replaces the dispatcher's
+    choices for the unit, or for all the other units, with today's choice at
+    the same moments. The corrected dispatcher fails if its decisions caused
+    more such deaths than they prevented. Both counts are reported."
+
+================================================================================
+12. THE INSTRUMENT AND THE ANALYZER (built in Part 2; record-only)
+================================================================================
+12.1 outputs/_dq_probe.py = the movement round's _mvg_probe.py with the J-point
+    machinery restored from round 1's _dp_probe.py, under a new version string
+    (the analyzer refuses mixed versions). _mvg_probe dropped this machinery, so
+    in a J run its j_calls, j_detail and j_timing would be empty.
+    RESTORED:
+      - the jpoint wrap, with legacy_pairs (the counterfactual of 11.2);
+      - PRE / sets, and j_detail with progress and "unevaluated";
+      - j_timing raw / net / thread / gc;
+      - the _cap wraps of the J functions (their inputs and outputs are what
+        Z-R1 checks);
+      - nest_ms in apply_cmd, and the j_ms totals.
+    NEW, J POINTS (dq1):
+      - d, D_c, d* and the clean-approach verdict for every living unit to every
+        VICTIM OF INTEREST (W, W_L and every contest's victim) at every J point;
+      - each contest's open / closed verdict, delta, k, k_L, H and FROZEN;
+      - a burning-set and smoke digest per J point;
+      - the ACTED footprint: a frozen copy of round 1's joint_dispatch.py,
+        loaded by path (sha256 recorded), plus single-change reversions of C1,
+        C2, R-1 and R-2. All are pure functions, recomputed on the recorded
+        inputs.
+    NEW, EVERY ARM - THE ARM-INDEPENDENT PER-STEP SAMPLE at the sample instant
+    (10.1). For every unbound, living, on-grid, non-exiting unit, of either
+    status label:
+      - its status;
+      - the instrument's own fire-free BFS route verdict (unit-cell exemption)
+        to every detected needy victim without an active binder and not in
+        custody;
+      - its move flag;
+      - its rows of the model's firefighting log (_firefight_log: action and
+        write) for the advance just sampled.
+    D1 and D3 are computed from this sample in every arm; dq0 has no J points.
+    The U1 KICK SHADOW is gated off when DISPATCH_JOINT is on: in a J arm it
+    would append spurious mismatch rows. Every other shadow row stays and feeds
+    SM.
+    Every J wrap is a no-op with J off. The instrument must load at main
+    897e93b5 (dqR), where no joint_dispatch module exists; round 1's _dp_probe
+    already reads J hooks through getattr defaults.
+12.2 outputs/_dq_analyze.py: the movement round's gates verbatim (SIGN_KEYS,
+    compare_counts, sign_test_p, holm, s3_rule, r2_set_test, l4_counts, the
+    zero checks, w3_validity), with:
+      - round 1's J measures and zeros (the _dp_analyze digest, rb_figures with
+        live = joint_on, ledger_check);
+      - D1-D4, the new zeros, and the DIVERGED assertion (10.6);
+      - the frozen seed file check;
+      - hash checks of this document's sections 0 and 2-15 and of the rulings
+        amendment, printing the Part 1 and Part 2 commits;
+      - a --zeros-only wave-check mode;
+      - a synthetic self-test with known answers for every rule.
+12.3 outputs/_dq_replay.py ports _mvg_replay.py: the override knockouts of 11.2
+    (installed before the probe's wraps), R0 exact, and the knockout log.
+    outputs/_dq_w3_queue.py is the frozen W3 generator: candidates, the
+    empty-set rule and the knockout plan.
+PAPER: "both arms are recorded by one record-only instrument; every
+dispatcher decision is logged in a form that replays exactly".
+
+================================================================================
+13. PART 2 - THE BUILD (pre-registered; starts only after the rulings)
+================================================================================
+    (1) Base: the dispatch branch at the rulings amendment (merged main
+        897e93b5). If main has moved outside outputs/, STOP for a ruling.
+    (2) CODE, in place, nothing else:
+        - joint_dispatch.py:
+            - the fill key (C1, R-2 (b));
+            - the history progress rule with k and k_L (R-1, C2);
+            - delta, open / closed, and the active-or-latched contest (C2);
+            - replacement planning: nearest qualifying spare, ledger-allowed
+              among the nearest ties, or the incumbent; persistence for every
+              spare; a clean approach for every challenger (C1, R-2 (a));
+        - wildfire_model.py _joint_dispatch_point / _dispatch_view:
+            - the d* maps (smoke read at every J point where PRE holds);
+            - contests for active and latched binders, under Limit 3;
+            - W_L out of steps 2 and 4 under Limit 3 only (Limit 2 alone keeps
+              D-7);
+            - PRE as restated in 5.2.
+        - The movement round's known doc defect is fixed in the same change:
+          the comment at agents.py:3813 (3773 on main) says the fixes act "each
+          behind its own exact-1 switch". This edits a run-loaded file before
+          W1: the src_sha changes, behaviour does not.
+    (3) TESTS, each failing without its part, each paired with a named mutant:
+        C1
+          - a nearer re-used unit beats a farther fresh one (unit side);
+          - a nearer victim on a re-used pair beats a farther fresh one (victim
+            side, |W| > |F_free|);
+          - an exact tie goes to the fresh pair;
+          - L1b: a clean-approach unit beats a nearer unit without one;
+          - nearest-or-incumbent withholds a REPLACE whose nearest qualifying
+            spares are all barred, and a latched replacement whose nearest
+            spare has b = 2;
+          - a tie at the least d* goes to the allowed spare (mutant: id
+            tie-break before the ledger);
+          - the margin leg uses a barred spare's persistence (mutant:
+            persistence counted for fresh spares only).
+        C2
+          - a latched unit with small G is not replaced by a far spare (margin
+            fails; stall fails until k_L > d* - G); it IS replaced once the
+            charge is exceeded;
+          - a latched unit whose route is open is judged on d* and k;
+          - an active unit whose route is closed is judged on G and k_L;
+          - k_L resets when the route opens: a unit blocked 30 steps whose route
+            reopens is not stall-replaced at that J-post by a spare with
+            d*(B) < d*(A) + 30 (mutant: count kept at reopening);
+          - FROZEN steps count in neither k nor k_L;
+          - the replacement is a LATCH-FILL with the cap; under Limit 2 alone
+            the second claim is kept (T-J10 unchanged).
+        R-1
+          - the false-stall board of 2.2 gives k = 0 throughout;
+          - a two-cell loop still stalls, also when v's cell turns smoky at
+            every third evaluation (mutant: re-base without memory);
+          - d* equals d when no clean path exists;
+          - H is initialised at the bind.
+        R-2 - a margin challenger without a clean approach is refused.
+        C3 - a REGRESSION check (C3 adds no code): J writes nothing to a free
+             unit; I4-W at every J call.
+        ROUND 1'S TESTS that pin superseded behaviour are amended or retired,
+        each with a reason and its replacement test (investigator report "disp"
+        Q4, review design M7):
+          - T-J11 (ii) and T-FLIP-b's last phase (fresh over nearer re-used);
+          - T-R8 (its no-allowed leg asserts the cap after the stall charge is
+            met), T-R10 (a) / (b), the stage-field test and T-INV's latch leg
+            (immediate LATCH-FILL);
+          - T-R1 to T-R4's pure calls (history progress; persistence for every
+            spare; clean maps now required by margin);
+          - I4's W_L checks (T-INV _check_frame, T-R10 _i4_violations), under
+            Limit 3 only;
+          - T-FLIP-a: its simulator is re-implemented to the corrected J order
+            (W-only fill; contests in step 3 with delta, k and k_L; nearest or
+            incumbent; persistence for every spare; R-2). The stage-4
+            LATCH-FILL assertion is retired with a reason, and the
+            non-vacuity thresholds are re-derived;
+          - T-J5 if touched.
+        test_shipped_defaults is unchanged (both switches still ship 0).
+    (4) MUTATION CHECK: round 1's dispatch mutants are re-run; those whose
+        target behaviour changed are retired with a reason. The new mutants
+        are added. Every mutant must be killed.
+    (5) THE INSTRUMENT, ANALYZER, REPLAY TOOL AND W3 GENERATOR (12), each with a
+        self-test.
+    (6) THE CHANCE-RATE TABLE, committed before W1: the movement round's method
+        (_mvg_guard_rates.py) on round 1's dp0 -> dp1 per-cell deltas (sets
+        1-2, in-sample, decides nothing). It reports F1 under R2, the literal
+        core F1 + L2 + L3, and the chance PASS of S3 + the literals for a
+        no-effect change, under the cell and seed nulls. A second table uses the
+        movement screen's G-arm death density, as a description of today's arm.
+    (7) At most 3 review agents.
+    (8) The full suite in a detached worktree (expected failing set: the base's,
+        {T5}). It never runs beside the smoke's timing runs or a screen wave.
+    (9) THE SMOKE, structural fields only, outcomes never read:
+        - dq0 and dq1 on set 1 ring A_N and set 1 uniform A_N (4 runs);
+        - dqR == dq0 on those 2 cells on the frozen S1 field list (2 runs; the
+          identity machinery);
+        - the overheads measured in-run, and the hours restated.
+        STRUCTURE CHECK: dq1 runs on set-1 / set-2 cells, in the order of
+        outputs/_dq_seeds.txt, until every correction's path has run at least
+        once. The paths: a C1 fill where a re-used pair is nearest; a contest
+        with a closed route; a stall and a margin replacement; a nearest-barred
+        frame. At most 16 runs. Paths not exercised are reported NOT EXERCISED
+        IN THE SMOKE.
+        W3 TOOLING VALIDATION (3-4 runs), on one dq1 smoke run through
+        _dq_replay.py:
+          - R0 must reproduce its record;
+          - one knockout with a non-empty decision set;
+          - one knockout with an EMPTY decision set, run anyway: it must
+            reproduce R0 exactly (11.2).
+    (10) Commit; STOP before W1.
+    PAPER: "the corrected dispatcher was built against tests that fail without
+    each of its rules, a mutation check and the full suite, before any screen
+    run".
+
+================================================================================
+14. WAVES, RUN COUNT AND HOURS
+================================================================================
+    | Wave | Content                                                | Runs    |
+    |------|--------------------------------------------------------|---------|
+    | -    | Part 2: smoke 6, structure check <= 16, W3 tooling 3-4  | 10-26   |
+    | W1   | dqR + dq0 on sets 7-8 (S1); W2 starts after S1 passes   | 128     |
+    | W2   | dq1 on sets 7-8 (THE SCREEN's treatment arm)            | 64      |
+    | W3   | knockout replays, before the verdict (11)              | 30-70   |
+    |      | TOTAL before the verdict                               | 232-288 |
+    W3's size follows from W2. The estimate:
+      - the movement screen's W3 had 24 cell-arms with candidates over its two
+        arms (80 lines), about 12 per arm;
+      - this round has one gating arm. Candidates also arise from deaths at
+        different steps, not only from count changes; round 1 changed
+        firefighter deaths in 11 of 64 cells;
+      - so about 6-15 cell-arms, with R0 + KO-OWN + KO-OTHERS (+ KO-LAST) per
+        (A) and 2 knockouts per (B): 30-70 runs.
+    HOURS (wave time; one pool, outputs/_mf2_pool.py --maxpar 12
+    --min-free-gb 3, no other pool):
+      | Stage  | Runs    | at 50 runs/h | at 79 runs/h  | at 28-32 runs/h       |
+      |        |         | (planning)   | (movement     | (round 1, about 8     |
+      |        |         |              |  screen)      |  concurrent)          |
+      |--------|---------|--------------|---------------|-----------------------|
+      | Part 2 | 10-26   | 0.2-0.5 h    | 0.1-0.3 h     | 0.3-0.9 h             |
+      | W1     | 128     | 2.6 h        | 1.6 h         | 4.0-4.6 h             |
+      | W2     | 64      | 1.3 h        | 0.8 h         | 2.0-2.3 h             |
+      | W3     | 30-70   | 0.6-1.4 h    | 0.4-0.9 h     | 0.9-2.5 h             |
+      | TOTAL  | 232-288 | 4.6-5.8 h    | 2.9-3.6 h     | 7.3-10.3 h            |
+      - The rate depends on the commit memory free on the day, the reason round
+        1 ran at about 8 concurrent.
+      - Plus the full suite (about 1.5-2.2 h; the merged branch holds about
+        2 400 tests), in its own worktree, never beside the smoke's timing runs
+        or a screen wave (S6 is timing-sensitive).
+      - Plus the analyzer and the wave checks. Part 2 restates the hours from
+        the smoke.
+    - Every run line is queued before W1 and frozen. Tags are re-checked unused
+      (tracked and untracked, all trees) before each wave.
+    - Wave checks every 20-30 minutes (the analyzer's --zeros-only mode:
+      validity, S1, the structural zeros, W3 validity; no outcome).
+    - No commit and no edit of a run-loaded file from W1 to the end of W3.
+    PAPER: "the run count and hours were stated before any run".
+
+================================================================================
+15. EXPECTED OUTCOME (stated before any run)
+================================================================================
+    - WHAT DISPATCH CAN STILL CHANGE. On today's dispatch with the shipped
+      movement (mvg arm G, sets 5-6, 64 cells) there were 13 DD (10 + 3). Their
+      frozen 22.9 classes were 9 MOV-a (approach-leg), 2 FUT (futile), 1 MOV-b
+      and 1 MOV-closure; none was dispatch-order.
+      - M8-D - a death where a FREE unit could have reached her in time while she
+        waited - was 1.
+      - Limit 3 acts on approach legs (stalls and margins), so the MOV-a deaths
+        are its domain. The movement fixes already removed many of the loops it
+        was built for (LIVELOCK 3 -> 0, CYCLE 103 -> 58).
+    - ROUND 1 (in-sample, pre-fix): J left DD unchanged (13 -> 13).
+    - THE CORRECTIONS are mostly safety and consistency:
+      - C1 changed 5 of round 1's 256 fill binds;
+      - C2's footprint is uncertain in both directions (5.7);
+      - C3 changes no behaviour;
+      - R-1 / R-2 remove false stalls and blind margins and fills.
+    - EXPECTED SIDE EFFECTS, stated now: latch episodes (F6) and returns after
+      an outside event (D2) rise where C1 re-binds nearer units on pairs that
+      have already raised once (4.5).
+    - EXPECTED VERDICT: NOT SHOWN is the likeliest. S3 needs, on a base of about
+      13 DD: a pooled fall in DD, no rise in either set, and robustness to the
+      best cell.
+      - FAIL is possible by chance. A pooled literal clause on firefighter
+        deaths fails a no-effect change with probability about 0.38-0.5
+        (urgency_part1d.txt 1d.3.2). The movement round's literal core (F1 + L2
+        + L3) failed a no-effect fix by chance about 0.8 of the time on its
+        deltas (0.806-0.828). Part 2 (6) states this round's rates before W1.
+      - PASS needs a pooled fall in DD, no rise in either set, robustness to the
+        best cell, and no harm on any guard.
+    - FIREFIGHTER DEATHS may move either way:
+      - J changes which units walk which legs;
+      - it removes closed-route binds (in round 1, 1 of 20 ended in a unit's
+        death);
+      - it keeps more units free, and unbound units account for most
+        firefighter deaths.
+      L4 decides it causally.
+    - Under decision 0.2, NOT SHOWN and FAIL have the same consequence: both
+      switches stay 0, nothing merges, and the measurement round follows with
+      today's dispatch.
+    PAPER: "the round's rule, its expected outcome and its chance rates were
+    stated before any run".
+
+================================================================================
+16. WHAT THIS MEANS FOR THE PAPER - SUMMARY
+================================================================================
+    P.1 Before any run the maintainer made this the only further dispatch
+        attempt (0).
+    P.2 Merging the shipped movement fixes changed the dispatcher's premises:
+        its fire-free distance is no longer the distance a unit walks. The
+        corrected dispatcher:
+          - uses the clean distance where one exists (R-1);
+          - measures a stall against every cell the unit has stood on, on the
+            current fire (R-1);
+          - prefers units that can walk cleanly to the victim, and never
+            replaces a unit by one that cannot (R-2).
+    P.3 Round 1's report gets two corrections and one extension (3.4).
+    P.4 C1: history never decides a choice between units. Where the
+        anti-reversal proof forbids the nearest challenger, the dispatcher keeps
+        the incumbent rather than send a farther unit - the one place where
+        history still costs a unit, and the price of the proof.
+    P.5 C2: a unit blocked by fire keeps its victim until a clearly nearer unit,
+        or the time it has demonstrably been blocked, justifies replacing it. It
+        is credited with the shortest possible path for a stationary victim,
+        since the fire's reopening is random. Its blocked time is never charged
+        against it once its route reopens.
+    P.6 C3: a unit that cannot reach any waiting victim is not held for one. It
+        keeps the shipped free-unit policy (fight the nearest fire front,
+        retreat, or stand by) and is bound at the J point at which a route
+        opens. The dispatcher does not aim its work at the waiting victim.
+    P.7 The no-flip-flop theorem holds unchanged.
+    P.8 The screen's rule, guards (with the causal clause), seeds, hours and
+        expected outcome were fixed before any run; the verdict is reported
+        whatever it is.
+
+================================================================================
+17. SOURCES, AGENTS, CONTACT, PROCESS
+================================================================================
+17.1 SOURCES. Code at 27714461 (dispatch worktree). Round 1's records and
+    documents (dispatch_part1.txt, dispatch_part2_notes.txt, dispatch_report.txt,
+    dispatch_analysis.txt). The movement round's documents and tools on main
+    (urgency_part1d.txt, mvg_report.txt, mvg_screen_analysis.txt, _mvg_*.py).
+    The urgency worktree's urgency_part1.txt (22-23).
+17.2 INVESTIGATORS (read-only fact-finding; not reviewers). One workflow of six
+    agents, 2026-10-08 12:02-12:27, on six topics:
+      - the movement fixes against J;
+      - the dispatch code's anatomy and tests;
+      - free units and the M3(a) steps;
+      - latch recovery and the fire model;
+      - the fresh-pair instance;
+      - the gate tooling to port.
+    Their reports are in the session scratch record. Every number in sections
+    2-3 and 5-6 is theirs, re-read by the orchestrator and checked by the facts
+    reviewer (17.5). The exception is 3.1's REPLACE count, the orchestrator's
+    own offline recomputation (scratch nearest_barred.py), which the facts
+    reviewer reproduced.
+    - None edited a repository file or ran the simulator, a probe or pytest.
+    - Scripts ran on the .venv Python, standard library only, reading named
+      records.
+17.3 CONTACT WITH THE QUARANTINE (outputs/_firemech_rewound_20260914, present
+    only in E:/Projects/SAS/outputs). Traversal is contact; each case is listed.
+    - Investigators "disp" and "latch" each ran ONE Grep / Glob tool call rooted
+      at the dispatch worktree ROOT (patterns tests/test_dispatch*.py and
+      {agents.py,common_fixed_variables.py}). That breaks the rooting rule; both
+      disclosed it.
+    - The facts reviewer ran one recursive grep from the dispatch worktree root
+      (grep -rn "def apply_wind" --include=*.py . | grep -v outputs/) and
+      disclosed it. It traversed that worktree's outputs/. It may also have
+      followed the worktree's .venv junction into E:/Projects/SAS/.venv, which
+      is not the quarantine.
+    - In all three cases the dispatch worktree does not contain the quarantine
+      directory, so there was no contact with it - but each is a breach of the
+      rooting rule.
+    - The other two reviewers rooted directory searches only at
+      src_extension/ or tests/.
+    - One shared-scratch file collision between investigators was disclosed;
+      the results were reproduced under unique names.
+    - The orchestrator's seed scan walked E:/Projects/SAS/outputs with os.walk.
+      It saw the quarantine directory's NAME in its parent listing and pruned it
+      before descending: no file inside was opened or listed, as in the
+      movement round's scan.
+    - Git history searches excluded the directory by pathspec. git status ran
+      only with -uno.
+17.4 REVIEW: three read-only review agents (the allowed maximum), 12:58-13:21,
+    each with one lens - design and proof; gates, statistics, knockouts and
+    operations; facts. 53 findings: 3 blockers, 14 major, 36 minor.
+17.5 FINDINGS AND DISPOSITIONS (every finding was accepted; none rejected)
+    BLOCKERS
+      design B1  C2 carried the latched-time count into the reopening, so a
+                 recovered unit could be stall-replaced against d* + k. FIXED:
+                 the separate closed-route count k_L, reset when the route opens
+                 (5.2), with a test and a mutant (13 (3)).
+      design B2  Re-basing a progress reference after an undefined spell let a
+                 two-cell loop reset k. FIXED: progress against the history of
+                 cells on the current board, with nothing ever re-based (2.8),
+                 with a test and a mutant.
+      gates B1   The knockout's "J decides on what remains" could be read two
+                 ways, and the empty-knockout shortcut was not exact. FIXED: the
+                 override semantics (11.2), plus a tooling check that runs one
+                 empty knockout (13 (9)).
+    MAJOR
+      design M1  Nearest-or-nothing's hold is unbounded. FIXED: stated in 4.5,
+                 5.5 and X-1; durations reported.
+      design M2  "The principle holds as stated" overclaimed. FIXED: 4.1, P.4
+                 and X-1 now state where history still costs a unit.
+      design M3  Ties could withhold an allowed replacement. FIXED: the
+                 lowest-id allowed spare among the least-d* ties (4.3, Z-C1b);
+                 test and mutant.
+      design M4  d* in the fill preferred units with no clean route. FIXED: R-2
+                 (b), the fill's L1b (2.8, 4.2).
+      design M5  The M = 5 argument does not survive exemption jumps or regime
+                 switches. FIXED: restated as a limit; margin decisions with a
+                 unit on an unclean cell are reported (2.8).
+      design M6  W_L out of the fill also overrode D-7 under Limit 2 alone.
+                 FIXED: Limit 3 only; T-J10 unchanged (5.2, 13 (2)).
+      design M7  The Part 2 test list was incomplete. FIXED: 13 (3) names
+                 T-FLIP-a's simulator, T-R1 to T-R4, T-R8 and the new tests;
+                 C3's test is a regression check.
+      design M8  C3 overclaimed useful work. FIXED: 6.2-6.5, P.6 and X-4 say
+                 that C3 (a) changes no behaviour; Z-C3 is a code-structure
+                 check.
+      gates M1   S1's "every field present in both" fails by construction.
+                 FIXED: a frozen field list (10.2).
+      gates M2   D3 was not computable in dq0. FIXED: the arm-independent
+                 per-step sample (10.1, 12.1); victims of interest defined.
+      gates M3   Z1-M (v) and SM were dropped in dq1. FIXED: kept in every arm,
+                 except the gated U1 kick rows (10.3).
+      gates M4   Z-R1 could compare the instrument with itself. FIXED: it
+                 compares J's _cap inputs with an independent BFS (10.3).
+      facts F1   "The fire changes only at spread ticks" was false (extinguish
+                 writes). FIXED: 2.6, 3.2, 5.6 (b).
+      facts F2   Section 8's "only files that name sets 7-8" was false. FIXED:
+                 reworded.
+    MINOR (all fixed in place)
+      - Design: m1 (bind initialisation: H at the bind), m2 (active and
+        closed: now C2's closed rule), m3 (k at the latch: k_L starts at 0),
+        m4 (wording: G as an optimistic bound; L2' / L3'; "for a stationary
+        victim"), m5 (latch rate rises with C1: 4.5, 5.7, 15), m6 (PRE
+        restated; G-B(a) / I7 made a dq1 zero), m7 (the comment's location and
+        owner).
+      - Gates: m1 / F7 (Holm's reach), m2 (L3 marked as carried), m3 (PASS
+        wording), m4 (seed-file roles descriptive), m5 (outcome 1 covers every
+        arm; replays that are missing, invalid or crashed are UNRESOLVED), m6
+        (D4 defined on the label; D1 custody), m7 (D2's expected rise), m8
+        (Z-C1a per stage), m9 (KO-OTHERS removes every replacement), m10
+        (round 1's rate column; the W3 basis; the suite apart from timing
+        runs), m11 (hashes cover sections 0 and 2-15), m12 (DIVERGED gates
+        the tests; asserted), m13 (the merge-after-NOT-SHOWN ruling
+        removed: 0.2 already fixes the no-merge), m14 (the per-switch
+        deviation disclosed), m15 (PAPER lines on rulings and sections
+        12-14), m16 (X-7 (b) restated with its bridge).
+      - Facts: F3 (491 decisions, 256 binds), F4 (5 raises, 3 replaced), F5
+        (10-75; 101 / 115), F6 (k_L), F8 (enclosure unverified), F9 (P.5 an
+        extension), F10 (stage order), F11 (latched-binder episodes defined),
+        F12 (+104 of +111), F13 (0.38-0.5), F14 (X-0), F15 (comment line).
+    The orchestrator's own check during the review (7.3): a bound unit's
+    route_blocked label is written only by its own raise. The handler's early
+    return (WM:5658) can leave a unit bound and labelled only for a victim
+    that J's needy test also excludes. Step (ii) of the proof is stated in that
+    robust form.
+    PAPER: "the pre-registration was reviewed by three independent agents
+    before its commit; every finding and its disposition is recorded".
+
+================================================================================
+18. DECISIONS FOR THE MAINTAINER - STOP
+================================================================================
+Recommendation first in each. Decision 0.2 already fixes the code's fate after a
+FAIL or NOT SHOWN (not merged), so no ruling is asked on it.
+  X-0  READING OF "DIAGNOSTICS ONLY" (3.5).
+       (a) RECOMMENDED: no correction or variant is chosen on round 1's runs;
+           the offline mechanism checks are reported only; no round-1 cell is
+           re-run as evidence.
+       (b) Another reading, to be stated.
+       PAPER: "the first round's runs named the causes; none was used to choose
+       a fix".
+  X-1  C1 IN REPLACEMENTS, where the proof's ledger bars the nearest
+       challenger.
+       (a) RECOMMENDED: keep the incumbent (4.3). J never SENDS a farther unit
+           because a nearer one has history. The cost: a barred spare that
+           stays nearest blocks every replacement of that victim, without
+           bound (4.5); round 1: 3 of 40 REPLACEs.
+       (b) Send the nearest ALLOWED spare (round 1's rule). No such block, but
+           a farther fresh unit can be sent over a nearer re-used one - the
+           pattern the brief names.
+       Both keep the fill ledger-free and the proof intact.
+       PAPER (a): "where the anti-reversal proof forbids the nearest challenger,
+       the incumbent is kept". (b): "...the nearest allowed unit is sent".
+  X-2  RE-USE IN THE FILL KEY. (a) RECOMMENDED: an exact-tie tie-break (L4').
+       (b) Dropped. Indistinguishable on round 1's records.
+       PAPER: none either way (a tie-break).
+  X-3  C2'S FORM.
+       (a) RECOMMENDED: the blocked unit is an incumbent, credited with its
+           grid distance, under the unchanged stall and margin rules, with its
+           blocked steps counted apart (5.2).
+       (b) One fire update of patience (5.6 (b)).
+       (c) S latched steps (5.6 (c)).
+       PAPER (a): P.5. (b): "a blocked unit is replaced only after the fire
+       has changed at least once". (c): "...only after S blocked steps".
+  X-4  C3'S FORM.
+       (a) RECOMMENDED: no new behaviour (6.3). Not held, I4-W, no closed-route
+           binds, and a corrected measure D3. It does NOT aim free units' work
+           at the waiting victim.
+       (b) Breach targeting (6.4).
+       (c) Staging (6.4). (b) and (c) both move units toward fire after the
+           last movement round.
+       PAPER (a): P.6, including "the dispatcher does not aim its work at the
+       waiting victim".
+  X-5  R-1: ONE ROUTE METRIC d* AND HISTORY PROGRESS (2.8).
+       (a) RECOMMENDED: yes.
+       (b) Keep round 1's d and e-shift progress, accepting false stalls (2.2)
+           and the clean-detour bias (2.4).
+       PAPER (a): P.2.
+  X-6  R-2: CLEAN APPROACH FIRST, for every challenger and in the fill (L1b).
+       (a) RECOMMENDED: yes.
+       (b) Stall challengers only, as round 1.
+       PAPER (a): "a unit that can walk cleanly to a victim is preferred, and
+       only such a unit may replace an incumbent".
+  X-7  S1 REFERENCE.
+       (a) RECOMMENDED: dqR re-measured at main 897e93b5 on sets 7-8: the same
+           cells as the screen, 64 runs.
+       (b) dq0 on sets 5-6 against the movement round's mvg1 records (64 runs).
+           This needs a version bridge (the S1 field list read from the
+           mvg_probe v1 records, whose instrument differs) and an exception to
+           section 8 for sets 5-6. It relies on the 8 / 8 flip identity.
+       PAPER (a): "with both dispatch switches at 0, the round's code equals
+       the shipped code on all 64 screen cells".
+  X-8  D3 (IDLE-UNREACHABLE).
+       (a) RECOMMENDED: arm-symmetric, both labels, "did no work" from the
+           firefighting log and the rows (10.6).
+       (b) Arm-symmetric but action-blind: it rises when units survive.
+       (c) Round 1's M3(a): legacy's closed-route binds hide its waits.
+       PAPER (a): "idle means unbound and doing no work".
+  X-9  L4 KNOCKOUT SEMANTICS.
+       (a) RECOMMENDED: today's choice substituted at J's decision times by
+           OVERRIDE, KO-OWN / KO-OTHERS (11.2).
+       (b) Withholding only: Limit-3 actions withheld, fills unchanged. Clean
+           for C2, but blind to fill and refrain decisions, which are most of
+           what J changes.
+       PAPER (a): 11.3's line. (b): "only reassignment decisions were knocked
+       out".
+  X-10 THE SIGN-TESTED FAMILY.
+       (a) RECOMMENDED: the movement round's 24 plus D1-D4, m = 28 (at least
+           10 changed cells, nearly all rising).
+       (b) The 24 plus D1-D3 (m = 27, the same reach), with D4 reported.
+       PAPER: the reach is disclosed with the verdict.
+  X-11 OWNERSHIP OF A MOVEMENT OR GUARD ZERO FAILING IN dq1 ONLY.
+       (a) RECOMMENDED: an S2 FAIL: the dispatcher broke a shipped invariant.
+       (b) A STOP: a shipped-code defect.
+       PAPER (a): "the corrected dispatcher kept every movement invariant", or
+       the failure is reported as its own.
+  X-12 THE ROUTE_BLOCKED GATE SHARDS, where round 1's only LATCH-FILL
+       happened.
+       (a) RECOMMENDED: not run. They carry no dp record, CRN is off, and the
+           seed-202 latch cannot recur at HEAD. C2 is checked by tests, Z-C2
+           and its footprint.
+       (b) Run all four shards for both arms as report-only evidence: about
+           1.5-2.5 h (round 1's 4 gate lines took 1 h 10 per arm).
+       PAPER (a): 10.8's NOT EXERCISED line if C2 never acts.
+  X-13 A THIRD, ROUND-1 J ARM.
+       (a) RECOMMENDED: no. The brief fixes two arms, and the instrument's
+           frozen shadow gives each correction's footprint.
+       (b) Yes, report-only: +64 runs, about 0.8-1.3 h at 50-79 runs/h (2.0-2.3
+           h at round 1's rate).
+       PAPER (a): the footprints only; no corrected-vs-round-1 outcome claim.
+  X-14 THE CORRECTIONS IN PLACE, WITH NO SUB-SWITCHES.
+       (a) RECOMMENDED: yes.
+       (b) A sub-switch per correction: more code; enables X-13 (b) on one
+           checkout and a per-correction NOT MEASURED rule.
+       PAPER (a): 10.8's deviation line.
+  X-15 THE GUARD'S TIME-SAFETY IN J (2.5).
+       (a) RECOMMENDED: no - a stated limit; L4 is the check.
+       (b) Yes: FROZEN and every challenger use the guard's admit test. Wind and
+           FAE enter J's information, at about 40 ms p99 per call.
+       PAPER (a): "the stranding guard protects movement steps; the dispatcher
+       does not run it".
+NEXT: commit, then STOP. Part 2 starts only after the rulings, recorded as an
+amendment to this document.
