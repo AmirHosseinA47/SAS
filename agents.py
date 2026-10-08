@@ -3810,9 +3810,9 @@ class Firefighter(mesa.Agent):
     # rulings 23) and their stranding guard (outputs/urgency_part1d.txt 1d.2; amendment C1, 1d.13).
     # Every *_choice / *_verdict method below is PURE - it reads the board and this unit, and never
     # moves, raises, relabels or writes state - so the instrument can evaluate it as a
-    # shadow in every arm. The fixes act only through _fix_move, each behind its own exact-1
-    # switch (ff_approach_path, ff_retreat_keep_approach) and the guard (ff_fix_stranding_guard,
-    # through _guarded); with both fix switches at 0 none of this is ever entered.
+    # shadow in every arm. The fixes act only through _fix_move, each behind its own switch - off only
+    # on an exact 0 and shipped 1 since the MVG flip (ff_approach_path, ff_retreat_keep_approach) - and the
+    # guard (ff_fix_stranding_guard, through _guarded); with both fix switches at 0 none of this is ever entered.
     # ------------------------------------------------------------------
     def _board_sets(self) -> tuple[set, set]:
         return fire_board_sets(self.model)

@@ -1,16 +1,20 @@
 """Dispatch round: the joint dispatcher J (outputs/dispatch_part1.txt sections 5-7; rulings section 20;
-amendment A1 section 21).
+amendment A1 section 21) - as corrected by dispatch round 2 (outputs/dispatch2_part1.txt sections 2.8, 4-7;
+rulings section 19).
 
 Pure functions over plain data - no model, grid, agent or RNG access. wildfire_model builds the inputs (cells,
 sets, dicts of distances, the ledger) and applies J's output through the RescueExecutor; this module only decides.
 
-LIMIT 2 - solve_fill: free units x waiting victims, chosen exactly by the lexicographic key (design 5.4)
-    L1 most victims served, L2 fewest re-used pairs, L3 least total route time, L4 least worst route time,
-    L5 smallest sorted (victim index, unit index) list, indices parsed as INTEGERS.
-LIMIT 3 - progress_step / update_persistence / plan_replacements: the stall rule (design 6.3-6.4: S counted
-    steps without the unit's OWN progress, fire and victim motion factored out, a clean approach required of
-    the challenger) and the margin rule (design 6.5: M steps better for P consecutive evaluations). A REPLACE
-    may use only a never-bound pair (ledger b = 0) - the device behind the no-reversal theorem (design 6.9).
+LIMIT 2 - solve_fill: free units x waiting victims, chosen exactly by the lexicographic key (round 2, 4.2)
+    L1 most victims served, L1b most clean-approach pairs, L2' least total route time d*, L3' least worst d*,
+    L4' fewest re-used pairs (an exact-tie tie-break), L5 smallest sorted (victim index, unit index) list, indices
+    parsed as INTEGERS.
+LIMIT 3 - progress_step / update_persistence / plan_replacements: the stall rule (S counted steps without the
+    unit's OWN progress - progress = beating every cell it has stood on since its last progress, on the current
+    board; a closed route counted apart, k_closed) and the margin rule (M steps better for P consecutive
+    evaluations). Every challenger needs a clean approach; the new unit is the nearest qualifying one that the
+    ledger allows, else the incumbent is kept. A REPLACE may use only a never-bound pair (ledger b = 0), a
+    LATCH-FILL a pair bound at most once - the devices behind the no-reversal theorem (design 6.9).
 
 Route distances come from bfs_distances rooted at the VICTIM over cells that are not blocked; route_distance
 reads a unit's cell with the unit's own exemption (the route test never tests its source), so
@@ -189,6 +193,7 @@ class FillPair:
     unit: str
     distance: int
     reused: bool
+    clean: bool = False
 
 
 def count_configurations(n_units: int, n_victims: int) -> int:
@@ -202,18 +207,27 @@ def solve_fill(
     distance: Mapping[tuple[str, str], int | None],
     ledger: Mapping[tuple[str, str], int],
     *,
+    clean: Mapping[tuple[str, str], bool] | None = None,
     capped: Iterable[str] = (),
 ) -> list[FillPair]:
-    """Limit 2's fill (design 5.4-5.6): the lexicographically best matching of free `units` to waiting `victims`.
+    """Limit 2's fill: the lexicographically best matching of free `units` to waiting `victims`.
 
-    distance[(unit, victim)] is the route distance (None or missing = no route; never allowed).
-    ledger[(unit, victim)] = b, the binds of that pair so far. A pair with b >= 1 is RE-USED (L2 prefers fresh
-    pairs among maximum matchings). Victims in `capped` are LATCH-FILL targets: a pair with b >= 2 is not
-    allowed for them (design 5.6). Returned in victim order.
+    Round 2 key (outputs/dispatch2_part1.txt 4.2, rulings X-1 / X-2 / X-6):
+        L1  most victims served;
+        L1b most pairs with a CLEAN APPROACH (clean[(unit, victim)]; R-2 (b));
+        L2' least total route time;  L3' least worst route time  (distance = d*, R-1);
+        L4' fewest re-used pairs (ledger b >= 1) - an EXACT-TIE tie-break only (C1);
+        L5  smallest sorted (victim index, unit index) list, indices parsed as integers.
+    The ledger never enters L1-L3', so history never decides a choice between units or victims.
+    distance[(unit, victim)] = the route distance d* (None or missing = no route; never allowed). Victims in
+    `capped` are LATCH-FILL targets of round 1's step 2 (a pair with b >= 2 not allowed); the round-2 model never
+    passes any (a latched-held victim is a contest under Limit 3, and Limit 2 alone passes none, as round 1).
+    Returned in victim order.
     """
     unit_list = sorted({str(u) for u in units}, key=id_index)
     victim_list = sorted({str(v) for v in victims}, key=id_index)
     capped_set = {str(v) for v in capped}
+    clean_map = clean if clean is not None else {}
     n_configs = count_configurations(len(unit_list), len(victim_list))
     if n_configs > MAX_CONFIGURATIONS:
         raise ValueError(
@@ -221,9 +235,9 @@ def solve_fill(
             f"exceed {MAX_CONFIGURATIONS} (design 5.5)"
         )
 
-    options: dict[str, list[tuple[str, int, bool]]] = {}
+    options: dict[str, list[tuple[str, int, bool, bool]]] = {}
     for unit in unit_list:
-        row: list[tuple[str, int, bool]] = []
+        row: list[tuple[str, int, bool, bool]] = []
         for victim in victim_list:
             d = distance.get((unit, victim))
             if d is None:
@@ -231,7 +245,7 @@ def solve_fill(
             b = int(ledger.get((unit, victim), 0) or 0)
             if victim in capped_set and b >= 2:
                 continue
-            row.append((victim, int(d), b >= 1))
+            row.append((victim, int(d), b >= 1, bool(clean_map.get((unit, victim), False))))
         options[unit] = row
 
     best_key: tuple | None = None
@@ -239,11 +253,12 @@ def solve_fill(
 
     def score(pairs: list[FillPair]) -> tuple:
         n = len(pairs)
+        n_clean = sum(1 for p in pairs if p.clean)
         total = sum(p.distance for p in pairs)
         worst = max((p.distance for p in pairs), default=0)
         reused = sum(1 for p in pairs if p.reused)
         ids = sorted((id_index(p.victim), id_index(p.unit)) for p in pairs)
-        return (-n, reused, total, worst, ids)
+        return (-n, -n_clean, total, worst, reused, ids)
 
     def walk(i: int, used: frozenset[str], chosen: list[FillPair]) -> None:
         nonlocal best_key, best_pairs
@@ -255,10 +270,10 @@ def solve_fill(
             return
         unit = unit_list[i]
         walk(i + 1, used, chosen)
-        for victim, d, reused in options[unit]:
+        for victim, d, reused, is_clean in options[unit]:
             if victim in used:
                 continue
-            chosen.append(FillPair(victim=victim, unit=unit, distance=d, reused=reused))
+            chosen.append(FillPair(victim=victim, unit=unit, distance=d, reused=reused, clean=is_clean))
             walk(i + 1, used | {victim}, chosen)
             chosen.pop()
 
@@ -270,12 +285,20 @@ def solve_fill(
 
 @dataclass(frozen=True)
 class Progress:
-    """Per-binding progress state (design 6.3), reset at every bind."""
+    """Per-binding progress state (outputs/dispatch2_part1.txt 2.8 R-1 and 5.2 C2), reset at every bind.
 
-    best: int
-    k: int
-    d_prev: int
-    cell_prev: Cell
+    history  H: the cells the unit has stood on at J-post evaluations since its last progress (the bind cell
+             first), sorted and unique.
+    k        J-posts with the unit's route OPEN and no progress (not FROZEN); 0 at progress.
+    k_closed k_L: consecutive J-posts with the route CLOSED in the current closed spell (not FROZEN); reset to 0
+             when the route opens.
+    closed   whether the route was closed at the last evaluation.
+    persist  the margin persistence counters, per spare (6.5; counted for every spare, fresh or not - C1)."""
+
+    history: tuple[Cell, ...]
+    k: int = 0
+    k_closed: int = 0
+    closed: bool = False
     age: int = 0
     persist: tuple[tuple[str, int], ...] = field(default_factory=tuple)
 
@@ -283,36 +306,63 @@ class Progress:
         return dict(self.persist)
 
 
-def new_progress(d: int, cell: Cell) -> Progress:
-    """The state of a binding at its bind (design 7.1 step 4)."""
-    return Progress(best=int(d), k=0, d_prev=int(d), cell_prev=(int(cell[0]), int(cell[1])))
+def new_progress(cell: Cell) -> Progress:
+    """The state of a binding at its bind: H = {the bind cell}, both counts 0 (2.8; review finding m1)."""
+    return Progress(history=((int(cell[0]), int(cell[1])),))
 
 
-def progress_step(state: Progress, d_now: int | None, x_now: int | None, cell_now: Cell, frozen: bool) -> Progress:
-    """One J-post update (design 6.3).
+def _finite_min(values: Iterable[int | None]) -> int | None:
+    finite = [int(v) for v in values if v is not None]
+    return min(finite) if finite else None
 
-    d_now = the incumbent's route distance from its CURRENT cell, x_now = from its PREVIOUS cell - both on the
-    current burning set and the victim's current cell. e = x_now - d_prev is the change the unit did not cause
-    (fire, either sign; the victim, any direction); the reference `best` shifts by it, so only the unit's own
-    moves can beat it. `frozen` (no unit has a clean approach) stops k from advancing. A closed route (either
-    distance None) leaves the state untouched: the unit's own route test raises route_blocked at its next move.
+
+def progress_step(
+    state: Progress,
+    route_open: bool,
+    d_now: int | None,
+    c_now: int | None,
+    d_hist: Sequence[int | None],
+    c_hist: Sequence[int | None],
+    cell_now: Cell,
+    frozen: bool,
+) -> Progress:
+    """One J-post update (R-1, 2.8; C2, 5.2). Every distance is on the CURRENT board, to v's CURRENT cell:
+    d = the fire-free route distance, c = the clean distance (None = none), each read at a unit cell with the
+    unit-cell exemption; d_hist / c_hist are the same reads at the cells of state.history, in its order.
+
+    CLOSED route (route_open False): no own progress is possible; H grows, k unchanged, k_closed + 1 unless
+    FROZEN.
+    OPEN route: k_closed resets to 0. PROGRESS iff the unit reached v (d = 0), or d_now beats the least finite d
+    over H, or c_now (finite) beats the least finite c over H. A metric with no finite value over H is not compared
+    (amendment A2, outputs/dispatch2_part2_notes.txt: an empty minimum read as infinite would let a two-cell loop
+    on the clean-field boundary score progress every frame). On progress H = {cell_now}, k = 0; otherwise H grows
+    and k + 1 unless FROZEN.
     """
-    if d_now is None or x_now is None:
-        return state
-    best = state.best + (int(x_now) - state.d_prev)
-    k = state.k
-    if d_now == 0:
-        best, k = 0, 0
-    elif d_now < best:
-        best, k = int(d_now), 0
-    elif not frozen:
-        k += 1
+    cell = (int(cell_now[0]), int(cell_now[1]))
+    grown = tuple(sorted(set(state.history) | {cell}))
+    if not route_open:
+        return replace(
+            state,
+            history=grown,
+            k_closed=state.k_closed + (0 if frozen else 1),
+            closed=True,
+            age=state.age + 1,
+        )
+    best_d = _finite_min(d_hist)
+    best_c = _finite_min(c_hist)
+    progressed = d_now is not None and (
+        int(d_now) == 0
+        or (best_d is not None and int(d_now) < best_d)
+        or (c_now is not None and best_c is not None and int(c_now) < best_c)
+    )
+    if progressed:
+        return replace(state, history=(cell,), k=0, k_closed=0, closed=False, age=state.age + 1)
     return replace(
         state,
-        best=best,
-        k=k,
-        d_prev=int(d_now),
-        cell_prev=(int(cell_now[0]), int(cell_now[1])),
+        history=grown,
+        k=state.k + (0 if frozen else 1),
+        k_closed=0,
+        closed=False,
         age=state.age + 1,
     )
 
@@ -320,19 +370,19 @@ def progress_step(state: Progress, d_now: int | None, x_now: int | None, cell_no
 def update_persistence(
     state: Progress,
     spare_distance: Mapping[str, int | None],
-    d_incumbent: int | None,
+    delta_incumbent: int | None,
     margin: int,
-    fresh: Mapping[str, bool],
 ) -> Progress:
-    """The margin persistence counters of one binding (design 6.5): spare B's count rises by one at each
-    evaluation where (B, v) is fresh and d(B, v) + margin <= d(A, v), and resets otherwise - including every
-    evaluation at which B is not a spare (it is absent from spare_distance)."""
+    """The margin persistence counters of one binding (6.5, C1): spare B's count rises by one at each evaluation
+    where d*(B, v) + margin <= delta(A, v), and resets otherwise - including every evaluation at which B is not a
+    spare (absent from spare_distance). Counted for EVERY spare, fresh or re-used: the ledger is consulted only when
+    the replacement is chosen (4.3)."""
     previous = state.persist_map()
     counts: dict[str, int] = {}
     for unit, d in spare_distance.items():
-        if d is None or d_incumbent is None or not fresh.get(unit, False):
+        if d is None or delta_incumbent is None:
             continue
-        if int(d) + int(margin) <= int(d_incumbent):
+        if int(d) + int(margin) <= int(delta_incumbent):
             counts[unit] = previous.get(unit, 0) + 1
     ordered = tuple(sorted(counts.items(), key=lambda kv: id_index(kv[0])))
     return replace(state, persist=ordered)
@@ -340,14 +390,22 @@ def update_persistence(
 
 @dataclass(frozen=True)
 class Contest:
-    """A contestable binding at J-post (design 6.2): victim, its only (active) binder, its current route distance,
-    its stall count and its margin persistence counters."""
+    """A contestable binding at J-post (5.2): victim, its only binder, the binder's distance delta (d* if its route
+    is open, the grid distance G if closed), whether the route is open, the two counts, the margin persistence
+    counters, and whether the binder is LATCHED (labelled route_blocked; its replacement is a LATCH-FILL)."""
 
     victim: str
     incumbent: str
-    d: int
+    delta: int
+    route_open: bool
     k: int
+    k_closed: int
     persist: Mapping[str, int]
+    latched: bool = False
+
+    @property
+    def count(self) -> int:
+        return self.k if self.route_open else self.k_closed
 
 
 @dataclass(frozen=True)
@@ -357,6 +415,108 @@ class Replacement:
     new_unit: str
     cause: str  # "stall" | "margin"
     distance: int
+    latched: bool = False
+
+
+@dataclass(frozen=True)
+class Barred:
+    """A contest whose nearest qualifying spares (all at the least d*) are ledger-barred: no replacement (4.3)."""
+
+    victim: str
+    incumbent: str
+    cause: str
+    distance: int
+    units: tuple[str, ...]
+
+
+def plan_replacements_detail(
+    contests: Sequence[Contest],
+    spares: Sequence[str],
+    distance: Mapping[tuple[str, str], int | None],
+    ledger: Mapping[tuple[str, str], int],
+    clean: Mapping[tuple[str, str], bool],
+    *,
+    stall_steps: int,
+    margin_persist: int,
+) -> tuple[list[Replacement], list[Barred]]:
+    """Limit 3's replacements at one J-post (4.3, 5.2, 2.8 R-2 (a)).
+
+    A contest is STALLED when its count (k if the route is open, k_closed if closed) reaches stall_steps.
+    QUALIFYING spares (the ledger NOT consulted): unused in this frame, a clean approach (clean[(B, v)]), a route
+    (distance[(B, v)] = d* not None), and
+        STALL   d*(B, v) < delta + count;
+        MARGIN  persistence count >= margin_persist (d*(B, v) + M <= delta at each of the last P evaluations).
+    The new unit is the lowest-id ledger-ALLOWED spare among the qualifying spares at the least d* (D): a REPLACE
+    needs b = 0, a LATCH-FILL (latched incumbent) b <= 1. If every qualifying spare at D is barred, no replacement
+    for that victim in this frame (a Barred record); the spares stay available to other contests.
+    Contest order: stalled first by largest count, then largest gain (delta - D, ledger-blind), then victim id;
+    then margin contests by largest gain, then victim id. Each spare and each victim is used at most once.
+    """
+    spare_list = sorted({str(s) for s in spares}, key=id_index)
+    used: set[str] = set()
+    out: list[Replacement] = []
+    barred: list[Barred] = []
+
+    def allowed(unit: str, c: Contest) -> bool:
+        b = int(ledger.get((unit, c.victim), 0) or 0)
+        return b <= 1 if c.latched else b == 0
+
+    def qualifying(c: Contest, stall: bool) -> list[tuple[int, str]]:
+        found = []
+        for unit in spare_list:
+            if unit in used or not clean.get((unit, c.victim), False):
+                continue
+            d = distance.get((unit, c.victim))
+            if d is None:
+                continue
+            if stall:
+                if not int(d) < c.delta + c.count:
+                    continue
+            elif int(c.persist.get(unit, 0) or 0) < margin_persist:
+                continue
+            found.append((int(d), unit))
+        return found
+
+    def nearest(c: Contest, stall: bool) -> int | None:
+        q = qualifying(c, stall)
+        return min(d for d, _ in q) if q else None
+
+    def decide(c: Contest, stall: bool) -> None:
+        q = qualifying(c, stall)
+        if not q:
+            return
+        least = min(d for d, _ in q)
+        ties = sorted((u for d, u in q if d == least), key=id_index)
+        ok = [u for u in ties if allowed(u, c)]
+        cause = "stall" if stall else "margin"
+        if not ok:
+            barred.append(Barred(victim=c.victim, incumbent=c.incumbent, cause=cause, distance=least,
+                                 units=tuple(ties)))
+            return
+        unit = ok[0]
+        used.add(unit)
+        out.append(Replacement(victim=c.victim, old_unit=c.incumbent, new_unit=unit, cause=cause, distance=least,
+                               latched=c.latched))
+
+    stalled = [c for c in contests if c.count >= stall_steps]
+    margins = [c for c in contests if c.count < stall_steps]
+
+    def stall_order(c: Contest) -> tuple:
+        d = nearest(c, True)
+        gain = (c.delta - d) if d is not None else -(10**9)
+        return (-c.count, -gain, id_index(c.victim))
+
+    for c in sorted(stalled, key=stall_order):
+        decide(c, True)
+
+    def margin_order(c: Contest) -> tuple:
+        d = nearest(c, False)
+        gain = (c.delta - d) if d is not None else -(10**9)
+        return (-gain, id_index(c.victim))
+
+    for c in sorted(margins, key=margin_order):
+        decide(c, False)
+    return out, barred
 
 
 def plan_replacements(
@@ -369,74 +529,13 @@ def plan_replacements(
     stall_steps: int,
     margin_persist: int,
 ) -> list[Replacement]:
-    """Limit 3's replacements at one J-post (design 6.4, 6.5, 6.7 step 3).
+    """plan_replacements_detail without the Barred records."""
+    return plan_replacements_detail(
+        contests, spares, distance, ledger, clean, stall_steps=stall_steps, margin_persist=margin_persist
+    )[0]
 
-    STALL (k >= stall_steps): spare B replaces A iff (B, v) is fresh, B has a clean approach (clean[(B, v)])
-    and d(B, v) < d(A, v) + k; candidates by least d(B, v), then integer id. Stalled incumbents are served first,
-    by largest k, then largest gain, then victim id.
-    MARGIN (k < stall_steps): spare B replaces A iff (B, v) is fresh and its persistence count reached
-    margin_persist; candidates by largest gain d(A, v) - d(B, v), then integer id; incumbents by largest gain.
-    Each spare and each victim is used at most once.
-    """
-    spare_list = sorted({str(s) for s in spares}, key=id_index)
-    used: set[str] = set()
-    out: list[Replacement] = []
 
-    def fresh(unit: str, victim: str) -> bool:
-        return int(ledger.get((unit, victim), 0) or 0) == 0
-
-    def stall_candidates(c: Contest) -> list[tuple[int, tuple[int, str], str]]:
-        found = []
-        for unit in spare_list:
-            if unit in used or not fresh(unit, c.victim) or not clean.get((unit, c.victim), False):
-                continue
-            d = distance.get((unit, c.victim))
-            if d is None or not int(d) < c.d + c.k:
-                continue
-            found.append((int(d), id_index(unit), unit))
-        return sorted(found)
-
-    def margin_candidates(c: Contest) -> list[tuple[int, tuple[int, str], str]]:
-        found = []
-        for unit in spare_list:
-            if unit in used or not fresh(unit, c.victim):
-                continue
-            if int(c.persist.get(unit, 0) or 0) < margin_persist:
-                continue
-            d = distance.get((unit, c.victim))
-            if d is None:
-                continue
-            found.append((-(c.d - int(d)), id_index(unit), unit))
-        return sorted(found)
-
-    stalled = [c for c in contests if c.k >= stall_steps]
-    margins = [c for c in contests if c.k < stall_steps]
-
-    def stall_order(c: Contest) -> tuple:
-        cands = stall_candidates(c)
-        gain = (c.d - cands[0][0]) if cands else -(10**9)
-        return (-c.k, -gain, id_index(c.victim))
-
-    for c in sorted(stalled, key=stall_order):
-        cands = stall_candidates(c)
-        if not cands:
-            continue
-        d, _, unit = cands[0]
-        used.add(unit)
-        out.append(Replacement(victim=c.victim, old_unit=c.incumbent, new_unit=unit, cause="stall", distance=d))
-
-    def margin_order(c: Contest) -> tuple:
-        cands = margin_candidates(c)
-        gain = -cands[0][0] if cands else -(10**9)
-        return (-gain, id_index(c.victim))
-
-    for c in sorted(margins, key=margin_order):
-        cands = margin_candidates(c)
-        if not cands:
-            continue
-        neg_gain, _, unit = cands[0]
-        used.add(unit)
-        out.append(
-            Replacement(victim=c.victim, old_unit=c.incumbent, new_unit=unit, cause="margin", distance=c.d + neg_gain)
-        )
-    return out
+def grid_distance(a: Cell, b: Cell) -> int:
+    """G (5.2): the length of a shortest 4-connected path through any cells - the grid has no impassable cell other
+    than burning ones and the bounds - i.e. the Manhattan distance."""
+    return abs(int(a[0]) - int(b[0])) + abs(int(a[1]) - int(b[1]))

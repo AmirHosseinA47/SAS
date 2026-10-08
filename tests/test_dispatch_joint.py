@@ -379,18 +379,23 @@ def test_tj10_latched_held_victim_gets_a_second_claimant_under_limit2_alone(mode
     assert bound_to(model, FF_A) == V0
 
 
-def test_tj11_coverage_before_reuse_and_fresh_before_reused():
-    """T-J11. (i) Coverage first: with (B, v) re-used and B unable to reach w, the only maximum matching
-    {A->w, B->v} is chosen although (A, v) is fresh. (ii) Among maximum matchings a fresh one wins over a
-    shorter re-used one. A pair bound twice is never used for a latch-fill.
-    MUTANT tj11: the L2 (fewest re-used pairs) key removed."""
+def test_tj11_coverage_before_reuse_and_nearest_over_fresh():
+    """T-J11 (round 2 C1, outputs/dispatch2_part1.txt 4.2). (i) Coverage first: with (B, v) re-used and B unable to
+    reach w, the only maximum matching {A->w, B->v} is chosen although (A, v) is fresh. (ii) History never ranks a
+    fill: among maximum matchings the SHORTER one wins although it re-uses a pair (round 1 chose the fresh one).
+    (iii) On an exact tie of total and worst route the fresh pair wins (L4'). (iv) The LATCH-FILL cap still holds
+    for a capped victim (the parameter stays; the round-2 model passes none).
+    MUTANT c1_l2: round 1's L2 (fewest re-used pairs) restored ahead of the route keys. MUTANT c1_tie: the re-use
+    tie-break dropped (ids decide an exact tie)."""
     A, B, v, w = "ff_unit_0", "ff_unit_1", "victim_0", "victim_1"
     dist = {(A, v): 5, (A, w): 5, (B, v): 5, (B, w): None}
     pairs = jd.solve_fill([A, B], [v, w], dist, {(B, v): 1})
     assert {(p.unit, p.victim) for p in pairs} == {(A, w), (B, v)}
     dist2 = {(A, v): 5, (A, w): 5, (B, v): 5, (B, w): 7}
     pairs2 = jd.solve_fill([A, B], [v, w], dist2, {(B, v): 1})
-    assert {(p.unit, p.victim) for p in pairs2} == {(A, v), (B, w)}
+    assert {(p.unit, p.victim) for p in pairs2} == {(A, w), (B, v)}      # total 10 (re-used) beats 12 (fresh)
+    dist3 = {(A, v): 5, (B, v): 5}
+    assert [p.unit for p in jd.solve_fill([A, B], [v], dist3, {(A, v): 1})] == [B]
     assert jd.solve_fill([B], [v], {(B, v): 3}, {(B, v): 2}, capped=[v]) == []
     assert len(jd.solve_fill([B], [v], {(B, v): 3}, {(B, v): 1}, capped=[v])) == 1
 

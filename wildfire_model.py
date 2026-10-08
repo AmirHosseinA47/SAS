@@ -6035,6 +6035,7 @@ class WildFireModel(mesa.Model):
         waiting: list[str] = []
         latched: list[str] = []
         contest: dict[str, str] = {}
+        latched_binder: dict[str, str] = {}
         for vid, info in victims.items():
             binders = info["binders"]
             cell = info["cell"]
@@ -6053,6 +6054,10 @@ class WildFireModel(mesa.Model):
             statuses = [str(getattr(units[u], "status", "") or "").strip().lower() for u in binders]
             if all(s == "route_blocked" for s in statuses):
                 latched.append(vid)
+                # Dispatch round 2 (outputs/dispatch2_part1.txt 5.2, C2): a single latched binder on the grid is
+                # a contestable incumbent under Limit 3.
+                if len(binders) == 1 and units[binders[0]].pos is not None:
+                    latched_binder[vid] = binders[0]
             elif (
                 len(binders) == 1
                 and statuses[0] in ("en_route", "assigned")
@@ -6066,6 +6071,7 @@ class WildFireModel(mesa.Model):
             "waiting": waiting,
             "latched": latched,
             "contest": contest,
+            "latched_binder": latched_binder,
         }
 
     def _dispatch_fire_sets(self, need_smoke: bool) -> tuple[set[tuple[int, int]], set[tuple[int, int]]]:
@@ -6086,9 +6092,14 @@ class WildFireModel(mesa.Model):
         return burning, smoky
 
     def _joint_dispatch_point(self, phase: str) -> None:
-        """J-pre (phase "pre") and J-post (phase "post") - design 5.7, 5.8, 6.7. A no-op unless
-        DISPATCH_JOINT is an exact 1. PRE = (a free unit AND a waiting or latched-held victim) OR (Limit 3
-        on at J-post AND a contestable binding); when it does not hold nothing is computed."""
+        """J-pre (phase "pre") and J-post (phase "post") - design 5.7, 5.8, 6.7 as corrected by dispatch round 2
+        (outputs/dispatch2_part1.txt 2.8, 4-7; rulings section 19). A no-op unless DISPATCH_JOINT is an exact 1.
+
+        PRE = (a free unit AND a fill victim) OR (Limit 3 on at J-post AND a contest). Fill victims are W, plus
+        W_L under Limit 2 alone (ruling D-7: a second claimant); under Limit 3 a latched-held victim is a contest
+        (C2). Contests (Limit 3, J-post): a single binder that is ACTIVE (en_route / assigned) or LATCHED
+        (route_blocked). Route metric (R-1): d* = the clean distance when finite, else the fire-free d; a CLEAN
+        APPROACH = a finite clean distance (R-2). When PRE does not hold nothing is computed."""
         if not agents.dispatch_joint():
             return
         reassign = agents.dispatch_reassign()
@@ -6099,91 +6110,98 @@ class WildFireModel(mesa.Model):
         free = view["free"]
         waiting = view["waiting"]
         latched = view["latched"]
-        contest = view["contest"] if (reassign and post) else {}
+        if reassign and post:
+            contest = dict(view["contest"])
+            contest.update(view["latched_binder"])
+        else:
+            contest = {}
+        fill_victims = list(waiting) if reassign else list(waiting) + list(latched)
         progress = self._dispatch_state("_dispatch_progress", dict)
         if post:
             live = {(uid, vid) for vid, info in victims.items() for uid in info["binders"]}
             for key in list(progress):
                 if key not in live:
                     progress.pop(key, None)
-        if not ((free and (waiting or latched)) or contest):
+        if not ((free and fill_victims) or contest):
             return
 
         ledger = self._dispatch_state("_dispatch_ledger", dict)
         x_size, y_size = int(self.grid.width), int(self.grid.height)
-        burning, smoky = self._dispatch_fire_sets(need_smoke=bool(contest))
-        maps: dict[str, dict[tuple[int, int], int]] = {}
-        for vid in list(waiting) + list(latched) + list(contest):
-            maps[vid] = _jd.bfs_distances(victims[vid]["cell"], x_size, y_size, burning)
+        burning, smoky = self._dispatch_fire_sets(need_smoke=True)
+        unclean = _jd.unclean_cells(burning, smoky)
+        maps: dict[str, Any] = {}
+        clean_maps: dict[str, Any] = {}
+        for vid in list(fill_victims) + list(contest):
+            if vid in maps:
+                continue
+            vcell = victims[vid]["cell"]
+            maps[vid] = _jd.bfs_distances(vcell, x_size, y_size, burning)
+            clean_maps[vid] = None if vcell in unclean else _jd.bfs_distances(vcell, x_size, y_size, unclean)
 
         def unit_cell(uid: str) -> tuple[int, int]:
             pos = units[uid].pos
             return (int(pos[0]), int(pos[1]))
 
-        def d_of(uid: str, vid: str) -> int | None:
-            return _jd.route_distance(maps[vid], unit_cell(uid), burning)
+        def d_at(vid: str, cell: tuple[int, int]) -> int | None:
+            return _jd.route_distance(maps[vid], cell, burning)
 
-        unclean: set[tuple[int, int]] | None = None
-        clean_maps: dict[str, dict[tuple[int, int], int] | None] = {}
+        def c_at(vid: str, cell: tuple[int, int]) -> int | None:
+            cmap = clean_maps[vid]
+            return None if cmap is None else _jd.route_distance(cmap, cell, unclean)
+
+        def dstar(uid: str, vid: str) -> int | None:
+            # R-1: d* = the clean distance when finite, else d. D_c finite implies d finite (2.8).
+            cell = unit_cell(uid)
+            d = d_at(vid, cell)
+            if d is None:
+                return None
+            c = c_at(vid, cell)
+            return d if c is None else c
 
         def clean_ok(uid: str, vid: str) -> bool:
-            nonlocal unclean
-            if unclean is None:
-                unclean = _jd.unclean_cells(burning, smoky)
-            if vid not in clean_maps:
-                vcell = victims[vid]["cell"]
-                clean_maps[vid] = (
-                    None if vcell in unclean else _jd.bfs_distances(vcell, x_size, y_size, unclean)
-                )
-            cmap = clean_maps[vid]
-            return cmap is not None and _jd.route_distance(cmap, unit_cell(uid), unclean) is not None
+            return c_at(vid, unit_cell(uid)) is not None
 
-        # 1 PROGRESS (design 6.3) - J-post, Limit 3 only.
-        current_d: dict[str, int | None] = {}
-        unevaluated: set[str] = set()
+        # 1 PROGRESS (R-1, C2) - J-post, Limit 3 only: every contest, active or latched, open or closed.
+        delta: dict[str, int] = {}
+        route_open: dict[str, bool] = {}
         for vid, uid in contest.items():
             key = (uid, vid)
             cell = unit_cell(uid)
-            d_now = _jd.route_distance(maps[vid], cell, burning)
-            current_d[vid] = d_now
+            d_now = d_at(vid, cell)
+            is_open = d_now is not None
+            route_open[vid] = is_open
+            if is_open:
+                c_now = c_at(vid, cell)
+                delta[vid] = int(d_now) if c_now is None else int(c_now)
+            else:
+                c_now = None
+                delta[vid] = _jd.grid_distance(cell, victims[vid]["cell"])
             state = progress.get(key)
             if state is None:
-                if d_now is not None:
-                    progress[key] = _jd.new_progress(d_now, cell)
+                progress[key] = _jd.new_progress(cell)
                 continue
-            x_now = _jd.route_distance(maps[vid], state.cell_prev, burning)
-            if d_now is None or x_now is None:
-                # 6.3: d or x infinite - the state is frozen and the binding is not evaluated this frame (no
-                # persistence count, no replacement).
-                unevaluated.add(vid)
-                continue
+            d_hist = tuple(d_at(vid, h) for h in state.history)
+            c_hist = tuple(c_at(vid, h) for h in state.history)
             frozen = not (clean_ok(uid, vid) or any(clean_ok(f, vid) for f in free))
-            progress[key] = _jd.progress_step(state, d_now, x_now, cell, frozen)
+            progress[key] = _jd.progress_step(state, is_open, d_now, c_now, d_hist, c_hist, cell, frozen)
 
-        # 2 FILL (design 5.4-5.6); under Limit 3 a latched-held victim's bind is a LATCH-FILL.
+        # 2 FILL (C1, R-1, R-2 (b)): free units x W (under Limit 2 alone also W_L, a second claim - D-7).
         bound_units: set[str] = set()
         bound_victims: set[str] = set()
-        fill_victims = list(waiting) + list(latched)
         if free and fill_victims:
-            dist = {(u, v): d_of(u, v) for u in free for v in fill_victims}
-            capped = latched if reassign else []
-            for pair in _jd.solve_fill(free, fill_victims, dist, ledger, capped=capped):
-                if reassign and pair.victim in latched:
-                    ok = self._dispatch_replace(
-                        view, pair.victim, list(victims[pair.victim]["binders"]), pair.unit,
-                        "joint_replace_latched", pair.distance, phase, kind="latch_fill", stage=2,
-                    )
-                else:
-                    ok = self._dispatch_fill_bind(
-                        view, pair.victim, pair.unit, pair.distance, phase, kind="fill", stage=2
-                    )
+            dist = {(u, v): dstar(u, v) for u in free for v in fill_victims}
+            clean2 = {(u, v): clean_ok(u, v) for u in free for v in fill_victims}
+            for pair in _jd.solve_fill(free, fill_victims, dist, ledger, clean=clean2):
+                ok = self._dispatch_fill_bind(
+                    view, pair.victim, pair.unit, pair.distance, phase, kind="fill", stage=2
+                )
                 if ok:
                     bound_units.add(pair.unit)
                     bound_victims.add(pair.victim)
         if not contest:
             return
 
-        # 3 REPLACE (design 6.4, 6.5) - spares only, fresh pairs only.
+        # 3 REPLACE (C1, C2, R-1, R-2 (a)) - spares only; the nearest qualifying spare the ledger allows, else none.
         spares = [u for u in free if u not in bound_units]
         stall_steps = agents.dispatch_stall_steps()
         margin = agents.dispatch_margin_steps()
@@ -6192,52 +6210,57 @@ class WildFireModel(mesa.Model):
         dist3: dict[tuple[str, str], int | None] = {}
         clean3: dict[tuple[str, str], bool] = {}
         for vid, uid in contest.items():
-            d_inc = current_d.get(vid)
             state = progress.get((uid, vid))
-            if state is None or d_inc is None or vid in unevaluated:
+            if state is None:
                 continue
-            spare_d = {b: d_of(b, vid) for b in spares}
-            fresh = {b: int(ledger.get((b, vid), 0) or 0) == 0 for b in spares}
-            state = _jd.update_persistence(state, spare_d, d_inc, margin, fresh)
+            spare_d = {b: dstar(b, vid) for b in spares}
+            state = _jd.update_persistence(state, spare_d, delta[vid], margin)
             progress[(uid, vid)] = state
             for b in spares:
                 dist3[(b, vid)] = spare_d[b]
-                if state.k >= stall_steps:
-                    clean3[(b, vid)] = clean_ok(b, vid)
+                clean3[(b, vid)] = clean_ok(b, vid)
+            label = str(getattr(units[uid], "status", "") or "").strip().lower()
             contests.append(
-                _jd.Contest(victim=vid, incumbent=uid, d=int(d_inc), k=state.k, persist=state.persist_map())
+                _jd.Contest(
+                    victim=vid, incumbent=uid, delta=int(delta[vid]), route_open=bool(route_open[vid]),
+                    k=state.k, k_closed=state.k_closed, persist=state.persist_map(),
+                    latched=label == "route_blocked",
+                )
             )
         released: list[str] = []
         if spares and contests:
-            plan = _jd.plan_replacements(
+            plan, barred = _jd.plan_replacements_detail(
                 contests, spares, dist3, ledger, clean3, stall_steps=stall_steps, margin_persist=persist,
             )
+            for item in barred:
+                self._dispatch_record(
+                    phase=phase, kind="nearest_barred", stage=3, victim_id=item.victim, unit=item.incumbent,
+                    old_units=[], barred=list(item.units), reason="nearest_barred_" + item.cause,
+                    distance=int(item.distance), message="",
+                )
             for rep in plan:
+                if rep.latched:
+                    reason, kind = "joint_replace_latched", "latch_fill"
+                else:
+                    reason, kind = "reassign_" + rep.cause, "replace"
                 if self._dispatch_replace(
-                    view, rep.victim, [rep.old_unit], rep.new_unit, "reassign_" + rep.cause,
-                    rep.distance, phase, kind="replace", stage=3,
+                    view, rep.victim, [rep.old_unit], rep.new_unit, reason, rep.distance, phase,
+                    kind=kind, stage=3,
                 ):
                     released.append(rep.old_unit)
 
-        # 4 SECOND FILL (design 6.7 step 4 as amended by A2, outputs/dispatch_part1.txt 22.1): released units x
-        # the victims not bound in step 2 - those of W, and those of W_L under the LATCH-FILL cap. A W_L bind is
-        # a LATCH-FILL exactly as in step 2. Runs only after a REPLACE, so only under Limit 3.
+        # 4 SECOND FILL (A2 step 4, restricted to W under Limit 3 - C2): released units x the W victims not bound
+        # in step 2. A released latched unit is an unassigned route_blocked unit and is not free.
         if released:
             again = [u for u in released if self._firefighter_available_for_dispatch(units[u])]
-            still = [v for v in list(waiting) + list(latched) if v not in bound_victims]
+            still = [v for v in waiting if v not in bound_victims]
             if again and still:
-                still_latched = [v for v in latched if v not in bound_victims]
-                dist4 = {(u, v): d_of(u, v) for u in again for v in still}
-                for pair in _jd.solve_fill(again, still, dist4, ledger, capped=still_latched):
-                    if pair.victim in latched:
-                        self._dispatch_replace(
-                            view, pair.victim, list(victims[pair.victim]["binders"]), pair.unit,
-                            "joint_replace_latched", pair.distance, phase, kind="latch_fill", stage=4,
-                        )
-                    else:
-                        self._dispatch_fill_bind(
-                            view, pair.victim, pair.unit, pair.distance, phase, kind="second_fill", stage=4
-                        )
+                dist4 = {(u, v): dstar(u, v) for u in again for v in still}
+                clean4 = {(u, v): clean_ok(u, v) for u in again for v in still}
+                for pair in _jd.solve_fill(again, still, dist4, ledger, clean=clean4):
+                    self._dispatch_fill_bind(
+                        view, pair.victim, pair.unit, pair.distance, phase, kind="second_fill", stage=4
+                    )
 
     def _dispatch_fill_bind(
         self, view: dict[str, Any], vid: str, uid: str, distance: int, phase: str, *, kind: str, stage: int
@@ -6270,7 +6293,7 @@ class WildFireModel(mesa.Model):
             pending.pop(vid, None)
             pos = view["units"][uid].pos
             self._dispatch_state("_dispatch_progress", dict)[(uid, vid)] = _jd.new_progress(
-                int(distance), (int(pos[0]), int(pos[1]))
+                (int(pos[0]), int(pos[1]))
             )
         self._dispatch_record(
             phase=phase, kind=kind if ok else kind + "_refused", stage=int(stage), victim_id=vid, unit=uid,
@@ -6342,7 +6365,7 @@ class WildFireModel(mesa.Model):
             released.extend(self._release_other_claimants(vid, marker, "", reason, only_ff_id=old))
             progress.pop((old, vid), None)
         pos = new_unit.pos
-        progress[(new_uid, vid)] = _jd.new_progress(int(distance), (int(pos[0]), int(pos[1])))
+        progress[(new_uid, vid)] = _jd.new_progress((int(pos[0]), int(pos[1])))
         self._dispatch_state("_dispatch_pending_cause", dict).pop(vid, None)
         self._dispatch_record(
             phase=phase, kind=kind, stage=int(stage), victim_id=vid, unit=new_uid, old_units=list(old_units),

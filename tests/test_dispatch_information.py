@@ -386,8 +386,8 @@ def test_tsw_with_joint_off_j_is_never_entered_and_nothing_changes(monkeypatch):
 # ============================================================================ T-INV: the invariants, stepped
 
 def _check_frame(model, failures):
-    """I1, I4, I5, I7 at a frame boundary. I4 as amended by A2 (outputs/dispatch_part1.txt 22.1): the SECOND FILL
-    offers the units a REPLACE released to W and, under the latch cap, to W_L, so no unit is exempt from either leg."""
+    """I1, I4, I5, I7 at a frame boundary. I4 as restated by round 2 (outputs/dispatch2_part1.txt 7.3): under Limit 3
+    no free unit and WAITING victim (W) with a finite route; a latched-held victim is a contest, not a fill target."""
     view = model._dispatch_view()
     victims, units = view["victims"], view["units"]
     for vid, info in victims.items():
@@ -397,15 +397,12 @@ def _check_frame(model, failures):
             failures.append(("I1", vid, active))
         if active and latched:
             failures.append(("I7", vid, active, latched))
-    # I4: no free unit and waiting victim with a finite route (a fill is uncapped), nor a free unit with b <= 1
-    # and a finite route beside a latched-held victim (the LATCH-FILL cap, Limit 3)
+    # I4 (W leg only under Limit 3): no free unit and waiting victim with a finite route (a fill is uncapped)
     burning = model._active_burning_cells()
     ledger = getattr(model, "_dispatch_ledger", {}) or {}
-    for vid in list(view["waiting"]) + list(view["latched"]):
+    for vid in list(view["waiting"]):
         dmap = jd.bfs_distances(victims[vid]["cell"], model.grid.width, model.grid.height, burning)
         for uid in view["free"]:
-            if vid in view["latched"] and int(ledger.get((uid, vid), 0) or 0) > 1:
-                continue
             if jd.route_distance(dmap, tuple(units[uid].pos), burning) is not None:
                 failures.append(("I4", vid, uid))
     # I5: every REPLACE bound a never-bound pair; every LATCH-FILL a pair bound at most once before
@@ -459,9 +456,10 @@ def test_tinv_invariants_hold_at_every_frame_of_a_real_run(monkeypatch):
     (three units: a spare exists). After EVERY J call: I1 (at most one active binder), I4 (full fill, latch-cap leg
     included), I5 (ledger), I7 (no latched + active pair), I6 (no carrier, finisher or co-located unit was a J
     donor or target, its binding untouched) and I3 (no J action stripped a victim of its unit). Limit 3 is made to
-    act inside the real run: one binder is put in the repeated-raise state (latched) between steps - a LATCH-FILL
-    must follow - and then a free unit with a fresh pair is parked beside a bound victim whose incumbent was moved
-    far away - a margin REPLACE must follow. Both are asserted to have happened, so the invariants are not checked
+    act inside the real run: one binder is put in the repeated-raise state (latched) between steps - round 2 (C2):
+    its route is open, so it is NOT latch-filled at once (it recovers in its own advance) and the latch leaves I7
+    intact - and then a free unit with a fresh pair is parked beside a bound victim whose incumbent was moved far
+    away - a margin REPLACE must follow. The REPLACE is asserted to have happened, so the invariants are not checked
     vacuously."""
     switches(monkeypatch, joint=1, reassign=1)
     model = pinned_model(monkeypatch)
@@ -503,7 +501,8 @@ def test_tinv_invariants_hold_at_every_frame_of_a_real_run(monkeypatch):
     vid_l, uid_l = sorted(view["contest"].items())[0]
     ff(model, uid_l).status = "route_blocked"
     step()
-    assert [e for e in events(model, "latch_fill") if e["victim_id"] == vid_l], events(model)
+    assert not [e for e in events(model, "latch_fill") if e["victim_id"] == vid_l], events(model)
+    assert uid_l in binders(model, vid_l)
     # MARGIN: the other bound victim's incumbent is moved far away; a free unit with a fresh pair is parked
     # beside the victim before each step until the margin replacement happens (P evaluations)
     moved = False
