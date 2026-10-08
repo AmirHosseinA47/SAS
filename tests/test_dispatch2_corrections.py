@@ -30,6 +30,7 @@ from dispatch_test_support import (
     burn,
     events,
     ff,
+    fire_at,
     j_post,
     move,
     pinned_model,
@@ -89,7 +90,7 @@ def test_c1_a_nearer_victim_on_a_reused_pair_beats_a_farther_fresh_one(model):
 
 def test_c1_l1b_a_clean_approach_beats_a_nearer_unit_without_one(model):
     """R-2 (b) in the fill (key L1b). A stands in a smoke pocket (its cell and its four neighbours smoky: no clean
-    approach; d* = d = 10); B has a clean approach at 20: B is bound.
+    approach; d* = d = 10); B has a clean approach at 24 (round the pocket): B is bound.
     MUTANT r2_fill: L1b removed from the fill key."""
     place_units(model, {FF_A: (20, 30), FF_B: (20, 20)})
     place_victims(model, {V0: (20, 40)})
@@ -145,8 +146,9 @@ def test_c1_a_tie_at_the_least_distance_goes_to_the_allowed_spare():
 def test_c1_the_margin_leg_counts_a_barred_spares_persistence(model):
     """C1, margin leg (4.3: persistence is kept for every spare, fresh or not). A bound and still (route 30); spare
     B1 at route 10 (b = 1, barred) and spare B2 at route 20 (fresh) both hold the margin (10 + 5, 20 + 5 <= 30)
-    for P evaluations. B1 is the nearest qualifying spare and is barred, so nothing is replaced at the margin - nor
-    at the stall charge later.
+    for P evaluations. B1 is the nearest qualifying spare and is barred, so nothing is replaced at the margin - a
+    MARGIN nearest-barred record at the P-th evaluation, before the stall charge can arise - nor at the stall charge
+    later.
     MUTANT c1_freshpersist: the model counts persistence (and offers spares) only for fresh pairs - B2 replaces A at
     the 3rd evaluation."""
     place_units(model, {FF_A: (20, 10)})
@@ -156,10 +158,46 @@ def test_c1_the_margin_leg_counts_a_barred_spares_persistence(model):
     _revive(model, FF_B, (20, 30))
     _revive(model, FF_C, (20, 20))
     model._dispatch_ledger[(FF_B, V0)] = 1
-    j_post(model, 2 * S)
+    j_post(model, P)
+    assert model._dispatch_progress[(FF_A, V0)].k < S
+    margin_barred = [e for e in events(model, "nearest_barred") if e["reason"] == "nearest_barred_margin"]
+    assert margin_barred and margin_barred[0]["barred"] == [FF_B], events(model, "nearest_barred")
+    j_post(model, 2 * S - P)
     assert events(model, "replace") == []
     assert bound_to(model, FF_A) == V0
-    assert events(model, "nearest_barred")
+
+
+def test_c1_coverage_comes_before_clean_approach_pairs():
+    """C1 key order (4.2: "L1 ... coverage first, unchanged; L1b ..."). A reaches v cleanly and w without a clean
+    approach; B reaches only v, without one. Serving both ({A -> w, B -> v}, no clean pair) beats serving v alone
+    by its one clean pair ({A -> v}).
+    MUTANT c1_l1b_first: L1b ranked before L1 - A -> v alone."""
+    A, B, v, w = "ff_unit_0", "ff_unit_1", "victim_0", "victim_1"
+    dist = {(A, v): 5, (A, w): 7, (B, v): 6, (B, w): None}
+    clean = {(A, v): True, (A, w): False, (B, v): False, (B, w): False}
+    pairs = jd.solve_fill([A, B], [v, w], dist, {}, clean=clean)
+    assert {(p.unit, p.victim) for p in pairs} == {(A, w), (B, v)}
+
+
+def test_c1_a_spare_barred_for_one_contest_stays_available_to_another():
+    """C1 (4.3: "the spares stay available to other contests"). Two stalled contests; the first (larger count) has
+    its nearest qualifying spare ff_unit_1 barred (b = 1): a Barred record, no replacement. ff_unit_1 is also the
+    nearest qualifying spare of the second contest, where it is allowed: it replaces there.
+    MUTANT c1_barred_used: a barred contest's nearest spares are marked used - ff_unit_2 replaces in the second."""
+    c1 = jd.Contest(victim="victim_0", incumbent="ff_unit_0", delta=20, route_open=True, k=S + 2, k_closed=0,
+                    persist={})
+    c2 = jd.Contest(victim="victim_1", incumbent="ff_unit_3", delta=20, route_open=True, k=S, k_closed=0,
+                    persist={})
+    dist = {("ff_unit_1", "victim_0"): 10, ("ff_unit_2", "victim_0"): 15,
+            ("ff_unit_1", "victim_1"): 12, ("ff_unit_2", "victim_1"): 14}
+    clean = {key: True for key in dist}
+    reps, barred = jd.plan_replacements_detail(
+        [c1, c2], ["ff_unit_1", "ff_unit_2"], dist, {("ff_unit_1", "victim_0"): 1}, clean,
+        stall_steps=S, margin_persist=P,
+    )
+    assert [(b.victim, b.units) for b in barred] == [("victim_0", ("ff_unit_1",))]
+    assert [(r.victim, r.old_unit, r.new_unit, r.cause) for r in reps] == [("victim_1", "ff_unit_3", "ff_unit_1",
+                                                                             "stall")]
 
 
 # ============================================================================ C2: a closed-route binder is an incumbent
@@ -219,6 +257,25 @@ def test_c2_frozen_steps_count_in_neither_count():
     assert (state.k, state.k_closed) == (0, 1)
 
 
+def test_c2_a_latched_label_on_an_open_route_is_read_from_the_route(model):
+    """C2 (5.2: "OPEN OR CLOSED, read from the route, not the label ... A latched unit whose label lags an open
+    route ... is treated as open"). A is bound and labelled route_blocked, but its route is open and it advances one
+    cell per frame towards v (30 away): every frame is progress, k stays 0, and the spare B (d* 26: never 5 closer,
+    26 + 5 > 30) is never sent - no LATCH-FILL in 2S + 1 frames.
+    MUTANT c2_label_open: the route read as closed whenever the label is route_blocked - delta = G and k_L grow
+    (G + k_L stays 30 > 26), a stall LATCH-FILL at k_L = S."""
+    place_units(model, {FF_A: (10, 10), FF_B: (40, 36)})
+    place_victims(model, {V0: (40, 10)})
+    assert assign(model, V0, FF_A)
+    ff(model, FF_A).status = "route_blocked"
+    for frame in range(1, 2 * S + 2):
+        move(model, FF_A, (10 + frame, 10))
+        j_post(model)
+        assert events(model, "latch_fill") == [], frame
+        assert model._dispatch_progress[(FF_A, V0)].k == 0, frame
+    assert binders(model, V0) == [FF_A]
+
+
 # ============================================================================ R-1: d* and the history rule
 
 def _clean_step(model, cell, vcell):
@@ -241,8 +298,8 @@ def test_r1_a_unit_walking_a_clean_detour_never_stalls(model):
     (D_c 26). A walks the clean route one cell per frame: its fire-free d first rises, yet every step beats every
     earlier cell on the clean distance, so k stays 0 and the spare B (d 15 through the gap, a clean approach)
     is never sent.
-    MUTANT r1_donly: progress judged on the fire-free d only (round 1's metric) - A stalls at frame S + 1 and B
-    replaces it."""
+    MUTANT r1_donly: progress judged on the fire-free d only (round 1's metric) - A's rising d is no progress and
+    its k grows (the k == 0 assertion fails; B, at d* 29, still does not qualify within these frames)."""
     burn(model, [(10, y) for y in range(10, 21) if y != 15])
     place_units(model, {FF_A: (8, 15)})
     place_victims(model, {V0: (20, 15)})
@@ -278,6 +335,59 @@ def test_r1_a_two_cell_loop_on_the_clean_field_boundary_still_stalls(model):
             break
     reps = events(model, "replace")
     assert len(reps) == 1 and reps[0]["reason"] == "reassign_stall" and reps[0]["unit"] == FF_B, reps
+
+
+def test_r1_a_two_cell_loop_stalls_also_when_the_victims_cell_turns_smoky_every_third_evaluation(model):
+    """R-1 (2.8: "Nothing is ever re-based"; 13 (3): "a two-cell loop still stalls, also when v's cell turns smoky
+    at every third evaluation"). A loops between (20, 21) and (20, 20) against v at (20, 40); v's own cell is smoky
+    at every third J-post, so the clean distance is undefined there (only d is compared, A2) and nobody has a clean
+    approach (FROZEN: neither count moves). The loop never beats its own history, so k still reaches S and the spare
+    B (d* 20, a stall challenger, never 5 closer) replaces A by stall, on a clean frame.
+    MUTANT q_rebase: H re-based to the current cell when the clean distance is undefined (re-base without memory) -
+    after each re-base at (20, 20) the next step to (20, 21) beats it, k restarts and no stall comes."""
+    place_units(model, {FF_A: (20, 20)})
+    place_victims(model, {V0: (20, 40)})
+    j_post(model)
+    assert bound_to(model, FF_A) == V0
+    _revive(model, FF_B, (30, 30))      # d* 20: a stall challenger (20 < delta + S), never a margin one
+    for frame in range(3 * S + 3):
+        fire_at(model, (20, 40)).smoke.smoke = frame % 3 == 0
+        move(model, FF_A, (20, 21) if frame % 2 == 0 else (20, 20))
+        j_post(model)
+        if events(model, "replace"):
+            break
+    reps = events(model, "replace")
+    assert len(reps) == 1 and reps[0]["reason"] == "reassign_stall" and reps[0]["unit"] == FF_B, reps
+
+
+def test_r1_a_margin_challenger_through_a_gap_is_judged_on_its_clean_distance(model):
+    """R-1 (2.3's worked example: d* is used for margin comparisons). A burning wall x = 10, y = 10..20 with a gap
+    at (10, 15) (the gap cell is unclean); v at (20, 15). A is bound and still at (20, 35), d* 20. Spare B at
+    (7, 15) has d 13 through the gap but a clean approach only round the wall, D_c 27: 13 + 5 <= 20 but
+    27 + 5 > 20, so B never holds the margin; within S - 1 evaluations nothing is replaced.
+    MUTANT r1_dstar_d: d* replaced by the fire-free d - B margin-replaces A at the 3rd evaluation."""
+    burn(model, [(10, y) for y in range(10, 21) if y != 15])
+    place_units(model, {FF_A: (20, 35)})
+    place_victims(model, {V0: (20, 15)})
+    j_post(model)
+    assert bound_to(model, FF_A) == V0 and events(model, "fill")[-1]["distance"] == 20
+    _revive(model, FF_B, (7, 15))
+    j_post(model, S - 1)
+    assert model._dispatch_progress[(FF_A, V0)].k == S - 1
+    assert events(model, "replace") == [] and bound_to(model, FF_A) == V0
+
+
+def test_r1_the_fill_ranks_units_by_dstar_not_by_a_gap_distance(model):
+    """R-1 (2.4's worked example: d* is the fill's length key). Same wall and gap; v at (20, 15). Free A at
+    (8, 15): d 12 through the gap, D_c 26 round the wall; free B at (20, 35): d = D_c = 20. Both have a clean
+    approach (L1b ties): B, the shorter WALKED route, is bound.
+    MUTANT r1_dstar_d: d* replaced by d - A (12 < 20) is bound."""
+    burn(model, [(10, y) for y in range(10, 21) if y != 15])
+    place_units(model, {FF_A: (8, 15), FF_B: (20, 35)})
+    place_victims(model, {V0: (20, 15)})
+    j_post(model)
+    assert bound_to(model, FF_B) == V0 and bound_to(model, FF_A) is None
+    assert events(model, "fill")[-1]["distance"] == 20
 
 
 def test_r1_dstar_is_d_when_no_clean_path_exists(model):

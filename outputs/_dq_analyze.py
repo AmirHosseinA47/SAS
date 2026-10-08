@@ -10,10 +10,15 @@ checked on hand-built records with known answers by outputs/_dq_analyze_selftest
 run is read.
 
 usage (dispatch worktree root, E:/Projects/SAS/.venv/Scripts/python.exe):
-  python outputs/_dq_analyze.py --head SHA [--part2-notes PATH] [--out REPORT] [--allow-incomplete | --zeros-only]
+  python outputs/_dq_analyze.py --head SHA --part2-notes PATH [--out REPORT] [--zeros-only]
+                                [--w3-unresolved NAME[,NAME...]]
   python outputs/_dq_analyze.py --smoke DIR --smoke-files ARM=FILE[,ARM=FILE...] [--smoke-cell set1/ring/A_N]
                                 [--out REPORT] [--zeros-only]
-  --head SHA          the screen head (the Part 2 commit) every dq0 / dq1 record and every W3 replay must carry. THE
+  --head SHA          (required outside --smoke, WITH --part2-notes - review M1, as _mvg_analyze's main) the screen
+                      head; the analysis TOOLING_AT_HEAD files (this analyzer and its self-test, the queue / W3 /
+                      replay tools, the probe and its check and round-1 shadow, the frozen W1 / W2 queues and the seeds)
+                      must be byte-identical, LF-normalised, to their blobs at SHA, else REFUSED (exit 2). The screen
+                      head every dq0 / dq1 record and every W3 replay must carry. THE
                       HEAD RULE (the movement round's rule (a), head_rule verbatim): valid when the recorded head starts
                       with SHA, or is an ANCESTOR of SHA with every RUN-LOADED file (root *.py, src_extension/, the
                       probe chain RUN_LOADED_TOOLING, and outputs/_dq_replay.py for a replay) byte-identical LF-normalised.
@@ -22,53 +27,83 @@ usage (dispatch worktree root, E:/Projects/SAS/.venv/Scripts/python.exe):
                       (dq.probe_sha = mvg.probe_sha, dq.r1_shadow_sha, mvg.u1_shadow_sha) must be outputs/_dq_probe.py,
                       outputs/_dq_r1_shadow.py, outputs/_mvg_u1_shadow.py at SHA (every arm runs the dispatch worktree's
                       probe). SHA must descend from BASE and from the rulings commit 87a93cda.
-  --part2-notes PATH  optional: every '<sha256> outputs/...' line verified against the file on disk (notes_check
-                      verbatim); the files of NOTES_REQUIRED must be listed. REFUSED on any mismatch.
-  --zeros-only        the wave check (14): sections 0-3 and the W3 validity, then stop - no outcome section, no verdict,
-                      and no outcome VALUE in a failure line (field paths only, numbers masked)
-  --allow-incomplete  compute on what exists; the reading is PROVISIONAL, and while W3 is incomplete NO VERDICT is
-                      printed at all (11.3)
+  --part2-notes PATH  (required with --head) every '<sha256> outputs/...' line verified against the file on disk
+                      (notes_check verbatim); the files of NOTES_REQUIRED must be listed. REFUSED on any mismatch.
+  --zeros-only        the wave check (14): sections 0, 1, 3, 2 (in 10.8's order) and the W3 validity, then stop - no
+                      outcome section, no verdict, and no outcome VALUE in a failure line (field paths only, numbers
+                      masked)
+  --w3-unresolved L   (review m3; 11.2: "UNRESOLVED also: a knockout replay that is missing, INVALID, or crashed ...")
+                      W3 replay lines L (comma-separated queue names) still missing or INVALID after a DOCUMENTED re-run
+                      are declared UNRESOLVED: their candidates count as 11.3 says (an UNRESOLVED (A) is CAUSED, an
+                      unresolved (B) never PREVENTED) and W3 then counts as COMPLETE. Every declared line is printed.
+                      REFUSED (exit 2) when a named line is not a W3 queue line, or its replay is present and valid.
+                      Without it a missing or INVALID replay keeps W3 INCOMPLETE (no verdict).
+  --allow-incomplete  REMOVED (review M2): passing it is an argparse error. No outcome is printed with a missing or
+                      INVALID run, and no verdict before W3 is COMPLETE.
   --smoke DIR         ONE cell of the spent sets 1-2 (--smoke-cell) from DIR: ARM in R, 0, 1 (any subset); relaxed
-                      validity (no queue, no 360-step, no head checks); the cell stands in for the fresh set 7. SMOKE -
-                      NOT A SCREEN (13 (9): structural fields only): sections 0-3, the STRUCTURE counts of 13 (9) (the
-                      corrections' paths) and the S6 cost line; every outcome section is suppressed.
-exit: 0 report written; 1 STOP (S1 identity failed; a dq0 / dqR failure - 10.3; the DIVERGED assertion - 10.6); 2
-REFUSED (a hashed section differs, a reused function or module is not the committed one, the Part 2 notes differ, the
-seeds file is unusable, a run's scenario / wind / seed is not its frozen cell, or the W3 queue is not what the frozen
-rule gives on the W1 / W2 records).
+                      validity (no queue, no head checks; section 9's constants still hold); the cell stands in for the
+                      fresh set 7. SMOKE - NOT A SCREEN (13 (9): structural fields only): sections 0-3, the STRUCTURE
+                      counts of 13 (9) (the corrections' paths) and the S6 cost line; every outcome section is
+                      suppressed.
+exit: 0 report written; 1 STOP (10.8 (1): a missing or INVALID run, a zero / SM row / crash in dq0 or dqR - 10.3; 10.8
+(2): S1 identity failed; the DIVERGED assertion - 10.6); 2 REFUSED (a hashed section differs, a reused function or
+module is not the committed one, the Part 2 notes differ, a TOOLING_AT_HEAD file differs from --head, the seeds file is
+unusable, a run's scenario / wind / seed is not its frozen cell, the W3 queue is not what the frozen rule gives on the
+W1 / W2 records, or --w3-unresolved names a line it may not).
 
-HASHED SECTIONS (12.2): the LF-normalised text of dispatch2_part1.txt sections 0 and 2-15 and section 19 (the rulings
-amendment A1), each from its 'N. ' header to the line before the next top-level 'N. ' header (or EOF), trailing blank
-and '=' banner lines dropped, has the sha256 of SECTION_SHA256 - constants computed from the committed file
-(git show 87a93cda:outputs/dispatch2_part1.txt, 2026-10-08). The working file AND the blobs at ba647655 (sections 0,
-2-15) and 87a93cda (0, 2-15, 19) must give them; any difference REFUSES a verdict. An appended amendment (section 20 =
-A2, ...) changes none of them; its sha is printed as information.
+HASHED SECTIONS (12.2): the LF-normalised text of dispatch2_part1.txt sections 0 and 2-15, section 19 (the rulings
+amendment A1) and section 20 (amendment A2, review M3), each from its 'N. ' header to the line before the next
+top-level 'N. ' header (or EOF), trailing blank and '=' banner lines dropped, has the sha256 of SECTION_SHA256 -
+constants computed from the committed file (sections 0-19: git show 87a93cda:outputs/dispatch2_part1.txt; section 20:
+git show 71cfe796:outputs/dispatch2_part1.txt, identical at 1182f085 and in the working file, 2026-10-08). The working
+file AND the blobs at SECTION_COMMITS (ba647655: sections 0, 2-15; 87a93cda: 0, 2-15, 19; 71cfe796: 20) must give
+them; any difference REFUSES a verdict. THE MECHANISM IS GENERIC: a later ruling section N is hashed by adding N to
+SECTION_SHA256 and N -> its commit to AMENDMENT_COMMITS; an appended section that is not hashed yet is printed as
+information.
 
-SECTIONS
-  0 HEADER        commits ba647655 (Part 1), 87a93cda (rulings, A1), 897e93b5 (BASE), HEAD and --head; the hash checks;
-                  the functions verbatim from _mvg_analyze.py (897e93b5) and _dp_analyze.py (cc8d653c); the reused
-                  modules byte-identical to cc8d653c's; the Part 2 notes (optional); the seeds (0.6 / 8: the rule
-                  recomputed for sets 1-8 from the bases, set 7 = 575201, set 8 = 741141; STOP on any mismatch; never
-                  re-scanned).
+SECTIONS (printed in 10.8's order: validity and the zeros BEFORE S1 - outcome 1 takes precedence over outcome 2)
+  0 HEADER        commits ba647655 (Part 1), 87a93cda (rulings, A1), 71cfe796 (A2), 897e93b5 (BASE), HEAD and --head;
+                  the hash checks; the functions verbatim from _mvg_analyze.py (897e93b5) and _dp_analyze.py (cc8d653c);
+                  the reused modules byte-identical to cc8d653c's; TOOLING_AT_HEAD at --head; the Part 2 notes; the
+                  seeds (0.6 / 8: the rule recomputed for sets 1-8 from the bases, set 7 = 575201, set 8 = 741141; STOP
+                  on any mismatch; never re-scanned).
   1 LOAD + PROV   validity per run (INVALID = a tooling defect, re-run), crash material (Z6), the seed-selector STOP.
-  2 S1 IDENTITY   10.2: dq0 == dqR value identity on 64 / 64 cells on the FROZEN field list (S1_FIELDS): every listed
-                  field present in both records; a missing one is a failure. Field paths only, never values.
+                  Section 9's CONSTANTS are asserted on every record, not the queue line's values (review M1): --steps
+                  360, CRN on (--crn), FF_APPROACH_PATH = FF_RETREAT_KEEP_APPROACH = FF_FIX_STRANDING_GUARD = 1,
+                  GLOBAL_PLANNER_MODE = 0, VICTIM_SPAWN_MODE = the cell's placement (ring 0, uniform 1), BATCH_SIZE =
+                  360, no other --set key, and the dispatch keys (dqR none, dq0 both 0, dq1 both 1); dq1's S / M / P
+                  10 / 5 / 3 and their raw module values the shipped constants (review R2-F2). A record whose rows_ff
+                  is not one row per step done (or the W3 compact's other non-crash reasons) is INVALID (review m2).
   3 ZEROS         10.3: in EVERY arm the movement-owned (Z1-M item (v), Z-RB, Zm-a, Zm-b, Z-S, Z2-M), guard-owned
                   (Zg-1 two-sided, Zg-2) and shared (Z5, Z6) zeros and SM; DISPATCH-OWNED in dq1 (G-B(a) / I7, G-B(b),
                   G-B(c), I4-W, G-T(a), G-T(c), M6, Z-C1a, Z-C1b, Z-C2, Z-R1, Z-R2, Z-C3), each recomputed from the
                   probe's recorded J inputs and the instrument's own maps (never from J's outputs). OWNERS: any zero, SM
                   row or crash in dq0 / dqR is a STOP (a shipped movement or guard zero there: a STOP for a maintainer
                   ruling); a zero failing in dq1 only is an S2 FAIL (X-11 (a)). Z1-M (i)-(iv) and Zg-3 are void.
+                  Z-R1 also gates (review m7) the LEDGER J was passed at every J call (the _cap records' b) against the
+                  ledger rebuilt from dp.commands strictly before that J point; a pair with a non-J successful assign
+                  AT the J point's (step, phase) is ambiguous on the record (before or after J) and is reported, never
+                  gated. Never applied to a W3 replay (replays shield the ledger by design; they are not digested).
+                  A dq0 / dqR STOP here is 10.8's outcome 1 and is decided BEFORE S1 (review m1).
+  2 S1 IDENTITY   10.2: dq0 == dqR value identity on 64 / 64 cells on the FROZEN field list (S1_FIELDS): every listed
+                  field present in both records; a missing one is a failure. Field paths only, never values. Includes
+                  (review R2-F1) params restricted to the cfv keys present in BOTH records and the 'effective' block.
   W3 VALIDITY     11.2-11.3: the W3 queue and candidates re-derived by the frozen generator outputs/_dq_w3_queue.py
-                  from the W1 (dq0) and W2 (dq1) records; every replay present and valid; every R0 checked against its
-                  W2 record; the knockout evidence (the first changed J decision in the knockout log).
+                  from the W1 (dq0) and W2 (dq1) records; every replay present and valid (or declared UNRESOLVED by
+                  --w3-unresolved); every R0 checked against its W2 record (a listed field missing from either record
+                  is a difference, review m4); the knockout evidence (the first changed J decision in the knockout
+                  log). An UNCOMPUTABLE cell forces L4 FAIL only for its documented crash (printed); any other
+                  uncomputable reason is a tooling defect and keeps W3 from COMPLETE (review m2).
   4 COMPARISON    FULL(0 -> 1) = S1 to S6 (10.1): S3 (10.4), S4 = L2 + L3, S5 = F1 (R2) + L4 + the sign-tested family
                   of m = 28 (10.6: the movement round's 24 + D1 abandoned waiting, D2 returns of any cause, D3
                   idle-unreachable, D4 route_blocked at run end), Holm 0.05; the DIVERGED assertion; S6 (10.7).
   5 M8 + 22.9     M8, M8-D and the movement round's frozen death classes for every DD.
   6 MEASURES      10.9, reported, never gating.
   7 W3 / L4       11.3: CAUSED and PREVENTED, pooled and per set; the run-level variant, KO-LAST, the hybrid diagnostic,
-                  the same-step deaths with the C-NONE check.
+                  the same-step deaths with the C-NONE check; per candidate (REPORTED, never gating) its class at
+                  death (bound / latched / unbound / carrying), whether U died as a CHALLENGER (11.2, KO-OTHERS), the
+                  knockout decisions that hit a refused or aborted J decision (review m5, m6), the declared
+                  UNRESOLVED lines. S5's printed status is FAIL only for F1 / L4 / the sign tests (L2 / L3 are S4's).
   8 DECISION      10.8's outcomes 1-6 on FULL(0 -> 1); the ACTED footprint per correction and set (NOT EXERCISED);
                   the scenario STOP as a diagnostic.
 
@@ -146,6 +181,7 @@ finally:
 PART1, RULINGS = "ba647655", "87a93cda"
 PART1_FULL = "ba64765590049ef04cd566e37ccd73f67ac6a2e4"
 RULINGS_FULL = "87a93cda95a5e75b58afe67c191c8f72db477f9b"
+A2, A2_FULL = "71cfe796", "71cfe796e03a5d471ceff6453d71922bbdc8f51d"   # amendment A2 (section 20), review M3
 BASE = "897e93b5ed14b582789fd3e59501253aebfb911b"     # main = tag movement-guard: the dqR checkout and the base
 DISPATCH = "cc8d653c4a5740c0f04a9e94d6ff48e92a0ca027"  # round 1's Part 3 head: outputs/_dp_analyze.py (DPR verbatim)
 MVG_AT = BASE                              # outputs/_mvg_analyze.py at main 897e93b5 (the functions ported verbatim)
@@ -170,8 +206,16 @@ SECTION_SHA256 = {
     14: "1a374d12d37a25864aabf8efecb70667c35fba931ae495527be04d0ffee8b5da",
     15: "e1655b6bdc71e4108959cce4a0c8335831c6ec8348e20025b407832804928aec",
     19: "806b67dc4137be9de9fcdb9c11d69d466d32fece808f2752338dc36c8e929e0f",
+    # amendment A2 (review M3): git show 71cfe796:outputs/dispatch2_part1.txt; identical at 1182f085 and in the working
+    # file (2026-10-08)
+    20: "f3dc2c4b41378a097c3b05d34d9293fda34f7df55eafe8afa7e6bc350d0bde76",
 }
-SECTION_COMMITS = {n: ((PART1, RULINGS) if n != 19 else (RULINGS,)) for n in SECTION_SHA256}
+# THE GENERIC MECHANISM (review M3): a ruling / amendment section is hashed at the commit that added it - to hash a
+# later one, add its number to SECTION_SHA256 (the sha of its text at that commit) and its commit here. Every other
+# hashed section (0, 2-15) is checked at Part 1 and at the rulings commit.
+AMENDMENT_COMMITS = {19: RULINGS, 20: A2_FULL}
+SECTION_COMMITS = {n: ((PART1, RULINGS) if n not in AMENDMENT_COMMITS else (AMENDMENT_COMMITS[n],))
+                   for n in SECTION_SHA256}
 REUSED_MODULES = ("_fx3r_analyze.py", "_fb3_analyze.py", "_sd_analyze.py", "_ut_analyze.py", "_ut_analyze2.py",
                   "_fx3_pockets.py", "_mf2_p3_analyze.py", "_fb3_queue.py", "_mf2_pool.py")
 # --part2-notes (optional): the files the notes must list (the instrument and its chain, the round-1 shadow, the analyzer
@@ -193,6 +237,20 @@ RUN_LOADED_TOOLING = ("outputs/_dq_probe.py", "outputs/_dq_r1_shadow.py", "outpu
                       "outputs/_sd_probe.py", "outputs/_fm2_probe_harness.py", "outputs/_ffr_harness.py",
                       "outputs/_bp_inst.py", "outputs/_dim_hooks.py")
 RUN_LOADED_REPLAY = ("outputs/_dq_replay.py",)
+# review M1: outside --smoke, each of these files in the worktree must equal its blob at --head (LF-normalised sha256)
+TOOLING_AT_HEAD = ("outputs/_dq_analyze.py", "outputs/_dq_analyze_selftest.py", "outputs/_dq_queue.py",
+                   "outputs/_dq_w3_queue.py", "outputs/_dq_replay.py", "outputs/_dq_probe.py", "outputs/_dq_probe_check.py",
+                   "outputs/_dq_r1_shadow.py", "outputs/_dq_q_w1.jsonl", "outputs/_dq_q_w2.jsonl", "outputs/_dq_seeds.txt")
+# review M1: SECTION 9's run-line constants, asserted on every record (never derived from the queue line)
+S9_STEPS = 360
+S9_SETS = {"GLOBAL_PLANNER_MODE": 0, "FF_APPROACH_PATH": 1, "FF_RETREAT_KEEP_APPROACH": 1,
+           "FF_FIX_STRANDING_GUARD": 1, "BATCH_SIZE": 360}
+S9_DISPATCH = {"R": {}, "0": {"DISPATCH_JOINT": 0, "DISPATCH_REASSIGN": 0},
+               "1": {"DISPATCH_JOINT": 1, "DISPATCH_REASSIGN": 1}}
+# review R2-F2: dq1's S / M / P (design 6.4-6.5, ruling D-8: 10 / 5 / 3, never tuned) and the raw module values the
+# probe records (repr(getattr(cfv, name)) - the shipped constants: no override)
+SMP_KEYS = ("DISPATCH_STALL_STEPS", "DISPATCH_MARGIN_STEPS", "DISPATCH_MARGIN_PERSIST")
+SMP_SHIPPED = (10, 5, 3)
 PROBE_REL, REPLAY_REL = "outputs/_dq_probe.py", "outputs/_dq_replay.py"
 R1_SHADOW_REL = "outputs/_dq_r1_shadow.py"
 U1_SHADOW_REL = "outputs/_mvg_u1_shadow.py"
@@ -2296,9 +2354,11 @@ def section_sha(text, n):
 
 
 def hash_checks(current_text=None, blobs=None):
-    """NEW (12.2): every hashed section (0, 2-15 and 19) of the working outputs/dispatch2_part1.txt AND of its committed
-    blobs (ba647655: sections 0 and 2-15; 87a93cda: 0, 2-15 and 19) has the frozen SECTION_SHA256. A later appended
-    amendment (section 20, ...) is reported, never hashed. Returns (ok, lines)."""
+    """NEW (12.2; CHANGED, review M3): every hashed section (0, 2-15, 19 and 20) of the working
+    outputs/dispatch2_part1.txt AND of its committed blobs (SECTION_COMMITS: ba647655: sections 0 and 2-15; 87a93cda:
+    0, 2-15 and 19; 71cfe796: 20) has the frozen SECTION_SHA256. Generic: the blobs read are every commit
+    SECTION_COMMITS names. A later appended section not yet in SECTION_SHA256 is reported, never hashed. Returns (ok,
+    lines)."""
     lines, ok = [], True
     if current_text is None:
         try:
@@ -2307,7 +2367,7 @@ def hash_checks(current_text=None, blobs=None):
         except OSError as exc:
             return False, ["  outputs/dispatch2_part1.txt unreadable: %r" % (exc,)]
     if blobs is None:
-        blobs = {c: show_blob(c, SPEC_REL) for c in (PART1, RULINGS)}
+        blobs = {c: show_blob(c, SPEC_REL) for c in sorted({c for cs in SECTION_COMMITS.values() for c in cs})}
     for n, want in sorted(SECTION_SHA256.items()):
         got = section_sha(current_text, n)
         refs = {c: section_sha(blobs.get(c), n) for c in SECTION_COMMITS[n]}
@@ -2317,10 +2377,27 @@ def hash_checks(current_text=None, blobs=None):
             n, want[:16], "==" if got == want else "DIFFERS (%s)" % (got or "absent")[:16],
             ", ".join("%s %s" % (c, "==" if v == want else "DIFFERS (%s)" % (v or "absent")[:16]) for c, v in
                       refs.items()), "identical" if same else "DIFFERS (or unreadable)"))
-    for n in range(20, 100):
+    for n in range(max(SECTION_SHA256) + 1, 100):
         s = section_sha(current_text, n)
         if s is not None:
             lines.append("  info: section %d (a later amendment - not hashed) sha256 %s" % (n, s[:16]))
+    return ok, lines
+
+
+def head_files_check(head_sha, rels=TOOLING_AT_HEAD, root=None):
+    """NEW (review M1): each file of `rels` in the worktree (root: the worktree, WT) has the LF-normalised sha256 of its
+    blob at head_sha (git show <head>:<path>, LF-normalised); a file missing on disk or at head_sha is a mismatch.
+    Returns (ok, lines)."""
+    root = root or WT
+    lines, ok = [], True
+    for rel in rels:
+        p = os.path.join(root, rel.replace("/", os.sep))
+        have = sha_lf_file(p) if os.path.exists(p) else None
+        want = lf_sha_at(head_sha, rel)
+        same = have is not None and have == want
+        ok = ok and same
+        lines.append("  %-34s LF sha256 %s %s" % (rel, (have or "MISSING")[:16], "== %s" % head_sha[:10] if same else
+                                                  "DIFFERS from %s (%s)" % (head_sha[:10], (want or "absent")[:16])))
     return ok, lines
 
 
@@ -2407,15 +2484,16 @@ def load_seeds(path=None, mvg_path=None):
 
 
 def sec_header(opts):
-    """CHANGED: the round's commits (Part 1 ba647655, the rulings 87a93cda, the base 897e93b5, HEAD, --head), the hash
-    checks of 12.2, the verbatim and module checks, the Part 2 notes when given."""
+    """CHANGED: the round's commits (Part 1 ba647655, the rulings 87a93cda, amendment A2 71cfe796, the base 897e93b5,
+    HEAD, --head), the hash checks of 12.2 (section 20 included, review M3), the verbatim and module checks, outside
+    --smoke the TOOLING_AT_HEAD files at --head (review M1), the Part 2 notes."""
     head("DISPATCH ROUND 2 - THE CORRECTED-DISPATCH SCREEN'S ANALYZER (outputs/dispatch2_part1.txt 10, 11.3, 12.2; "
-         "rulings section 19, every option (a))")
+         "rulings section 19, every option (a); amendment A2 section 20)")
     if opts.smoke:
-        out("SMOKE - NOT A SCREEN (one cell of the spent sets 1-2 from %s; queue / 360-step / head checks relaxed; the "
-            "cell stands in for the fresh set 7; structural fields only, 13 (9))" % opts.smoke)
+        out("SMOKE - NOT A SCREEN (one cell of the spent sets 1-2 from %s; queue / head checks relaxed, section 9's "
+            "constants kept; the cell stands in for the fresh set 7; structural fields only, 13 (9))" % opts.smoke)
     for c, what in ((PART1, "Part 1 (sections 0-18, frozen)"), (RULINGS, "rulings amendment A1 (section 19)"),
-                    (BASE[:8], "base (main 897e93b5 = dqR's checkout)")):
+                    (A2, "amendment A2 (section 20)"), (BASE[:8], "base (main 897e93b5 = dqR's checkout)")):
         rc, txt = git("log", "-1", "--format=%H %ad %s", "--date=short", c)
         out("%-38s %s  %s" % (what + ":", c, txt.decode("utf-8", "replace").strip()[:110] if rc == 0 else "NOT FOUND"))
     rc, hd = git("rev-parse", "HEAD")
@@ -2446,6 +2524,15 @@ def sec_header(opts):
     if not (vok and mok):
         out("REFUSED: a reused function or module is not the committed one (12.2)")
         return False
+    if opts.head and not opts.smoke:
+        hok, hlines = head_files_check(opts.head)
+        out("  the analysis tooling and the frozen inputs at --head %s (review M1):" % opts.head[:10])
+        for ln in hlines:
+            out(ln)
+        if not hok:
+            out("REFUSED: a tooling file or frozen input differs from its blob at --head %s (LF-normalised) - the "
+                "analysis runs only on committed tooling" % opts.head)
+            return False
     if getattr(opts, "part2_notes", None):
         nok, lines = notes_check(opts.part2_notes)
         for ln in lines:
@@ -2611,17 +2698,79 @@ def j_record_problems(d, arm):
     return why
 
 
-def prov_run(d, path, line, cell, arm, opts):
+def s9_problems(d, argv_l, arm, mode, crashed):
+    """NEW (review M1): the record against SECTION 9's CONSTANTS - never against its queue line: the record's own argv
+    (d['argv'], the _sd_probe arguments) holds --steps 360 and exactly the --set tokens of section 9's run line
+    (GLOBAL_PLANNER_MODE=0, VICTIM_SPAWN_MODE=<the cell's placement: ring 0, uniform 1>, FF_APPROACH_PATH=1,
+    FF_RETREAT_KEEP_APPROACH=1, FF_FIX_STRANDING_GUARD=1, BATCH_SIZE=360, and the arm's dispatch keys: dqR none, dq0
+    DISPATCH_JOINT=0 DISPATCH_REASSIGN=0, dq1 both 1), each once, nothing else; d['steps'] 360; CRN on with draws (the
+    line, when there is one, carries --crn); the record's effective placement and planner mode. mode None (a cell
+    without a placement): VICTIM_SPAWN_MODE 0 or 1. Returns the INVALID reasons."""
+    why = []
+    rargv = d.get("argv") if isinstance(d.get("argv"), list) else []
+    toks = [str(rargv[i + 1]) for i in range(len(rargv) - 1) if rargv[i] == "--set"]
+    want = dict(S9_SETS)
+    want.update(S9_DISPATCH.get(arm, {}))
+    if mode is not None:
+        want["VICTIM_SPAWN_MODE"] = int(mode)
+    want_toks = sorted("%s=%d" % kv for kv in want.items())
+    got = sorted(toks)
+    if mode is None:
+        vsm = [t for t in got if t.split("=", 1)[0] == "VICTIM_SPAWN_MODE"]
+        if vsm not in (["VICTIM_SPAWN_MODE=0"], ["VICTIM_SPAWN_MODE=1"]):
+            why.append("section 9: VICTIM_SPAWN_MODE %s is not one exact 0 / 1" % vsm)
+        got = [t for t in got if t not in vsm]
+    if got != want_toks:
+        why.append("section 9: the run's --set tokens %s != section 9's %s (arm %s%s)" % (
+            got, want_toks, arm, "" if mode is None else ", placement %d" % int(mode)))
+    if arg_of(rargv, "--steps") != str(S9_STEPS) or d.get("steps") != S9_STEPS:
+        why.append("section 9: --steps %s / steps %s != %d" % (arg_of(rargv, "--steps"), d.get("steps"), S9_STEPS))
+    if argv_l and "--crn" not in argv_l:
+        why.append("section 9: the line has no --crn (CRN by the --crn flag)")
+    crn = (d.get("fb3") or {}).get("crn") or {}
+    if not crashed and not (crn.get("on") is True and int(crn.get("crn_draws") or 0) > 0):
+        why.append("section 9: CRN on %s with crn_draws %s (0 draws is INVALID)" % (crn.get("on"), crn.get("crn_draws")))
+    eff = (d.get("fb3") or {}).get("eff") or {}
+    if mode is not None and eff.get("victim_spawn_mode") != int(mode):
+        why.append("section 9: fb3.eff.victim_spawn_mode %s, the cell's placement is %d" % (eff.get("victim_spawn_mode"),
+                                                                                         int(mode)))
+    if isinstance(d.get("effective"), dict) and d["effective"].get("global_planner_mode") != 0:
+        why.append("section 9: effective.global_planner_mode %s != 0" % d["effective"].get("global_planner_mode"))
+    return why
+
+
+def smp_problems(d):
+    """NEW (review R2-F2): a dq1 record's dispatch parameters - dq.switches S / M / P == 10 / 5 / 3 (D-8, never tuned)
+    and the raw module values the probe recorded for DISPATCH_STALL_STEPS / DISPATCH_MARGIN_STEPS /
+    DISPATCH_MARGIN_PERSIST (repr(getattr(cfv, name))) the shipped constants '10' / '5' / '3' (no override; the
+    record's run line sets none of them - s9_problems). Returns the INVALID reasons."""
+    dq = d.get("dq") if isinstance(d.get("dq"), dict) else {}
+    qsw = dq.get("switches") or {}
+    raw = qsw.get("raw") or {}
+    why = []
+    got = [qsw.get("S"), qsw.get("M"), qsw.get("P")]
+    if got != list(SMP_SHIPPED):
+        why.append("dq1 S / M / P %s != %s (D-8: never tuned)" % (got, list(SMP_SHIPPED)))
+    rv = [raw.get(k) for k in SMP_KEYS]
+    if rv != [repr(x) for x in SMP_SHIPPED]:
+        why.append("dq1 raw %s %s != the shipped %s (an override)" % ("/".join(SMP_KEYS), rv,
+                                                                      [repr(x) for x in SMP_SHIPPED]))
+    return why
+
+
+def prov_run(d, path, line, cell, arm, opts, s9_mode=None):
     """CHANGED (the movement round's validity, for the three arms of section 9): (INVALID reasons, crash text or None,
     STOP reason or None). A crashed run (crash flag, chain exit code != 0, or an early stop) is Z6 material - an S2 FAIL
     in dq1, a STOP in dq0 / dqR - so the CRN-draw and stdout reasons a crash itself causes are NOT added. INVALID (a
     tooling defect, re-run): no frozen queue line; repo / argv / .argv signature / steps / extra_params differing from
-    the line; a head the head rule rejects (dqR: not BASE itself); uncommitted source or instrument (src_check,
-    instrument_check); 0 CRN draws; dp not dp_probe v3 or with errors or a successful assign stamped init / sweep (R-B's
-    cut); dq / ud / mvg not dq_probe v1 or with errors; the movement switches not the pinned ones; the dispatch switches
-    not the arm's (dqR: no DISPATCH_* key; dq0: both 0, off; dq1: both 1, on); the J record's bookkeeping
-    (j_record_problems); the schemas (mv, guard, sample, ff_log); the _survival_move replica disagreeing with the model.
-    ud.shadow_mismatch is behaviour (SM / Z1-M / Zg-1), never INVALID."""
+    the line; SECTION 9's CONSTANTS (s9_problems, review M1 - the placement from s9_mode, else the cell's 'mode'); a
+    head the head rule rejects (dqR: not BASE itself); uncommitted source or instrument (src_check, instrument_check); 0
+    CRN draws; dp not dp_probe v3 or with errors or a successful assign stamped init / sweep (R-B's cut); dq / ud / mvg
+    not dq_probe v1 or with errors; the movement switches not the pinned ones; the dispatch switches not the arm's (dqR:
+    no DISPATCH_* key; dq0: both 0, off; dq1: both 1, on); dq1's S / M / P (smp_problems, review R2-F2); rows_ff not one
+    row per step done without a crash (review m2: the W3 compact's non-crash reason - a tooling defect, never a forced
+    L4 FAIL); the J record's bookkeeping (j_record_problems); the schemas (mv, guard, sample, ff_log); the _survival_move
+    replica disagreeing with the model. ud.shadow_mismatch is behaviour (SM / Z1-M / Zg-1), never INVALID."""
     why, stop = [], None
     if d.get("dp_only"):
         return ["the chain wrote no sd JSON"] if not isinstance(d.get("dp"), dict) else [], \
@@ -2635,6 +2784,15 @@ def prov_run(d, path, line, cell, arm, opts):
     exp_steps = d.get("steps") if smoke else int(arg_of(sd_argv, "--steps") or H)
     crash = run_crash(d, exp_steps)
     replay = bool(argv_l) and os.path.basename(str(argv_l[0])) == "_dq_replay.py"
+    why += s9_problems(d, argv_l, arm, s9_mode if s9_mode is not None else (cell or {}).get("mode"),
+                       crash is not None)
+    if crash is None:
+        rows_ff = d.get("rows_ff")
+        if not isinstance(rows_ff, list) or not rows_ff:
+            why.append("no rows_ff without a crash (a tooling defect, 10.8 (1); review m2)")
+        elif len(rows_ff) != d.get("steps_done"):
+            why.append("rows_ff holds %d steps, steps_done %s, without a crash (a tooling defect, 10.8 (1); review "
+                       "m2)" % (len(rows_ff), d.get("steps_done")))
     if not smoke:
         if line is None:
             why.append("no line in the frozen queues outputs/_dq_q_w1 / w2 / w3.jsonl")
@@ -2753,6 +2911,8 @@ def prov_run(d, path, line, cell, arm, opts):
         if bool(qsw.get("joint_on")) is not bool(want_j) or bool(qsw.get("reassign_on")) is not bool(want_j):
             why.append("dq.switches joint_on %s reassign_on %s, the arm %s means %s" % (
                 qsw.get("joint_on"), qsw.get("reassign_on"), arm, bool(want_j)))
+        if arm == "1":
+            why += smp_problems(d)
         got = {k: bool(qsw.get(k)) for k in want_sw}
         if got != want_sw:
             why.append("dq effective switches %s != the line's %s" % (got, want_sw))
@@ -2795,18 +2955,31 @@ def _drop_cols(rows, cols, drop):
     return [[r[i] for i in keep] for r in rows]
 
 
-def s1_fields(d):
+S1_PARAMS = "params (the cfv keys in both records)"
+S1_EFFECTIVE = "effective"
+
+
+def s1_fields(d, params_keys=None):
     """NEW (10.2): {field: value} of one record on the FROZEN S1 field list - round 1's G-ID fields (_fx3r_analyze
     FIELDS; every mf2 section but its probe string; stdout_sha; every non-J dp field: S1_DP_REQUIRED by name, plus any
     other dp key outside J_ONLY, as round 1's ident_diff compares them); eval and rows_uav / ff / vic / dec / trig; fb3,
     mr and ut; the movement record (mv rows without fix_ms / inst_ms and mv cols, mv_events, the guard rows without
-    ms_guard / ms_inst); the arm-independent per-step sample and the firefighting log. A field absent from the record
-    reads MISSING (an S1 failure even when absent from both). NOT compared: tag, repo, head, out, argv, extra_params,
-    wall_s, params (the cfv keys absent at main), and the J-only fields (dp J_ONLY, d['dq'] but its sample and ff_log,
-    ud, mvg but its guard rows)."""
+    ms_guard / ms_inst); the arm-independent per-step sample and the firefighting log; CHANGED (review R2-F1): params
+    restricted to params_keys (the cfv keys present in BOTH records - s1_pair; None: every key of this record) and the
+    effective-switch block d['effective']. A field absent from the record reads MISSING (an S1 failure even when absent
+    from both). NOT compared: tag, repo, head, out, argv, extra_params, wall_s, the cfv parameter keys absent at main
+    (in one record only), and the J-only fields (dp J_ONLY, d['dq'] but its sample and ff_log, ud, mvg but its guard
+    rows)."""
     res = {}
     for f in tuple(R.FIELDS) + tuple(x for x in ("eval", "stdout_sha") + ROW_KINDS if x not in R.FIELDS):
         res[f] = d[f] if f in d else MISSING
+    pr = d.get("params")
+    if not isinstance(pr, dict):
+        res[S1_PARAMS] = MISSING
+    else:
+        keys = sorted(pr) if params_keys is None else sorted(k for k in params_keys if k in pr)
+        res[S1_PARAMS] = {k: pr[k] for k in keys}
+    res[S1_EFFECTIVE] = d[S1_EFFECTIVE] if S1_EFFECTIVE in d else MISSING
     mf2 = d.get("mf2")
     if not isinstance(mf2, dict):
         res["mf2"] = MISSING
@@ -2836,6 +3009,14 @@ def s1_fields(d):
     res["dq.sample"] = dq["sample"] if "sample" in dq else MISSING
     res["dq.ff_log"] = dq["ff_log"] if "ff_log" in dq else MISSING
     return res
+
+
+def s1_pair(a, b):
+    """NEW (review R2-F1): S1 on one cell's dqR record a and dq0 record b - s1_compare of their s1_fields, params
+    restricted to the cfv keys present in both (a params block missing from either record fails as MISSING)."""
+    pa, pb = a.get("params"), b.get("params")
+    keys = (set(pa) & set(pb)) if isinstance(pa, dict) and isinstance(pb, dict) else None
+    return s1_compare(s1_fields(a, keys), s1_fields(b, keys))
 
 
 def s1_compare(fa, fb):
@@ -3435,6 +3616,53 @@ def chain_zeros(jdl):
     return bad
 
 
+def ledger_zeros(dp):
+    """NEW (review m7; Z-R1, run level - a dq1 zero, never applied to a W3 replay, which shields the ledger by design
+    and is never digested): the ledger J was passed at every J call - the _cap records' b of solve_fill (its units x
+    victims) and plan_replacements_detail (its spares x contest victims), a pair absent from b meaning 0 - equals the
+    ledger REBUILT from dp.commands strictly before that J point (successful assigns at an earlier (step, phase) in J
+    point order; the model's sink counts every bind while J is on, design 5.6). Established on the real dq1 records
+    first (smoke and structure check: 0 violations over every cap record). A pair of a cap call cannot have been bound
+    earlier in the same J call (step 2 binds W victims, which the plan's contests and step 4 exclude; the plan's spares
+    and step 4's released units were not free / were incumbents), so J's own binds at the J point are excluded. The
+    record cannot place a NON-J successful assign at the J point's own (step, phase) before or after J: such a pair is
+    AMBIGUOUS - reported, never gated. Returns (violations [[step, phase, text]], ambiguous [[step, phase, fn, pair, b,
+    rebuilt before, same-point non-J assigns]], number of pair values checked)."""
+    asg = [(int(c[0]), PHASE_RANK.get(str(c[1]), 9), str(c[4]), str(c[3]), str(c[5] or ""))
+           for c in dp.get("commands") or () if c[2] == "assign" and c[6]]
+    bad, amb, n = [], [], 0
+    for row in dp.get("j_detail") or ():
+        step, phase, cur = row[0], str(row[1]), row[2]
+        key = phase_key(step, phase)
+        led, same_nonj = collections.Counter(), collections.Counter()
+        for s, pr, u, v, reason in asg:
+            if (s, pr) < key:
+                led[(u, v)] += 1
+            elif (s, pr) == key and reason not in J_REASONS:
+                same_nonj[(u, v)] += 1
+        for c in cur.get("calls") or []:
+            fn = c.get("fn")
+            if fn == "solve_fill":
+                pairs = [(str(u), str(v)) for u in c.get("units") or [] for v in c.get("victims") or []]
+            elif fn == "plan_replacements_detail":
+                pairs = [(str(b), str(r[0])) for b in c.get("spares") or [] for r in c.get("contests") or []]
+            else:
+                continue
+            b = {ukey(k): int(x) for k, x in (c.get("b") or {}).items()}
+            for p in sorted(set(b) - set(pairs)):
+                bad.append([step, phase, "%s: the ledger passed names %s, not a pair of the call" % (fn, pkey(*p))])
+            for p in pairs:
+                n += 1
+                got = int(b.get(p, 0) or 0)
+                if same_nonj.get(p):
+                    amb.append([step, phase, fn, pkey(*p), got, led[p], same_nonj[p]])
+                    continue
+                if got != led[p]:
+                    bad.append([step, phase, "%s: the ledger J was passed for %s, b = %d, != %d rebuilt from "
+                                             "dp.commands before this J point" % (fn, pkey(*p), got, led[p])])
+    return bad, amb, n
+
+
 def i4w_sample(rows):
     """NEW (I4-W at the sample instant = D1's W part, 10.6): every sample victim-step of W (no living binder, not in
     custody) with a FREE unit holding a finite route (the sample is taken right after J-post). Returns [[step, 'sample',
@@ -3564,8 +3792,8 @@ def dispatch_zeros(dp, sample_rows, rows_vic, ff_dead, ff_rb, reassign_on):
     """NEW (10.3): every dispatch-owned zero of one run (computed in every arm; only dq1's gate - section 3 owners):
     G-B(a) / I7 and G-B(b) (gb_counts, dp.binders), G-B(c) (gb_c_check), I4-W (every J point's end, and the sample),
     G-T(a) (round 1's reading: gt_returns with no outside event), G-T(c) (ledger_check), M6 (a successful assign the
-    instrument's BFS found closed), Z-C1a / Z-C1b / Z-C2 / Z-R1 / Z-R2 (jpoint_zeros, chain_zeros), Z-C3 (zc3_run).
-    Returns (Z {zero: instances}, stats Counter, extras)."""
+    instrument's BFS found closed), Z-C1a / Z-C1b / Z-C2 / Z-R1 / Z-R2 (jpoint_zeros, chain_zeros, and the ledger J was
+    passed: ledger_zeros, review m7), Z-C3 (zc3_run). Returns (Z {zero: instances}, stats Counter, extras)."""
     Z = collections.defaultdict(list)
     st = collections.Counter()
     cmds = dp.get("commands") or []
@@ -3598,8 +3826,12 @@ def dispatch_zeros(dp, sample_rows, rows_vic, ff_dead, ff_rb, reassign_on):
         if any(e.get("kind") in J_BIND_KINDS for e in es) and (step, phase) not in jp_pts:
             Z["Z-C3"].append([step, phase, "J bound at a J point with no recorded PRE (j_detail)"])
     Z["Z-R1"] += chain_zeros(jdl)
+    lz, lamb, ln = ledger_zeros(dp)           # review m7: the ledger J was passed vs dp.commands (dq1's Z-R1)
+    Z["Z-R1"] += lz
+    st["ledger values checked (Z-R1)"] = ln
+    st["ledger values ambiguous (reported)"] = len(lamb)
     st["J points with PRE"] = len(jdl)
-    return Z, st, {"gb_c_excused": exc, "gb_c_nosample": nos}
+    return Z, st, {"gb_c_excused": exc, "gb_c_nosample": nos, "ledger_ambiguous": lamb}
 
 
 # ================================================================================================ D1-D4 (10.6; pure)
@@ -3905,19 +4137,83 @@ def ko_first(jpoints, rules, units):
     return None
 
 
+def ko_refused(jpoints, rules, units):
+    """NEW (review m5; REPORTED, never gating): the J decisions of dq1's record that were REFUSED (a fill / second fill
+    the executor refused) or ABORTED (a replacement) and that a knockout with these rules changes (its decision set
+    includes them: drop_bind / drop_victim / drop_unreleased on a stage-2 / 4 attempt, drop_challenger / drop_release /
+    drop_victim on a stage-3 replacement) - there J's control flow under the knockout may differ from R0's. Returns
+    [[step, phase, kind, victim, unit]]."""
+    res = []
+    for step, phase, legacy, s2, s3, s4 in jpoints or ():
+        K = rule_k(rules, step, phase, units)
+        if not K:
+            continue
+        keys = {(str(c[2]), str(c[3]), str(c[4])) for c in override_changes(step, phase, legacy, s2, s3, s4, K)}
+        for stage, rows in ((2, s2), (4, s4)):
+            for v, u, ok in rows:
+                if not ok and any((str(u), str(v), k) in keys for k in ("drop_bind", "drop_victim", "drop_unreleased")):
+                    res.append([step, phase, "stage %d refused" % stage, str(v), str(u)])
+        for kind, v, new, olds, ok in s3:
+            hit = ((str(new), str(v), "drop_challenger") in keys or (str(new), str(v), "drop_victim") in keys
+                   or any((str(o), str(v), "drop_release") in keys for o in olds))
+            if not ok and hit:
+                res.append([step, phase, "%s aborted" % kind, str(v), str(new)])
+    return res
+
+
+def death_class(rows_ff, unit, t):
+    """NEW (review m6; reported): the unit's class at its death step t, from its last row before the death (rows_ff
+    index t - 2; the death row itself when t = 1): 'carrying' (exiting or rescue_completed), 'latched' (bound, status
+    route_blocked), 'bound' (bound otherwise), 'unbound'; '?' when the row is absent."""
+    if t is None:
+        return None
+    idx = int(t) - 2 if int(t) >= 2 else int(t) - 1
+    row = rows_ff[idx] if 0 <= idx < len(rows_ff or ()) else []
+    r = next((x for x in row if str(x[0]) == str(unit)), None)
+    if r is None:
+        return "?"
+    if r[5] or (len(r) > 10 and r[10]):
+        return "carrying"
+    if r[8] is not None:
+        return "latched" if str(r[3]).strip().lower() == "route_blocked" else "bound"
+    return "unbound"
+
+
+def challenger_death(cmds, rows_ff, unit, t):
+    """NEW (review m6; 11.2: 'a death U met as a challenger is reported with that label'): [step, victim, reason] when
+    U's last successful bind at or before its death step t was a J REPLACEMENT (REPLACE or LATCH-FILL - U the
+    challenger) and U was still bound to that victim at its last rows before the death (index t - 2 or t - 1); else
+    None. A KO-OTHERS replay can never reproduce that role: no replacement occurs in it."""
+    last = None
+    for c in cmds or ():
+        if c[2] == "assign" and c[6] and str(c[4]) == str(unit) and int(c[0]) <= int(t):
+            last = c
+    if last is None or str(last[5]) not in REPLACE_REASONS + (LATCH_REASON,):
+        return None
+    for idx in (int(t) - 2, int(t) - 1):
+        row = rows_ff[idx] if 0 <= idx < len(rows_ff or ()) else []
+        r = next((x for x in row if str(x[0]) == str(unit)), None)
+        if r is not None and str(r[8]) == str(last[3]):
+            return [int(last[0]), str(last[3]), str(last[5])]
+    return None
+
+
 def r0_reproduces(x, r0, x_stdout, r0_stdout):
     """CHANGED (11.2: 'every per-step row, the commands, the J events, the movement events, eval and stdout'): R0 must
-    reproduce dq1's record exactly. Returns the differing fields ([] = reproduces)."""
-    diff = [k for k in ROW_KINDS if x.get(k) != r0.get(k)]
-    if (x.get("dp") or {}).get("commands") != (r0.get("dp") or {}).get("commands"):
-        diff.append("dp.commands")
-    if (x.get("dp") or {}).get("j_events") != (r0.get("dp") or {}).get("j_events"):
-        diff.append("dp.j_events")
-    if x.get("mv_events") != r0.get("mv_events"):
-        diff.append("mv_events")
-    if x.get("eval") != r0.get("eval"):
-        diff.append("eval")
-    if x_stdout is None or x_stdout != r0_stdout:
+    reproduce dq1's record exactly. CHANGED (review m4; outputs/_dq_replay.py r0_reproduces' presence semantics, made
+    two-sided): a listed field MISSING from either record - or from both - is a difference, never an equality of two
+    absences. Returns the differing fields ([] = reproduces)."""
+    def same(a, b, key):
+        return isinstance(a, dict) and isinstance(b, dict) and key in a and key in b and a[key] == b[key]
+
+    diff = [k for k in ROW_KINDS if not same(x, r0, k)]
+    for sec, key in (("dp", "commands"), ("dp", "j_events")):
+        if not same(x.get(sec), r0.get(sec), key):
+            diff.append("%s.%s" % (sec, key))
+    for key in ("mv_events", "eval"):
+        if not same(x, r0, key):
+            diff.append(key)
+    if x_stdout is None or r0_stdout is None or x_stdout != r0_stdout:
         diff.append("stdout")
     return diff
 
@@ -4123,6 +4419,7 @@ def digest(d, arm, label, path, cell_set=None, censor=H + 1):
     g["Z"] = Z
     g["jst"] = jst
     lists["gb_c_excused"], lists["gb_c_nosample"] = jx["gb_c_excused"], jx["gb_c_nosample"]
+    lists["ledger_ambiguous"] = jx["ledger_ambiguous"]
     led = dp.get("ledger") or {}
     if g["joint_on"] or led:
         _v, _r, bcount = ledger_check(cmds)
@@ -4161,6 +4458,9 @@ def digest(d, arm, label, path, cell_set=None, censor=H + 1):
     # ---- W3 material: dq1's recorded J decisions (the knockout evidence); every dead unit's rows (the C-NONE check)
     g["jpoints"] = j_decision_points(dp) if g["joint_on"] else []
     g["units"] = sorted({str(r[0]) for row in rows_ff for r in row}, key=id_index)
+    g["death_class"] = {u: death_class(rows_ff, u, t) for u, t in ff_dead.items()}          # review m6 (reported)
+    g["challenger_death"] = ({u: challenger_death(cmds, rows_ff, u, t) for u, t in ff_dead.items()}
+                             if g["joint_on"] else {})
     g["dead_unit_h"] = {u: hashes([next((r for r in rows_ff[s] if r[0] == u), None) for s in range(t)])
                         for u, t in ff_dead.items()}
     g["num"], g["lists"] = num, lists
@@ -4213,18 +4513,29 @@ def process(cells, opts, queues):
                 rec["prov"][arm] = ["unreadable JSON %r" % (exc,)]
                 continue
             line = None if getattr(opts, "smoke", None) else (queues.get(os.path.normcase(p)) or (None, None))[1]
-            why, crash, stop = prov_run(d, p, line, None if getattr(opts, "smoke", None) else c, arm, opts)
+            why, crash, stop = prov_run(d, p, line, None if getattr(opts, "smoke", None) else c, arm, opts,
+                                        s9_mode=c.get("mode"))
             rec["crash"][arm] = crash
             if stop:
                 rec["stop"].append((arm, stop))
-            g = digest(d, arm, "%s_%s" % (ARM_TAG[arm], c["id"]), p, c["set"],
-                       censor=(int(d.get("steps_done") or 0) + 1) if getattr(opts, "smoke", None) else H + 1)
+            try:
+                g = digest(d, arm, "%s_%s" % (ARM_TAG[arm], c["id"]), p, c["set"],
+                           censor=(int(d.get("steps_done") or 0) + 1) if getattr(opts, "smoke", None) else H + 1)
+            except Exception as exc:          # noqa: BLE001 - review m2: a record that cannot be read is INVALID
+                g = {"arm": arm, "label": "%s_%s" % (ARM_TAG[arm], c["id"]), "path": p, "set": c["set"],
+                     "usable": False, "inst_problems": [], "crashed": d.get("crashed")}
+                why = why + ["the record cannot be digested (%s) - a tooling defect, 10.8 (1)" % (repr(exc)[:160],)]
             g["line_name"] = line_name(arm, c)
             if c["fresh"] and w3q is not None and arm in ("0", "1"):
                 try:
                     g["w3c"] = w3q.compact(d)
                 except Exception as exc:      # noqa: BLE001 - W3 is then REFUSED / incomplete (validity only)
                     g["w3c_error"] = repr(exc)[:200]
+                # review m2: a record the W3 compact cannot use WITHOUT a crash is a tooling defect (10.8 (1)): INVALID
+                # here - never an uncomputable cell that forces L4 FAIL (that is kept for a documented crash only)
+                if isinstance(g.get("w3c"), dict) and not g["w3c"].get("usable") and crash is None:
+                    why = why + ["the W3 compact marks the record unusable without a crash: %s (a tooling defect, 10.8 "
+                                 "(1); review m2)" % g["w3c"].get("why")]
             rec["prov"][arm] = why + list(g.get("inst_problems") or [])
             rec["g"][arm] = g
             if arm in ("R", "0"):
@@ -4235,7 +4546,7 @@ def process(cells, opts, queues):
             if a.get("dp_only") or b.get("dp_only"):
                 rec["ident"] = (["sd record missing (crash)"], [])
             else:
-                rec["ident"] = s1_compare(s1_fields(a), s1_fields(b))
+                rec["ident"] = s1_pair(a, b)
         raw.clear()
         G = rec["g"]
         if "0" in G and "1" in G and G["0"].get("usable") and G["1"].get("usable"):
@@ -4285,8 +4596,9 @@ def sec_s1(recs, opts):
     """NEW (10.2): S1 = dq0 == dqR value identity on 64 / 64 cells on the FROZEN field list; field paths only."""
     head("2 S1 IDENTITY (10.2) - dq0 == dqR value identity on the FROZEN field list (_fx3r_analyze FIELDS, every mf2 "
          "section, stdout_sha, the non-J dp fields %s, fb3 / mr / ut, the movement record without its timing columns, "
-         "the per-step sample and the firefighting log); a listed field missing from either record fails. Field paths "
-         "only, never values" % "/".join(S1_DP_REQUIRED))
+         "the per-step sample and the firefighting log, params on the cfv keys of both records and the effective "
+         "block); a listed field missing from either record fails. Field paths only, never values (printed after the "
+         "zeros: 10.8's outcome 1 precedes outcome 2)" % "/".join(S1_DP_REQUIRED))
     comp = [r for r in recs if r["ident"] is not None]
     same = sum(1 for r in comp if not r["ident"][0])
     for r in comp:
@@ -4366,6 +4678,13 @@ def sec_zeros(recs, st, opts):
              if g.get("usable"))
     out("  Z-R1's progress rule follows amendment A2 (section 20: a metric with no finite value over H is not "
         "compared); evaluations where 2.8's literal text would give another verdict: %d (reported)" % a2)
+    led_n = sum(int((g.get("jst") or {}).get("ledger values checked (Z-R1)", 0)) for r in recs for g in r["g"].values()
+                if g.get("usable"))
+    led_amb = [(g["label"], g["lists"].get("ledger_ambiguous")[:3]) for r in recs for g in r["g"].values()
+               if g.get("usable") and g["lists"].get("ledger_ambiguous")]
+    out("  Z-R1 includes the LEDGER J was passed at every J call (the _cap records' b) against dp.commands rebuilt "
+        "strictly before the J point (review m7): %d pair values checked; ambiguous on the record (a non-J assign at "
+        "the J point's own step and phase - reported, never gated): %s" % (led_n, led_amb[:4] or "none"))
     lm = [(g["label"], g["lists"].get("ledger_mismatch")) for r in recs for g in r["g"].values()
           if g.get("usable") and g["lists"].get("ledger_mismatch")]
     if lm:
@@ -4438,11 +4757,11 @@ def w2_records_gate(cells, opts, queues):
 def w2_gate(head_sha, notes):
     """NEW (the contract outputs/_dq_w3_queue.py build relies on: UA.w2_gate(head, notes) -> (ok, problems)): the
     analyzer's own header checks (section 0 with --head and --part2-notes: the hashed sections, the verbatim / module
-    checks, the Part 2 notes; --head must descend from the base and the rulings) and section 1's validity of the 64 W1
-    dq0 and 64 W2 dq1 records (w2_records_gate on the 64 screen cells). Prints sections 0-1 only, masked; never an
-    outcome."""
+    checks, TOOLING_AT_HEAD at --head, the Part 2 notes; --head must descend from the base and the rulings) and section
+    1's validity of the 64 W1 dq0 and 64 W2 dq1 records (w2_records_gate on the 64 screen cells). Prints sections 0-1
+    only, masked; never an outcome."""
     opts = argparse.Namespace(head=head_sha, part2_notes=notes, smoke=None, smoke_cell=None, smoke_files={},
-                              zeros_only=True, allow_incomplete=False, out=None)
+                              zeros_only=True, w3_unresolved=[], out=None)
     if not head_sha or not notes:
         return False, ["--head and --part2-notes are both required"]
     if not sec_header(opts):
@@ -4465,7 +4784,13 @@ def w3_validity(recs, opts):
     THE KNOCKOUT EVIDENCE - the first change ko_first gives on dq1's recorded J decisions (the analyzer's own reading of
     11.2) must equal the frozen rule's prediction (the candidates file's 'first') and be in the replay's ko_applied, and
     a knockout the rule did not queue must have an empty decision set - and the hybrid diagnostic (the knockout's rows
-    equal dq0's up to t). Prints validity only (no outcome); returns the evidence for section 7 and the decision."""
+    equal dq0's up to t). CHANGED (review m3): replay lines named by --w3-unresolved (opts.w3_unresolved) that are still
+    missing or INVALID are declared UNRESOLVED - their candidates already count as 11.3 says (an UNRESOLVED (A) is
+    CAUSED, an unresolved (B) never PREVENTED) - and W3 is then COMPLETE; a named line that is not a W3 queue line, or
+    whose replay is present and valid, REFUSES. CHANGED (review m2): an uncomputable cell forces L4 FAIL only for a
+    documented crash (printed); without one it keeps W3 INCOMPLETE. REPORTED per candidate (m5, m6): the class at death,
+    a challenger death, the knockout decisions on a refused / aborted J decision. Prints validity only (no outcome);
+    returns the evidence for section 7 and the decision."""
     head("W3 VALIDITY (11.2-11.3) - the dispatch knockout replays: the queue re-derived by the frozen rule "
          "(outputs/_dq_w3_queue.py) from the W1 / W2 records; every replay present and valid; every R0 against its W2 "
          "record")
@@ -4602,7 +4927,10 @@ def w3_validity(recs, opts):
                 x_dead = g1["ff_dead"].get(u)
                 other = c.get("t0") if kind == "A" else c.get("t1", c.get("tx"))
                 it = {"cell": e["cell"], "set": e["set"], "kind": kind, "unit": u, "t": t, "other": other,
-                      "never_other": other is None, "resolved": True, "why": [], "hybrid": {}}
+                      "never_other": other is None, "resolved": True, "why": [], "hybrid": {}, "refused": {},
+                      # review m6 (reported): the class at death in the arm where U died at t; (A): a challenger death
+                      "class": ((g1 if kind == "A" else g0).get("death_class") or {}).get(u),
+                      "challenger": (g1.get("challenger_death") or {}).get(u) if kind == "A" else None}
                 if r0_diff is None:
                     it["resolved"] = False
                     it["why"].append("R0 missing or INVALID")
@@ -4629,6 +4957,8 @@ def w3_validity(recs, opts):
                         it[key + "_dies"] = x_dead is not None
                         it[key + "_run"] = False
                         continue
+                    # review m5 (reported): the knockout's decision set touches a refused / aborted J decision
+                    it["refused"][ko] = ko_refused(jpoints, rules_of[name], units)
                     rec = load_w3(name)
                     it[key + "_run"] = True
                     if rec is None:
@@ -4663,6 +4993,40 @@ def w3_validity(recs, opts):
                 res["items"].append(it)
     for name in by_name:                     # every line is read and validated, referenced or not
         load_w3(name)
+    # review m3: replay lines declared UNRESOLVED (still missing or INVALID after a documented re-run, 11.2)
+    declared = [str(x) for x in (getattr(opts, "w3_unresolved", None) or [])]
+    not_w3 = [n for n in declared if n not in by_name]
+    valid_named = [n for n in declared if n in by_name and loaded.get(n) is not None]
+    if not_w3 or valid_named:
+        res["refused"] = True
+        res["refused_text"] = ("REFUSED - --w3-unresolved names %s%s%s: only a W3 queue line whose replay is still "
+                               "missing or INVALID can be declared UNRESOLVED (11.2)" % (
+                                   "lines that are not W3 queue lines %s" % not_w3 if not_w3 else "",
+                                   "; " if not_w3 and valid_named else "",
+                                   "lines whose replay is present and valid %s" % valid_named if valid_named else ""))
+        res["state"] = res["refused_text"]
+        out("  " + res["refused_text"])
+        return res
+    invalid_by = dict(invalid)
+    for n in declared:
+        out("  DECLARED UNRESOLVED (--w3-unresolved; 11.2: missing / INVALID after a documented re-run): %s - %s" % (
+            n, "missing" if n in missing else "INVALID: %s" % "; ".join(str(w) for w in invalid_by.get(n, [])[:3])))
+    open_lines = [n for n in missing if n not in declared] + [n for n, _w in invalid if n not in declared]
+    # review m2: an UNCOMPUTABLE cell forces L4 FAIL only for its documented crash; any other reason is a tooling defect
+    unc_crash, unc_other = [], []
+    for u in res["uncomputable"]:
+        r = cells.get(u.get("cell"))
+        crash_txt = [(a, r["crash"].get(a)) for a in ("1", "0") if r is not None and r["crash"].get(a)]
+        if crash_txt:
+            unc_crash.append(u)
+            out("  UNCOMPUTABLE cell %s - a documented crash (%s): its (A) candidates count as CAUSED and its (B) not "
+                "as PREVENTED, so L4 is forced to FAIL (11.3: an uncomputable cell counts against)" % (
+                    u.get("cell"), "; ".join("%s %s" % (ARM_TAG[a], mask_text(str(t)) if masked(opts) else t)
+                                             for a, t in crash_txt)))
+        else:
+            unc_other.append(u)
+            out("  UNCOMPUTABLE cell %s WITHOUT a crash (%s): a tooling defect (10.8 (1), review m2) - W3 is not "
+                "complete" % (u.get("cell"), u.get("why")))
     n_r0 = len(res["r0"])
     bad_r0 = {k: v for k, v in res["r0"].items() if v}
     out("  W3 queue: %d lines (frozen, identical to the rule's re-derivation from the W1 / W2 records); cells with a "
@@ -4682,15 +5046,22 @@ def w3_validity(recs, opts):
     out("  knockout evidence conflicts ([replay, the analyzer's first change, the frozen rule's]: a replay that did not "
         "knock out dq1's first changed J decision, a first change the rule predicts otherwise, an empty or a "
         "non-queued non-empty decision set): %s" % (res["conflicts"][:8] or "none"))
-    res["complete"] = not missing and not invalid
-    res["state"] = "COMPLETE" if res["complete"] else "INCOMPLETE (%d missing, %d INVALID replays)" % (len(missing),
-                                                                                                      len(invalid))
+    res["declared"] = declared
+    res["uncomputable_crash"] = unc_crash
+    res["complete"] = not open_lines and not unc_other
+    if res["complete"]:
+        res["state"] = "COMPLETE" + ("" if not declared else " (%d replay line(s) declared UNRESOLVED: %s)" % (
+            len(declared), declared))
+    else:
+        res["state"] = "INCOMPLETE (%d missing, %d INVALID replays not declared UNRESOLVED%s)" % (
+            sum(1 for n in missing if n not in declared), sum(1 for n, _w in invalid if n not in declared),
+            "; %d uncomputable cell(s) without a crash" % len(unc_other) if unc_other else "")
     out("  W3 => %s" % res["state"])
     if res["complete"]:
         l4 = l4_counts(res["items"])
-        if res["uncomputable"]:
+        if unc_crash:
             l4["uncomputable"] = True
-            l4["fail"] = True                 # an uncomputable cell counts against (11.3)
+            l4["fail"] = True                 # an uncomputable cell (a documented crash) counts against (11.3)
         res["l4"] = l4
     return res
 
@@ -4703,6 +5074,12 @@ def s6_values(cells):
     rr = [g["j_ms_total"] / (g["wall_s"] * 1000.0) for g in gy if g.get("wall_s")]
     ms = [x for g in gy for x in g.get("j_net_ms") or []]
     return rr, ms
+
+
+def s5_literal_fails(literal):
+    """NEW (review N1): S5's failing LITERAL clauses (10.5: S5 = F1, L4 and the sign-tested family) - F1 pooled, F1 R2
+    per set and L4; L2 / L3 are S4's literals and never make S5's status FAIL (the verdict is unchanged: S4 fails)."""
+    return [k for k, v in literal.items() if v["fail"] and (k.startswith("F1") or k == L4_KEY)]
 
 
 def comparison(recs, zres, s1_pass, w3=None):
@@ -4724,7 +5101,8 @@ def comparison(recs, zres, s1_pass, w3=None):
     res["literal"][L4_KEY] = {"x": None if l4 is None else l4["prevented"], "y": None if l4 is None else l4["caused"],
                               "fail": bool(l4 and l4["fail"]), "l4": l4}
     res["lit_fail"] = [k for k, v in res["literal"].items() if v["fail"]]
-    res["S5"] = not res["lit_fail"] and not res["sig_fail"]
+    res["S5_lit_fail"] = s5_literal_fails(res["literal"])          # review N1: L2 / L3 are S4's, never S5's
+    res["S5"] = not res["S5_lit_fail"] and not res["sig_fail"]
     s2f = list(zres.get("s2") or [])
     res["S2"] = not s2f
     res["S2_fails"] = s2f
@@ -4783,7 +5161,7 @@ def print_comparison(res):
         "point; %d runs, %d J points)" % (
             "PASS" if res["S2"] else "FAIL", "" if res["S2"] else " %s" % [(f[0], f[2]) for f in res["S2_fails"][:6]],
             "PASS" if res["S4"] else "FAIL", "INCOMPLETE" if res["L4_incomplete"] else "PASS" if res["S5"] else "FAIL",
-            res["lit_fail"] or "none", res["sig_fail"] or "none", "PASS" if res["S6"] else "FAIL",
+            res["S5_lit_fail"] or "none", res["sig_fail"] or "none", "PASS" if res["S6"] else "FAIL",
             fmt(None if s6["median_R"] is None else 100 * s6["median_R"], "%.3f%%"), fmt(s6["p99"], "%.2f"),
             s6["n_runs"], s6["n_calls"]))
     out("    FULL(0 -> 1) = %s" % res["full"])
@@ -4971,10 +5349,27 @@ def sec_measures(recs, C):
 
 
 # ================================================================================================ 7 W3 / L4
+def candidate_notes(it):
+    """NEW (review m5, m6; REPORTED, never gating): one candidate's class at death, its challenger label (KO-OTHERS,
+    11.2) and the knockouts whose decision set includes a refused or aborted J decision of dq1's record."""
+    if it["kind"] == "A":
+        ch = it.get("challenger")
+        chal = ("U DIED AS A CHALLENGER (bound by %s at step %s on %s) - KO-OTHERS cannot reproduce that role (11.2)"
+                % (ch[2], ch[0], ch[1]) if ch else "not a challenger death")
+    else:
+        chal = "n/a (a dq0 death: no J)"
+    ref = {ko: x for ko, x in (it.get("refused") or {}).items() if x}
+    return "class at death %s | KO-OTHERS: %s | refused / aborted J decisions in the knockout's decision set: %s" % (
+        it.get("class"), chal, ("%s - J's control flow under the knockout may differ from R0's at that decision" % ref)
+        if ref else "none")
+
+
 def sec_w3_report(w3):
     """CHANGED (11.3): the L4 counts both ways (CAUSED and PREVENTED, pooled and per set) with every candidate's
     evidence; REPORTED, never counted: the run-level variant, KO-LAST, the hybrid diagnostic (whether each knockout's rows
-    equal dq0's up to t), and the same-step deaths with the C-NONE check."""
+    equal dq0's up to t), the same-step deaths with the C-NONE check, and per candidate (review m5, m6) its class at
+    death, the challenger label and the knockout decisions on a refused / aborted J decision (candidate_notes); the
+    declared UNRESOLVED lines (review m3) and the documented crash of every uncomputable cell (review m2)."""
     head("7 W3 / L4 - THE PER-DEATH ATTRIBUTION (11.3): CAUSED and PREVENTED for dq1, pooled and per set (FAIL iff "
          "CAUSED > PREVENTED); the rest reported, never counted")
     if not w3 or not w3.get("complete"):
@@ -5001,8 +5396,12 @@ def sec_w3_report(w3):
                 " KO-LAST %s" % it.get("last") if it["kind"] == "A" else "",
                 ("CAUSED" if it["kind"] == "A" else "PREVENTED") if counted else
                 ("not caused" if it["kind"] == "A" else "not prevented"), it.get("hybrid") or "-"))
+        out("        %s" % candidate_notes(it))
+    for n in w3.get("declared") or []:
+        out("   declared UNRESOLVED replay line (--w3-unresolved): %s" % n)
     if w3["uncomputable"]:
-        out("   uncomputable cells (a crashed W2 run): %s" % [u.get("cell") for u in w3["uncomputable"]])
+        out("   uncomputable cells (a documented crash - L4 forced to FAIL): %s" % [
+            u.get("cell") for u in w3.get("uncomputable_crash") or w3["uncomputable"]])
     same = w3.get("same") or []
     out("-- deaths at the same step in dq1 and dq0 (neither candidate; the C-NONE check - the unit's own rows identical "
         "up to t): %s" % ("none" if not same else ""))
@@ -5059,11 +5458,9 @@ def sec_decision(recs, st, s1, zres, C, w3, opts):
         verdict = "OUTCOME %d: %s" % (outcome, OUTCOME_TEXT[outcome])
         if not s1["pass"] and not s1["fail"]:
             verdict = "INCOMPLETE (S1 not established: the identity wave is incomplete) - would be %s" % verdict
-        if incomplete:
-            verdict = ("PROVISIONAL (incomplete data, --allow-incomplete) - %s" % verdict
-                       if getattr(opts, "allow_incomplete", False) else
-                       "INCOMPLETE (%d missing, %d invalid runs - re-run them; no outcome is read)" % (
-                           len(st["missing"]), len(st["invalid"])))
+        if incomplete:                       # review M2: never PROVISIONAL - outcome 1 (re-run), nothing read
+            verdict = "INCOMPLETE (%d missing, %d invalid runs - re-run them; no outcome is read)" % (
+                len(st["missing"]), len(st["invalid"]))
     out("")
     out("VERDICT: %s" % verdict)
     return outcome
@@ -5071,11 +5468,11 @@ def sec_decision(recs, st, s1, zres, C, w3, opts):
 
 # ================================================================================================ outcome gate
 def incomplete_line(st, w3=None):
-    """CHANGED (W3)."""
+    """CHANGED (W3; review M2: no PROVISIONAL reading exists)."""
     return ("INCOMPLETE (%d missing, %d invalid runs; W3 %s) - the outcome sections are NOT printed (no screen outcome "
-            "is looked at before every run is valid and present, and no verdict before W3 is complete); re-run them, or "
-            "pass --allow-incomplete for a PROVISIONAL reading" % (len(st["missing"]), len(st["invalid"]),
-                                                                   (w3 or {}).get("state") or "not evaluated"))
+            "is looked at before every run is valid and present, and no verdict before W3 is complete); re-run them, "
+            "or declare a W3 replay that stays missing / INVALID after a documented re-run with --w3-unresolved" % (
+                len(st["missing"]), len(st["invalid"]), (w3 or {}).get("state") or "not evaluated"))
 
 
 def stop_out(opts, text):
@@ -5140,9 +5537,9 @@ def outcome_sections(recs, st, s1, zres, w3, opts):
     - --zeros-only (the wave check): nothing after the W3 validity but ZEROS_ONLY_LINE;
     - --smoke: the STRUCTURE and COST lines, then SMOKE_SUPPRESSED - no literal clause, sign-tested count, S2-S5,
       FULL, M8, measure, DIAG, L4 or decision;
-    - a missing or INVALID run, or a W3 that is not complete, without --allow-incomplete: the INCOMPLETE line only;
-    - otherwise every section (PROVISIONAL with --allow-incomplete; NO VERDICT while W3 is incomplete). The DIVERGED
-      assertion failing is a STOP (exit 1)."""
+    - a missing or INVALID run, or a W3 that is not complete: the INCOMPLETE line only (review M2: no PROVISIONAL
+      reading - --allow-incomplete was removed);
+    - otherwise every section. The DIVERGED assertion failing is a STOP (exit 1)."""
     if getattr(opts, "zeros_only", False):
         out(ZEROS_ONLY_LINE)
         return None
@@ -5153,7 +5550,7 @@ def outcome_sections(recs, st, s1, zres, w3, opts):
         out(SMOKE_SUPPRESSED)
         return None
     w3_ok = bool(w3 and w3.get("complete"))
-    if (st["missing"] or st["invalid"] or not w3_ok) and not getattr(opts, "allow_incomplete", False):
+    if st["missing"] or st["invalid"] or not w3_ok:
         head("8 DECISION")
         out("VERDICT: %s" % incomplete_line(st, w3))
         return None
@@ -5169,22 +5566,68 @@ def outcome_sections(recs, st, s1, zres, w3, opts):
 
 
 # ================================================================================================ main
+ALLOW_INCOMPLETE_REMOVED = ("--allow-incomplete was REMOVED (review M2): no outcome is printed with a missing or INVALID "
+                            "run, or before W3 is COMPLETE (10.8 (1), 11.3); a W3 replay that stays missing / INVALID "
+                            "after a documented re-run is declared with --w3-unresolved")
+
+
+def screen_sections(recs, opts):
+    """NEW (review m1; 10.8's order): after process() - section 1 (validity; the seed-selector STOP), section 3 (the
+    zeros) and THEN S1. Outcome 1 (STOP, nothing read) takes precedence over outcome 2 (S1): a zero, SM row or crash in
+    dq0 / dqR STOPS before S1 is printed, and so does (outside --zeros-only) a missing or INVALID run in any arm; the
+    wave check (--zeros-only) still prints S1 and the W3 validity on an incomplete wave. --smoke never STOPS. Returns
+    the exit code (0 report, 1 STOP, 2 REFUSED)."""
+    smoke = bool(getattr(opts, "smoke", None))
+    zeros_only = bool(getattr(opts, "zeros_only", False))
+    st = sec_prov(recs, opts)
+    if st["seed"]:
+        out("STOP: a run's scenario / wind / seed differs from its frozen cell (seed-selector rule)")
+        return 2
+    zres = sec_zeros(recs, st, opts)
+    if not smoke:
+        if st["stop"] or zres["stop"]:
+            stop_out(opts, "STOP - OUTCOME 1: %s%s (decided before S1, 10.8: outcome 1 takes precedence)" % (
+                OUTCOME_TEXT[1], " FOR A MAINTAINER RULING (a shipped movement / guard zero failed in dq0 / dqR)"
+                if zres["ruling"] else ""))
+            return 1
+        if (st["missing"] or st["invalid"]) and not zeros_only:
+            stop_out(opts, "STOP - OUTCOME 1: %s - %d missing, %d INVALID run(s): re-run them; S1 and every outcome "
+                           "section are not read (decided before S1, 10.8)" % (OUTCOME_TEXT[1], len(st["missing"]),
+                                                                              len(st["invalid"])))
+            return 1
+    s1 = sec_s1(recs, opts)
+    if s1["fail"] and not smoke:
+        stop_out(opts, "STOP (S1 IDENTITY FAILED) - OUTCOME 2: %s" % OUTCOME_TEXT[2])
+        return 1
+    w3 = None if smoke else w3_validity(recs, opts)
+    if w3 is not None and w3.get("refused"):
+        stop_out(opts, w3.get("refused_text") or "REFUSED - the W3 queue is not the one the frozen rule gives on these "
+                                                 "W1 / W2 records (11.3)")
+        return 2
+    res = outcome_sections(recs, st, s1, zres, w3, opts)
+    return 1 if res == "STOP" else 0
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(add_help=True)
     ap.add_argument("--out")
     ap.add_argument("--head")
     ap.add_argument("--part2-notes")
-    ap.add_argument("--allow-incomplete", action="store_true")
+    ap.add_argument("--allow-incomplete", action="store_true", help=argparse.SUPPRESS)   # REMOVED (review M2)
     ap.add_argument("--smoke")
     ap.add_argument("--smoke-cell", default="set1/ring/A_N")
     ap.add_argument("--smoke-files", default="")
     ap.add_argument("--zeros-only", action="store_true")
+    ap.add_argument("--w3-unresolved", default="")
     opts = ap.parse_args(_ARGV[1:] if argv is None else argv)
+    if opts.allow_incomplete:
+        ap.error(ALLOW_INCOMPLETE_REMOVED)
     opts.smoke_files = dict(x.split("=", 1) for x in opts.smoke_files.split(",") if "=" in x)
-    if not opts.smoke and not opts.head:
-        ap.error("--head <the screen head> is required outside --smoke")
-    if opts.zeros_only and opts.allow_incomplete:
-        ap.error("--zeros-only prints no outcome: --allow-incomplete does not apply")
+    opts.w3_unresolved = [x.strip() for x in opts.w3_unresolved.split(",") if x.strip()]
+    if not opts.smoke and not (opts.head and opts.part2_notes):
+        ap.error("--head <the screen head> and --part2-notes <path> are required outside --smoke (review M1)")
+    if opts.smoke and opts.w3_unresolved:
+        ap.error("--w3-unresolved reads the screen's W3: not with --smoke")
     if opts.smoke and (set(opts.smoke_files) - set(ARMS) or not opts.smoke_files):
         ap.error("--smoke-files takes ARM=FILE with ARM in R, 0, 1")
     if os.path.normcase(os.path.realpath(HERE)) != os.path.normcase(os.path.realpath(OUT_DIR)):
@@ -5203,31 +5646,11 @@ def main(argv=None):
             out("REFUSED: --smoke-cell %s is not a cell of the spent sets 1-2" % opts.smoke_cell)
             return 2
         recs = process(cells, opts, queues)
-        st = sec_prov(recs, opts)
-        if st["seed"]:
-            out("STOP: a run's scenario / wind / seed differs from its frozen cell (seed-selector rule)")
-            return 2
-        s1 = sec_s1(recs, opts)
-        if s1["fail"] and not opts.smoke:
-            stop_out(opts, "STOP (S1 IDENTITY FAILED) - %s" % OUTCOME_TEXT[2])
-            return 1
-        zres = sec_zeros(recs, st, opts)
-        if (st["stop"] or zres["stop"]) and not opts.smoke:
-            stop_out(opts, "STOP - %s%s" % (OUTCOME_TEXT[1], " FOR A MAINTAINER RULING (a shipped movement / guard zero "
-                                                             "failed in dq0 / dqR)" if zres["ruling"] else ""))
-            return 1
-        w3 = None if opts.smoke else w3_validity(recs, opts)
-        if w3 is not None and w3.get("refused"):
-            stop_out(opts, "REFUSED - the W3 queue is not the one the frozen rule gives on these W1 / W2 records (11.3)")
-            return 2
-        res = outcome_sections(recs, st, s1, zres, w3, opts)
-        if res == "STOP":
-            return 1
+        return screen_sections(recs, opts)
     finally:
         if opts.out:
             with open(opts.out, "w", encoding="utf-8", newline="\n") as fh:
                 fh.write("\n".join(_LINES) + "\n")
-    return 0
 
 
 if __name__ == "__main__":

@@ -11,10 +11,14 @@ usage (any cwd; E:/Projects/SAS/.venv/Scripts/python.exe):
         nothing. --dest writes the four files into DIR instead (self-tests); the lines are the same.
   python outputs/_dq_queue.py check [WAVE ...] [--range A-B] [--resume] [--all-trees] [--dest DIR]
         before a launch: the frozen file equals the rebuilt lines, the probe exists, the reference checkout is
-        897e93b5 (waves with dqR lines), and the TAG CHECK; prints a PASS / FAIL table per wave and an OVERALL line
-        (exit 0 = PASS, 1 = FAIL). No WAVE = all four. --range A-B (1-based, inclusive) checks only those lines of
-        the (single) wave: the structure check is launched incrementally. --resume: the lines' OWN untracked outputs
-        may exist (a re-launch; the pool skips a run whose .argv matches); an out without its .argv is still a FAIL.
+        897e93b5 (waves with dqR lines), the dispatch tree's RUN-LOADED files are clean (review R2-F13: git status
+        --porcelain -uno over RUN_LOADED_PATHS - the root *.py files, src_extension/, outputs/_dq_probe.py,
+        _dq_r1_shadow.py, _dq_replay.py and the probe chain the probe loads; FAIL if any is modified), and the TAG
+        CHECK over EVERY registered worktree (review R2-F6: what --all-trees did is now the default; --all-trees is
+        accepted as a no-op alias); prints a PASS / FAIL table per wave and an OVERALL line (exit 0 = PASS, 1 =
+        FAIL). No WAVE = all four. --range A-B (1-based, inclusive) checks only those lines of the (single) wave: the
+        structure check is launched incrementally. --resume: the lines' OWN untracked outputs may exist (a re-launch;
+        the pool skips a run whose .argv matches); an out without its .argv is still a FAIL.
   python outputs/_dq_queue.py show WAVE [--range A-B]
         print the wave's lines (name, seed, cwd, switches).
   python outputs/_dq_queue.py slice WAVE A-B PATH [--dest DIR]
@@ -52,8 +56,8 @@ TAG CHECK (0.5, 14: "re-checked unused (tracked and untracked, all trees) before
   when it occurs as a whole token (case-insensitive; not preceded or followed by a letter or digit) in
     - the name of any entry of the TOP-LEVEL listing (os.listdir, never a walk) of outputs/ and outputs/_ffr_logs/ of
       the dispatch, urgency and base897e93b5 worktrees and of the main checkout E:\\Projects\\SAS, and of every
-      outputs/_dq* directory of the dispatch worktree (this round's own; one level); --all-trees adds every other
-      registered worktree's outputs/ and outputs/_ffr_logs/;
+      outputs/_dq* directory of the dispatch worktree (this round's own; one level); `check` adds every other
+      registered worktree's outputs/ and outputs/_ffr_logs/ (always - review R2-F6; `write` keeps the fixed list);
     - any path of `git ls-files` of the dispatch worktree (its index);
     - any path ADDED by any commit reachable from any ref (git log --all -m --no-renames --diff-filter=A
       --name-only; every tracked path was added once);
@@ -110,6 +114,16 @@ NAME_RE = re.compile(r"^dq([R01])([ru])([1278])_([A-D])_([NSEW])$")
 CONTROL_OUTPUTS = {WT: "dp0r_A_N", URGENCY_WT: "ud0r1_A_N", REF_WT: "mvg1r5_A_N", MAIN_WT: "mvg1r5_A_N"}
 CONTROL_FFR = "base1511_east_def_101"
 CONTROL_GIT = "dp0r_A_N"
+# review R2-F13: the dispatch tree's RUN-LOADED files - every tracked *.py at the root (git glob: '*' never crosses
+# a '/'), everything under src_extension/, the probe and its round-1 shadow, the replay tool, and the chain the probe
+# loads (_mvg_u1_shadow.py by path; runpy _ut_probe.py -> _fb3_probe.py (-> _fm2_probe_harness.py -> _ffr_harness.py;
+# _bp_inst.py by path) -> _fx3_probe.py -> _mf2_probe.py -> _sd_probe.py; _dim_hooks.py with a --dim-* option, listed
+# conservatively) - the analyzer's RUN_LOADED_REPO + RUN_LOADED_TOOLING + RUN_LOADED_REPLAY
+RUN_LOADED_PATHS = (":(glob)*.py", "src_extension", "outputs/_dq_probe.py", "outputs/_dq_r1_shadow.py",
+                    "outputs/_dq_replay.py", "outputs/_mvg_u1_shadow.py", "outputs/_ut_probe.py",
+                    "outputs/_fb3_probe.py", "outputs/_fx3_probe.py", "outputs/_mf2_probe.py", "outputs/_sd_probe.py",
+                    "outputs/_fm2_probe_harness.py", "outputs/_ffr_harness.py", "outputs/_bp_inst.py",
+                    "outputs/_dim_hooks.py")
 
 
 def stop(msg: str) -> None:
@@ -515,6 +529,17 @@ def ref_checkout_row() -> list[str]:
     return ["reference checkout " + REF_WT, "-", "-", "-", ("PASS (%s)" if ok else "FAIL (%s)") % note]
 
 
+def run_loaded_row() -> tuple[list[str], list[str]]:
+    """Review R2-F13: the dispatch tree's run-loaded files (RUN_LOADED_PATHS) are clean - `git status --porcelain -uno`
+    with exactly those pathspecs (and the quarantine excluded) lists nothing; FAIL if any is modified (staged or not).
+    Returns (the table row, the modified entries)."""
+    raw = _git(["status", "--porcelain", "-uno", "--", *RUN_LOADED_PATHS, QUARANTINE_EXCLUDE])
+    dirty = [ln for ln in raw.decode("utf-8", "replace").splitlines() if ln.strip()]
+    row = ["run-loaded files of %s (root *.py, src_extension/, the probe chain)" % WT, str(len(RUN_LOADED_PATHS)),
+           str(len(dirty)), "-", "PASS (clean)" if not dirty else "FAIL (MODIFIED)"]
+    return row, ["MODIFIED (run-loaded) " + ln.strip() for ln in dirty]
+
+
 # ------------------------------------------------------------------------------------------------------------ main
 def _range(arg: str | None, n: int) -> tuple[int, int]:
     if arg is None:
@@ -582,12 +607,16 @@ def write(dest: str | None) -> int:
 
 
 def check(waves: list[str], rng: str | None, resume: bool, all_trees: bool, dest: str | None) -> int:
+    """The pre-launch check. all_trees is accepted and IGNORED (review R2-F6): the tag check always covers every
+    registered worktree."""
     _here_check()
     per = all_lines()
     if rng is not None and len(waves) != 1:
         stop("--range needs exactly one wave")
     head = _git(["rev-parse", "HEAD"]).decode().strip()
-    print("dispatch HEAD %s; seeds sha256 %s (rule recomputed, sets 1-6 == _mvg_seeds.txt)" % (head, _file_sha(SEEDS)))
+    print("dispatch HEAD %s; seeds sha256 %s (rule recomputed, sets 1-6 == _mvg_seeds.txt); the tag check covers every "
+          "registered worktree" % (head, _file_sha(SEEDS)))
+    rl_row, rl_details = run_loaded_row()
     overall = True
     for wave in waves:
         lines = per[wave]
@@ -611,7 +640,9 @@ def check(waves: list[str], rng: str | None, resume: bool, all_trees: bool, dest
                      else "FAIL (missing)"])
         if any(ln["name"].startswith("dqR") for ln in sel):
             rows.append(ref_checkout_row())
-        trows, details = tag_check(sel, resume=resume, all_trees=all_trees)
+        rows.append(rl_row)
+        trows, details = tag_check(sel, resume=resume, all_trees=True)
+        details = rl_details + details
         rows += trows
         _print_table(rows)
         ok = all(r[4].startswith("PASS") for r in rows)
@@ -679,7 +710,8 @@ def main() -> int:
         for w in pos:
             if w not in WAVES:
                 stop("unknown wave %r (waves: %s)" % (w, " ".join(WAVES)))
-        return check(pos or list(WAVES), rng, "--resume" in sys.argv, "--all-trees" in sys.argv, dest)
+        # --all-trees: a no-op alias (review R2-F6) - check always covers every registered worktree
+        return check(pos or list(WAVES), rng, "--resume" in sys.argv, True, dest)
     if cmd == "show":
         if len(sys.argv) < 3 or sys.argv[2] not in WAVES:
             stop("show needs a wave: %s" % " ".join(WAVES))

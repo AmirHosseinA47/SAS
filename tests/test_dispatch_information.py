@@ -453,8 +453,8 @@ def _clean_cell(model, origin, lo, hi):
 
 def test_tinv_invariants_hold_at_every_frame_of_a_real_run(monkeypatch):
     """T-INV. A short pinned real run (scenario A's team) with both switches on and TWO victims detected at the start
-    (three units: a spare exists). After EVERY J call: I1 (at most one active binder), I4 (full fill, latch-cap leg
-    included), I5 (ledger), I7 (no latched + active pair), I6 (no carrier, finisher or co-located unit was a J
+    (three units: a spare exists). After EVERY J call: I1 (at most one active binder), I4 (the W leg: Limit 3 has no
+    latch-cap fill leg), I5 (ledger), I7 (no latched + active pair), I6 (no carrier, finisher or co-located unit was a J
     donor or target, its binding untouched) and I3 (no J action stripped a victim of its unit). Limit 3 is made to
     act inside the real run: one binder is put in the repeated-raise state (latched) between steps - round 2 (C2):
     its route is open, so it is NOT latch-filled at once (it recovers in its own advance) and the latch leaves I7

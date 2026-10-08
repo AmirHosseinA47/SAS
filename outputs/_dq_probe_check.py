@@ -30,8 +30,16 @@ usage (dispatch worktree root, the parent .venv):
         rows of that step and unit, and its W + WL and free-unit routes == dp.waiting's - two independent BFS).
   python outputs/_dq_probe_check.py ident REF.json DQ0.json
       S1 (10.2) on ONE cell: dqR (REF, main 897e93b5) == dq0 value identity on the FROZEN field list S1_FIELDS: a
-      listed field missing from either record is a failure. Everything else that differs is reported, never gated
-      (the J-only fields, tag / repo / head / out / argv / extra_params / wall_s, the cfv keys absent at main).
+      listed field missing from either record is a failure. S1_FIELDS includes (review R2-F1) params restricted to
+      the cfv keys present in BOTH records and the 'effective' block. Everything else that differs is reported, never
+      gated (the J-only fields, tag / repo / head / out / argv / extra_params / wall_s, the cfv keys absent at main).
+      check --arm 1 also requires (review R2-F2) dq.switches S / M / P == 10 / 5 / 3, their raw module values the
+      shipped '10' / '5' / '3' and no --set of DISPATCH_STALL_STEPS / MARGIN_STEPS / MARGIN_PERSIST.
+  python outputs/_dq_probe_check.py synthetic
+      in-process, NO model step: the scenes below, and (review R2-F3) DEEP PURITY of the J-point recorders
+      (jpoint_pre, jpoint_post) and the per-step sample (dq_sample) on a scene with W, W_L and a contest: a deep
+      canonical snapshot of the model, every agent and marker, the dispatch state and every RNG must be identical
+      before and after one call of each; a deliberately impure recorder (a ledger bump, one RNG draw) must be caught.
   python outputs/_dq_probe_check.py selftest [DQ1.json]
       in-process, NO model step: the probe's pure functions against the repo's joint_dispatch (loaded by path) and the
       frozen round-1 copy on random boards and instances (the instrument's BFS / exemption / unclean set, the fill
@@ -590,6 +598,28 @@ def own_zr1(cur):
 
 
 # ------------------------------------------------------------------------------------------------- check
+SMP_SHIPPED = (("DISPATCH_STALL_STEPS", "S", 10), ("DISPATCH_MARGIN_STEPS", "M", 5),
+               ("DISPATCH_MARGIN_PERSIST", "P", 3))
+
+
+def smp_problems(d):
+    """Review R2-F2 (arm 1): dq.switches S / M / P == 10 / 5 / 3 (D-8, never tuned); the raw module values the probe
+    recorded (repr(getattr(cfv, name))) are the shipped '10' / '5' / '3' - no override; and the run line sets none of
+    the three keys. Returns the problems."""
+    sw = (d.get("dq") or {}).get("switches") or {}
+    raw = sw.get("raw") or {}
+    sets = argv_sets(d)
+    probs = []
+    for key, short, val in SMP_SHIPPED:
+        if sw.get(short) != val:
+            probs.append("dq.switches %s %r != %d" % (short, sw.get(short), val))
+        if raw.get(key) != repr(val):
+            probs.append("raw %s %r != the shipped %r" % (key, raw.get(key), repr(val)))
+        if key in sets:
+            probs.append("the run line sets %s=%s (an override)" % (key, sets[key]))
+    return probs
+
+
 def j_problems(d, arm, jd=None, r1m=None):
     """The J record's consistency (see the module docstring). Returns (problems, counts)."""
     P = probe_module()
@@ -781,6 +811,9 @@ def check(path, arm=None):
         res("arm 1: DISPATCH_JOINT / DISPATCH_REASSIGN pinned 1, on",
             sets.get("DISPATCH_JOINT") == "1" and sets.get("DISPATCH_REASSIGN") == "1" and sw.get("joint_on") is True
             and sw.get("reassign_on") is True)
+        sp = smp_problems(d)
+        res("arm 1: S / M / P 10 / 5 / 3, raw module values shipped, no override (review R2-F2)", not sp,
+            "; ".join(sp))
     crn = (d.get("fb3") or {}).get("crn") or {}
     draws = crn.get("crn_draws")
     res("CRN on (--crn) with crn_draws > 0 (%r; 0 draws = INVALID, section 9)" % draws,
@@ -837,13 +870,26 @@ def _drop_cols(rows, cols, drop):
     return [[r[i] for i in keep] for r in rows]
 
 
-def s1_fields(d):
-    """{field name: value} of one record on S1_FIELDS (10.2); a missing field reads as the sentinel '<MISSING>'."""
+S1_PARAMS = "params (the cfv keys in both records)"
+S1_EFFECTIVE = "effective"
+
+
+def s1_fields(d, params_keys=None):
+    """{field name: value} of one record on S1_FIELDS (10.2); a missing field reads as the sentinel '<MISSING>'.
+    Review R2-F1: params restricted to params_keys (the cfv keys present in BOTH records - ident / s1_pair; None: all
+    of this record's) and the effective-switch block d['effective'] are S1 fields too."""
     P = probe_module()
     miss = "<MISSING>"
     out = {}
     for f in FX3R_FIELDS:
         out[f] = d.get(f, miss)
+    pr = d.get("params")
+    if not isinstance(pr, dict):
+        out[S1_PARAMS] = miss
+    else:
+        keys = sorted(pr) if params_keys is None else sorted(k for k in params_keys if k in pr)
+        out[S1_PARAMS] = {k: pr[k] for k in keys}
+    out[S1_EFFECTIVE] = d.get(S1_EFFECTIVE, miss)
     mf2 = d.get("mf2")
     if not isinstance(mf2, dict):
         out["mf2"] = miss
@@ -886,8 +932,7 @@ def ident(ref_path, dq0_path):
         refuse("ident reads a dqR record and a dq0 record (got arms %s / %s)" % (arm_of(a), arm_of(b)))
     if argv_sets(a).get("VICTIM_SPAWN_MODE") != argv_sets(b).get("VICTIM_SPAWN_MODE"):
         refuse("not the same placement")
-    fa, fb = s1_fields(a), s1_fields(b)
-    bad, rows = s1_compare(fa, fb)
+    bad, rows = s1_pair(a, b)
     print("S1 (10.2) %s (dqR) vs %s (dq0): %d fields" % (os.path.basename(ref_path), os.path.basename(dq0_path),
                                                        len(rows)))
     for name, ok, detail in rows:
@@ -895,12 +940,11 @@ def ident(ref_path, dq0_path):
     # reported, never gated
     rep = []
     for k in sorted(set(a) | set(b)):
-        if k in FX3R_FIELDS or k in S1_SECTIONS or k in NOT_COMPARED_TOP:
+        if k in FX3R_FIELDS or k in S1_SECTIONS or k in NOT_COMPARED_TOP or k == S1_EFFECTIVE:
             continue
         if a.get(k) != b.get(k):
             rep.append(k)
     pa, pb = a.get("params") or {}, b.get("params") or {}
-    rep += ["params.%s" % k for k in sorted(set(pa) & set(pb)) if pa[k] != pb[k]]
     absent = sorted(set(pb) - set(pa)) + sorted(set(pa) - set(pb))
     if (a.get("fx3") or {}) != (b.get("fx3") or {}):
         rep.append("fx3")
@@ -913,6 +957,14 @@ def ident(ref_path, dq0_path):
     print("  reported, not gated - differing: %r; cfv keys in one record only (absent at main): %r" % (rep, absent))
     print("  S1 %s" % ("PASS (value-identical on every listed field)" if not bad else "FAIL: %r" % bad))
     return 1 if bad else 0
+
+
+def s1_pair(a, b):
+    """Review R2-F1: S1 on a dqR record a and a dq0 record b - s1_compare of their s1_fields with params restricted to
+    the cfv keys present in BOTH records (a params block missing from either fails as missing)."""
+    pa, pb = a.get("params"), b.get("params")
+    keys = (set(pa) & set(pb)) if isinstance(pa, dict) and isinstance(pb, dict) else None
+    return s1_compare(s1_fields(a, keys), s1_fields(b, keys))
 
 
 def s1_compare(fa, fb):
@@ -1108,21 +1160,59 @@ def selftest(record=None):
         base.setdefault(f, None)
     for k in DP_NON_J_REQUIRED:
         base["dp"].setdefault(k, [])
+    base["params"] = {"NUM_FIREFIGHTERS": 3, "NUM_VICTIMS": 5}
+    base["effective"] = {"global_planner_mode": 0, "base_station_mode": 3}
     other = copy.deepcopy(base)
     other["dp"]["j_calls"] = [2]
     other["mv"]["rows"] = [[1, 0.9]]
     other["mf2"]["probe"] = "y"
-    bad1, _rows = s1_compare(s1_fields(base), s1_fields(other))
-    expect("ident: J-only / timing / mf2.probe differences are not gated", not bad1, repr(bad1))
+    other["params"]["DISPATCH_JOINT"] = 0          # a cfv key absent at main: in one record only, never compared
+    try:
+        bad1, _rows = s1_pair(base, other)
+    except Exception as exc:  # noqa: BLE001 - a case of the review fix R2-F1: missing -> FAIL
+        bad1 = ["raised %r" % (exc,)]
+    expect("ident: J-only / timing / mf2.probe differences and a cfv key in one record only are not gated", not bad1,
+           repr(bad1))
     for label, mutate in (("rows_ff", lambda x: x["rows_ff"].append([2])),
                           ("dp.commands", lambda x: x["dp"]["commands"].append(2)),
                           ("mv rows", lambda x: x["mv"]["rows"].append([2, 0.1])),
                           ("dq.sample missing", lambda x: x["dq"].pop("sample")),
-                          ("dp.m9 missing", lambda x: x["dp"].pop("m9"))):
+                          ("dp.m9 missing", lambda x: x["dp"].pop("m9")),
+                          # review R2-F1: params on the cfv keys of both records, and the effective block
+                          ("params common-key (R2-F1)", lambda x: x["params"].update(NUM_VICTIMS=4)),
+                          ("params missing (R2-F1)", lambda x: x.pop("params")),
+                          ("effective (R2-F1)", lambda x: x["effective"].update(base_station_mode=0)),
+                          ("effective missing (R2-F1)", lambda x: x.pop("effective"))):
         x = copy.deepcopy(base)
         mutate(x)
-        bad2, _rows = s1_compare(s1_fields(base), s1_fields(x))
+        try:
+            bad2, _rows = s1_pair(base, x)
+        except Exception as exc:  # noqa: BLE001
+            bad2 = []
+            label += " (raised %r)" % (exc,)
         expect("ident: a %s difference fails S1" % label, bool(bad2), repr(bad2))
+    # 8b. review R2-F2: dq1's S / M / P
+    good = {"argv": ["--set", "DISPATCH_JOINT=1"],
+            "dq": {"switches": {"S": 10, "M": 5, "P": 3, "raw": {"DISPATCH_STALL_STEPS": "10",
+                                                                    "DISPATCH_MARGIN_STEPS": "5",
+                                                                    "DISPATCH_MARGIN_PERSIST": "3"}}}}
+    try:
+        g0 = smp_problems(good)
+        bads = []
+        for label, mutate in (("S 12", lambda x: x["dq"]["switches"].update(S=12)),
+                              ("raw margin '6'", lambda x: x["dq"]["switches"]["raw"].update(
+                                  DISPATCH_MARGIN_STEPS="6")),
+                              ("raw persist 'None'", lambda x: x["dq"]["switches"]["raw"].update(
+                                  DISPATCH_MARGIN_PERSIST="None")),
+                              ("--set DISPATCH_STALL_STEPS=10", lambda x: x["argv"].extend(
+                                  ["--set", "DISPATCH_STALL_STEPS=10"]))):
+            x = copy.deepcopy(good)
+            mutate(x)
+            bads.append((label, bool(smp_problems(x))))
+    except Exception as exc:  # noqa: BLE001
+        g0, bads = ["raised %r" % (exc,)], []
+    expect("check --arm 1 (R2-F2): S / M / P 10 / 5 / 3 with the shipped raw values pass; S 12, a raw override, or "
+           "the line setting a key fail", not g0 and len(bads) == 4 and all(b for _l, b in bads), repr((g0, bads)))
     # 9. corruption controls on a real dq1 record
     if record:
         d = load(record)
@@ -1272,6 +1362,260 @@ def zr1_corruptions():
 
     return (("a d* in the fill", d_star), ("a clean flag in the fill", clean), ("FROZEN", frozen),
             ("d over H", hist), ("the progress verdict k", verdict), ("the incumbent's delta", delta))
+
+
+# ------------------------------------------------------------------------------------------------- deep purity
+# Review R2-F3. State EXCLUDED from the deep snapshot: none is needed - every value reachable from the model, its agents
+# and markers is walked. Objects the walker cannot open (no __dict__, no __slots__, not a container, not an RNG) are
+# compared by IDENTITY only and are listed by the check (on the synthetic scene: none).
+DEEP_EXCLUDED = ()
+
+
+class DeepSnapshot:
+    """A deterministic canonical walk of the model's state (review R2-F3): one sha256 per component - every attribute of
+    the model's __dict__ (the marker dicts, _dispatch_progress / _dispatch_ledger / _dispatch_events, the grid, the
+    planners, ...), every agent's __dict__ (the schedule's agents and the firefighter / victim markers and managed
+    victim states), and every RNG (the random module, agents.random, model.random, cfv / wildfire_model SYSTEM_RANDOM,
+    numpy's global state; RNG objects met in the walk by their state). Entities (the model, agents, markers) met inside
+    another component are written as references; containers are walked in order (a set sorted by its elements' form);
+    floats by repr; numpy arrays by dtype / shape / bytes."""
+
+    def __init__(self, ag, cfv, wf):
+        self.ag, self.cfv, self.wf = ag, cfv, wf
+        self.opaque = collections.Counter()
+
+    def _tok(self, obj, ent, memo, out):
+        import types as _t
+        import numpy as np
+        t = type(obj)
+        if obj is None or t in (bool, int, str):
+            out.append("%s:%r" % (t.__name__, obj))
+            return
+        if t is float:
+            out.append("f:%r" % obj)
+            return
+        if isinstance(obj, np.generic):
+            out.append("np:%s:%r" % (t.__name__, obj.item()))
+            return
+        if isinstance(obj, np.ndarray):
+            out.append("nd:%s:%s:%s" % (obj.dtype, obj.shape,
+                                        hashlib.sha256(np.ascontiguousarray(obj).tobytes()).hexdigest()))
+            return
+        oid = id(obj)
+        if oid in ent:
+            out.append("@" + ent[oid])
+            return
+        if oid in memo:
+            out.append("^%d" % memo[oid])
+            return
+        if isinstance(obj, random.Random):
+            out.append("rng:" + hashlib.sha256(repr(obj.getstate()).encode()).hexdigest())
+            return
+        if isinstance(obj, np.random.Generator):
+            out.append("npg:" + hashlib.sha256(repr(obj.bit_generator.state).encode()).hexdigest())
+            return
+        if isinstance(obj, np.random.RandomState):
+            st = obj.get_state()
+            out.append("nprs:%s:%r" % (hashlib.sha256(st[1].tobytes()).hexdigest(), st[2:]))
+            return
+        if isinstance(obj, (_t.FunctionType, _t.BuiltinFunctionType, _t.ModuleType, type)):
+            out.append("fn:%s" % getattr(obj, "__qualname__", getattr(obj, "__name__", t.__name__)))
+            return
+        if isinstance(obj, _t.MethodType):
+            out.append("meth:%s" % obj.__func__.__qualname__)
+            self._tok(obj.__self__, ent, memo, out)
+            return
+        memo[oid] = len(memo)
+        if isinstance(obj, (list, tuple, collections.deque)):
+            out.append("%s[%d" % (t.__name__, len(obj)))
+            for x in obj:
+                self._tok(x, ent, memo, out)
+            out.append("]")
+            return
+        if isinstance(obj, dict):
+            out.append("%s{%d" % (t.__name__, len(obj)))
+            for k, v in obj.items():
+                self._tok(k, ent, memo, out)
+                self._tok(v, ent, memo, out)
+            out.append("}")
+            return
+        if isinstance(obj, (set, frozenset)):
+            parts = []
+            for x in obj:
+                sub = []
+                self._tok(x, ent, {}, sub)
+                parts.append("|".join(sub))
+            out.append("%s(%s)" % (t.__name__, ",".join(sorted(parts))))
+            return
+        d = getattr(obj, "__dict__", None)
+        slots = [s for c in t.__mro__ for s in getattr(c, "__slots__", ()) if isinstance(s, str)
+                 and s not in ("__dict__", "__weakref__")]
+        if isinstance(d, dict) or slots:
+            out.append("obj:%s.%s{" % (t.__module__, t.__qualname__))
+            if isinstance(d, dict):
+                for k, v in d.items():
+                    out.append(str(k))
+                    self._tok(v, ent, memo, out)
+            for s in slots:
+                if hasattr(obj, s):
+                    out.append(s)
+                    self._tok(getattr(obj, s), ent, memo, out)
+            out.append("}")
+            return
+        self.opaque["%s.%s" % (t.__module__, t.__qualname__)] += 1
+        out.append("opaque:%s:%d" % (t.__qualname__, oid))
+
+    @staticmethod
+    def _entities(model):
+        ent = {id(model): "model"}
+        objs = {}
+        for a in list(getattr(model.schedule, "agents", None) or []):
+            label = "agent:%s:%s" % (type(a).__name__, getattr(a, "unique_id", id(a)))
+            ent[id(a)] = label
+            objs[label] = a
+        for name in ("firefighter_marker_agents", "victim_marker_agents", "managed_victims"):
+            for k, o in (getattr(model, name, None) or {}).items():
+                if id(o) not in ent:
+                    ent[id(o)] = "%s:%s" % (name, k)
+                    objs[ent[id(o)]] = o
+        return ent, objs
+
+    def take(self, model):
+        """{component: sha256}."""
+        import numpy as np
+        old = sys.getrecursionlimit()
+        sys.setrecursionlimit(max(old, 100000))
+        try:
+            ent, objs = self._entities(model)
+            comps = {}
+            for k, v in vars(model).items():
+                if ("model." + k) in DEEP_EXCLUDED:
+                    continue
+                out = []
+                self._tok(v, ent, {}, out)
+                comps["model." + k] = hashlib.sha256("\x1f".join(out).encode("utf-8")).hexdigest()
+            for label, o in objs.items():
+                out = []
+                for k2, v2 in (getattr(o, "__dict__", None) or {}).items():
+                    out.append(str(k2))
+                    self._tok(v2, ent, {}, out)
+                comps[label] = hashlib.sha256("\x1f".join(out).encode("utf-8")).hexdigest()
+        finally:
+            sys.setrecursionlimit(old)
+        rngs = (("random (module)", random), ("agents.random", getattr(self.ag, "random", None)),
+                ("model.random", getattr(model, "random", None)),
+                ("cfv.SYSTEM_RANDOM", getattr(self.cfv, "SYSTEM_RANDOM", None)),
+                ("wildfire_model.SYSTEM_RANDOM", getattr(self.wf, "SYSTEM_RANDOM", None)))
+        for name, r in rngs:
+            try:
+                comps["rng " + name] = hashlib.sha256(repr(r.getstate()).encode()).hexdigest()
+            except Exception as exc:  # noqa: BLE001 - recorded as the component's value
+                comps["rng " + name] = "unreadable %r" % (exc,)
+        st = np.random.get_state()
+        comps["rng numpy (global)"] = "%s:%r" % (hashlib.sha256(st[1].tobytes()).hexdigest(), st[2:])
+        return comps
+
+    @staticmethod
+    def diff(a, b):
+        return sorted(k for k in set(a) | set(b) if a.get(k) != b.get(k))
+
+
+def _closure(fn):
+    """{free variable: value} of a closure (the probe's recorders live inside install's closures)."""
+    return dict(zip(fn.__code__.co_freevars, (c.cell_contents for c in fn.__closure__ or ())))
+
+
+def deep_purity(W, ag, cfv, wf, P, expect):
+    """Review R2-F3 - DEEP PURITY of the probe's J-point recorders and per-step sample (no model step). A scene with W,
+    W_L AND a contest (victim_1 waiting with a free unit; victim_0 held by a route_blocked unit on a closed route: W_L
+    and a latched contest; victim_2 with an en_route binder: an active contest), J on; then, with a DEEP snapshot
+    (DeepSnapshot) before and after each: ONE call of jpoint_pre (J-post), of dq_sample, and - after the real J ran on
+    the recorded cur, its cap records filled - of jpoint_post. Each must leave every component identical. POSITIVE
+    CONTROLS: an impure jpoint_pre (it bumps a ledger entry IN PLACE - the in-run shallow guard cannot see that) and an
+    impure dq_sample (it draws one model RNG number) must each be detected; a second snapshot with no call in between
+    is identical (the walk is deterministic). The recorders are taken from install's closures."""
+    import contextlib
+    import io
+    m = W.model
+    jd = wf._jd
+    V0, V1, V2 = "victim_0", "victim_1", "victim_2"
+    A, B, C = "ff_unit_0", "ff_unit_1", "ff_unit_2"
+    cfv.DISPATCH_JOINT, cfv.DISPATCH_REASSIGN = 1, 1
+    W.quiet()
+    W.place_units({A: (25, 28), B: (40, 25), C: (10, 30)})
+    W.place_victims({V0: (25, 25), V1: (30, 30), V2: (10, 20)})
+    m._dispatch_ledger = {}
+    m._dispatch_progress = {}
+    assert W.assign(V0, A) and W.assign(V2, C), "assign failed"
+    m.firefighter_marker_agents[A].status = "route_blocked"
+    m._dispatch_ledger = {(A, V0): 1, (C, V2): 1, (B, V2): 1}
+    m._dispatch_progress = {(A, V0): jd.Progress(history=((25, 28),), closed=True, k_closed=2),
+                            (C, V2): jd.Progress(history=((10, 31),), k=3)}
+    W.burn([(24, 28), (26, 28), (25, 27), (25, 29)])
+    m.evaluation_timesteps_counter = 900
+    fj = _closure(wf.WildFireModel._joint_dispatch_point)
+    fs = _closure(wf.WildFireModel._sync_firefighter_marker_status)
+    jpre, jpost, o_j, rec, dq_sample = fj["jpoint_pre"], fj["jpoint_post"], fj["o_jpoint"], fj["rec"], fs["dq_sample"]
+    ds = DeepSnapshot(ag, cfv, wf)
+    s0 = ds.take(m)
+    again = ds.take(m)
+    expect("R2-F3 deep snapshot deterministic (%d components: the model's attributes, every agent / marker, every "
+           "RNG; excluded %s)" % (len(s0), list(DEEP_EXCLUDED) or "none"), not ds.diff(s0, again),
+           repr(ds.diff(s0, again)))
+    legacy, cur = jpre(m, "post")
+    s1 = ds.take(m)
+    sets = (cur or {}).get("sets") or {}
+    expect("R2-F3 the scene reaches the J-point recorders with W %s, W_L %s and contests %s / %s" % (
+        sets.get("waiting"), sets.get("latched"), sets.get("contest"), sets.get("latched_binder")),
+        sets.get("waiting") and sets.get("latched") and (sets.get("contest") or sets.get("latched_binder")))
+    expect("R2-F3 jpoint_pre is DEEP-pure (one call)", not ds.diff(s0, s1), repr(ds.diff(s0, s1)[:6]))
+    n_s = len(rec["dq_sample"])
+    dq_sample(m)
+    s2 = ds.take(m)
+    row = rec["dq_sample"][-1] if len(rec["dq_sample"]) > n_s else None
+    expect("R2-F3 dq_sample is DEEP-pure (one call; its row W %s, W_L %s)" % (row[1] if row else None,
+                                                                              row[2] if row else None),
+           row is not None and row[1] and row[2] and not ds.diff(s1, s2), repr(ds.diff(s1, s2)[:6]))
+    n0 = len(getattr(m, "_dispatch_events", None) or [])
+    rec["in_j"], rec["j_phase"], rec["j_cur"], rec["j_model"] = True, "post", cur, m
+    rec["j_plan_seen"] = False
+    rec["nest_ms"], rec["gc_n"] = 0.0, 0
+    try:
+        with contextlib.redirect_stdout(io.StringIO()):
+            o_j(m, "post")
+    finally:
+        rec["in_j"], rec["j_cur"] = False, None
+    s3 = ds.take(m)
+    n_jd = len(rec["j_detail"])
+    jpost(m, "post", n0, legacy, cur, 1.0, 1.0, 1.0, 0)
+    s4 = ds.take(m)
+    expect("R2-F3 jpoint_post is DEEP-pure (one call, after the real J filled %d cap records; J itself changed %d "
+           "components)" % (len(cur.get("calls") or []), len(ds.diff(s2, s3))),
+           cur.get("calls") and len(rec["j_detail"]) == n_jd + 1 and not ds.diff(s3, s4), repr(ds.diff(s3, s4)[:6]))
+    # positive controls
+    shallow = P["purity_snapshot"](m, ag)
+    b0 = ds.take(m)
+    jpre(m, "post")
+    led = m._dispatch_ledger
+    led[(B, V1)] = int(led.get((B, V1), 0) or 0) + 1                       # the deliberately impure pre recorder
+    b1 = ds.take(m)
+    shallow_bad = P["purity_diff"](shallow, m, ag)
+    led[(B, V1)] -= 1
+    if not led[(B, V1)]:
+        del led[(B, V1)]
+    expect("R2-F3 POSITIVE CONTROL: an impure jpoint_pre (a ledger entry bumped in place) is detected (%s; the in-run "
+           "shallow guard sees %s)" % (ds.diff(b0, b1), shallow_bad or "nothing"),
+           ds.diff(b0, b1) == ["model._dispatch_ledger"], repr(ds.diff(b0, b1)))
+    rstate = m.random.getstate()
+    c0 = ds.take(m)
+    dq_sample(m)
+    m.random.random()                                                      # the deliberately impure sample
+    c1 = ds.take(m)
+    m.random.setstate(rstate)
+    expect("R2-F3 POSITIVE CONTROL: an impure dq_sample (one model RNG draw) is detected (%s)" % ds.diff(c0, c1),
+           "rng model.random" in ds.diff(c0, c1), repr(ds.diff(c0, c1)))
+    expect("R2-F3 opaque objects compared by identity only: %s" % (dict(ds.opaque) or "none"), not ds.opaque,
+           repr(dict(ds.opaque)))
 
 
 # ------------------------------------------------------------------------------------------------- synthetic
@@ -1518,6 +1862,15 @@ def synthetic():
     sp = [p for p in sp if "not one per step" not in p]   # scenes are separate steps, one row each
     expect("synthetic: sample consistency and the dp.waiting route cross-check (%d route pairs)" %
            sst["route cross-checks"], not sp and sst["route cross-checks"] >= 3, "; ".join(sp[:3]))
+    # review R2-F3: DEEP PURITY of jpoint_pre / jpoint_post / dq_sample, with positive controls (after the sample check:
+    # its direct dq_sample calls add sample rows without a dp.waiting row)
+    try:
+        deep_purity(W, ag, cfv, wf, P, expect)
+    except Exception as exc:  # noqa: BLE001 - the deep-purity block must run: a failure to run is a FAIL
+        expect("R2-F3 deep purity ran", False, repr(exc))
+    expect("synthetic: no instrument error after the deep-purity calls (dq / dp / ud / mvg)",
+           not (rec["dq_errors"] or rec["errors"] or rec["ud_errors"] or rec["mvg_errors"]),
+           repr(rec["dq_errors"][:2] + rec["errors"][:2] + rec["ud_errors"][:2] + rec["mvg_errors"][:2]))
     for label, ok, detail in results:
         print("%-4s %s %s" % ("OK" if ok else "FAIL", label, "" if ok else detail))
     bad = [r for r in results if not r[1]]

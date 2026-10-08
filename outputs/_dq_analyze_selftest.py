@@ -588,7 +588,8 @@ def d_cases():
 def s1_cases():
     """10.2: the FROZEN S1 field list."""
     a = {k: [1] for k in DA.R.FIELDS}
-    a.update({"mf2": {"probe": "p1", "fleet": [1]}, "fb3": {"x": 1}, "mr": {"y": 2}, "ut": {"z": 3},
+    a.update({"params": {"NUM_FIREFIGHTERS": 3}, "effective": {"global_planner_mode": 0},
+              "mf2": {"probe": "p1", "fleet": [1]}, "fb3": {"x": 1}, "mr": {"y": 2}, "ut": {"z": 3},
               "dp": {k: [] for k in DA.S1_DP_REQUIRED}, "mv": {"cols": ["step", "fix_ms", "inst_ms"],
                                                                "rows": [[1, 0.5, 0.1]]},
               "mv_events": [], "mvg": {"guard": {"cols": list(DA.GUARD_COLS), "rows": []}},
@@ -955,6 +956,11 @@ def mini_record(arm, line, deaths=None, eval_=None, j_calls=None, steps_done=360
     joint = arm == "1"
     sw = {"FF_APPROACH_PATH": True, "FF_RETREAT_KEEP_APPROACH": True, "FF_FIX_STRANDING_GUARD": True}
     raw = {k: ("None" if arm == "R" else arm) for k in ("DISPATCH_JOINT", "DISPATCH_REASSIGN")}
+    # the dispatch parameters as dq_probe v1 records them (absent at main: 'None' / None); the self-test's own copy of
+    # the shipped values (D-8: 10 / 5 / 3)
+    shipped = (("DISPATCH_STALL_STEPS", 10), ("DISPATCH_MARGIN_STEPS", 5), ("DISPATCH_MARGIN_PERSIST", 3))
+    raw.update({k: ("None" if arm == "R" else repr(v)) for k, v in shipped})
+    smp = dict(zip(("S", "M", "P"), (None,) * 3 if arm == "R" else [v for _k, v in shipped]))
     jc = list(j_calls or [])
     rows_ff = [[ffrow(u, dead=int(deaths.get(u) is not None and t >= deaths[u])) for u in (U0, U1, U2)]
                for t in range(1, steps_done + 1)]
@@ -972,7 +978,8 @@ def mini_record(arm, line, deaths=None, eval_=None, j_calls=None, steps_done=360
                    "decisions": [], "switches": dict(sw, DISPATCH_URGENCY=False, FF_CARRY_REPLAN=False)},
             "mvg": {"probe": DA.DQ_PROBE, "errors": [], "switches": dict(sw), "mp_mismatch": [], "replica": {},
                     "guard": {"cols": list(DA.GUARD_COLS), "rows": []}},
-            "dq": {"probe": DA.DQ_PROBE, "errors": [], "switches": dict(sw, raw=raw, joint_on=joint, reassign_on=joint),
+            "dq": {"probe": DA.DQ_PROBE, "errors": [], "switches": dict(sw, raw=raw, joint_on=joint, reassign_on=joint,
+                                                                         **smp),
                    "sample": {"cols": list(DA.SAMPLE_COLS), "unit_cols": list(DA.SAMPLE_UNIT_COLS),
                               "rows": [[t, [], [], [], [], []] for t in range(1, steps_done + 1)]},
                    "ff_log": {"cols": list(DA.FFLOG_COLS), "rows": []}, "zr1": {"jpoints": 0},
@@ -981,7 +988,10 @@ def mini_record(arm, line, deaths=None, eval_=None, j_calls=None, steps_done=360
             "rows_vic": [[[V0, 5, 5, "candidate", "candidate", "", 0, 0, 0, 0]] for _ in range(steps_done)],
             "rows_uav": [[["uav_1", 1, 1, "victim_searcher", 50.0, False, False, [0, 0], "x"]]
                          for _ in range(steps_done)],
-            "rows_dec": [], "rows_trig": [], "params": {"NUM_FIREFIGHTERS": 3, "NUM_VICTIMS": 1},
+            "rows_dec": [], "rows_trig": [],
+            "params": dict({"NUM_FIREFIGHTERS": 3, "NUM_VICTIMS": 1},
+                           **({} if arm == "R" else {"DISPATCH_JOINT": int(arm), "DISPATCH_REASSIGN": int(arm)})),
+            "effective": {"global_planner_mode": 0, "base_station_mode": 3},
             "eval": eval_ or {"rescued": 1, "firefighter_deaths": len(deaths)}, "depots": {"cells": [[0, 45]]},
             "grid": [50, 50], "stdout_sha": "", "stdout_tags": {}, "inline_violations": [], "warning_count": 0,
             "mf2": {"probe": "mf2", "fleet": [1]}, "mr": {"probe": "mr"}, "ut": {"probe": "ut"}}
@@ -1178,7 +1188,7 @@ def w3_end_to_end():
     deaths = {7: {"R": {U0: 60, U2: 30}, "0": {U0: 60, U2: 30}, "1": {U0: 40}}}
     fx = W3Fixture((7,), deaths, W3_DP, w3q)
     try:
-        opts = types.SimpleNamespace(smoke=None, head=None, zeros_only=False, allow_incomplete=False)
+        opts = types.SimpleNamespace(smoke=None, head=None, zeros_only=False, w3_unresolved=[])
         with contextlib.redirect_stdout(io.StringIO()):
             recs = DA.process(fx.cells, opts, fx.queues)
         doc, rlines = fx.generate(recs)
@@ -1282,8 +1292,9 @@ def w3_end_to_end():
 def outcome_e2e():
     """Sections 1-8 end to end on a synthetic two-cell screen (set 7 ring A_N: dq1 loses ff_unit_0 at 40, dq0 loses
     ff_unit_0 at 60 and ff_unit_2 at 30; set 8 ring A_N: the arms identical), the REAL W3 generator: process, section
-    1, S1, the zeros, W3 (complete) and the outcome sections with --allow-incomplete (2 of 64 cells: S1 not
-    established). dq1's J decisions here are the counterfactual only (no J bind: every dispatch zero holds on these
+    1, S1, the zeros, W3 (complete) and the outcome sections (2 of 64 cells, none missing or INVALID: S1 not
+    established; --allow-incomplete no longer exists, review M2). dq1's J decisions here are the counterfactual only
+    (no J bind: every dispatch zero holds on these
     minimal records). Asserts the printed structure: the DIVERGED assertion line, FULL(0 -> 1), the 28 sign-tested
     rows, L4 1 / 1, sections 5 and 6, and a VERDICT that would be OUTCOME 4 (NOT SHOWN: no DD fall), naming decision
     0.2."""
@@ -1298,7 +1309,7 @@ def outcome_e2e():
     fx = W3Fixture((7, 8), deaths, dp1, w3q)
     n0 = len(DA._LINES)
     try:
-        opts = types.SimpleNamespace(smoke=None, head=None, zeros_only=False, allow_incomplete=True, smoke_files={})
+        opts = types.SimpleNamespace(smoke=None, head=None, zeros_only=False, smoke_files={}, w3_unresolved=[])
         with contextlib.redirect_stdout(io.StringIO()):
             recs = DA.process(fx.cells, opts, fx.queues)
         _doc, rlines = fx.generate(recs)
@@ -1498,6 +1509,505 @@ def own_vs_jd_cases():
          bad[:2])
 
 
+# ================================================================================================ the review fixes
+# Every case below FAILS without its fix (a function the fix adds is missing -> the case records FAIL, never a crash).
+def _try(name, fn):
+    try:
+        cond, detail = fn()
+    except Exception as exc:                  # noqa: BLE001
+        cond, detail = False, "raised %r" % (exc,)
+    case(name, cond, detail)
+
+
+def _quiet_call(fn, *a, **k):
+    err, outb = io.StringIO(), io.StringIO()
+    code = None
+    try:
+        with contextlib.redirect_stderr(err), contextlib.redirect_stdout(outb):
+            fn(*a, **k)
+    except SystemExit as exc:
+        code = exc.code
+    return code, err.getvalue(), outb.getvalue()
+
+
+def head_sha():
+    return DA.git("rev-parse", "HEAD")[1].decode().strip()
+
+
+def m1_cases():
+    """M1: --part2-notes with --head; TOOLING_AT_HEAD at --head; section 9's constants in prov_run."""
+    def notes_required():
+        n0 = len(DA._LINES)
+        code, err, _o = _quiet_call(DA.main, ["--head", head_sha()])
+        del DA._LINES[n0:]
+        return code == 2 and "--part2-notes" in err, (code, err[-160:])
+    _try("M1-1 outside --smoke --head without --part2-notes is an argparse error (exit 2), as _mvg_analyze's main",
+         notes_required)
+
+    def files_at_head():
+        hd = head_sha()
+        tmp = tempfile.mkdtemp(prefix="dq_m1_")
+        try:
+            present = []                      # the TOOLING_AT_HEAD files committed at HEAD (a copy of each blob)
+            for rel in DA.TOOLING_AT_HEAD:
+                rc, blob = DA.git("show", "%s:%s" % (hd, rel))
+                if rc != 0:
+                    continue
+                present.append(rel)
+                p = os.path.join(tmp, rel.replace("/", os.sep))
+                os.makedirs(os.path.dirname(p), exist_ok=True)
+                with open(p, "wb") as fh:
+                    fh.write(blob.replace(b"\r\n", b"\n"))
+            ok1, _l1 = DA.head_files_check(hd, rels=present, root=tmp)
+            p0 = os.path.join(tmp, "outputs", "_dq_seeds.txt")
+            with open(p0, "rb") as fh:
+                data = fh.read()
+            with open(p0, "wb") as fh:
+                fh.write(data.replace(b"\n", b"\r\n"))
+            ok2, _l2 = DA.head_files_check(hd, rels=present, root=tmp)
+            with open(os.path.join(tmp, "outputs", "_dq_replay.py"), "ab") as fh:
+                fh.write(b"# an uncommitted edit\n")
+            ok3, l3 = DA.head_files_check(hd, rels=present, root=tmp)
+            os.remove(os.path.join(tmp, "outputs", "_dq_seeds.txt"))
+            ok4, l4 = DA.head_files_check(hd, rels=["outputs/_dq_seeds.txt"], root=tmp)
+            ok5, l5 = DA.head_files_check(hd, rels=["outputs/_dq_q_selftest_never_committed.jsonl"])
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+        return (len(present) >= 8 and ok1 and ok2 and not ok3 and not ok4 and not ok5
+                and len(DA.TOOLING_AT_HEAD) == 11 and any("_dq_replay.py" in x and "DIFFERS" in x for x in l3)
+                and any("MISSING" in x for x in l4) and any("absent" in x for x in l5)), (ok1, ok2, ok3, ok4, ok5,
+                                                                                         l3[:2], present)
+    _try("M1-2 the TOOLING_AT_HEAD files equal to their blobs at --head pass (a CRLF copy too: LF-normalised); an "
+         "uncommitted edit, a file missing on disk, or a file not committed at --head REFUSES", files_at_head)
+
+    def header_refuses():
+        saved = DA.head_files_check
+        DA.head_files_check = lambda h, rels=DA.TOOLING_AT_HEAD, root=None: (False, ["  outputs/x DIFFERS"])
+        n0 = len(DA._LINES)
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                ok = DA.sec_header(types.SimpleNamespace(head=head_sha(), smoke=None, part2_notes=None))
+        finally:
+            DA.head_files_check = saved
+        rep = DA._LINES[n0:]
+        del DA._LINES[n0:]
+        return ok is False and any("REFUSED: a tooling file or frozen input differs" in x for x in rep), rep[-2:]
+    _try("M1-3 section 0 REFUSES (no verdict) when a TOOLING_AT_HEAD file differs from --head", header_refuses)
+
+    def s9():
+        tmp = tempfile.mkdtemp(prefix="dq_s9_")
+        try:
+            cell = {"scen": SCEN[0], "wind": SCEN[1], "seed": SCEN[2], "mode": 0}
+            o = types.SimpleNamespace(smoke=None, head=None)
+
+            def run(arm, mut_line=None, mut_rec=None, steps_done=360):
+                line = queue_line(arm, tmp)
+                if mut_line:
+                    mut_line(line)
+                d = mini_record(arm, line, steps_done=steps_done)
+                if mut_rec:
+                    mut_rec(d)
+                write_run(line, d)
+                return DA.prov_run(d, line["out"], line, cell, arm, o)[0]
+
+            def tok(old, new):
+                def f(line):
+                    line["argv"][line["argv"].index(old)] = new
+                return f
+
+            def extra(line):
+                i = line["argv"].index("--steps")
+                line["argv"][i:i] = ["--set", "FIRE_SPREAD_MULTIPLIER=2"]
+
+            res = {
+                "a ring cell with VICTIM_SPAWN_MODE=1 (line and record agree)": run(
+                    "1", tok("VICTIM_SPAWN_MODE=0", "VICTIM_SPAWN_MODE=1"),
+                    lambda d: d["fb3"]["eff"].update(victim_spawn_mode=1)),
+                "GLOBAL_PLANNER_MODE=1": run("0", tok("GLOBAL_PLANNER_MODE=0", "GLOBAL_PLANNER_MODE=1")),
+                "BATCH_SIZE=180": run("R", tok("BATCH_SIZE=360", "BATCH_SIZE=180")),
+                "--steps 300 (line, record and its rows agree)": run(
+                    "1", tok("360", "300"), lambda d: d.update(steps=300), steps_done=300),
+                "an extra --set key": run("0", extra),
+                "no --crn and CRN off (line and record agree)": run(
+                    "1", lambda ln: ln["argv"].pop(1), lambda d: d["fb3"].update(crn={"on": False, "crn_draws": 0})),
+            }
+            base = run("1")
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+        flagged = {k: any("section 9" in str(w) for w in v) for k, v in res.items()}
+        return not base and all(flagged.values()), (flagged, base)
+    _try("M1-4 section 9's CONSTANTS, never the queue line: a record whose line and record agree on a ring cell with "
+         "VICTIM_SPAWN_MODE=1, GLOBAL_PLANNER_MODE=1, BATCH_SIZE=180, --steps 300, an extra --set key, or no --crn with "
+         "CRN off is INVALID; the section-9 record passes", s9)
+
+
+def smp_cases():
+    """R2-F2: dq1's S / M / P and their raw module values."""
+    def f():
+        tmp = tempfile.mkdtemp(prefix="dq_smp_")
+        try:
+            cell = {"scen": SCEN[0], "wind": SCEN[1], "seed": SCEN[2], "mode": 0}
+            o = types.SimpleNamespace(smoke=None, head=None)
+            out_ = {}
+            for label, arm, mut in (("dq1 shipped", "1", None),
+                                    ("dq1 S 12", "1", lambda d: d["dq"]["switches"].update(S=12)),
+                                    ("dq1 raw margin '6'", "1",
+                                     lambda d: d["dq"]["switches"]["raw"].update(DISPATCH_MARGIN_STEPS="6")),
+                                    ("dq1 raw persist 'None'", "1",
+                                     lambda d: d["dq"]["switches"]["raw"].update(DISPATCH_MARGIN_PERSIST="None"))):
+                line = queue_line(arm, tmp)
+                d = mini_record(arm, line)
+                if mut:
+                    mut(d)
+                write_run(line, d)
+                out_[label] = [w for w in DA.prov_run(d, line["out"], line, cell, arm, o)[0] if "dq1" in str(w)]
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+        return (not out_["dq1 shipped"] and out_["dq1 S 12"] and out_["dq1 raw margin '6'"]
+                and out_["dq1 raw persist 'None'"]), out_
+    _try("R2F2-1 a dq1 record whose dq.switches S / M / P is not 10 / 5 / 3, or whose raw DISPATCH_STALL_STEPS / "
+         "MARGIN_STEPS / MARGIN_PERSIST is not the shipped module value, is INVALID; the shipped record passes", f)
+
+
+def m2_m3_cases():
+    """M2 (--allow-incomplete removed), M3 (section 20 hashed)."""
+    def removed():
+        n0 = len(DA._LINES)
+        code, err, _o = _quiet_call(DA.main, ["--head", "x", "--part2-notes", "y", "--allow-incomplete"])
+        del DA._LINES[n0:]
+        return code == 2 and "REMOVED" in err, (code, err[-200:])
+    _try("M2-1 --allow-incomplete is an argparse error saying it was REMOVED (exit 2)", removed)
+
+    def sec20():
+        with open(os.path.join(HERE, "dispatch2_part1.txt"), encoding="utf-8") as fh:
+            text = fh.read()
+        ok, lines = DA.hash_checks()
+        bad, lbad = DA.hash_checks(text.replace("(a) RECOMMENDED - keep the correction",
+                                                "(a) RECOMMENDED - keep the corrections"))
+        return (ok and not bad and DA.SECTION_COMMITS[20] == (DA.A2_FULL,)
+                and any(ln.lstrip().startswith("section 20") and "identical" in ln and DA.A2_FULL in ln
+                        for ln in lines)
+                and any(ln.lstrip().startswith("section 20") and "DIFFERS" in ln for ln in lbad)), lbad[-3:]
+    _try("M3-1 section 20 (amendment A2) is HASHED at 71cfe796 (SECTION_COMMITS[20], printed in the header): the "
+         "working file passes; one edited character in section 20 REFUSES", sec20)
+
+
+def order_cases():
+    """m1: 10.8's order - validity and the zeros before S1; outcome 1 precedes outcome 2."""
+    w3q, _rp = w3_tools()
+
+    def run(dq0_crash, zeros_only=False):
+        fx = W3Fixture((7,), {7: {"R": {}, "0": {}, "1": {}}}, W3_DP, w3q)
+        try:
+            lnR, ln0 = fx.lines[(7, "R")], fx.lines[(7, "0")]
+            dR = fx.record("R", lnR, {})
+            dR["eval"] = {"rescued": 9, "firefighter_deaths": 0}          # S1 differs (eval)
+            write_run(lnR, dR)
+            if dq0_crash:
+                write_run(ln0, mini_record("0", ln0, {}, steps_done=17, crashed={"type": "ValueError", "step": 17}))
+            opts = types.SimpleNamespace(smoke=None, head=None, zeros_only=zeros_only, w3_unresolved=[])
+            with contextlib.redirect_stdout(io.StringIO()):
+                recs = DA.process(fx.cells, opts, fx.queues)
+            n0 = len(DA._LINES)
+            with contextlib.redirect_stdout(io.StringIO()):
+                rc = DA.screen_sections(recs, opts)
+            rep = DA._LINES[n0:]
+            del DA._LINES[n0:]
+        finally:
+            fx.close()
+        zi = next((i for i, ln in enumerate(rep) if ln.startswith("3 STRUCTURAL ZEROS")), None)
+        si = next((i for i, ln in enumerate(rep) if ln.startswith("2 S1 IDENTITY")), None)
+        stop = [ln for ln in rep if ln.startswith(("VERDICT:", "ZEROS-ONLY STOP CONDITION:"))]
+        return rc, zi, si, stop
+
+    def both():
+        rc, zi, si, stop = run(True)
+        return (rc == 1 and zi is not None and si is None and len(stop) == 1 and "OUTCOME 1" in stop[0]), (rc, zi, si,
+                                                                                                            stop)
+    _try("m1-1 a crash in dq0 AND an S1 difference: the zeros are printed, S1 is NOT (outcome 1 takes precedence over "
+         "outcome 2): STOP, OUTCOME 1, exit 1", both)
+
+    def s1_only():
+        rc, zi, si, stop = run(False)
+        rcz, ziz, siz, stopz = run(False, zeros_only=True)
+        return (rc == 1 and zi is not None and si is not None and zi < si and len(stop) == 1 and "OUTCOME 2" in stop[0]
+                and rcz == 1 and ziz is not None and siz is not None and ziz < siz
+                and stopz and stopz[0].startswith("ZEROS-ONLY STOP CONDITION")), (rc, zi, si, stop, rcz, stopz)
+    _try("m1-2 S1 alone fails: section 3 (the zeros) is printed BEFORE section 2 (S1), then STOP, OUTCOME 2; "
+         "--zeros-only still works (the same order, a ZEROS-ONLY STOP CONDITION)", s1_only)
+
+
+def _w3_good_fixture(w3q):
+    """w3_end_to_end's synthetic screen with every replay written (R0, the (A) and (B) knockouts of set7/ring/A_N)."""
+    deaths = {7: {"R": {U0: 60, U2: 30}, "0": {U0: 60, U2: 30}, "1": {U0: 40}}}
+    fx = W3Fixture((7,), deaths, W3_DP, w3q)
+    opts = types.SimpleNamespace(smoke=None, head=None, zeros_only=False, w3_unresolved=[])
+    with contextlib.redirect_stdout(io.StringIO()):
+        recs = DA.process(fx.cells, opts, fx.queues)
+    fx.generate(recs)
+    p = "dqrp_dq1r7_A_N_"
+    good = {"R0": (deaths[7]["1"], []),
+            "f0_KOown": ({}, [[10, "post", U0, V0, "drop_bind"]]),
+            "f0_KOlast": ({}, [[10, "post", U0, V0, "drop_bind"]]),
+            "f0_KOothers": ({U0: 40}, [[10, "post", U0, V0, "drop_victim"], [10, "post", U1, V0, "ko_today"],
+                                       [12, "post", U2, V1, "drop_bind"]]),
+            "f2_KOown": ({U0: 40}, [[12, "post", U2, V1, "drop_bind"]]),
+            "f2_KOothers": ({U0: 40, U2: 30}, [[10, "post", U0, V0, "drop_bind"], [10, "post", U1, V0, "ko_today"]])}
+    for suffix, (dead, applied) in good.items():
+        fx.replay(p + suffix, dead, applied)
+    return fx, recs, opts, p
+
+
+def m2_uncomputable_cases():
+    """m2: a non-crash uncomputable record is INVALID (no forced L4 FAIL); the crash case keeps the forced FAIL and
+    prints why."""
+    w3q, _rp = w3_tools()
+
+    def prov():
+        tmp = tempfile.mkdtemp(prefix="dq_m2_")
+        try:
+            line = queue_line("1", tmp)
+            d = mini_record("1", line)
+            d["rows_ff"] = d["rows_ff"][:359]
+            write_run(line, d)
+            w = DA.prov_run(d, line["out"], line, {"scen": SCEN[0], "wind": SCEN[1], "seed": SCEN[2], "mode": 0}, "1",
+                            types.SimpleNamespace(smoke=None, head=None))[0]
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+        return any("rows_ff holds 359" in x for x in w), w
+    _try("m2-1 rows_ff not one row per step done WITHOUT a crash (359 rows, steps_done 360) is INVALID (a tooling "
+         "defect, 10.8 (1))", prov)
+
+    def e2e(kind):
+        deaths = {7: {"R": {U0: 60}, "0": {U0: 60}, "1": {U0: 40}}}
+        fx = W3Fixture((7,), deaths, W3_DP, w3q)
+        try:
+            ln1 = fx.lines[(7, "1")]
+            if kind == "rows":
+                d1 = fx.record("1", ln1, deaths[7]["1"])
+                d1["rows_ff"] = d1["rows_ff"][:359]
+            else:
+                d1 = mini_record("1", ln1, {}, j_calls=W3_DP["j_calls"], steps_done=17,
+                                 crashed={"type": "ValueError", "step": 17})
+            write_run(ln1, d1)
+            opts = types.SimpleNamespace(smoke=None, head=None, zeros_only=False, w3_unresolved=[])
+            with contextlib.redirect_stdout(io.StringIO()):
+                recs = DA.process(fx.cells, opts, fx.queues)
+            if kind == "crash":
+                fx.generate(recs)
+            n0 = len(DA._LINES)
+            with contextlib.redirect_stdout(io.StringIO()):
+                res = DA.w3_validity(recs, opts)
+            rep = DA._LINES[n0:]
+            del DA._LINES[n0:]
+            return recs, res, rep
+        finally:
+            fx.close()
+
+    def rows():
+        recs, res, _rep = e2e("rows")
+        inv = recs[0]["prov"].get("1") or []
+        return (any("W3 compact marks the record unusable without a crash" in x for x in inv) and "l4" not in res
+                and not res["complete"] and "INVALID" in str(res["state"])), (inv[:2], res.get("state"))
+    _try("m2-2 end to end: the dq1 record the W3 compact cannot use without a crash is INVALID - W3 is not evaluated "
+         "(no forced L4 FAIL, no verdict)", rows)
+
+    def crash():
+        _recs, res, rep = e2e("crash")
+        return (res["complete"] and res.get("l4", {}).get("fail") is True and res["l4"].get("uncomputable")
+                and any("documented crash" in x and "set7/ring/A_N" in x for x in rep)), (res.get("state"), rep[-4:])
+    _try("m2-3 the documented crash case keeps the forced L4 FAIL (11.3: an uncomputable cell counts against) and "
+         "prints why", crash)
+
+
+def m3_cases():
+    """m3: --w3-unresolved."""
+    w3q, _rp = w3_tools()
+
+    def f():
+        fx, recs, opts, p = _w3_good_fixture(w3q)
+        try:
+            os.remove(fx.byn[p + "f0_KOown"]["out"])
+            with contextlib.redirect_stdout(io.StringIO()):
+                plain = DA.w3_validity(recs, opts)
+            n0 = len(DA._LINES)
+            with contextlib.redirect_stdout(io.StringIO()):
+                decl = DA.w3_validity(recs, types.SimpleNamespace(**dict(vars(opts), w3_unresolved=[p + "f0_KOown"])))
+            rep = DA._LINES[n0:]
+            with contextlib.redirect_stdout(io.StringIO()):
+                valid = DA.w3_validity(recs, types.SimpleNamespace(**dict(vars(opts), w3_unresolved=[p + "R0"])))
+                foreign = DA.w3_validity(recs, types.SimpleNamespace(**dict(vars(opts),
+                                                                            w3_unresolved=["dq1r7_A_N"])))
+            del DA._LINES[n0:]
+        finally:
+            fx.close()
+        ia = {(it["kind"], it["unit"]): it for it in decl.get("items") or []}.get(("A", U0)) or {}
+        return (not plain["complete"] and decl["complete"] and not ia.get("resolved", True)
+                and decl["l4"]["caused"] == 1 and any("DECLARED UNRESOLVED" in x and p + "f0_KOown" in x for x in rep)
+                and valid.get("refused") and "present and valid" in str(valid.get("refused_text"))
+                and foreign.get("refused") and "not W3 queue lines" in str(foreign.get("refused_text"))), (
+            plain.get("state"), decl.get("state"), ia.get("why"), valid.get("refused_text"))
+    _try("m3-1 --w3-unresolved: a missing KO-OWN replay keeps W3 INCOMPLETE; declared UNRESOLVED it is printed, its "
+         "(A) candidate is UNRESOLVED and counts as CAUSED, and W3 is COMPLETE; naming a present valid replay or a "
+         "line that is not a W3 queue line REFUSES", f)
+
+
+def w3_report_cases():
+    """m4 (R0 presence), m5 (refused / aborted J decisions), m6 (class at death, challenger)."""
+    def m4():
+        x = {"rows_ff": [[1]], "rows_vic": [], "rows_uav": [], "rows_dec": [], "dp": {"commands": [1]},
+             "mv_events": [], "eval": {"rescued": 1}}
+        return (DA.r0_reproduces(x, copy.deepcopy(x), "s", "s") == ["rows_trig", "dp.j_events"]
+                and DA.r0_reproduces(dict(x, rows_trig=[]), dict(x, rows_trig=[], dp={"commands": [1],
+                                                                                      "j_events": []}),
+                                     "s", "s") == ["dp.j_events"]), DA.r0_reproduces(x, copy.deepcopy(x), "s", "s")
+    _try("m4-1 R0 reproduction: a listed field (rows_trig, dp.j_events) MISSING from both records - or from one - is a "
+         "difference, never an equality of two absences", m4)
+
+    def m5():
+        dp = {"j_calls": [[14, "post", 1.0, 2, {"legacy": [[V2, U3]], "j_fills": [], "stage3": [], "stage4": []}]],
+              "j_events": [{"step": 14, "phase": "post", "kind": "replace", "stage": 3, "victim_id": V1, "unit": U2,
+                            "old_units": [U1]},
+                           {"step": 14, "phase": "post", "kind": "second_fill_refused", "stage": 4, "victim_id": V2,
+                            "unit": U1},
+                           {"step": 20, "phase": "post", "kind": "replace_aborted", "stage": 3, "victim_id": V0,
+                            "unit": U3, "old_units": [U0]}]}
+        jp = DA.j_decision_points(dp)
+        units = [U0, U1, U2, U3]
+        own1 = DA.ko_refused(jp, [{"unit": U1, "from": 0, "to": 40}], units)     # drop_bind on the refused fill
+        own3 = DA.ko_refused(jp, [{"unit": U3, "from": 0, "to": 40}], units)     # ko_today on V2 -> drop_victim; 20
+        own2 = DA.ko_refused(jp, [{"unit": U2, "from": 0, "to": 40}], units)     # drop_challenger -> drop_unreleased
+        none0 = DA.ko_refused(jp, [{"unit": U0, "from": 0, "to": 19}], units)    # before 20: no decision of U0
+        last1 = DA.ko_refused(jp, [{"unit": U1, "from": 15, "to": 40}], units)   # after 14: nothing
+        return (own1 == [[14, "post", "stage 4 refused", V2, U1]]
+                and own3 == [[14, "post", "stage 4 refused", V2, U1], [20, "post", "replace aborted", V0, U3]]
+                and own2 == [[14, "post", "stage 4 refused", V2, U1]] and none0 == [] and last1 == []), (
+            own1, own3, own2, none0, last1)
+    _try("m5-1 the knockout decisions on a REFUSED (second fill) or ABORTED (replacement) J decision of dq1's record "
+         "are found through every override path (drop_bind, drop_victim of a ko_today victim, drop_unreleased after a "
+         "dropped challenger; reported: J's control flow under the knockout may differ from R0's there); a knockout "
+         "touching none -> none", m5)
+
+    def m6():
+        def r(u, st, exiting, vid):
+            return [u, 1, 1, st, int(vid is not None), exiting, 0, 0, vid, None, 0, None]
+        rows_ff = [[r(U0, "en_route", 0, V0), r(U1, "en_route", 1, V1), r(U2, "available", 0, None),
+                    r(U3, "en_route", 0, V2)] for _t in range(3)]
+        rows_ff.append([r(U0, "route_blocked", 0, V0), r(U1, "en_route", 1, V1), r(U2, "available", 0, None),
+                        r(U3, "en_route", 0, V2)])
+        rows_ff.append([x[:6] + [1] + x[7:] for x in rows_ff[-1]])                  # every unit dead at step 5
+        cls = {u: DA.death_class(rows_ff, u, 5) for u in (U0, U1, U2, U3)}
+        cmds = [[2, "post", "assign", V0, U0, "reassign_stall", True, True, 5, 5],
+                [1, "post", "assign", V2, U3, "joint_initial", True, True, 5, 5]]
+        ch0, ch3 = DA.challenger_death(cmds, rows_ff, U0, 5), DA.challenger_death(cmds, rows_ff, U3, 5)
+        it = {"kind": "A", "cell": "set7/ring/A_N", "unit": U0, "class": cls[U0], "challenger": ch0,
+              "refused": {"KOown": [[14, "post", "stage 4 refused", V2, U0]]}}
+        note = DA.candidate_notes(it)
+        w3 = {"complete": True, "items": [dict(it, set="set7", t=5, other=None, resolved=True, why=[], hybrid={},
+                                               own=True, others=False)], "uncomputable": [], "same": [],
+              "declared": []}
+        w3["l4"] = DA.l4_counts(w3["items"])
+        n0 = len(DA._LINES)
+        with contextlib.redirect_stdout(io.StringIO()):
+            DA.sec_w3_report(w3)
+        rep = DA._LINES[n0:]
+        del DA._LINES[n0:]
+        return (cls == {U0: "latched", U1: "carrying", U2: "unbound", U3: "bound"}
+                and ch0 == [2, V0, "reassign_stall"] and ch3 is None and "DIED AS A CHALLENGER" in note
+                and "may differ from R0's" in note
+                and any("class at death latched" in x and "CHALLENGER" in x for x in rep)), (cls, ch0, ch3, note)
+    _try("m6-1 every candidate's class at death (bound / latched / unbound / carrying, from the record) and, for "
+         "KO-OTHERS, whether U died as a CHALLENGER (bound by a J replacement), are printed in the W3 report (with m5's "
+         "refused / aborted decisions)", m6)
+
+
+def m7_cases():
+    """m7: the ledger J was passed vs dp.commands (Z-R1)."""
+    units = {U0: (2, 2, False, EN), U1: (8, 8, False, FREE), U2: (9, 9, False, FREE)}
+    hist = {DA.pkey(U0, V0): {"H": [[19, 19]]}}
+    pb = {(U0, V0): [[[2, 3]], 9, 0, False, 9, {}]}
+
+    def dp_of(e, extra=()):
+        prior = [[5, "post", "assign", V0, U1, "joint_initial", True, True, 5, 5],
+                 [8, "post", "unassign", V0, U1, "joint_replacement_after_blocked", True, None, None, None],
+                 [9, "post", "assign", V0, U0, "joint_initial", True, True, 5, 5]]
+        return {"commands": prior + list(extra) + e["cmds"], "j_detail": [[e["step"], e["phase"], e["cur"]]]}
+
+    def f():
+        e = emulate([U1, U2], [], units, {V0: (5, 5)}, {V0: {U0: (20, 20), U1: (15, 15), U2: (18, 18)}},
+                    contest={V0: U0}, progress_before=pb, hist=hist, ledger={(U1, V0): 1, (U0, V0): 1})
+        ok, amb, n = DA.ledger_zeros(dp_of(e))
+        bad = copy.deepcopy(e)
+        pc = next(c for c in bad["cur"]["calls"] if c["fn"] == "plan_replacements_detail")
+        pc["b"][DA.pkey(U1, V0)] += 1
+        bz, _a, _n = DA.ledger_zeros(dp_of(bad))
+        bad2 = copy.deepcopy(e)
+        next(c for c in bad2["cur"]["calls"] if c["fn"] == "plan_replacements_detail")["b"][DA.pkey(U2, V0)] = 1
+        bz2, _a, _n = DA.ledger_zeros(dp_of(bad2))
+        Z, _st, _x = DA.dispatch_zeros(dp_of(bad), [], [], {}, {}, True)
+        amb_e = [[50, "post", "assign", V0, U2, "initial", True, True, 5, 5]]
+        az, aamb, _n = DA.ledger_zeros(dp_of(bad2, amb_e))
+        return (not ok and not amb and n == 2 and len(bz) == 1 and "b = 2, != 1" in bz[0][2] and len(bz2) == 1
+                and any("ledger J was passed" in x[2] for x in Z["Z-R1"]) and not az and len(aamb) == 1), (
+            ok, bz, bz2, az, aamb)
+    _try("m7-1 Z-R1's ledger check: the plan's b equals the ledger rebuilt from dp.commands before the J point "
+         "(0 violations); a spare's b raised by 1, or a b on a pair never bound, is flagged (also through "
+         "dispatch_zeros); a pair with a non-J assign at the J point's own step and phase is AMBIGUOUS - reported, "
+         "never gated", f)
+
+    def fill():
+        e = emulate([U0, U1], [V0], {U0: (1, 1, False, FREE), U1: (9, 9, False, FREE)}, {V0: (3, 3)},
+                    {V0: {U0: (5, 5), U1: (9, 9)}}, ledger={(U0, V0): 1}, post=False)
+        dp = {"commands": [[10, "post", "assign", V0, U0, "joint_initial", True, True, 5, 5]] + e["cmds"],
+              "j_detail": [[e["step"], e["phase"], e["cur"]]]}
+        ok, _amb, n = DA.ledger_zeros(dp)
+        dp_late = {"commands": [[50, "advance", "assign", V0, U0, "joint_initial", True, True, 5, 5]] + e["cmds"],
+                   "j_detail": [[e["step"], e["phase"], e["cur"]]]}
+        late, _a, _n = DA.ledger_zeros(dp_late)
+        return not ok and n == 2 and len(late) == 1, (ok, late)
+    _try("m7-2 a J-pre fill's b (a re-used pair, b = 1) equals the bind made before the J point; the same bind stamped "
+         "AFTER the J point (step 50 advance > step 50 pre) does not count -> flagged", fill)
+
+
+def n1_r2f1_cases():
+    """N1 (S5's printed status), R2-F1 (S1: params on the common cfv keys, the effective block)."""
+    def n1():
+        lit = collections.OrderedDict([("F1 ff deaths pooled", {"fail": False}), ("F1 R2 set7", {"fail": False}),
+                                       ("F1 R2 set8", {"fail": False}), ("L2 rescued set7", {"fail": True}),
+                                       ("L2 rescued set8", {"fail": False}), ("L3 DD pooled", {"fail": True}),
+                                       (DA.L4_KEY, {"fail": False})])
+        a = DA.s5_literal_fails(lit)
+        lit2 = copy.deepcopy(lit)
+        lit2["F1 R2 set8"]["fail"] = True
+        lit3 = copy.deepcopy(lit)
+        lit3[DA.L4_KEY]["fail"] = True
+        return (a == [] and DA.s5_literal_fails(lit2) == ["F1 R2 set8"] and DA.s5_literal_fails(lit3) == [DA.L4_KEY]
+                and DA.full_verdict(True, True, True, False, True, True) == "FAIL"), (a, )
+    _try("N1-1 S5's printed status: L2 / L3 failing (S4's literals) leave S5 PASS; F1 or L4 failing make it FAIL; the "
+         "verdict is unchanged (S4 FAIL -> FAIL)", n1)
+
+    def r2f1():
+        a = {k: [1] for k in DA.R.FIELDS}
+        a.update({"params": {"NUM_FIREFIGHTERS": 3, "NUM_VICTIMS": 5}, "effective": {"global_planner_mode": 0}})
+        b = copy.deepcopy(a)
+        b["params"]["DISPATCH_JOINT"] = 0
+        only = DA.s1_pair(a, b)[0]
+        c = copy.deepcopy(b)
+        c["params"]["NUM_VICTIMS"] = 4
+        com = DA.s1_pair(a, c)[0]
+        e = copy.deepcopy(b)
+        e["effective"]["global_planner_mode"] = 1
+        eff = DA.s1_pair(a, e)[0]
+        m = copy.deepcopy(b)
+        del m["params"]
+        miss = DA.s1_pair(a, m)[0]
+        want = [x for x in only if x not in (DA.S1_PARAMS, DA.S1_EFFECTIVE)]
+        return (DA.S1_PARAMS not in only and DA.S1_EFFECTIVE not in only and DA.S1_PARAMS in com
+                and DA.S1_EFFECTIVE in eff and DA.S1_PARAMS in miss and DA.S1_PARAMS not in want), (only, com, eff, miss)
+    _try("R2F1-1 S1 compares params on the cfv keys present in BOTH records (a DISPATCH_* key in dq0 only is not "
+         "compared; a common key that differs fails; a missing params block fails) and the 'effective' block", r2f1)
+
+
 def main() -> int:
     stat_cases()
     l4_cases()
@@ -1515,6 +2025,16 @@ def main() -> int:
     w3_end_to_end()
     outcome_e2e()
     header_cases()
+    # the review fixes (M1-M3, m1-m7, N1, R2-F1, R2-F2): each case fails without its fix
+    m1_cases()
+    smp_cases()
+    m2_m3_cases()
+    order_cases()
+    m2_uncomputable_cases()
+    m3_cases()
+    w3_report_cases()
+    m7_cases()
+    n1_r2f1_cases()
     LINES.append("")
     LINES.append("SELF-TEST %s (%d cases, %d failed)" % ("PASS" if not FAILS else "FAIL", sum(
         1 for ln in LINES if ln.startswith(("PASS", "FAIL"))), len(FAILS)))

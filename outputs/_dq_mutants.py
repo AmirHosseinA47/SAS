@@ -295,7 +295,9 @@ MUTANTS: dict[str, tuple[str, list[tuple[str, str, str]], list[str]]] = {
         [f"{TR}::test_tr8_no_allowed_unit_keeps_the_latched_binder"],
     ),
     "tr8capp": (
-        "the LATCH-FILL cap removed from the pure solver (b >= 2 allowed for a capped victim)",
+        "the LATCH-FILL cap removed from the pure solver (b >= 2 allowed for a capped victim) - DEAD CODE in the round-2 "
+        "model, which never passes `capped` (Limit 3's LATCH-FILL is a step-3 decision; review F9): kept because the "
+        "pure function keeps the parameter",
         [(JD, "            if victim in capped_set and b >= 2:\n                continue",
               "            if False:\n                continue")],
         [f"{TJ}::test_tj11_coverage_before_reuse_and_nearest_over_fresh"],
@@ -464,6 +466,22 @@ MUTANTS: dict[str, tuple[str, list[tuple[str, str, str]], list[str]]] = {
               "        or (c_now is not None and (best_c is None or int(c_now) < best_c))")],
         [f"{TC}::test_r1_a_two_cell_loop_on_the_clean_field_boundary_still_stalls"],
     ),
+    "q_rebase": (
+        "R-1: H re-based to the current cell when the clean distance is undefined (re-base without memory; 2.8 "
+        "'Nothing is ever re-based', review B2's exploit)",
+        [(JD, "    best_c = _finite_min(c_hist)\n",
+              "    best_c = _finite_min(c_hist)\n"
+              "    if c_now is None:\n"
+              "        return replace(state, history=(cell,), k=state.k + (0 if frozen else 1), k_closed=0, closed=False,\n"
+              "                       age=state.age + 1)\n")],
+        [f"{TC}::test_r1_a_two_cell_loop_stalls_also_when_the_victims_cell_turns_smoky_every_third_evaluation"],
+    ),
+    "r1_dstar_d": (
+        "R-1: d* replaced by the fire-free d (the fill's length keys and the margin comparisons)",
+        [(WM, "            return d if c is None else c", "            return d")],
+        [f"{TC}::test_r1_a_margin_challenger_through_a_gap_is_judged_on_its_clean_distance",
+         f"{TC}::test_r1_the_fill_ranks_units_by_dstar_not_by_a_gap_distance"],
+    ),
     "q_initempty": (
         "R-1: new_progress starts with an empty history",
         [(JD, "    return Progress(history=((int(cell[0]), int(cell[1])),))", "    return Progress(history=())")],
@@ -493,6 +511,24 @@ MUTANTS: dict[str, tuple[str, list[tuple[str, str, str]], list[str]]] = {
          f"{TC}::test_r2_a_margin_challenger_without_a_clean_approach_is_refused"],
     ),
     # ------------------------------------------------------------------ ROUND 2: C1 (nearest wins)
+    "c1_l1b_first": (
+        "C1: L1b (clean-approach pairs) ranked before L1 (coverage)",
+        [(JD, _KEY, "        return (-n_clean, -n, total, worst, reused, ids)")],
+        [f"{TC}::test_c1_coverage_comes_before_clean_approach_pairs"],
+    ),
+    "c1_barred_used": (
+        "C1: a barred contest's nearest spares are marked used (not left available to other contests)",
+        [(JD, "                                 units=tuple(ties)))\n            return\n",
+              "                                 units=tuple(ties)))\n            used.update(ties)\n            return\n")],
+        [f"{TC}::test_c1_a_spare_barred_for_one_contest_stays_available_to_another"],
+    ),
+    "c2_label_open": (
+        "C2: the route read as closed whenever the binder is labelled route_blocked (label, not route)",
+        [(WM, "            is_open = d_now is not None\n",
+              "            is_open = d_now is not None and str(getattr(units[uid], \"status\", \"\") or \"\").strip()"
+              ".lower() != \"route_blocked\"\n")],
+        [f"{TC}::test_c2_a_latched_label_on_an_open_route_is_read_from_the_route"],
+    ),
     "c1_l2": (
         "C1: round 1's L2 (fewest re-used pairs) restored ahead of the route keys",
         [(JD, _KEY, "        return (-n, reused, -n_clean, total, worst, ids)")],
