@@ -52,11 +52,12 @@ unusable, a run's scenario / wind / seed is not its frozen cell, the W3 queue is
 W1 / W2 records, or --w3-unresolved names a line it may not).
 
 HASHED SECTIONS (12.2): the LF-normalised text of dispatch2_part1.txt sections 0 and 2-15, section 19 (the rulings
-amendment A1) and section 20 (amendment A2, review M3), each from its 'N. ' header to the line before the next
+amendment A1), section 20 (amendment A2, review M3) and section 21 (amendment A3, the STOP rulings), each from its 'N. ' header to the line before the next
 top-level 'N. ' header (or EOF), trailing blank and '=' banner lines dropped, has the sha256 of SECTION_SHA256 -
 constants computed from the committed file (sections 0-19: git show 87a93cda:outputs/dispatch2_part1.txt; section 20:
-git show 71cfe796:outputs/dispatch2_part1.txt, identical at 1182f085 and in the working file, 2026-10-08). The working
-file AND the blobs at SECTION_COMMITS (ba647655: sections 0, 2-15; 87a93cda: 0, 2-15, 19; 71cfe796: 20) must give
+git show 71cfe796:outputs/dispatch2_part1.txt, identical at 1182f085 and in the working file, 2026-10-08; section 21:
+git show 68a8288e). The working
+file AND the blobs at SECTION_COMMITS (ba647655: sections 0, 2-15; 87a93cda: 0, 2-15, 19; 71cfe796: 20; 68a8288e: 21) must give
 them; any difference REFUSES a verdict. THE MECHANISM IS GENERIC: a later ruling section N is hashed by adding N to
 SECTION_SHA256 and N -> its commit to AMENDMENT_COMMITS; an appended section that is not hashed yet is printed as
 information.
@@ -182,6 +183,7 @@ PART1, RULINGS = "ba647655", "87a93cda"
 PART1_FULL = "ba64765590049ef04cd566e37ccd73f67ac6a2e4"
 RULINGS_FULL = "87a93cda95a5e75b58afe67c191c8f72db477f9b"
 A2, A2_FULL = "71cfe796", "71cfe796e03a5d471ceff6453d71922bbdc8f51d"   # amendment A2 (section 20), review M3
+A3, A3_FULL = "68a8288e", "68a8288ed994563dc4eb06ecc43de89a3c1c0893"   # amendment A3 (section 21): the STOP rulings
 BASE = "897e93b5ed14b582789fd3e59501253aebfb911b"     # main = tag movement-guard: the dqR checkout and the base
 DISPATCH = "cc8d653c4a5740c0f04a9e94d6ff48e92a0ca027"  # round 1's Part 3 head: outputs/_dp_analyze.py (DPR verbatim)
 MVG_AT = BASE                              # outputs/_mvg_analyze.py at main 897e93b5 (the functions ported verbatim)
@@ -209,11 +211,14 @@ SECTION_SHA256 = {
     # amendment A2 (review M3): git show 71cfe796:outputs/dispatch2_part1.txt; identical at 1182f085 and in the working
     # file (2026-10-08)
     20: "f3dc2c4b41378a097c3b05d34d9293fda34f7df55eafe8afa7e6bc350d0bde76",
+    # amendment A3 (the maintainer's rulings on the Part 2 STOP: R-A2 (a), R-NT (a), the go): git show
+    # 68a8288e:outputs/dispatch2_part1.txt, identical in the working file (2026-10-08)
+    21: "fade2e5ef37265433764c2904eabd4c8dd8f0bb8f0102c8bf771f2d05a79fce4",
 }
 # THE GENERIC MECHANISM (review M3): a ruling / amendment section is hashed at the commit that added it - to hash a
 # later one, add its number to SECTION_SHA256 (the sha of its text at that commit) and its commit here. Every other
 # hashed section (0, 2-15) is checked at Part 1 and at the rulings commit.
-AMENDMENT_COMMITS = {19: RULINGS, 20: A2_FULL}
+AMENDMENT_COMMITS = {19: RULINGS, 20: A2_FULL, 21: A3_FULL}
 SECTION_COMMITS = {n: ((PART1, RULINGS) if n not in AMENDMENT_COMMITS else (AMENDMENT_COMMITS[n],))
                    for n in SECTION_SHA256}
 REUSED_MODULES = ("_fx3r_analyze.py", "_fb3_analyze.py", "_sd_analyze.py", "_ut_analyze.py", "_ut_analyze2.py",
@@ -2488,12 +2493,13 @@ def sec_header(opts):
     HEAD, --head), the hash checks of 12.2 (section 20 included, review M3), the verbatim and module checks, outside
     --smoke the TOOLING_AT_HEAD files at --head (review M1), the Part 2 notes."""
     head("DISPATCH ROUND 2 - THE CORRECTED-DISPATCH SCREEN'S ANALYZER (outputs/dispatch2_part1.txt 10, 11.3, 12.2; "
-         "rulings section 19, every option (a); amendment A2 section 20)")
+         "rulings section 19, every option (a); amendment A2 section 20; amendment A3 section 21: R-A2 (a), R-NT (a))")
     if opts.smoke:
         out("SMOKE - NOT A SCREEN (one cell of the spent sets 1-2 from %s; queue / head checks relaxed, section 9's "
             "constants kept; the cell stands in for the fresh set 7; structural fields only, 13 (9))" % opts.smoke)
     for c, what in ((PART1, "Part 1 (sections 0-18, frozen)"), (RULINGS, "rulings amendment A1 (section 19)"),
-                    (A2, "amendment A2 (section 20)"), (BASE[:8], "base (main 897e93b5 = dqR's checkout)")):
+                    (A2, "amendment A2 (section 20)"), (A3, "amendment A3 (section 21, rulings)"),
+                    (BASE[:8], "base (main 897e93b5 = dqR's checkout)")):
         rc, txt = git("log", "-1", "--format=%H %ad %s", "--date=short", c)
         out("%-38s %s  %s" % (what + ":", c, txt.decode("utf-8", "replace").strip()[:110] if rc == 0 else "NOT FOUND"))
     rc, hd = git("rev-parse", "HEAD")

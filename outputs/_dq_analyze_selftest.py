@@ -873,15 +873,15 @@ def header_cases():
                                            "X-15 the stranding guard is run inside J."))
     e16, _l = DA.hash_checks(text.replace("P.7 The no-flip-flop theorem holds unchanged.",
                                           "P.7 The no-flip-flop theorem holds."))
-    app, lapp = DA.hash_checks(text.rstrip("\n") + "\n\n" + "=" * 80 + "\n21. AMENDMENT A3 - A LATER READING\n" +
+    app, lapp = DA.hash_checks(text.rstrip("\n") + "\n\n" + "=" * 80 + "\n22. AMENDMENT A4 - A LATER READING\n" +
                                "=" * 80 + "\n    text\n")
     case("HASH-1 (12.2) the working dispatch2_part1.txt passes (sections 0, 2-15 and 19 at their frozen sha256, also at "
          "ba647655 / 87a93cda); one edited character in section 10 or in the rulings section 19 REFUSES; an edit in "
-         "section 16 (not hashed) does not; an appended section 21 leaves every hashed section identical (reported)",
+         "section 16 (not hashed) does not; an appended section 22 leaves every hashed section identical (reported)",
          ok and not e10 and not e19 and e16 and app
          and any(ln.lstrip().startswith("section 10") and "DIFFERS" in ln for ln in l10)
          and any(ln.lstrip().startswith("section 19") and "DIFFERS" in ln for ln in l19)
-         and any("section 21" in ln and "info" in ln for ln in lapp), [ln for ln in l10 + l19 if "DIFFERS" in ln][:2])
+         and any("section 22" in ln and "info" in ln for ln in lapp), [ln for ln in l10 + l19 if "DIFFERS" in ln][:2])
     txt = "x\n" + "=" * 10 + "\n3. THREE\n" + "=" * 10 + "\n a\n\n" + "=" * 10 + "\n4. FOUR\n b\n"
     case("HASH-2 section extraction: from the 'N. ' header to the line before the next one, trailing blank / '=' lines "
          "dropped; a '4.1 ' sub-header is no boundary; EOF ends the last",
@@ -1690,6 +1690,18 @@ def m2_m3_cases():
                 and any(ln.lstrip().startswith("section 20") and "DIFFERS" in ln for ln in lbad)), lbad[-3:]
     _try("M3-1 section 20 (amendment A2) is HASHED at 71cfe796 (SECTION_COMMITS[20], printed in the header): the "
          "working file passes; one edited character in section 20 REFUSES", sec20)
+
+    def sec21():
+        with open(os.path.join(HERE, "dispatch2_part1.txt"), encoding="utf-8") as fh:
+            text = fh.read()
+        ok, lines = DA.hash_checks()
+        bad, lbad = DA.hash_checks(text.replace("R-NT (a): the two T-NT scope pins", "R-NT (b): the two T-NT scope pins"))
+        return (ok and not bad and DA.SECTION_COMMITS[21] == (DA.A3_FULL,)
+                and any(ln.lstrip().startswith("section 21") and "identical" in ln and DA.A3_FULL in ln
+                        for ln in lines)
+                and any(ln.lstrip().startswith("section 21") and "DIFFERS" in ln for ln in lbad)), lbad[-3:]
+    _try("M3-2 section 21 (amendment A3, the Part 2 STOP rulings) is HASHED at 68a8288e (SECTION_COMMITS[21]): the "
+         "working file passes; one edited character in section 21 REFUSES", sec21)
 
 
 def order_cases():
