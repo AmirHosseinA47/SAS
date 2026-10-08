@@ -260,7 +260,7 @@ MUTANTS: dict[str, tuple[str, list[tuple[str, str, str]], list[str]]] = {
               "            if False:\n                continue\n            if not binders:")],
         [f"{TR}::test_tr5_a_carrier_or_finisher_is_never_touched[exiting]",
          f"{TR}::test_tr5_a_carrier_or_finisher_is_never_touched[rescue_completed]",
-         f"{TR}::test_tr5_a_carrier_or_finisher_is_never_touched[colocated_latched]"],
+         f"{TR}::test_tr5_colocated_latched_is_custody_under_limit2_alone"],
     ),
     "tr5og": (
         "the off-grid exclusion removed from the donor (spare) predicate",
@@ -680,6 +680,10 @@ def main() -> int:
             nodes = MUTANTS[mid][2]
         rc, cases, secs = _run(dest, py, nodes)
         shutil.rmtree(dest, ignore_errors=True)
+        if rc in (2, 3, 4, 5):
+            # pytest interrupted / internal error / usage error / nothing collected: no listed test ran, so the
+            # outcome says nothing about the mutant (round 2: a vacuous "killed" is impossible).
+            cases = {}
         return (mid or "CONTROL", rc, cases, secs, nodes)
 
     lines = [f"dispatch round 2 Part 2 mutation check - repo {repo}",

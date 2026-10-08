@@ -110,6 +110,25 @@ def test_tr1_a_looping_unit_stalls_whatever_the_fire_and_the_victim_do(offset):
     assert ks[S] >= S               # frame S + 1: S
 
 
+def test_tr1_model_level_stall_replacement_at_exactly_s(model):
+    """T-R1 (model). A bound unit looping between two cells (route 20 / 19) with a spare 24 away that has a clean
+    approach: no replacement before k reaches S, a stall replacement (reassign_stall) at the frame it does.
+    MUTANT tr1m: the stall rule disabled."""
+    place_units(model, {FF_A: (20, 20), FF_B: (22, 18)})
+    place_victims(model, {V0: (20, 40)})
+    j_post(model)
+    assert bound_to(model, FF_A) == V0  # 20 < 24
+    for frame in range(1, S + 1):
+        move(model, FF_A, (20, 21) if frame % 2 else (20, 20))
+        j_post(model)
+        assert events(model, "replace") == [], frame
+    move(model, FF_A, (20, 21))
+    j_post(model)
+    reps = events(model, "replace")
+    assert len(reps) == 1 and reps[0]["reason"] == "reassign_stall" and reps[0]["unit"] == FF_B
+    assert bound_to(model, FF_B) == V0 and bound_to(model, FF_A) is None
+
+
 def test_tr2_no_false_stall():
     """T-R2 (pure). A unit chasing a victim that flees at equal speed, a unit progressing along a fresh fire-made
     detour, and a unit whose route the fire shortens while it advances never reach k = S: every new cell is closer,
@@ -307,10 +326,10 @@ def _bind_a_then_spare_b(model, a_cell, b_cell, v_cell):
 def test_tr5_a_carrier_or_finisher_is_never_touched(model, shape):
     """T-R5. A unit carrying its victim (exiting), a finisher (rescue_completed) or one standing on the victim's
     cell is never contested, even with a much closer spare for many frames. The co-located case is LATCHED
-    (route_blocked while standing on its victim): a plain co-located incumbent has d = 0, which the stall and
-    margin rules can never beat (the mutant is equivalent there), so co-location custody matters exactly where a
-    latched unit would otherwise be latch-filled away from a pickup it is standing on.
-    MUTANT tr5: the custody / finisher / co-location exclusions removed."""
+    (route_blocked while standing on its victim). Round 2 (C2): a co-located latched unit's route is OPEN (d* = 0),
+    which no stall or margin rule can beat, so under Limit 3 the co-located case is EQUIVALENT for the mutant; its
+    custody is observable under Limit 2 alone (test_tr5_colocated_latched_is_custody_under_limit2_alone).
+    MUTANT tr5: the custody / finisher / co-location exclusions removed (exiting, rescue_completed)."""
     _bind_a_then_spare_b(model, (20, 5), (20, 33), (20, 35))
     unit = ff(model, FF_A)
     if shape == "exiting":
@@ -324,6 +343,23 @@ def test_tr5_a_carrier_or_finisher_is_never_touched(model, shape):
     # not even an attempt: the unit is outside the contestable and latched sets, not merely refused at apply time
     assert [e for e in events(model) if e["kind"].startswith(("replace", "latch_fill"))] == []
     assert bound_to(model, FF_A) == V0 and bound_to(model, FF_B) is None
+
+
+def test_tr5_colocated_latched_is_custody_under_limit2_alone(monkeypatch):
+    """T-R5, the co-location leg (round 2). Under Limit 2 alone a latched-held victim gets a second claimant (D-7) -
+    but a latched unit standing ON its victim is in custody (pickup on its next advance), so the victim is in no set
+    and no second claimant is sent, for many frames.
+    MUTANT tr5: the custody / co-location exclusion removed - the victim becomes latched-held and B is bound as a
+    second claimant."""
+    switches(monkeypatch, joint=1, reassign=0)
+    m = pinned_model(monkeypatch)
+    quiet_fire(m)
+    place_units(m, {FF_A: (20, 35), FF_B: (20, 33)})
+    place_victims(m, {V0: (20, 35)})
+    assert assign(m, V0, FF_A)
+    ff(m, FF_A).status = "route_blocked"
+    j_post(m, 2 * S)
+    assert events(m) == [] and binders(m, V0) == [FF_A] and bound_to(m, FF_B) is None
 
 
 def test_tr5_an_off_grid_unit_is_never_a_challenger(model):
