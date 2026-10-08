@@ -1743,7 +1743,8 @@ def global_planner_mode() -> int:
 # --- dispatch round (outputs/dispatch_part1.txt, rulings section 20) ----------------------
 
 def dispatch_joint() -> bool:
-    """DISPATCH_JOINT - Limit 2, joint route-aware assignment (design section 5). Ships 0.
+    """DISPATCH_JOINT - Limit 2, joint route-aware assignment (design section 5). Ships 1 since the dispatch round 2
+    flip (outputs/dispatch2_report.txt).
     ON ONLY ON AN EXACT 1: _exact_integer(raw) == 1 (1, True, 1.0, "1", " 1 "); missing and
     every other value are OFF. Read at call time, never cached."""
     return _exact_integer(getattr(cfv, "DISPATCH_JOINT", 0)) == 1
@@ -1751,7 +1752,8 @@ def dispatch_joint() -> bool:
 
 def dispatch_reassign() -> bool:
     """DISPATCH_REASSIGN - Limit 3, reassignment with the ledger guarantee (design section 6).
-    Ships 0; ON only on an exact 1. ENFORCED OFF whenever dispatch_joint() is off (ruling D-4):
+    Ships 1 since the dispatch round 2 flip; ON only on an exact 1. ENFORCED OFF whenever dispatch_joint() is off
+    (ruling D-4):
     reassignment is defined only on top of the joint dispatcher's solve points."""
     if not dispatch_joint():
         return False

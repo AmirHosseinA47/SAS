@@ -184,10 +184,12 @@ def test_shipped_defaults() -> None:
     assert cfv.FF_APPROACH_PATH == 1
     assert cfv.FF_RETREAT_KEEP_APPROACH == 1
     assert cfv.FF_FIX_STRANDING_GUARD == 1
-    # Dispatch round (outputs/dispatch_part1.txt, rulings section 20): joint assignment (Limit 2) and reassignment
-    # (Limit 3) ship OFF - on only on an exact 1, REASSIGN only while JOINT is on; S, M, P fixed by D-8.
-    assert cfv.DISPATCH_JOINT == 0
-    assert cfv.DISPATCH_REASSIGN == 0
+    # Dispatch round 2 (outputs/dispatch2_part1.txt; the screen's OUTCOME 6, outputs/dispatch2_report.txt, and the
+    # maintainer's flip confirmation 2026-10-08): the corrected joint assignment (Limit 2) and reassignment (Limit 3)
+    # ship ON - on only on an exact 1, REASSIGN only while JOINT is on; S, M, P fixed by D-8. DISPATCH_JOINT = 0
+    # restores today's (legacy) dispatch exactly.
+    assert cfv.DISPATCH_JOINT == 1
+    assert cfv.DISPATCH_REASSIGN == 1
     assert cfv.DISPATCH_STALL_STEPS == 10
     assert cfv.DISPATCH_MARGIN_STEPS == 5
     assert cfv.DISPATCH_MARGIN_PERSIST == 3

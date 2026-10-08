@@ -40,6 +40,17 @@ _OWN_CONFIGURATION = (
 )
 
 
+@pytest.fixture
+def today_dispatch(monkeypatch):
+    """THE DISPATCH FLIP (dispatch round 2: outputs/dispatch2_part1.txt 10.8 and 21; outputs/dispatch2_report.txt
+    section 10). DISPATCH_JOINT and DISPATCH_REASSIGN ship 1. A test marked with this fixture encodes TODAY'S (legacy)
+    dispatch - the per-incident nearest pairing and its replacement / write-off paths - so it pins
+    DISPATCH_JOINT = 0 explicitly (REASSIGN with it; it is enforced off anyway). Each such test names its ON
+    counterpart in the dispatch tests (outputs/dispatch_part1.txt 13.3 / 15)."""
+    monkeypatch.setattr(cfv, "DISPATCH_JOINT", 0, raising=False)
+    monkeypatch.setattr(cfv, "DISPATCH_REASSIGN", 0, raising=False)
+
+
 @pytest.fixture(autouse=True)
 def _own_configuration(monkeypatch):
     for module in (cfv, wf):
@@ -422,6 +433,11 @@ def test_all_cardinals_produce_distinct_regions_and_safe_positions(monkeypatch) 
         _assert_position_not_on_hazard(trace.model, trace.final_position)
 
 
+# TODAY'S DISPATCH (pinned at the dispatch flip). ON counterpart(s):
+#   tests/test_dispatch_joint.py::test_tj6_a_unit_free_between_steps_is_paired_at_j_pre_before_moving
+#   tests/test_dispatch_joint.py::test_tj5_closed_route_is_never_bound
+#   tests/test_wind_aware_planning.py::test_known_victim_target_overrides_wind_aware_exploration
+@pytest.mark.usefixtures("today_dispatch")
 def test_known_victim_overrides_wind_aware_exploration() -> None:
     """While victim is live, pursuit stays victim-directed (not wind-aware)."""
 

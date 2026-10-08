@@ -7,11 +7,24 @@ import os
 os.environ.setdefault("MPLBACKEND", "Agg")
 
 from wildfire_model import WildFireModel
+import pytest
+import common_fixed_variables as cfv
 
 VICTIM_ID = "victim_0"
 FF_FAR = "ff_unit_0"
 VICTIM_CELL = (10, 10)
 FF_CELL = (10, 9)
+
+
+@pytest.fixture
+def today_dispatch(monkeypatch):
+    """THE DISPATCH FLIP (dispatch round 2: outputs/dispatch2_part1.txt 10.8 and 21; outputs/dispatch2_report.txt
+    section 10). DISPATCH_JOINT and DISPATCH_REASSIGN ship 1. A test marked with this fixture encodes TODAY'S (legacy)
+    dispatch - the per-incident nearest pairing and its replacement / write-off paths - so it pins
+    DISPATCH_JOINT = 0 explicitly (REASSIGN with it; it is enforced off anyway). Each such test names its ON
+    counterpart in the dispatch tests (outputs/dispatch_part1.txt 13.3 / 15)."""
+    monkeypatch.setattr(cfv, "DISPATCH_JOINT", 0, raising=False)
+    monkeypatch.setattr(cfv, "DISPATCH_REASSIGN", 0, raising=False)
 
 
 def _fresh_model() -> WildFireModel:
@@ -40,6 +53,11 @@ def test_apply_physical_rescue_command_assign() -> None:
     assert ff.rescued_victim is marker
 
 
+# TODAY'S DISPATCH (pinned at the dispatch flip). ON counterpart(s):
+#   tests/test_dispatch_joint.py::test_tj13_the_ledger_counts_every_bind_at_the_single_sink
+#   tests/test_dispatch_joint.py::test_tj6_a_unit_free_between_steps_is_paired_at_j_pre_before_moving
+#   tests/test_dispatch_information.py::test_tinfo_b_metamorphic_applied_binds
+@pytest.mark.usefixtures("today_dispatch")
 def test_dispatch_uses_shared_rescue_executor() -> None:
     model = _fresh_model()
     marker = model.victim_marker_agents[VICTIM_ID]

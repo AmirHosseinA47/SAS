@@ -981,9 +981,14 @@ ID_GOLDEN_BASE = "cdfe27599df24b7176203ed06db41219933273ebc6a6d52120fb283297e47e
 # The digest of _identity_run(..., "shipped") at THE FLIP (all three switches 1), recorded by running this very function
 # on the flipped worktree under PYTHONHASHSEED 0 and 12345 (equal). It pins the shipped movement on this barrier.
 ID_GOLDEN_SHIPPED = "4119d854df33a02af892432681da555ad0e82dd1121dd53b9c1338620646c694"
+# The same two settings under the SHIPPED dispatcher (DISPATCH_JOINT = DISPATCH_REASSIGN = 1, the dispatch flip,
+# outputs/dispatch2_report.txt section 10): the only difference from the goldens above is the corrected dispatcher's
+# J-pre binds of the two bystander units at step 1 (joint_initial); the barrier unit's rows are identical.
+ID_GOLDEN_BASE_J1 = "b4f9f71ab58322d78aab19298e9f84e387f735feb4372eb7aca0226955ff6e05"
+ID_GOLDEN_SHIPPED_J1 = "adcaf2d034ff14c19eb8499a0f1c6ff857a63387c6e12969acf3b747ec7aa6d3"
 
 
-def _identity_run(monkeypatch, setting: str) -> str:
+def _identity_run(monkeypatch, setting: str, dispatch: int = 0) -> str:
     """A short pinned REAL run: scenario A's team, every victim detected at step 0 (so the searchers idle), victim_2
     moved behind an 11-cell fire wall and bound to ff_unit_0 - the barrier on which today's mover 2-cycles and fix
     (a) would act at the third step. `setting` "absent" deletes the round's three switches from cfv (all three then
@@ -992,8 +997,16 @@ def _identity_run(monkeypatch, setting: str) -> str:
     Returns one sha256 over stdout, the command audit, the rescue events, the movement transitions and every
     unit's (cell, status, tier) after each of ID_STEPS model steps. Base-safe: no name new in this round.
     Each run starts from the import-time configuration (the caller's monkeypatch.undo() also undoes the autouse
-    fixture's restore, and the full suite's other files leave scenario settings behind)."""
+    fixture's restore, and the full suite's other files leave scenario settings behind).
+    DISPATCH (THE DISPATCH FLIP, dispatch round 2): `dispatch` pins DISPATCH_JOINT and DISPATCH_REASSIGN after the
+    restore (a fixture-level pin would be undone by it). The default 0 is TODAY'S dispatch, under which the goldens
+    ID_GOLDEN_BASE / ID_GOLDEN_SHIPPED were recorded (on the base a20a2ef5 and at the MVG flip); 1 is the shipped
+    dispatcher (ON counterpart: test_tidm_under_the_shipped_dispatcher_the_movement_identities_hold). "absent" deletes
+    only the movement switches, never DISPATCH_* (a missing DISPATCH_JOINT reads OFF: test_tsw_missing_is_off_and_
+    reassign_needs_joint). raising=False keeps the function base-safe."""
     restore_config(monkeypatch)
+    monkeypatch.setattr(cfv, "DISPATCH_JOINT", dispatch, raising=False)
+    monkeypatch.setattr(cfv, "DISPATCH_REASSIGN", dispatch, raising=False)
     for name in SWITCH_NAMES:
         if setting == "absent":
             monkeypatch.delattr(cfv, name, raising=False)
@@ -1033,7 +1046,9 @@ def test_tidm_fixes_off_and_zero_are_identical_and_equal_the_base(monkeypatch):
     round's three switches all at 0, and with the fixes at 0 and the guard at 1 (the kill switch), gives one
     identical digest of stdout and the logs, and it equals the base code's (a20a2ef5) digest: with both fixes off,
     neither the fixes nor the guard change anything. The ON counterpart is
-    test_tidm_absent_equals_shipped_and_the_fixes_act.
+    test_tidm_absent_equals_shipped_and_the_fixes_act. Run under TODAY'S dispatch (pinned in _identity_run at the
+    dispatch flip; the dispatcher's own ON counterpart: test_tidm_under_the_shipped_dispatcher_the_movement_identities_
+    hold).
     MUTANT: id_a_off (the (a) branch taken when its switch is off)."""
     zero = _identity_run(monkeypatch, "zero")
     monkeypatch.undo()
@@ -1048,13 +1063,31 @@ def test_tidm_absent_equals_shipped_and_the_fixes_act(monkeypatch):
     fixes act, so the shipped code is not today's. Its digest is pinned (ID_GOLDEN_SHIPPED). On this barrier only fix
     (a) changes the run; (b)'s switch mutants are killed by T-SW-M.
     MUTANTS (the flip's record): fl_switch_a; fl_missing_a (a missing switch read off); fl_revert_a (the pre-flip
-    accessor body)."""
+    accessor body). "Absent" is the movement switches only; the run is under TODAY'S dispatch (pinned in _identity_run
+    at the dispatch flip).
+    """
     absent = _identity_run(monkeypatch, "absent")
     monkeypatch.undo()
     shipped = _identity_run(monkeypatch, "shipped")
     assert absent == shipped
     assert shipped != ID_GOLDEN_BASE
     assert shipped == ID_GOLDEN_SHIPPED
+
+
+def test_tidm_under_the_shipped_dispatcher_the_movement_identities_hold(monkeypatch):
+    """T-ID-M's ON counterpart for the DISPATCHER (added at the dispatch flip, dispatch round 2): under the shipped
+    dispatcher (DISPATCH_JOINT = DISPATCH_REASSIGN = 1) the movement identities still hold - zero == fixes_off (the
+    fixes off change nothing), absent == shipped (a missing movement switch reads ON), and the fixes still act
+    (shipped != zero) - and both digests are pinned (ID_GOLDEN_BASE_J1, ID_GOLDEN_SHIPPED_J1). They differ from the
+    today's-dispatch goldens: the corrected dispatcher binds the two bystander units at the first J-pre."""
+    digests = {}
+    for setting in ("zero", "fixes_off", "absent", "shipped"):
+        digests[setting] = _identity_run(monkeypatch, setting, dispatch=1)
+        monkeypatch.undo()
+    assert digests["zero"] == digests["fixes_off"] == ID_GOLDEN_BASE_J1
+    assert digests["absent"] == digests["shipped"] == ID_GOLDEN_SHIPPED_J1
+    assert digests["shipped"] != digests["zero"]
+    assert ID_GOLDEN_BASE_J1 != ID_GOLDEN_BASE and ID_GOLDEN_SHIPPED_J1 != ID_GOLDEN_SHIPPED
 
 
 # ---------------------------------------------------------------------------- T-NT
@@ -1234,13 +1267,34 @@ def _current_text(rel: str) -> str:
     return (ROOT / rel).read_bytes().decode("utf-8")
 
 
-def _git_text(rel: str) -> str | None:
+def _git_text(rel: str, commit: str = BASE_COMMIT) -> str | None:
     try:
-        proc = subprocess.run(["git", "-C", str(ROOT), "show", f"{BASE_COMMIT}:{rel}"], capture_output=True,
+        proc = subprocess.run(["git", "-C", str(ROOT), "show", f"{commit}:{rel}"], capture_output=True,
                               timeout=60)
     except (OSError, subprocess.SubprocessError):
         return None
     return proc.stdout.decode("utf-8") if proc.returncode == 0 else None
+
+
+# THE DISPATCH FLIP (dispatch round 2: outputs/dispatch2_part1.txt 21.1, ruling R-NT (a); outputs/dispatch2_report.txt
+# section 10). The dispatch rounds' registered edits: the joint dispatcher J hooks into wildfire_model.py, so these
+# NOT-TOUCHED keys are RE-BASED to the dispatch source - wildfire_model.py and joint_dispatch.py are unchanged since
+# DISPATCH_BASE_COMMIT 71cfe796 (the flip changes only the shipped defaults) - and checked against `git show` of that
+# commit. Every other key stays pinned to the movement round's base a20a2ef5 (TNT_PINS, still checked against it).
+DISPATCH_BASE_COMMIT = "71cfe796"
+DISPATCH_REBASED_PINS: dict[str, str] = {
+    'wildfire_model.py::*': '02543ea7d712808b7669bcb3b01ef48ba882e154b66f3c9dc272f59b6e95db90',
+    'wildfire_model.py::WildFireModel._dispatch_firefighter_to_victim':
+        'fe7bb3d0a8d9a3806da37c4b9d24a5a107b2a52ed1e93c582ec36857afd792e9',
+    'wildfire_model.py::WildFireModel._handle_rescue_incident':
+        '302a7e5a39feeb41679a19a3fca4abb60f77e50c14be26f3e4b8dbb8c3be714a',
+    'wildfire_model.py::WildFireModel._release_other_claimants':
+        '6b92f003df81af68da55031a307f4d635b6d9cfef5a5f7c60de83ad05b3dc271',
+    'wildfire_model.py::WildFireModel._try_dispatch_unresolved_confirmed_victims':
+        'e36e88a5814680f46d75ce38172019b89893a30bb0bfb5b0f9c0d6721263315f',
+    'wildfire_model.py::WildFireModel.apply_physical_rescue_command':
+        '3a83d1ba188433aa9ac3a33dd532fde877603246962f875c3890d2bfec4ac5ce',
+}
 
 
 def test_tnt_the_not_touched_list_hashes_equal_the_base():
@@ -1250,15 +1304,23 @@ def test_tnt_the_not_touched_list_hashes_equal_the_base():
     escape sweep and the casualty sweep; MODE 2's kernel, _exit_leg_step and _exit_leg_hold; FAE; _move_toward and
     the route test; and the whole of wildfire_model.py - hashes (LF-normalised) equal to the base a20a2ef5. The pins
     are checked against `git show a20a2ef5` whenever git can see the commit.
+    RE-BASED AT THE DISPATCH FLIP (R-NT (a)): the six wildfire_model.py keys the dispatch rounds' J hooks change
+    (DISPATCH_REBASED_PINS) equal the dispatch source at 71cfe796 instead, checked against `git show 71cfe796`; every
+    other key still equals a20a2ef5.
     MUTANTS: nt_survival (one line changed in _survival_move); nt_release (15.3's T-NT form: one line changed in
     _release_other_claimants)."""
     current = _tnt_hashes(_current_text)
     assert set(current) == set(TNT_PINS)
-    changed = sorted(key for key in TNT_PINS if current[key] != TNT_PINS[key])
+    assert set(DISPATCH_REBASED_PINS) <= set(TNT_PINS)
+    want = {**TNT_PINS, **DISPATCH_REBASED_PINS}
+    changed = sorted(key for key in TNT_PINS if current[key] != want[key])
     assert changed == []
     if _git_text("agents.py") is not None:                 # in a checkout that holds the base commit
         assert _base_pins(_git_text) == {"TNT_PINS": TNT_PINS, "TOUCHED_PINS": TOUCHED_PINS,
                                          "REST_PINS": REST_PINS, "OTHER_PINS": OTHER_PINS}
+    if _git_text("wildfire_model.py", DISPATCH_BASE_COMMIT) is not None:     # ... and the dispatch commit
+        at_dispatch = _tnt_hashes(lambda rel: _git_text(rel, DISPATCH_BASE_COMMIT))
+        assert {key: at_dispatch[key] for key in DISPATCH_REBASED_PINS} == DISPATCH_REBASED_PINS
 
 
 # The places THIS branch touches differ from the base ONLY by the registered edits. Each edit is (begin marker, end
@@ -1274,6 +1336,8 @@ TOUCHED_EDITS = {
     ),
     "common_fixed_variables.py::*": (
         ("# ---- MVG round (outputs/urgency_part1d.txt", "# The ONE battery threshold pair (fix1 item 2)", ""),
+        # the dispatch rounds' switch block (registered at the dispatch flip, R-NT (a)): never on the base a20a2ef5
+        ("# Dispatch round (outputs/dispatch_part1.txt; rulings section 20", "# Base station (feature 3)", ""),
     ),
 }
 # The names this round ADDS to agents.py (Part 1d 1d.8 (2)-(3)); everything else in the file is base. Nothing of U1 or
@@ -1287,6 +1351,9 @@ NEW_NAMES = {
             "_board_sets", "_clean_predicate", "_greedy_choice", "_one_step_retreat_choice", "_survival_choice",
             "_victim_clean_field", "_approach_path_choice", "_retreat_on_route_choice", "_relabel_if_route_blocked",
             "_fix_move", "_stranding_guard_verdict", "_guarded")),
+        # the dispatch rounds' accessors (registered at the dispatch flip, R-NT (a))
+        "dispatch_joint", "dispatch_reassign", "_dispatch_steps_param", "dispatch_stall_steps",
+        "dispatch_margin_steps", "dispatch_margin_persist",
     }),
 }
 # The top-level statements this round adds to agents.py outside any def / class / assignment: one import.
@@ -1329,7 +1396,8 @@ def _other_hash(statements: list) -> str:
 
 def test_tnt_touched_functions_differ_from_the_base_only_by_the_registered_edits():
     """T-NT (the touched side, re-based to this branch): Firefighter.advance with its two gated fix blocks put back,
-    and common_fixed_variables.py with the round's switch block removed, each hash equal to the base; every OTHER
+    and common_fixed_variables.py with the round's switch block removed (and, since the dispatch flip, the dispatch
+    rounds' switch block - a registered edit, R-NT (a)), each hash equal to the base; every OTHER
     function, method, class and module constant of agents.py - all but the round's registered new names - is the
     base's, name for name; and agents.py's other top-level statements (imports, top-level blocks) are the base's
     plus the one registered import.

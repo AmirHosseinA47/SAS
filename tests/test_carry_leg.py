@@ -52,6 +52,17 @@ _SWITCHES = ("FF_EXIT_LEG_MODE", "FF_EXIT_LEG_HOLD", "FF_EXIT_LEG_SERVED")
 _CONFIG_NAMES = _SWITCHES + ("SYSTEM_RANDOM",)
 
 
+@pytest.fixture
+def today_dispatch(monkeypatch):
+    """THE DISPATCH FLIP (dispatch round 2: outputs/dispatch2_part1.txt 10.8 and 21; outputs/dispatch2_report.txt
+    section 10). DISPATCH_JOINT and DISPATCH_REASSIGN ship 1. A test marked with this fixture encodes TODAY'S (legacy)
+    dispatch - the per-incident nearest pairing and its replacement / write-off paths - so it pins
+    DISPATCH_JOINT = 0 explicitly (REASSIGN with it; it is enforced off anyway). Each such test names its ON
+    counterpart in the dispatch tests (outputs/dispatch_part1.txt 13.3 / 15)."""
+    monkeypatch.setattr(cfv, "DISPATCH_JOINT", 0, raising=False)
+    monkeypatch.setattr(cfv, "DISPATCH_REASSIGN", 0, raising=False)
+
+
 def _accessor_values():
     """The three accessors' values, with their types (False and 0 must not compare equal)."""
     values = (agents.ff_exit_leg_mode(), agents.ff_exit_leg_hold(), agents.ff_exit_leg_served())
@@ -913,6 +924,11 @@ def test_hold_one_keeps_the_carry_and_raises_nothing() -> None:
     assert commands == []
 
 
+# TODAY'S DISPATCH (pinned at the dispatch flip). ON counterpart(s):
+#   tests/test_dispatch_joint.py::test_tj7_no_pairing_mid_advance_and_a_same_step_detection_is_seen
+#   tests/test_dispatch_joint.py::test_tj7_real_step_no_assign_inside_the_advance
+#   tests/test_dispatch_joint.py::test_tj5_closed_route_is_never_bound
+@pytest.mark.usefixtures("today_dispatch")
 def test_hold_zero_drops_the_victim_exactly_as_today() -> None:
     """Pins the defect: route_blocked, the replacement unassign, and the victim left on
     the cell while another unit is paired to it."""
@@ -1148,6 +1164,10 @@ def test_a_held_carrier_that_dies_leaves_its_dead_victim_dead(hold) -> None:
     assert not [c for c in commands if c[0] == "assign"]
 
 
+# TODAY'S DISPATCH (pinned at the dispatch flip). ON counterpart(s):
+#   tests/test_dispatch_joint.py::test_tj8_a_casualty_victim_is_rebound_with_the_casualty_reason
+#   tests/test_dispatch_joint.py::test_tj8_casualty_with_an_empty_pool_waits_and_is_counted
+@pytest.mark.usefixtures("today_dispatch")
 def test_a_dying_carrier_whose_victim_still_lives_keeps_todays_reset() -> None:
     """HOLD 1's guard fires only for a victim that no longer needs rescue. A carrier that
     dies away from its victim (the swallowed move_agent case) keeps today's

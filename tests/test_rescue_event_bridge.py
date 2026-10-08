@@ -8,6 +8,8 @@ os.environ.setdefault("MPLBACKEND", "Agg")
 
 import agents
 from wildfire_model import WildFireModel
+import pytest
+import common_fixed_variables as cfv
 
 VICTIM_ID = "victim_0"
 FF_FAR = "ff_unit_0"
@@ -15,6 +17,17 @@ FF_NEAR = "ff_unit_1"
 VICTIM_CELL = (10, 10)
 FF0_CELL = (10, 9)
 FF1_CELL = (0, 0)
+
+
+@pytest.fixture
+def today_dispatch(monkeypatch):
+    """THE DISPATCH FLIP (dispatch round 2: outputs/dispatch2_part1.txt 10.8 and 21; outputs/dispatch2_report.txt
+    section 10). DISPATCH_JOINT and DISPATCH_REASSIGN ship 1. A test marked with this fixture encodes TODAY'S (legacy)
+    dispatch - the per-incident nearest pairing and its replacement / write-off paths - so it pins
+    DISPATCH_JOINT = 0 explicitly (REASSIGN with it; it is enforced off anyway). Each such test names its ON
+    counterpart in the dispatch tests (outputs/dispatch_part1.txt 13.3 / 15)."""
+    monkeypatch.setattr(cfv, "DISPATCH_JOINT", 0, raising=False)
+    monkeypatch.setattr(cfv, "DISPATCH_REASSIGN", 0, raising=False)
 
 
 def _fresh_model() -> WildFireModel:
@@ -69,6 +82,11 @@ def _set_cell_burning(model: WildFireModel, cell: tuple[int, int]) -> None:
     model.grid.place_agent(fire, cell)
 
 
+# TODAY'S DISPATCH (pinned at the dispatch flip). ON counterpart(s):
+#   tests/test_dispatch_joint.py::test_tj7_no_pairing_mid_advance_and_a_same_step_detection_is_seen
+#   tests/test_dispatch_joint.py::test_tj6_a_unit_free_between_steps_is_paired_at_j_pre_before_moving
+#   tests/test_dispatch_joint.py::test_tj12_reason_strings_and_event_types
+@pytest.mark.usefixtures("today_dispatch")
 def test_initial_dispatch_records_dispatch_initial() -> None:
     model = _fresh_model()
     _reset_ff(model)
@@ -86,6 +104,10 @@ def test_initial_dispatch_records_dispatch_initial() -> None:
     assert model.latest_physical_rescue_decision.victim_id == VICTIM_ID
 
 
+# TODAY'S DISPATCH (pinned at the dispatch flip). ON counterpart(s):
+#   tests/test_dispatch_joint.py::test_tj7_no_pairing_mid_advance_and_a_same_step_detection_is_seen
+#   tests/test_dispatch_joint.py::test_tj7_real_step_no_assign_inside_the_advance
+@pytest.mark.usefixtures("today_dispatch")
 def test_route_blocked_and_replacement_record_events() -> None:
     model = _fresh_model()
     _reset_ff(model)
@@ -112,6 +134,11 @@ def test_route_blocked_and_replacement_record_events() -> None:
     assert replacement[0]["firefighter_id"] == FF_NEAR
 
 
+# TODAY'S DISPATCH (pinned at the dispatch flip). ON counterpart(s):
+#   tests/test_dispatch_joint.py::test_tj8_a_casualty_victim_is_rebound_with_the_casualty_reason
+#   tests/test_dispatch_joint.py::test_tj8_casualty_with_an_empty_pool_waits_and_is_counted
+#   tests/test_dispatch_joint.py::test_tj12_reason_strings_and_event_types
+@pytest.mark.usefixtures("today_dispatch")
 def test_casualty_replacement_records_events() -> None:
     model = _fresh_model()
     _reset_ff(model)

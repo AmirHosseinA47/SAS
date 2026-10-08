@@ -31,6 +31,17 @@ V0 = "victim_0"
 PARAMS = {"WIND_DIRECTION": "east", "NUM_AGENTS": 2, "NUM_VICTIMS": 2, "NUM_FIREFIGHTERS": 2}
 
 
+@pytest.fixture
+def today_dispatch(monkeypatch):
+    """THE DISPATCH FLIP (dispatch round 2: outputs/dispatch2_part1.txt 10.8 and 21; outputs/dispatch2_report.txt
+    section 10). DISPATCH_JOINT and DISPATCH_REASSIGN ship 1. A test marked with this fixture encodes TODAY'S (legacy)
+    dispatch - the per-incident nearest pairing and its replacement / write-off paths - so it pins
+    DISPATCH_JOINT = 0 explicitly (REASSIGN with it; it is enforced off anyway). Each such test names its ON
+    counterpart in the dispatch tests (outputs/dispatch_part1.txt 13.3 / 15)."""
+    monkeypatch.setattr(cfv, "DISPATCH_JOINT", 0, raising=False)
+    monkeypatch.setattr(cfv, "DISPATCH_REASSIGN", 0, raising=False)
+
+
 @pytest.fixture(autouse=True)
 def _restore_module_config():
     saved = {mod: {n: getattr(mod, n) for n in dir(mod) if n.isupper()} for mod in (cfv, wf)}
@@ -138,6 +149,11 @@ def test_a_long_undetected_victim_is_labelled_once_and_not_written_off() -> None
     assert model._long_undetected_log == [{"step": 210, "victim_id": V0, "streak": 210}]
 
 
+# TODAY'S DISPATCH (pinned at the dispatch flip). ON counterpart(s):
+#   tests/test_dispatch_joint.py::test_tj7_no_pairing_mid_advance_and_a_same_step_detection_is_seen
+#   tests/test_dispatch_joint.py::test_tj6_a_unit_free_between_steps_is_paired_at_j_pre_before_moving
+#   tests/test_dispatch_joint.py::test_tj4_order_independence_model
+@pytest.mark.usefixtures("today_dispatch")
 def test_the_labelled_victim_can_still_be_detected_and_dispatched() -> None:
     model = _model()
     _sweep(model, 220)

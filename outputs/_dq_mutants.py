@@ -412,8 +412,8 @@ MUTANTS: dict[str, tuple[str, list[tuple[str, str, str]], list[str]]] = {
         [f"{TI}::test_tsw_step_parameters"],
     ),
     "tsw_shipped": (
-        "DISPATCH_JOINT shipped 1",
-        [(CFV, "\nDISPATCH_JOINT = 0\nDISPATCH_REASSIGN = 0", "\nDISPATCH_JOINT = 1\nDISPATCH_REASSIGN = 0")],
+        "DISPATCH_JOINT shipped 0 (re-anchored at THE DISPATCH FLIP: the shipped default is 1 / 1)",
+        [(CFV, "\nDISPATCH_JOINT = 1\nDISPATCH_REASSIGN = 1", "\nDISPATCH_JOINT = 0\nDISPATCH_REASSIGN = 1")],
         [f"{TI}::test_tsw_shipped_defaults", f"{TB}::test_shipped_defaults"],
     ),
     "tsw_gate": (

@@ -349,8 +349,11 @@ def test_tsw_step_parameters(monkeypatch, name, accessor, default):
 
 
 def test_tsw_shipped_defaults():
-    """T-SW. Both limits ship OFF."""
-    assert cfv.DISPATCH_JOINT == 0 and cfv.DISPATCH_REASSIGN == 0
+    """T-SW. Both limits ship ON since THE DISPATCH FLIP (dispatch round 2: the screen's OUTCOME 6,
+    outputs/dispatch2_report.txt; the maintainer's confirmation 2026-10-08). DISPATCH_JOINT = 0 alone restores today's
+    dispatch (test_tsw_with_joint_off_j_is_never_entered_and_nothing_changes).
+    MUTANT tsw_shipped: DISPATCH_JOINT shipped 0 (the pre-flip default)."""
+    assert cfv.DISPATCH_JOINT == 1 and cfv.DISPATCH_REASSIGN == 1
 
 
 def test_tsw_with_joint_off_j_is_never_entered_and_nothing_changes(monkeypatch):

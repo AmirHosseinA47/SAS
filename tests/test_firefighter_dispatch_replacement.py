@@ -8,6 +8,8 @@ os.environ.setdefault("MPLBACKEND", "Agg")
 
 import agents
 from wildfire_model import WildFireModel
+import pytest
+import common_fixed_variables as cfv
 
 VICTIM_ID = "victim_0"
 FF_FAR = "ff_unit_0"
@@ -17,6 +19,17 @@ FF_FAR_CELL = (0, 0)
 FF_NEAR_CELL = (9, 10)
 FF0_CASUALTY_CELL = (10, 9)
 FF1_REPLACEMENT_CELL = (0, 0)
+
+
+@pytest.fixture
+def today_dispatch(monkeypatch):
+    """THE DISPATCH FLIP (dispatch round 2: outputs/dispatch2_part1.txt 10.8 and 21; outputs/dispatch2_report.txt
+    section 10). DISPATCH_JOINT and DISPATCH_REASSIGN ship 1. A test marked with this fixture encodes TODAY'S (legacy)
+    dispatch - the per-incident nearest pairing and its replacement / write-off paths - so it pins
+    DISPATCH_JOINT = 0 explicitly (REASSIGN with it; it is enforced off anyway). Each such test names its ON
+    counterpart in the dispatch tests (outputs/dispatch_part1.txt 13.3 / 15)."""
+    monkeypatch.setattr(cfv, "DISPATCH_JOINT", 0, raising=False)
+    monkeypatch.setattr(cfv, "DISPATCH_REASSIGN", 0, raising=False)
 
 
 def _fresh_model() -> WildFireModel:
@@ -109,6 +122,11 @@ def _assign_ff_to_victim(
     return ff
 
 
+# TODAY'S DISPATCH (pinned at the dispatch flip). ON counterpart(s):
+#   tests/test_dispatch_joint.py::test_tj1_crossing_pairs_are_uncrossed
+#   tests/test_dispatch_joint.py::test_tj2_route_aware_choice_through_a_numpy_bool_fire_wall
+#   tests/test_dispatch_joint.py::test_tj3_scarcity_serves_the_nearest_by_route
+@pytest.mark.usefixtures("today_dispatch")
 def test_closest_firefighter_selected_on_dispatch() -> None:
     model = _fresh_model()
     _reset_firefighters(model)
@@ -141,6 +159,9 @@ def test_closest_firefighter_selected_on_dispatch() -> None:
     assert model._find_active_firefighter_for_victim(VICTIM_ID, marker) == (FF_NEAR, near)
 
 
+# TODAY'S DISPATCH (pinned at the dispatch flip). ON counterpart(s):
+#   tests/test_dispatch_joint.py::test_tj7_no_pairing_mid_advance_and_a_same_step_detection_is_seen
+@pytest.mark.usefixtures("today_dispatch")
 def test_route_blocked_triggers_replacement_firefighter() -> None:
     model = _fresh_model()
     _reset_firefighters(model)
@@ -170,6 +191,9 @@ def test_route_blocked_triggers_replacement_firefighter() -> None:
     assert VICTIM_ID not in model._rescue_failed_logged
 
 
+# TODAY'S DISPATCH (pinned at the dispatch flip). ON counterpart(s):
+#   tests/test_dispatch_joint.py::test_tj8_a_casualty_victim_is_rebound_with_the_casualty_reason
+@pytest.mark.usefixtures("today_dispatch")
 def test_firefighter_casualty_triggers_replacement() -> None:
     model = _fresh_model()
     _reset_firefighters(model)
@@ -200,6 +224,9 @@ def test_firefighter_casualty_triggers_replacement() -> None:
     assert marker.status in ("assigned", "confirmed")
 
 
+# TODAY'S DISPATCH (pinned at the dispatch flip). ON counterpart(s):
+#   tests/test_dispatch_joint.py::test_tj8_casualty_with_an_empty_pool_waits_and_is_counted
+@pytest.mark.usefixtures("today_dispatch")
 def test_no_replacement_available_marks_victim_unreachable_once() -> None:
     model = _fresh_model()
     _reset_firefighters(model)
@@ -231,6 +258,9 @@ def test_no_replacement_available_marks_victim_unreachable_once() -> None:
     assert model._dispatch_firefighter_to_victim(VICTIM_ID, marker, "test_retry") is False
 
 
+# TODAY'S DISPATCH (pinned at the dispatch flip). ON counterpart(s):
+#   tests/test_dispatch_joint.py::test_tj8_a_casualty_victim_is_rebound_with_the_casualty_reason
+@pytest.mark.usefixtures("today_dispatch")
 def test_check_fire_casualties_replaces_dead_assigned_firefighter() -> None:
     model = _fresh_model()
     _reset_firefighters(model)
@@ -271,6 +301,9 @@ def test_check_fire_casualties_replaces_dead_assigned_firefighter() -> None:
     )
 
 
+# TODAY'S DISPATCH (pinned at the dispatch flip). ON counterpart(s):
+#   tests/test_dispatch_joint.py::test_tj5_closed_route_is_never_bound
+@pytest.mark.usefixtures("today_dispatch")
 def test_route_blocked_without_replacement_keeps_victim_pending_not_unreachable() -> None:
     model = _fresh_model()
     _reset_firefighters(model)

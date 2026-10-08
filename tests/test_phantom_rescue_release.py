@@ -20,6 +20,7 @@ import agents
 import common_fixed_variables as cfv
 from src_extension.planning.rescue_planner import select_rescue_assignment
 from wildfire_model import PhysicalRescueCommand, WildFireModel
+import pytest
 
 V0 = "victim_0"
 V1 = "victim_1"
@@ -39,6 +40,17 @@ EXIT_CELL = (0, 20)
 # whether the completer is off-grid (Feature 1 on) or recycled at the exit (off)
 DRAIN_VICTIM_CELL = (30, 14)
 RELEASE_REASON = "released_after_rescue_complete"
+
+
+@pytest.fixture
+def today_dispatch(monkeypatch):
+    """THE DISPATCH FLIP (dispatch round 2: outputs/dispatch2_part1.txt 10.8 and 21; outputs/dispatch2_report.txt
+    section 10). DISPATCH_JOINT and DISPATCH_REASSIGN ship 1. A test marked with this fixture encodes TODAY'S (legacy)
+    dispatch - the per-incident nearest pairing and its replacement / write-off paths - so it pins
+    DISPATCH_JOINT = 0 explicitly (REASSIGN with it; it is enforced off anyway). Each such test names its ON
+    counterpart in the dispatch tests (outputs/dispatch_part1.txt 13.3 / 15)."""
+    monkeypatch.setattr(cfv, "DISPATCH_JOINT", 0, raising=False)
+    monkeypatch.setattr(cfv, "DISPATCH_REASSIGN", 0, raising=False)
 
 
 def _fresh_model() -> WildFireModel:
@@ -129,7 +141,10 @@ def _events(model: WildFireModel, event_type: str, vid: str) -> list[dict]:
 
 
 def _double_claim(model: WildFireModel):
-    """Two live claimants on victim_0: A at CELL_A, B at CELL_B, C parked out of the way."""
+    """Two live claimants on victim_0: A at CELL_A, B at CELL_B, C parked out of the way. A double claim exists
+    only under TODAY'S dispatch (the corrected dispatcher never makes one: G-B(b) is a structural zero), so
+    every test that builds it is pinned with the today_dispatch fixture (the dispatch flip)."""
+    assert not agents.dispatch_joint(), "the double-claim fixture needs DISPATCH_JOINT = 0 (today_dispatch)"
     _reset_all_ff(model)
     marker = _confirm_victim(model, V0, CELL)
     ff_a = _park(model, FF_A, CELL_A)
@@ -151,6 +166,11 @@ def _complete_as_carrier(model: WildFireModel, ff: agents.Firefighter, vid: str)
     _complete(model, vid, ff.unit_id)
 
 
+# TODAY'S DISPATCH (pinned at the dispatch flip). ON counterpart(s):
+#   tests/test_dispatch_information.py::test_tinv_invariants_hold_at_every_frame_of_a_real_run
+#     (I1 / I7: the corrected dispatcher never makes a double active claim)
+#   tests/test_dispatch_joint.py::test_tj10_latched_held_victim_gets_a_second_claimant_under_limit2_alone
+@pytest.mark.usefixtures("today_dispatch")
 def test_second_claimant_released_when_first_completes(capsys) -> None:
     model = _fresh_model()
     marker, ff_a, ff_b = _double_claim(model)
@@ -178,6 +198,11 @@ def test_second_claimant_released_when_first_completes(capsys) -> None:
     ]
 
 
+# TODAY'S DISPATCH (pinned at the dispatch flip). ON counterpart(s):
+#   tests/test_dispatch_information.py::test_tinv_invariants_hold_at_every_frame_of_a_real_run
+#     (I1 / I7: the corrected dispatcher never makes a double active claim)
+#   tests/test_dispatch_joint.py::test_tj10_latched_held_victim_gets_a_second_claimant_under_limit2_alone
+@pytest.mark.usefixtures("today_dispatch")
 def test_completing_unit_is_not_touched_by_the_release() -> None:
     model = _fresh_model()
     marker, ff_a, ff_b = _double_claim(model)
@@ -192,6 +217,11 @@ def test_completing_unit_is_not_touched_by_the_release() -> None:
     assert ff_b.rescued_victim is None
 
 
+# TODAY'S DISPATCH (pinned at the dispatch flip). ON counterpart(s):
+#   tests/test_dispatch_information.py::test_tinv_invariants_hold_at_every_frame_of_a_real_run
+#     (I1 / I7: the corrected dispatcher never makes a double active claim)
+#   tests/test_dispatch_joint.py::test_tj10_latched_held_victim_gets_a_second_claimant_under_limit2_alone
+@pytest.mark.usefixtures("today_dispatch")
 def test_released_unit_no_longer_walks_to_the_stale_target() -> None:
     """The probe's Q2 as a unit test: no phantom exit after the release."""
     model = _fresh_model()
@@ -206,6 +236,12 @@ def test_released_unit_no_longer_walks_to_the_stale_target() -> None:
     assert marker.pos is None
 
 
+# TODAY'S DISPATCH (pinned at the dispatch flip). ON counterpart(s):
+#   tests/test_dispatch_joint.py::test_tj6_a_unit_freed_by_a_death_release_is_bound_the_same_step
+#   tests/test_dispatch_information.py::test_tinv_invariants_hold_at_every_frame_of_a_real_run
+#     (I1 / I7: the corrected dispatcher never makes a double active claim)
+#   tests/test_dispatch_joint.py::test_tj10_latched_held_victim_gets_a_second_claimant_under_limit2_alone
+@pytest.mark.usefixtures("today_dispatch")
 def test_released_unit_is_the_planner_pick_for_the_next_victim() -> None:
     model = _fresh_model()
     marker, ff_a, ff_b = _double_claim(model)
@@ -226,6 +262,11 @@ def test_released_unit_is_the_planner_pick_for_the_next_victim() -> None:
     assert ff_b.target_pos == OTHER_CELL
 
 
+# TODAY'S DISPATCH (pinned at the dispatch flip). ON counterpart(s):
+#   tests/test_dispatch_information.py::test_tinv_invariants_hold_at_every_frame_of_a_real_run
+#     (I1 / I7: the corrected dispatcher never makes a double active claim)
+#   tests/test_dispatch_joint.py::test_tj10_latched_held_victim_gets_a_second_claimant_under_limit2_alone
+@pytest.mark.usefixtures("today_dispatch")
 def test_release_relabels_the_knowledge_model_as_available() -> None:
     """D2: without the relabel the unit is freed in fact but reported as assigned."""
     model = _fresh_model()
@@ -248,6 +289,11 @@ def test_release_relabels_the_knowledge_model_as_available() -> None:
         assert (getattr(unit, "target_victim", None) or None) is None
 
 
+# TODAY'S DISPATCH (pinned at the dispatch flip). ON counterpart(s):
+#   tests/test_dispatch_information.py::test_tinv_invariants_hold_at_every_frame_of_a_real_run
+#     (I1 / I7: the corrected dispatcher never makes a double active claim)
+#   tests/test_dispatch_joint.py::test_tj10_latched_held_victim_gets_a_second_claimant_under_limit2_alone
+@pytest.mark.usefixtures("today_dispatch")
 def test_route_blocked_claimant_is_released_and_recovered_by_revalidation(monkeypatch) -> None:
     """The 70e1b33 shape: a blocked second claimant must not be left latched.
     PINNED TO THE PRE-UNTUNE PROGRAM (SEARCHER_UNTUNED=0, the identity control): the model's other victims are
@@ -339,6 +385,11 @@ def test_completion_for_an_already_rescued_victim_releases_a_straggler() -> None
     assert len(finalizes) == 1
 
 
+# TODAY'S DISPATCH (pinned at the dispatch flip). ON counterpart(s):
+#   tests/test_dispatch_information.py::test_tinv_invariants_hold_at_every_frame_of_a_real_run
+#     (I1 / I7: the corrected dispatcher never makes a double active claim)
+#   tests/test_dispatch_joint.py::test_tj10_latched_held_victim_gets_a_second_claimant_under_limit2_alone
+@pytest.mark.usefixtures("today_dispatch")
 def test_victim_dead_releases_every_claimant_including_route_blocked(monkeypatch) -> None:
     """D1: one helper, one behaviour - the recall no longer skips route_blocked units.
     PINNED TO THE PRE-UNTUNE PROGRAM (SEARCHER_UNTUNED=0, the identity control): the model's other victims are
@@ -399,6 +450,12 @@ def test_victim_dead_with_one_visible_claimant_is_the_old_recall_plus_relabel() 
     assert _ff(model, FF_B).assigned is False
 
 
+# TODAY'S DISPATCH (pinned at the dispatch flip): an inline double claim, and the legacy re-dispatch inside the
+# drain. ON counterpart(s):
+#   tests/test_dispatch_joint.py::test_tj6_a_unit_freed_by_a_death_release_is_bound_the_same_step
+#   tests/test_dispatch_information.py::test_tinv_invariants_hold_at_every_frame_of_a_real_run
+#     (I1 / I7: the corrected dispatcher never makes a double active claim)
+@pytest.mark.usefixtures("today_dispatch")
 def test_drain_end_to_end_releases_loser_and_redispatches_it() -> None:
     """The production path: advance() completes at the exit cell -> drain -> release -> re-dispatch."""
     model = _fresh_model()
@@ -440,6 +497,11 @@ def test_drain_end_to_end_releases_loser_and_redispatches_it() -> None:
     assert model.pending_removal_failures_last_step == 0
 
 
+# TODAY'S DISPATCH (pinned at the dispatch flip). ON counterpart(s):
+#   tests/test_dispatch_information.py::test_tinv_invariants_hold_at_every_frame_of_a_real_run
+#     (I1 / I7: the corrected dispatcher never makes a double active claim)
+#   tests/test_dispatch_joint.py::test_tj10_latched_held_victim_gets_a_second_claimant_under_limit2_alone
+@pytest.mark.usefixtures("today_dispatch")
 def test_release_when_incident_names_the_loser_still_frees_the_loser() -> None:
     """Review finding: without a firefighter id, _finalize_rescued_victim names
     managed_victims[vid].firefighter_id = the LAST-assigned unit. In a double
@@ -463,6 +525,11 @@ def test_release_when_incident_names_the_loser_still_frees_the_loser() -> None:
     assert model.ff_claims_released_total == 1
 
 
+# TODAY'S DISPATCH (pinned at the dispatch flip). ON counterpart(s):
+#   tests/test_dispatch_information.py::test_tinv_invariants_hold_at_every_frame_of_a_real_run
+#     (I1 / I7: the corrected dispatcher never makes a double active claim)
+#   tests/test_dispatch_joint.py::test_tj10_latched_held_victim_gets_a_second_claimant_under_limit2_alone
+@pytest.mark.usefixtures("today_dispatch")
 def test_named_unit_is_kept_only_while_carrying() -> None:
     """A named unit that is exiting with the victim is the carrier and is kept;
     a named unit that is merely bound is a stale claimant and is released."""
@@ -484,6 +551,11 @@ def test_named_unit_is_kept_only_while_carrying() -> None:
     assert model2.ff_claims_released_total == 2
 
 
+# TODAY'S DISPATCH (pinned at the dispatch flip). ON counterpart(s):
+#   tests/test_dispatch_information.py::test_tinv_invariants_hold_at_every_frame_of_a_real_run
+#     (I1 / I7: the corrected dispatcher never makes a double active claim)
+#   tests/test_dispatch_joint.py::test_tj10_latched_held_victim_gets_a_second_claimant_under_limit2_alone
+@pytest.mark.usefixtures("today_dispatch")
 def test_release_counter_is_split_by_reason() -> None:
     model = _fresh_model()
     marker, ff_a, ff_b = _double_claim(model)
@@ -506,6 +578,11 @@ def test_release_counter_is_split_by_reason() -> None:
     assert model.ff_claims_released_total == 2
 
 
+# TODAY'S DISPATCH (pinned at the dispatch flip). ON counterpart(s):
+#   tests/test_dispatch_information.py::test_tinv_invariants_hold_at_every_frame_of_a_real_run
+#     (I1 / I7: the corrected dispatcher never makes a double active claim)
+#   tests/test_dispatch_joint.py::test_tj10_latched_held_victim_gets_a_second_claimant_under_limit2_alone
+@pytest.mark.usefixtures("today_dispatch")
 def test_named_exiting_unit_is_released_once_a_completer_exists() -> None:
     """Double carry plus the no-id fallback naming the second carrier: the true
     completer is protected by rescue_completed, so the name must not protect an
@@ -583,6 +660,11 @@ def test_relabel_failure_does_not_undo_or_hide_the_release(capsys, monkeypatch) 
     assert "[Rescue Release Failed]" not in out
 
 
+# TODAY'S DISPATCH (pinned at the dispatch flip). ON counterpart(s):
+#   tests/test_dispatch_information.py::test_tinv_invariants_hold_at_every_frame_of_a_real_run
+#     (I1 / I7: the corrected dispatcher never makes a double active claim)
+#   tests/test_dispatch_joint.py::test_tj10_latched_held_victim_gets_a_second_claimant_under_limit2_alone
+@pytest.mark.usefixtures("today_dispatch")
 def test_route_blocked_release_with_no_victim_left_clears_the_flag(capsys) -> None:
     """The gate case: released while blocked, and nothing left to be blocked from."""
     model = _fresh_model()
@@ -606,6 +688,11 @@ def test_route_blocked_release_with_no_victim_left_clears_the_flag(capsys) -> No
     assert f"[Route Cleared] FF-{FF_B} released with no victim left to reach" in out
 
 
+# TODAY'S DISPATCH (pinned at the dispatch flip). ON counterpart(s):
+#   tests/test_dispatch_information.py::test_tinv_invariants_hold_at_every_frame_of_a_real_run
+#     (I1 / I7: the corrected dispatcher never makes a double active claim)
+#   tests/test_dispatch_joint.py::test_tj10_latched_held_victim_gets_a_second_claimant_under_limit2_alone
+@pytest.mark.usefixtures("today_dispatch")
 def test_route_blocked_release_with_a_live_victim_leaves_the_flag_to_the_pass() -> None:
     model = _fresh_model()
     marker, ff_a, ff_b = _double_claim(model)
@@ -662,6 +749,11 @@ def test_same_step_co_completer_is_recycled_without_an_absence() -> None:
 
 
 # --- untune merge: the same two shapes under the SHIPPED default (FF_RELEASE_DETECTED_ONLY) -------------------
+# TODAY'S DISPATCH (pinned at the dispatch flip). ON counterpart(s):
+#   tests/test_dispatch_information.py::test_tinv_invariants_hold_at_every_frame_of_a_real_run
+#     (I1 / I7: the corrected dispatcher never makes a double active claim)
+#   tests/test_dispatch_joint.py::test_tj10_latched_held_victim_gets_a_second_claimant_under_limit2_alone
+@pytest.mark.usefixtures("today_dispatch")
 def test_route_blocked_claimant_is_released_and_recovered_by_revalidation_default() -> None:
     """The 70e1b33 shape under the shipped default. With a DETECTED victim waiting, the blocked claimant keeps its
     flag for the revalidation pass, which recovers it and re-dispatches it to that victim - not latched."""
@@ -678,6 +770,11 @@ def test_route_blocked_claimant_is_released_and_recovered_by_revalidation_defaul
     assert ff_b.assigned is True and ff_b.rescued_victim is other
 
 
+# TODAY'S DISPATCH (pinned at the dispatch flip). ON counterpart(s):
+#   tests/test_dispatch_information.py::test_tinv_invariants_hold_at_every_frame_of_a_real_run
+#     (I1 / I7: the corrected dispatcher never makes a double active claim)
+#   tests/test_dispatch_joint.py::test_tj10_latched_held_victim_gets_a_second_claimant_under_limit2_alone
+@pytest.mark.usefixtures("today_dispatch")
 def test_blocked_claimant_with_only_undetected_victims_left_is_released_default() -> None:
     """Under the shipped default a blocked claimant whose victim is resolved, with only UNDETECTED victims left,
     is released at once ("no victim left to reach") - a firefighter can only be dispatched to a detected victim,
