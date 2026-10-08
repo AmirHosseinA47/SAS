@@ -290,6 +290,28 @@ MR1_TRUTHINESS_FIX = 1
 # measurement-round configuration (outputs/isTrue_report.txt). SHIPS 1; off only on an exact 0, which is the pre-fix
 # readers.
 NUMPY_SCALAR_FLAGS = 1
+# ---- MVG round (outputs/urgency_part1d.txt; rulings and amendment C1 in its section 1d.13) ----------------------------
+# Movement fixes (a) and (b) of the urgency round and their stranding guard. The guarded screen passed
+# (outputs/mvg_report.txt, OUTCOME 6) and the maintainer confirmed the flip (1d.6.3 THE FLIP, 2026-10-07): all three
+# SHIP 1 and are OFF only on an exact 0 (agents._fix2_switch). Kill switch: both fixes at 0 restores the base commit's
+# movement exactly (one accessor check at each of the two decision sites; the guard is then never evaluated). The guard
+# alone at 0 gives the unguarded fixes (the screen's report-only arm N), which were NOT shipped.
+# FF_APPROACH_PATH (fix (a), urgency Part 1 22.2, agents.ff_approach_path): an approaching unit whose greedy step is NOT
+# on a shortest path over CLEAN cells (not burning, not smoky, not fire-adjacent) to its victim, while such a path exists
+# and the victim's clean region has a clean way out, steps along that path instead ("do not circle while a safe path
+# exists"). Otherwise today's _move_toward runs.
+FF_APPROACH_PATH = 1
+# FF_RETREAT_KEEP_APPROACH (fix (b), urgency Part 1 22.3, agents.ff_retreat_keep_approach): an approaching unit forced
+# to retreat (trigger unchanged) whose retreat cell is off its clean route to the victim steps to the clean on-route
+# neighbour instead, when the victim's clean region has a clean way out ("do not abandon an approach while a safe route
+# remains"). Otherwise today's retreat runs.
+FF_RETREAT_KEEP_APPROACH = 1
+# FF_FIX_STRANDING_GUARD (Part 1d 1d.2, agents.ff_fix_stranding_guard): a step of fix (a) or (b) is taken only if a
+# time-expanded clean route from the step's cell reaches the victim before the fire is expected to close it - the
+# urgency round's safe-in-time route test on the published-rate fire-arrival estimate
+# (src_extension/planning/movement_paths.stranding_guard); otherwise today's step runs (a veto). Inert with both fixes
+# at 0.
+FF_FIX_STRANDING_GUARD = 1
 # The ONE battery threshold pair (fix1 item 2), read at call time through
 # agents.battery_low_threshold() / battery_critical_threshold() by every reader: the UAV
 # labels, both analyzers, the resource model, the global monitor, the dashboard alert and

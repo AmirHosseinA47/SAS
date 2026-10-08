@@ -143,6 +143,8 @@ def test_shipped_defaults() -> None:
       - moving the agents.py accessor fallbacks with the constants
         (test_accessors_survive_junk_values).
     The assertions are deliberate.
+    MUTANTS (the MVG flip's record, outputs/_mvg_flip_mutants_result.txt): fl_shipped0_a, fl_shipped0_b (a movement
+    fix switch shipped 0).
     """
     assert cfv.BASE_STATION_MODE == 3
     assert cfv.BASE_STATION_RETURN_MECHANISM == 2
@@ -177,6 +179,11 @@ def test_shipped_defaults() -> None:
     assert cfv.MR1_TRUTHINESS_FIX == 1
     # F-2 ships ON (off only on an exact 0, the pre-fix readers): numpy scalars in the utility layer read as Python.
     assert cfv.NUMPY_SCALAR_FLAGS == 1
+    # MVG round (outputs/urgency_part1d.txt; the screen's OUTCOME 6, outputs/mvg_report.txt, and the maintainer's flip
+    # ruling): fixes (a) and (b) ship ON behind their stranding guard, also ON; each is off only on an exact 0.
+    assert cfv.FF_APPROACH_PATH == 1
+    assert cfv.FF_RETREAT_KEEP_APPROACH == 1
+    assert cfv.FF_FIX_STRANDING_GUARD == 1
     # Dispatch round (outputs/dispatch_part1.txt, rulings section 20): joint assignment (Limit 2) and reassignment
     # (Limit 3) ship OFF - on only on an exact 1, REASSIGN only while JOINT is on; S, M, P fixed by D-8.
     assert cfv.DISPATCH_JOINT == 0

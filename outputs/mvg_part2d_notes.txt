@@ -1,0 +1,525 @@
+MVG ROUND - PART 2d NOTES
+Build, tests, mutation check, tooling, reviews, full suite, smoke, structure check and port identity.
+Branch mvg (from main a20a2ef5), worktree E:/Projects/SAS_wt/mvg.
+Design: outputs/urgency_part1d.txt, copied verbatim from branch urgency
+  - Part 1d: 74039c54
+  - amendment C1 (section 1d.13, the rulings on 1d.12): 0d5358e3
+Rulings applied: 1d.13 (W-1, W-2, W-4..W-10, W-12 (a); W-3 (a) R2 plus the causal clause L4; W-11 (a), before the
+verdict, for arms G and N).
+Each finding and decision carries a "PAPER:" line saying what it means for the paper.
+
+================================================================================
+1. COMMITS
+================================================================================
+  - d17b80d7  Part 2d build (1/n):
+                - fixes (a) / (b) split from urgency 5dba5bcb;
+                - the stranding guard SG-T;
+                - tests and frozen test inputs;
+                - the reference copies (outputs/_mvg_ref/);
+                - the instrument and the replay tool.
+  - aaff76c0  (2/n) the frozen U1 module T-G4 reads (tests/data/urgency_dispatch_5dba5bcb.py), missing from 1/n.
+  - dbaf9f49  (3/n) T-G4 hashes the LF form of that copy (a CRLF checkout failed it).
+              THE FULL SUITE RAN ON THIS COMMIT (section 7).
+  - 6ebeadc6  (4/n) the analyzer and its self-test, the W1 / W2 queue writer and the frozen W1 / W2 queues, the W3
+              generator, the mutation engine, spec and first record (61 mutants).
+  - d2d5fb11  (5/n) the review fixes (section 6):
+                - the port / smoke / structure queues frozen;
+                - 65 mutants, all killed;
+                - the W3 tooling validation re-run on the final tools.
+              THE SMOKE, THE STRUCTURE CHECK, THE PORT IDENTITY, THE SMOKE REPLAYS, THE PURITY CHECK AND THE
+              VALIDATION RE-RUN RAN ON THIS COMMIT (sections 5 and 8).
+  - (this)    6/n. Contents:
+                - these notes;
+                - the smoke, structure, port, smoke-replay and validation records;
+                - the suite log.
+              No run-loaded file changes: every tracked root *.py, src_extension/ and the probe chain are
+              byte-identical to d2d5fb11. The runs made at d2d5fb11 are therefore valid under the analyzer's ancestor
+              rule (review A-2).
+              THIS COMMIT IS THE SCREEN'S HEAD:
+                - it is the analyzer's --head;
+                - every W1 / W2 / W3 run must record it, or an ancestor whose run-loaded files are identical.
+  Source between commits:
+  - The model source (agents.py, common_fixed_variables.py, wildfire_model.py, src_extension/) is identical from
+    d17b80d7 to this commit.
+  - The tests changed after dbaf9f49 only in docstrings (the four (b) mutant names, review C-3). The two test files'
+    ASTs with docstrings blanked are equal at dbaf9f49 and d2d5fb11.
+  PAPER: the code is base a20a2ef5 plus this diff.
+
+================================================================================
+2. LINE MAP (at d2d5fb11; base a20a2ef5 lines in brackets)
+================================================================================
+  agents.py (+302 -1):
+    15          import of movement_paths
+    1682-1725   the accessors [AG:1680]:
+                  - ff_approach_path and ff_retreat_keep_approach (on only on an exact 1);
+                  - ff_fix_stranding_guard (off only on an exact 0);
+                  - fire_board_sets
+    2477-2480   tier labels 7 and 10 [AG:2431]. 8 and 9 were fix (c)'s and are not carried.
+    3016-3039   fix (b) in advance's survival branch, through _guarded [AG:2966]
+    3102-3109   fix (a) in the approach branch, through _guarded [AG:3029]
+    3767-3987   the pure choices, the writers and the guard calls [AG:3686]:
+                  - pure: _board_sets, _clean_predicate, _greedy_choice, _one_step_retreat_choice,
+                    _survival_choice, _victim_clean_field, _approach_path_choice, _retreat_on_route_choice;
+                  - writers: _relabel_if_route_blocked, _fix_move;
+                  - guard: _stranding_guard_verdict, _guarded (None on a veto, so today's step runs)
+  common_fixed_variables.py (+20): 293-312, the three switches with documentation (0, 0, 1).
+  tests/test_base_station.py (+6): the three pins in test_shipped_defaults.
+  wildfire_model.py and docs/: unchanged (no U1, no fix (c)).
+  NEW:
+    - src_extension/planning/movement_paths.py (186 lines):
+        - neighbours, clean_distance_field, region_has_exit, _order_index, _best, approach_choice and retreat_choice,
+          verbatim from 5dba5bcb (not least_exposure_first_step / shelter_step);
+        - _in_bounds, unclean_cells, t_star and safe_route_hops, verbatim from urgency_dispatch.py at 5dba5bcb;
+        - stranding_guard (line 164), the guard SG-T of 1d.2.
+    - tests/test_stranding_guard.py (54 nodes), tests/test_movement_fixes.py (58 nodes), tests/mvg_test_support.py
+    - tests/data/mvg_guard_corpus.json.gz (1 019 frozen decisions), tests/data/urgency_dispatch_5dba5bcb.py (T-G4)
+
+================================================================================
+3. READINGS AND DEVIATIONS
+================================================================================
+  Pre-registration items that differ from the text, each disclosed:
+  (a) T-G1's "+1" case (review C-2).
+      - 1d.8 (4) says "c_n + 1 = T(v) exactly (admit) and c_n = T(v) (veto) (kills 'drop +1')". The second case
+        cannot kill that mutant. T*(v) <= T(v), so at c_n = T(v) v's own entry test refuses before the cut: c is
+        infinite with or without the +1.
+      - The +1 is isolated by c_n < T(v) < c_n + 1: the cases [plus_one_cut] and [n_is_v_cut]. The mutation
+        record kills g_plus1 on those two and on the property test.
+      - [c_equals_t] is kept and kills g_ge_k ("T* >= k" for "> k").
+      - This is the same observation as the urgency round's T-U2.
+      PAPER: the guard's "+1" is tested by the cases that can see it. It never binds on real fire boards: 0
+      finite-c vetoes in the 1 019 recorded decisions and in 300 random real-FAE boards.
+  (b) "live" in mv_events (review I-3).
+      - "live" keeps v2's meaning: the fix's switch is effective. It is NOT guarded.
+      - The guarded fields that 1d.8 (5) calls live / acted are:
+          - "ran" = live and not vetoed;
+          - the mv column "acted_g".
+      - Every consumer reads "ran": the analyzer's ran_of, the W3 generator's live-decision rule (1d.13.2), and the
+        check tool's pair (s* = the first ran event). MV_SCHEMA states it.
+      PAPER: a vetoed decision is never counted as a fix step.
+  (c) ko_applied in the replay boards (review I-5).
+      - For kinds a / b it logs every knocked-out pure choice. In G that includes decisions the guard would have
+        vetoed (no-op knockouts) and calls from the probe's shadow.
+      - Kind g (KO-GUARD) logs only true vetoes.
+      - The analyzer tests only whether X's first ran decision is in the knockout's set, so no count is affected.
+  (d) Zg-1's independence (reviews C-4 and I-1, FIXED).
+      - The instrument's guard verdict is a local replica of the frozen function's body (_mvg_guard_diag.guard,
+        sha256 70eeba78...). It runs on the U1 shadow's own helpers (the by-path copy of urgency_dispatch.py at
+        5dba5bcb), not on movement_paths' code.
+      - The repo function's tuple is recorded beside it as mp_verdict, a cross-check. A difference fails Zg-1 in G
+        and is reported in arms 0 and N.
+      - Common by design: the fire-arrival estimate (fire_arrival_estimate.arrival_time with
+        FrontPriorityParams()). The frozen function reads it too, it is in src_sha, and it is byte-identical to
+        5dba5bcb's (sha256 cd4da093).
+      - Zg-1 therefore checks both the model's plumbing (board, wind, extents, u / n / v) and the guard code. The
+        function is also pinned by T-G7 (1 019 decisions) and T-G1's oracle.
+      PAPER: the in-run guard check is independent of the guard's implementation, apart from the shared fire
+      estimate.
+  (e) A complete replay whose rows end before t (review A-5, FIXED).
+      - A run is complete when it did not crash, the chain exited 0, it stopped at --steps or at its terminal step,
+        and its rows equal steps_done.
+      - For a complete run, the unit's state at t is dead if it died within the rows, else alive.
+      - Only a crashed or incomplete run gives None, which makes the candidate UNRESOLVED.
+      - The probe always steps --steps, so this is latent.
+  (f) The structure check's tags: mvgt1<p><k>_<key>.
+      - The pre-registration does not fix them.
+      - The first writer's mvgs1<p><k> collided with the smoke's arm-1 tags.
+      - _mvg_queue.py now STOPs when two waves share a tag.
+  (g) The structure check runs in batches of 4 queue lines, in queue order, at d2d5fb11.
+      - It counts the runs in queue order up to and including the first that completes the requirement.
+      - The rest of that batch was already running. Those runs are recorded and read structurally like the
+        others; they decide nothing.
+      - No later batch was launched (section 8).
+  (h) The analyzer's head rule (review A-2 (a), FIXED). A run is valid at --head when either:
+      - its recorded head starts with --head; or
+      - the recorded head is an ancestor of --head, and every run-loaded file is LF-identical between the two.
+      The run-loaded files are every tracked root *.py, src_extension/, and the probe chain: _mvg_probe,
+      _mvg_u1_shadow, _ut_probe, _fb3_probe, _fx3_probe, _mf2_probe, _sd_probe, _fm2_probe_harness, _ffr_harness,
+      _bp_inst, and _mvg_replay for W3. outputs/_dim_hooks.py is listed conservatively: it loads only with a --dim-*
+      option, which no frozen line passes.
+  (i) The guard is not memoized. 1d.8 (3) permits per-(step, board) memoization of T; it is not used. Each call
+      computes FAE's T grid (about 14 ms; section 8).
+  (j) Mutation granularity.
+      - The guard-parametrized ported mutants are listed per case, which is stricter than function level.
+      - mb4_exempt survives T-Mb4 [next_to_her-guard1]: the guard's own unclean test vetoes the step onto her smoky
+        cell, so that case is not listed. This is documented in the spec.
+      - safe_clean [guard1] is killed only by T-SAFE-M's activity floor. With the guard on, the guard supplies the
+        clean-landing property.
+  (k) The mutant set is 65:
+      - 32 ported from the urgency round: (a) 11, (b) 9, shared / switch / identity 9, T-NT 3;
+      - 29 new: 28 guard mutants and nt_toplevel;
+      - 4 (b) mirrors added on review C-3: sw_strict_b, sw_import_b, sw_shipped_b and g_eval_off_b.
+      The urgency round's 16 fix-(c) mutants are dropped.
+  (l) The instrument's schema.
+      - d["mv"] has v2's 38 columns plus gA, gB, veto and acted_g (42).
+      - Guard rows carry, beyond 1d.8 (5)'s list: victim, today_kind, today_tier, today_raise, model_verdict,
+        model_cell, pre_writes, ms_inst, row and mp_verdict.
+      - An mp_verdict difference is kept as a row column and in d["mvg"]["mp_mismatch"], not in mvg.errors. Errors
+        make a run INVALID, and a re-run would reproduce, and so mask, a guard-function defect.
+      - VERSION stays "mvg_probe v1". Each record names its instrument by d["mvg"]["probe_sha"] (the LF sha256 of
+        _mvg_probe.py); the replay boards carry replay_sha and probe_sha (review I-9).
+  (m) Fix (c) material is not in the instrument.
+      - The validation normalises the urgency reference's fix-(c) carry rows: c0 is read as path and fc is not
+        compared. This touched 6 / 6 / 21 rows.
+      - Any other fix-(c) activity makes the check REFUSE. None occurred.
+  (n) Both the model and the instrument judge v = target_pos after the refresh, as the frozen diagnostic did.
+      - On 16 G rows (9 in KO-OTHERS) the board's entry-time target differed: the victim moved.
+      - This is information only.
+  (o) The W3 build gate (review A-4).
+      - _mvg_w3_queue.py build needs --head and --part2-notes.
+      - It refuses unless the analyzer's W2 gate passes on all 192 records.
+      - A crashed W2 record makes its cell-arm UNCOMPUTABLE, and L4 then fails: a hard clause never passes on
+        missing evidence.
+  (p) T-ID-M adds a third setting, "shipped" (fixes 0, guard 1), to "absent" and "zero". The golden cdfe2759 is
+      the same at a20a2ef5 and 27744a28.
+  (q) T-G7's corpus is 43 ud2 R0 replays, not the 44 R0 files in that folder. The 44th is ud3u3_D_N, the MU run.
+      - The corpus holds 1 019 decisions and 626 vetoes, exactly 1d.2.6's numbers.
+      - The generator refuses on any other count.
+  (r) Analyzer readings beyond the text:
+      - S6 is two rules: FIX (the per-advance a + b calls) and GUARD (the model's guard calls).
+      - Both use R = all fix code (a + b + g) / wall.
+      - FULL(0->N), which is reported, includes L4(N). HARMLESS(N->G) has no L4.
+      - KO-LAST uses kinds ab with from = to = s, as the urgency review's queue did.
+      - A conflicting KO-OWN or KO-OTHERS makes the candidate UNRESOLVED. A conflicting KO-LAST or KO-GUARD is
+        shown as unknown.
+      - No outcome of sets 1-4 is printed in any mode.
+  PAPER: the rules run as pre-registered; every reading is recorded before the screen.
+
+================================================================================
+4. TESTS AND THE MUTATION CHECK (1d.8 (4))
+================================================================================
+  - Every pre-registered test exists:
+      - ported from the urgency round, with the U1 and (c) material removed: T-Ma1..8, T-Mb1..6, T-SAFE-M, T-SW-M,
+        T-ID-M and T-NT;
+      - NEW: T-G1..T-G8.
+  - The round's files pass 171 / 171 on the final tree (PYTHONHASHSEED 0, 110.7 s):
+      - test_stranding_guard.py 54;
+      - test_movement_fixes.py 58;
+      - test_base_station.py 59.
+  - The mutation check is recorded in outputs/_mvg_mutants_result.txt / .json:
+      - 65 mutants and 103 (mutant, test) records;
+      - every mutant is killed on every listed node;
+      - 0 ERROR, 0 MISSING, 0 TIMEOUT;
+      - the CONTROL passes all 68 listed nodes (99 cases, 119.2 s);
+      - the docstring cross-check is clean, and changed_during_run is empty;
+      - kills: 102 by AssertionError, 1 by IndexError (g_xy_swap on the non-square case, intended).
+  - The record is bound to its tree:
+      - sha256 b2a4d7ec... over 212 files: the root *.py, src_extension/, tests/, plus
+        outputs/_mvg_guard_diag.py;
+      - plus each module, test file, spec and the engine.
+      - The analyzer's mutants_check REFUSES unless every bound sha equals the file at --head (review C-1).
+  - Fixed references:
+      - T-G7: the built guard equals the frozen guard on 1 019 / 1 019 decisions (admit, c, T_v exact).
+      - T-G3: with the guard at exact 0, a 400-board corpus gives the urgency code's digest d65f2674. With the
+        guard at 1 the digest differs, with 185 vetoes.
+      - T-ID-M: the switches absent, zero and shipped all give the base golden cdfe2759.
+  - Property margins (actual / floor), measured at the build; the test bodies are unchanged since:
+      - T-Ma6: 285 / 100 boards.
+      - T-Ma8: guard 0 gives 1 044 / 300 raises and 193 / 100 acted; guard 1 gives 40 / 30 acted.
+      - T-Mb6: 277 / 150 moved.
+      - T-SAFE-M: guard 0 gives {7: 135, 10: 51} against (80, 40); guard 1 gives {7: 31, 10: 30} against (25, 20).
+      - T-G1 crafted: admit 89, finite-c veto 111, infinite-c veto 100, each against 10.
+      - T-G2: a_veto 165 / 100; b_veto 20, a_admit 28, b_admit 21, each / 10.
+  - Two findings, recorded:
+      - hp_no_adjacent (unclean_cells without the fire-adjacency term) is equivalent inside the guard. FAE gives
+        T = 0 on burning cells, so T* already closes every fire-adjacent cell. Only T-G4's direct helper
+        comparison kills it.
+      - With the guard on, nearly every (a) step in T-SAFE-M's corpus is vetoed: {7: 31} admitted against 135
+        with the guard at 0. This is consistent with 1d.2.6's 61 % veto share.
+  PAPER: "every behavioural claim of the fixes and the guard has a test that fails without it" holds for all 65
+  mutants, including every named form in 1d.8 (4).
+
+================================================================================
+5. TOOLING VERIFICATION (1d.8 (5)-(6), 1d.13.4)
+================================================================================
+  _mvg_probe.py (instrument; probe_sha 37cc5d59...):
+    - The synthetic set passes 234 checks with 0 failed. Every positive control is detected, including:
+        - the repo-guard code swap (mp_verdict);
+        - the tier control at an (a) veto (review I-7);
+        - a CRLF U1 copy;
+        - 20 malformed --ko values and an injected TypeError (review I-4).
+    - The U1 shadow self-check: a synthetic qualifying kick gives a non-None U1 order. So the U1 class of 22.9 IS
+      computed in this round.
+  THE W3 TOOLING VALIDATION (1d.13.4), at d2d5fb11: outputs/_mvg_val/.
+    - Line: set4/uniform/B_N through _mvg_replay.py.
+    - R0 against the urgency record _mvg_ref/_sd_ud2u4_B_N.json: 26 comparisons, 0 differ. The mv rows are
+      85 / 85, the events 22 / 22, stdout is 4 824 bytes and equal, and the terminal step is 323.
+    - KO-OWN of ff_unit_1 against _sd_udrp_ud2u4_B_N_f1_KOown: 26 comparisons, 0 differ. ko_applied is identical
+      (3 entries).
+    - KO-OTHERS against _sd_udrp_ud2u4_B_N_f1_KOothers: 26 comparisons, 0 differ (8 entries).
+    - The mvg1 (guard-on) run of the same line:
+        - guard rows: 74; 6 admitted (a 2, b 4), 68 vetoes (a 65, b 3);
+        - guard problems: 0 on all four records;
+        - Zg-3: OK. The first veto is at step 30 (ff_unit_2, kind a), and the first difference is AT that veto.
+    - The frozen guard (sha 70eeba78) recomputed on the replay boards equals the instrument verdict on 22 / 16 /
+      40 / 74 rows, 152 / 152 in all. mp_verdict differs on 0 rows.
+    - Records:
+        - v1 (pre-review instrument) is kept in outputs/_mvg_val/v1/;
+        - v2 (F1's re-run: recorded head 6ebeadc6, uncommitted tools) is kept in outputs/_mvg_val/v2/;
+        - the d2d5fb11 re-run equals v2 on every field but head and timing; boards and stdout are byte-identical.
+  _mvg_analyze.py:
+    - The self-test passes 140 / 140. The W3 generator's self-test passes 13 / 13.
+    - Cases include:
+        - the R2 known answers;
+        - Zg-1 over-veto, under-veto and cross-check;
+        - the L4 known answers of 1d.13.4: advanced -> caused, postponed -> prevented, UNRESOLVED (A) -> caused,
+          a swap +1 / +1, a tie passes;
+        - review A-6's three cases: S1 port FAIL / INCOMPLETE, W3 end to end with a G veto, and an appended section.
+    - Header, run as `--head d2d5fb11 --part2-notes outputs/mvg_part2d_notes.txt --zeros-only`:
+        - 1d.2-1d.9 are identical to 74039c54 and to 0d5358e3; 1d.13 is identical to 0d5358e3; the whole document
+          equals 0d5358e3's;
+        - 26 DPR and 82 ud functions are verbatim; 9 reused modules are == cc8d653c;
+        - the notes PASS (40 sha256 lines);
+        - the mutation record binds 11 shas, all equal at d2d5fb11 (PASS);
+        - the seed rule is recomputed for sets 1-6: identical, 96 distinct seeds, and sets 1-4 equal urgency's.
+    - The same check on this commit is section 8's final line.
+  Queues (frozen; tags checked unused):
+    - W1 64, W2 192, port 8, smoke 6, structure 16.
+    - _mvg_queue.py check passes on all of them, with configuration identity 64 / 64 against the ud0 reference argv.
+  PAPER: the instrument is record-only and checks the guard independently of its implementation. The knockout
+  replays reproduce the urgency round's records exactly.
+
+================================================================================
+6. REVIEWS (3 of the allowed 3: code, instrument, analyzer; at 6ebeadc6)
+================================================================================
+  Totals: 0 BLOCKER, 5 MAJOR, 14 MINOR. All dispositioned before any Part 2d screen-shaped run.
+  Code:
+    - C-1 MAJOR: the committed mutation record was bound to a test file that dbaf9f49 had changed. FIXED: re-run on
+      the final tree (65 mutants, clean). The analyzer now REFUSES a record whose bound shas differ from --head.
+      PAPER: the mutation evidence is for the tree that runs.
+    - C-2 MINOR: T-G1's "+1" case. RECORDED (section 3 (a)).
+    - C-3 MINOR: the (b) accessor and call-site mutants were missing. FIXED: 4 mirrors, all killed.
+    - C-4 MINOR: Zg-1 called the same function as the model. FIXED with I-1 (section 3 (d)).
+  Instrument:
+    - I-1 MAJOR: the instrument's verdict was not the frozen function's. FIXED: frozen-body replica plus the
+      mp_verdict cross-check.
+      PAPER: as section 3 (d).
+    - I-2 MAJOR: W3's precondition (a replay R0 reproduces the direct W2 record) was never exercised on mvg records.
+      Under 1d.13.2, a systematic difference would turn into a spurious hard L4 FAIL. DONE in the smoke: section 8,
+      the smoke replays.
+      PAPER: the causal clause's replays are shown to reproduce the screen's own run lines.
+    - I-3 MINOR: "live" semantics. RECORDED (section 3 (b)), and MV_SCHEMA states it.
+    - I-4 MINOR: the --ko parser was looser than documented (the bare int() class). FIXED: strict int bounds,
+      strict unit ids, TypeError refused.
+    - I-5 MINOR: ko_applied has two meanings. DOCUMENTED (section 3 (c)).
+    - I-6 MINOR: the U1 copy was hashed raw. FIXED: LF-normalised everywhere.
+    - I-7 MINOR: no tier positive control. FIXED.
+    - I-8 MINOR: the deep purity check had not been run on a stepping model. DONE in the smoke (section 8).
+    - I-9 MINOR: no record named its instrument. FIXED: probe_sha, replay_sha.
+  Analyzer:
+    - A-1 MAJOR: the 1d.13 hash ran to EOF, so any later amendment would refuse every run. FIXED: it is bounded at
+      the next "1d.N " section. Self-test H-6.
+    - A-2 MAJOR: the strict head rule would invalidate Part 2d's port runs at the screen's head. FIXED: the ancestor
+      rule (section 3 (h)).
+    - A-3 MINOR: the port queue was not frozen. FIXED: port, smoke and structure queues are in NOTES_REQUIRED.
+    - A-4 MINOR: the W3 build was weaker than the analyzer. FIXED: the analyzer's W2 gate.
+    - A-5 MINOR: a complete run stopping before t. FIXED (section 3 (e)).
+    - A-6 MINOR: untested paths. FIXED: the S1, W3 end-to-end and appended-section cases.
+
+================================================================================
+7. FULL SUITE (1d.8 (8)): outputs/_mvg_fullsuite_run1.log
+================================================================================
+  - Run in the detached worktree E:/Projects/SAS_wt/mvg_suite at dbaf9f49:
+    `pytest tests -q -p no:cacheprovider`, with -B.
+  - It ran 11:50:25-13:30:14 (5 988 s): 1 failed, 1 814 passed, 5 warnings.
+  - The one failure is T5 = tests/test_uav_sector_assignment.py::test_fire_tracker_uavs_receive_different_target_sets.
+    The result is EXACTLY {T5}, the base's expected failing set (1d.8 (8)).
+  - 1 815 = isTrue's 1 697 + the 6 tests of 27744a28 + this round's 112 (54 + 58).
+  - The run covers the screen's head: after dbaf9f49 only test docstrings changed (section 1), and no source.
+  - The suite ran alongside every Part 2d pool. No failure is attributable to load.
+  - A first run at d17b80d7 was stopped before its end (section 9).
+  PAPER: the round adds 112 tests and changes no existing test's outcome.
+
+================================================================================
+8. SMOKE, STRUCTURE CHECK, PORT IDENTITY, OVERHEAD, HOURS (1d.8 (9), (11); 1d.9; 1d.13.5)
+================================================================================
+  All runs below are at d2d5fb11, through outputs/_mf2_pool.py with min-free 3 GB, with CRN active (crn_draws
+  169 559-252 296). Every record is complete: 360 steps, not crashed, 0 mvg errors, 0 mp_mismatch.
+  READ: structural fields and the analyzer's outcome-suppressed smoke mode only. No outcome of sets 1-2 was read.
+  THE SMOKE (1d.8 (9)): set 1 ring A_N and set 1 uniform A_N x arms 0 / G / N.
+    - Records: outputs/_sd_mvgs{0,1,2}{r1,u1}_A_N.json (+ .argv, .poollog, .stdout.txt) and
+      outputs/_mf2_pool_mvg_smoke.log.
+    - The analyzer's smoke mode, on both cells:
+        - 3 / 3 present and valid;
+        - every zero is 0 in every arm: Z1-M, Z2-M, Z5, Z-RB, Zm-a, Zm-b, Z-S, Zg-1, Zg-2, Zg-3;
+        - Z1-M 0->N and 0->G: the first difference is at s*, and the first acting fix is (a), in both cells;
+        - Zg-3 N->G: no veto in G, so G and N are identical end to end;
+        - "SMOKE: outcome sections suppressed".
+    - Structure in G (mvg1):
+        - ring: (a) ran 14, (b) ran 1, 0 vetoes;
+        - uniform: (a) ran 11, (b) ran 1, 0 vetoes.
+        So an admitted (a) step occurred and an (a) veto did NOT, which triggers the structure check.
+    - The check tool on the direct records:
+        - guard: 0 problems on all six;
+        - zg3 (N vs G): OK;
+        - pair (0 vs G): identical before s*.
+  THE STRUCTURE CHECK (1d.8 (9); outputs/_mvg_q_structure.jsonl, 16 lines frozen).
+    - Batch 1 is the first 4 lines (outputs/_mvg_q_structure_b1.jsonl, byte-identical to them), in queue order:
+        - mvgt1r1_A_E: no fix decision;
+        - mvgt1r1_A_S: (a) admitted 15, (a) VETO 2, (b) admitted 1;
+        - mvgt1r1_A_W: (a) admitted 6, (b) admitted 1;
+        - mvgt1r1_B_E: no fix decision.
+    - The requirement is met at queue position 2 (A_S): admitted (a) steps and an (a) veto in mvg1. No later batch
+      was run (4 structure runs of the allowed 16).
+    - A (b) veto did not occur in any mvg1 run of Part 2d; 1d.8 (9) requires one only "if one occurs". The (b) veto
+      path is exercised by the W3 validation's G run (3 (b) vetoes, Zg-2 incl. the _idle_retreat_* writes clean),
+      by T-G2 and by the synthetic set.
+    - The check tool's guard check: 0 problems on all four. At A_S's two vetoes, today's step was taken: cell,
+      tier and raise all match.
+  THE SMOKE REPLAYS (review I-2): the G and N smoke run lines of set 1 ring A_N, replayed through _mvg_replay.py
+  with no --ko (outputs/_mvg_smoke_replay/).
+    - The analyzer's r0_reproduces(direct record, replay) = [] for both: every row kind, dp.commands, mv_events,
+      eval and stdout are equal.
+    - The frozen guard (sha 70eeba78) on the replay boards: 15 / 15 equal to the instrument verdict in each; 0
+      problems.
+    PAPER: the knockout replays of the causal clause reproduce the screen's own run lines exactly. A replay R0
+    that failed to reproduce would make every candidate of its cell UNRESOLVED, and an UNRESOLVED (A) counts as
+    CAUSED. Here the tool reproduced the direct run line in 2 / 2 cases, one guard-on and one guard-off. The
+    analyzer still checks every W3 R0 against its W2 record.
+  THE DEEP PURITY CHECK (review I-8): `_mvg_probe_check.py purity 360 A north 9601` with both fixes at 1 and the
+  guard at its default (outputs/_mvg_smoke_replay/_purity_s1r_A_N_G.txt).
+    - 360 steps, in process, without CRN, so its own trajectory.
+    - Shadow points checked:
+        - 418 mv_shadow points;
+        - 57 guard evaluations, where the frozen replica == movement_paths;
+        - 6 kick shadows (1 qualifying).
+    - Failures: NONE. Both positive controls were detected (a unit write and an RNG draw).
+  THE PORT IDENTITY (1d.8 (11); outputs/_mvg_q_port.jsonl): mvg2 on set 3 ring A_N, A_W, B_S, B_W, C_N, C_S, C_W,
+  D_N against the ud2 records in outputs/_mvg_ref/.
+    - The analyzer gives PORT IDENTITY 8 / 8 identical => PASS.
+    - All 8 runs are valid, and every movement zero in N is 0 / 8.
+    - Code identity only.
+    PAPER: the guarded round's fixes are, with the guard off, exactly the fixes the first screen ran.
+  OVERHEAD (18 direct runs: 6 smoke, 4 structure, 8 port).
+    - The probe costs 0.15-1.29 % of wall time.
+        - It is above the expected 1 % (1d.9) in 3 runs: port runs in arm N, mvg2r3_A_N, B_S and D_N
+          (1.19-1.29 %). There the instrument evaluates the frozen-function guard as a shadow on every fix
+          decision (up to 78 per run).
+        - Record-only; not a gate.
+    - Fix code (a + b + guard) R = 0.04-0.34 % of wall.
+    - The fix calls' p99 per run is 7.8-12.1 ms. One call reached 59.8 ms (mvgt1r1_A_E, during 14 concurrent
+      simulations plus the suite); that run's p99 is 10.3 ms.
+    - The model's guard call: 52 calls over the mvg1 runs, max 24.8 ms; p50 13.7 ms and p99 20.3 ms pooled with
+      the validation G run (101 calls).
+    - The analyzer's S6 lines (smoke): R 0.146 / 0.173 %; FIX p99 7.8 / 8.6 ms; GUARD p99 20.4 / 18.1 ms. S6's
+      limits are median R <= 2 % and p99 <= 50 ms.
+    - The guard alone is 0.03-0.06 % of an mvg1 run's wall time (0.21 % in the validation G run, 74 calls).
+    PAPER: the guard costs about 14 ms per evaluated decision and well under 1 % of a run.
+  HOURS (wave time).
+    - Part 2d ran 32 pool runs plus 1 in-process purity run, within 1d.13.5's 17-33:
+        - smoke 6;
+        - structure 4;
+        - port 8;
+        - smoke replays 2 (review I-2);
+        - W3 tooling validation 4 x 3 (v1, v2, and the d2d5fb11 re-run, after the review).
+    - Wave 1, smoke 6 + validation 4 (10 concurrent): 12:55:03-13:03:40, 8 min 37 s, about 70 runs / h.
+    - Wave 2, port 8 + structure 4 + replays 2 (14 concurrent, beside the purity check and the suite): 13:06:08-
+      13:29:23.
+        - 13 runs ended by 13:18:45, about 62 runs / h.
+        - The heavy cell set1/ring/B_E (1 359 s; its arm-0 reference took 1 025 s) set the tail.
+    - Free memory reached 3.1 GB at 14 concurrent with the suite. The screen keeps maxpar <= 12.
+    - The per-run cost equals the urgency round's (probe and guard above), so 1d.13.5's planning rate stands.
+      Restated:
+        | Stage                          | Runs     | at 50 runs/h (urgency) | at 62-70 runs/h (this part) |
+        |--------------------------------|----------|------------------------|-----------------------------|
+        | W1 identity                    | 64       | 1.3 h                  | 0.9-1.0 h                   |
+        | W2 screen (0 / G / N)          | 192      | 3.8 h                  | 2.7-3.1 h                   |
+        | W3 knockout attribution (G, N) | 100-160  | 2.0-3.2 h              | 1.4-2.6 h                   |
+        | TOTAL before the verdict       | 356-416  | 7.1-8.3 h              | 5.1-6.7 h                   |
+      The smaller waves' faster rate is optimistic: heavy cells such as B_E dominate a wave's tail. 7.1-8.3 h is
+      the planning figure, against the pre-registered 7.4-8.9 h, which included Part 2d.
+  FINAL CHECK on this commit: the analyzer run with --head d2d5fb11 (identical run-loaded files) prints:
+    - notes PASS (40 sha256 lines) and mutation record PASS;
+    - PORT IDENTITY 8 / 8 PASS, and every zero in N 0 / 8;
+    - W1 / W2 missing, so S1 is INCOMPLETE and W3 is not evaluated.
+    Before W1 the same command runs with --head = this commit, together with the self-test:
+    `python -B outputs/_mvg_analyze.py --head <this commit> --part2-notes outputs/mvg_part2d_notes.txt --zeros-only`.
+
+================================================================================
+9. PROCESS RECORD
+================================================================================
+  - The full suite.
+      - The first run started 11:28:24 at d17b80d7 and was stopped: that commit lacked
+        tests/data/urgency_dispatch_5dba5bcb.py, which T-G4 reads (builder M's report).
+      - Its partial log was moved to the session scratch record (_mvg_fullsuite_aborted_d17b80d7.log).
+      - The file was committed (aaff76c0). T-G4 then failed on a CRLF checkout because it hashed raw bytes. It now
+        hashes the LF form (dbaf9f49).
+      - The suite was restarted at dbaf9f49 (section 7).
+  - The first mutation record (61 mutants) was computed on d17b80d7's tree plus the then-untracked file. 6ebeadc6
+    committed it after dbaf9f49 had changed a bound test file (review C-1). It was re-run on the final tree (65
+    mutants) and is now checked against --head by the analyzer.
+  - Validation records.
+      - F1's re-run of the W3 tooling validation (v2) recorded head 6ebeadc6 but ran uncommitted tools, so it is
+        INVALID under the new head and instrument checks.
+      - Re-run at d2d5fb11. The re-run equals v2 on every field but head and timing.
+      - v1 and v2 are kept in outputs/_mvg_val/v1/ and v2/ as records.
+  - Outcome exposure. Nothing below informed a setting, a rule or a reading.
+      - F1 saw the SD_DONE line of the v1 G pool log (set 4 seed 780005, the in-sample validation cell).
+      - I printed the .poollog of port run mvg2r3_C_W while checking the pool, which shows its SD_DONE tally (set
+        3 ring C_W, in-sample, arm N; that cell's ud2 outcome is already committed). The port identity was meant
+        to read none.
+      - No outcome of sets 1-2 was printed. The smoke and structure runs ended after every build, fix and review
+        agent had finished. They were read through guard rows, branch counts, timing, CRN draw counts, health
+        fields and the analyzer's outcome-suppressed smoke mode. A transcript search finds no set-1 SD_DONE line.
+      - Nothing ran on sets 5-6.
+  - Concurrency. Wave 2 ran 14 simulations beside the purity check (1 process) and the suite (2 processes). The
+    pool's min-free gate held: lowest free memory was 3.1 GB.
+  - Search scope:
+      - No recursive search was rooted at a repository root or an outputs/ directory in this part.
+      - One deviation from the "-uno and a pathspec" rule: a `git status --short` without -uno, scoped by pathspec to
+        outputs/_mvg_val and outputs/_mvg_smoke_replay, both in this worktree.
+      - The quarantine directory is not in this worktree and was not contacted.
+  - Untracked and ignored, pre-existing, not created by this part's commands:
+      - .pytest_cache in the worktree root (10:30);
+      - outputs/__pycache__/_mvg_analyze.cpython-310.pyc (11:47).
+    Every command of this part used -B or sys.dont_write_bytecode.
+  - Housekeeping. E:/Projects/SAS_wt/mvg_suite (detached at dbaf9f49, with a .venv junction) is removed after this
+    commit: `cmd /c rmdir .venv` first, then the worktree.
+  - No edit of a run-loaded file after d2d5fb11: this commit changes only records and these notes.
+  PAPER: no outcome on sets 1-2 informed the design. The only outcome-gated sets of this round are 5-6, and
+  nothing has run on them.
+
+================================================================================
+10. SHA256 OF EVERY TOOLING FILE AND FROZEN QUEUE (verified by _mvg_analyze.py --part2-notes)
+================================================================================
+  Format: sha256, size in bytes, path. These are the LF bytes; the analyzer also accepts the CRLF form. The first
+  30 lines are the analyzer's NOTES_REQUIRED; the rest are the round's other frozen inputs.
+    37cc5d591609b21ea06549f4972cd97444ba39edadbcbe2a02528f2118a4665f    104587 outputs/_mvg_probe.py
+    cfc97ebd6dcc4f3d2b3102468769b7396f78e86d5f93e342f25fe5370632b1cf      6730 outputs/_mvg_u1_shadow.py
+    a4b3a551de63b7285218f055a7acf3677fb9abc42945e21bbd9199218a1ff9ed     12991 outputs/_mvg_replay.py
+    67e6d73e6ba6db17f86e143264ee44f6af25e89d5da81977e4fbcb83ebbac3c4    103534 outputs/_mvg_probe_check.py
+    914e2fc4a0bb0ec2dc79d1ae713cb3644d2112e4a4fb7db732d1c08d71b293c2    274269 outputs/_mvg_analyze.py
+    d8ec0ca9963cc9f818f7917725633b06c44c98e927ce980e8124ddc84088c252    124006 outputs/_mvg_analyze_selftest.py
+    458a7b016ad16cc2c524e41f6a827f20b70a96d384e3919ffcf986219d82a1dc     27569 outputs/_mvg_queue.py
+    2ee413bdf106014dbdd52e118a882b6898f5aa1109197f7e4d4b2706d740c00b     32704 outputs/_mvg_w3_queue.py
+    ddf84bd07bef03ee48ea81333257bbd156e7ec2b99720117951d53534e719a65     32736 outputs/_mvg_q_w1.jsonl
+    1d2d2f9467b6a785290cb2f83e8a7730f4692ff1e0d9fad1a1857538102ebc83    109920 outputs/_mvg_q_w2.jsonl
+    d9b4d5e9317116ff6f155fa58431ced8ec5a3613e771f49fc12a1dc204d2370f      4965 outputs/_mvg_q_port.jsonl
+    b1df9619f99b42f9a48d664a4ef2e12d5e870c125a7cd1905ebdb4943d53177f      3450 outputs/_mvg_q_smoke.jsonl
+    cdf48234d626202ea06694c9c8d8ded81d71515c22ca09862f300bc9a910127d      9367 outputs/_mvg_q_structure.jsonl
+    0abc92b41803d7b729c02387697efdb148e7d0bc1764bb4557f421c60f1df289     25959 outputs/_mvg_mutants_result.txt
+    39313a668c59e50df2a6345c0ad7d5ff0fee8c078de144034571776e56654660     65010 outputs/_mvg_mutants_result.json
+    3bf03761b1d0826024428ae2ee1aa95a1a65d704506204cba4a812ae108d3003      9808 outputs/_ut_probe.py
+    2e0bd2e86b1897f4cba9dd2e0659b9c7f8ce11fece5ffac2bcae1e0f93228722     40524 outputs/_fb3_probe.py
+    cb06edc1a51737281296f800e7c5bed591a03c76f6282ab40836514952069f40     13661 outputs/_fx3_probe.py
+    73ca2ac8c4c679b9feefc6d97ec6f676a8df675c569c247582d01094086d445c     13872 outputs/_mf2_probe.py
+    9ece61795377ab07c44d7e63937d05054dcc682ca597ea271ae6c0f5902cc064     19980 outputs/_sd_probe.py
+    996a800534ea5ee952223d793a2118db7ec95385be063a50486e77a02f47fed0     10112 outputs/_fm2_probe_harness.py
+    82d01a19f15a7bfc7ec603ad3bbfea10934ff982156eca06f8471f992da6776e     46545 outputs/_ffr_harness.py
+    441caaf2164773f59dcb1e044d6ab0a472a969aacfa21402f0fb75e7d6431cfe     28489 outputs/_bp_inst.py
+    0898e3dcb8d80ad949f7e5b0ec272176000110358aa3a986b69bbbbd4878aab3      4839 outputs/_mf2_pool.py
+    e0cd8dac2cfc8491c89657d7b27e90a74613c63d767c793866b750a3bd157c55      5584 outputs/_mvg_seeds.txt
+    e3f778f383bc1de30221b13ca8bc046597ad665f226aaa284a8bba299f34520d     20514 outputs/_mvg_ref/_MANIFEST.sha256
+    74d28c1ee5f67d6b9c44cdaec4cf4c7b33193cc8dfb5a14513b75457cbb18b5e     41631 outputs/_mvg_mutants.py
+    4d245a31aab708271fc163b4646211f048b2e357de812066109fbd3557332565     47039 outputs/_mvg_mutants_mv.py
+    70eeba7877dae6174999ae2a00774bdeeb36ced08d35df407f27318cd3a313b2      8733 outputs/_mvg_guard_diag.py
+    a151a4dbc6b8962a2ba44f947fe5efd2d2d4056e209a582afd39d19e3a7d2e6a     13866 outputs/_mvg_make_guard_corpus.py
+    0e11b0b01ee63eadf5c8e3d3594d94c6f2019c0fe958d1a7e39eac4432bb398d     12123 outputs/_mvg_seedscan.py
+    4f8dbd3af69cbd20ef0f65772a93f3aa6afb15abb9eecb9025abafe1831ab1d1      3044 outputs/_mvg_seedscan_summary.txt
+    fade8995d8ad6bd945434511302b934b370309dbcdc3298b753bb6e0cec10823      6148 outputs/_mvg_freeze_records.txt
+    192eab388bd60773fb61a1a95fd782d1e26eeb35802685507010ba229df90b70     16144 outputs/_mvg_guard_rates.py
+    36eeebbc8877895266bf1ec56226eef5be5996df7939ed52307ed5154c94c8e6      7256 outputs/_mvg_guard_footprint.py
+    8e7f9e84caeb02fc3862f8d9cb5fd9fd34d1478b6aa7734de14e563983b62a4d      2072 outputs/_mvg_guard_timing.py
+    fc8b657e22305cead7c9062be8322658dc795be32c6fbd6caa59d5e51b631f86      2341 outputs/_mvg_q_structure_b1.jsonl
+    b5001496a35a77da2856e43dc45acbaf1fe1c04d22eb2032bb42b433a9159490      3106 outputs/_mvg_val/_mvg_val_queue.jsonl
+    3fa7a4ed3531e70da010dc14b91af639abdaf287181590a73839f9dab33efb78      1501 outputs/_mvg_smoke_replay/_q_smoke_replay.jsonl
+    9c865d0056d0ae12281aeb3727bae33b2da5d1ed5fec89b033c7a3e4f7d6ebf9     14021 outputs/_dim_hooks.py
